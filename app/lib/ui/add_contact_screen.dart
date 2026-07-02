@@ -41,7 +41,8 @@ class _AddContactScreenState extends State<AddContactScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('ADD CONTACT', style: Zn.mono(size: 13, letterSpacing: 3, color: Zn.text)),
+        title: const Text('Add a friend',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
         actions: [
           IconButton(
             icon: Icon(_scanning ? Icons.keyboard : Icons.qr_code_scanner,
@@ -64,7 +65,8 @@ class _AddContactScreenState extends State<AddContactScreen> {
           onDetect: (capture) {
             if (_scanHandled) return;
             final value = capture.barcodes.firstOrNull?.rawValue;
-            if (value != null && value.startsWith('ZC-')) {
+            if (value != null &&
+                (value.startsWith('ZC-') || value.startsWith('zn-'))) {
               _scanHandled = true;
               _add(value);
             }
@@ -75,8 +77,8 @@ class _AddContactScreenState extends State<AddContactScreen> {
           left: 0,
           right: 0,
           child: Center(
-            child: Text('point at a Zeon ID',
-                style: Zn.mono(size: 12, color: Zn.text, letterSpacing: 1)),
+            child: Text('Point at a friend\'s Zeon code',
+                style: TextStyle(fontSize: 13, color: Zn.text)),
           ),
         ),
       ],
@@ -89,14 +91,21 @@ class _AddContactScreenState extends State<AddContactScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('PASTE THEIR ZEON ID', style: Zn.mono(size: 10, letterSpacing: 2)),
-          const SizedBox(height: 10),
+          const Text('Their Zeon code',
+              style: TextStyle(
+                  color: Zn.text, fontSize: 13, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          const Text(
+            'Ask them for their three words — or scan their QR code with the '
+            'camera button above.',
+            style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
+          ),
+          const SizedBox(height: 12),
           TextField(
             controller: _id,
-            style: Zn.mono(size: 13, color: Zn.text),
-            maxLines: 2,
-            decoration: const InputDecoration(
-                hintText: 'ZC-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX'),
+            style: Zn.mono(size: 14, color: Zn.text),
+            autocorrect: false,
+            decoration: const InputDecoration(hintText: 'zn-palm-dog-cherry'),
           ),
           const SizedBox(height: 20),
           SizedBox(
@@ -109,13 +118,13 @@ class _AddContactScreenState extends State<AddContactScreen> {
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('SEND REQUEST'),
+                  : const Text('Send request'),
             ),
           ),
           const SizedBox(height: 16),
           const Text(
-            'They will get an encrypted contact request. You can chat once '
-            'they accept. IDs carry no personal information.',
+            'They\'ll get a private request, and you can chat once they '
+            'accept. Codes carry no personal information.',
             style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
           ),
         ],

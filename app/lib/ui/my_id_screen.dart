@@ -14,10 +14,12 @@ class MyIdScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final zeonId = app.zeonId ?? '';
+    final handle = app.handle ?? '';
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('MY ID', style: Zn.mono(size: 13, letterSpacing: 3, color: Zn.text)),
+        title: const Text('My code',
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
       ),
       body: Center(
         child: Padding(
@@ -41,27 +43,34 @@ class MyIdScreen extends StatelessWidget {
               Text(app.displayName ?? '',
                   style: const TextStyle(
                       color: Zn.text, fontSize: 18, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 12),
+              const SizedBox(height: 10),
               SelectableText(
-                zeonId,
+                handle,
                 textAlign: TextAlign.center,
-                style: Zn.mono(size: 13, color: Zn.ion, weight: FontWeight.w600),
+                style: Zn.mono(size: 19, color: Zn.ion, weight: FontWeight.w700),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               OutlinedButton.icon(
                 onPressed: () {
-                  Clipboard.setData(ClipboardData(text: zeonId));
-                  showZnSnack(context, 'ID copied');
+                  Clipboard.setData(ClipboardData(text: handle));
+                  showZnSnack(context, 'Code copied');
                 },
                 icon: const Icon(Icons.copy, size: 16),
-                label: const Text('COPY ID'),
+                label: const Text('Copy my code'),
               ),
               const SizedBox(height: 16),
               const Text(
-                'Anyone with this ID can send you a contact request — and '
+                'Friends add you with these three words, or by scanning the '
+                'QR. Anyone with your code can send you a request — and '
                 'nothing else. It contains no phone number, email, or name.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
+              ),
+              const SizedBox(height: 14),
+              SelectableText(
+                zeonId,
+                textAlign: TextAlign.center,
+                style: Zn.mono(size: 9, color: Zn.muted),
               ),
             ],
           ),

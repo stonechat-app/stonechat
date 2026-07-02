@@ -15,12 +15,24 @@ class ChatDb {
     final path = p.join(await getDatabasesPath(), 'zeon.db');
     final db = await openDatabase(
       path,
-      version: 1,
+      version: 3,
+      onUpgrade: (db, oldVersion, _) async {
+        if (oldVersion < 2) {
+          await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
+        }
+        if (oldVersion < 3) {
+          await db.execute(
+              "ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'");
+          await db.execute('ALTER TABLE messages ADD COLUMN media_path TEXT');
+          await db.execute('ALTER TABLE messages ADD COLUMN duration_ms INTEGER');
+        }
+      },
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE contacts (
             zeon_id        TEXT PRIMARY KEY,
             display_name   TEXT NOT NULL,
+            handle         TEXT,
             pubkey         TEXT NOT NULL,
             status         TEXT NOT NULL,
             server_address TEXT,
@@ -29,12 +41,15 @@ class ChatDb {
         ''');
         await db.execute('''
           CREATE TABLE messages (
-            id         TEXT PRIMARY KEY,
-            contact_id TEXT NOT NULL REFERENCES contacts(zeon_id),
-            outgoing   INTEGER NOT NULL,
-            text       TEXT NOT NULL,
-            sent_at    INTEGER NOT NULL,
-            status     TEXT NOT NULL
+            id          TEXT PRIMARY KEY,
+            contact_id  TEXT NOT NULL REFERENCES contacts(zeon_id),
+            outgoing    INTEGER NOT NULL,
+            text        TEXT NOT NULL,
+            kind        TEXT NOT NULL DEFAULT 'text',
+            media_path  TEXT,
+            duration_ms INTEGER,
+            sent_at     INTEGER NOT NULL,
+            status      TEXT NOT NULL
           )
         ''');
         await db.execute(

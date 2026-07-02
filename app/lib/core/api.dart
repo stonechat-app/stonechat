@@ -19,11 +19,15 @@ class ApiException implements Exception {
 
 class DirectoryEntry {
   final String zeonId;
+  final String? handle;
   final String pubkeyB64;
-  final String? serverAddress; // null → peer has no running server right now
+  final String? serverAddress; // null → peer's mailbox is off right now
 
   DirectoryEntry(
-      {required this.zeonId, required this.pubkeyB64, this.serverAddress});
+      {required this.zeonId,
+      this.handle,
+      required this.pubkeyB64,
+      this.serverAddress});
 }
 
 class ServerRecord {
@@ -63,23 +67,26 @@ class ControlPlaneApi {
     return Future.value(parse(body as Map<String, dynamic>));
   }
 
-  Future<({String zeonId, String accountToken})> register(
+  Future<({String zeonId, String handle, String accountToken})> register(
       String pubkeyB64) async {
     final r = await http.post(Uri.parse('$baseUrl/v1/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'pubkey': pubkeyB64}));
     return _check(r, (j) => (
           zeonId: j['zeon_id'] as String,
+          handle: j['handle'] as String,
           accountToken: j['account_token'] as String,
         ));
   }
 
-  Future<DirectoryEntry> directory(String zeonId) async {
-    final r = await http.get(Uri.parse('$baseUrl/v1/directory/$zeonId'));
+  /// Accepts either form: full ZC- ID or zn-word-word-word handle.
+  Future<DirectoryEntry> directory(String idOrHandle) async {
+    final r = await http.get(Uri.parse('$baseUrl/v1/directory/$idOrHandle'));
     return _check(r, (j) {
       final server = j['server'] as Map<String, dynamic>?;
       return DirectoryEntry(
         zeonId: j['zeon_id'] as String,
+        handle: j['handle'] as String?,
         pubkeyB64: j['pubkey'] as String,
         serverAddress: server?['address'] as String?,
       );
@@ -121,6 +128,31 @@ class ControlPlaneApi {
         await http.delete(Uri.parse('$baseUrl/v1/server'), headers: _auth);
     await _check(r, (_) => null);
   }
+}
+
+/// Upload an encrypted media blob to a peer's mailbox. Returns the blob id
+/// to reference from the media envelope.
+Future<String> uploadBlob(String serverAddress, List<int> bytes) async {
+  final r = await http
+      .post(Uri.parse('$serverAddress/blob'),
+          headers: {'Content-Type': 'application/octet-stream'}, body: bytes)
+      .timeout(const Duration(seconds: 60));
+  if (r.statusCode >= 400) {
+    throw ApiException('blob upload failed (${r.statusCode})', r.statusCode);
+  }
+  return (jsonDecode(r.body) as Map<String, dynamic>)['blob_id'] as String;
+}
+
+/// Download a blob from *your own* mailbox (owner token required).
+Future<List<int>> downloadBlob(
+    String serverAddress, String blobId, String token) async {
+  final r = await http
+      .get(Uri.parse('$serverAddress/blob/$blobId?token=$token'))
+      .timeout(const Duration(seconds: 60));
+  if (r.statusCode >= 400) {
+    throw ApiException('blob download failed (${r.statusCode})', r.statusCode);
+  }
+  return r.bodyBytes;
 }
 
 /// Delivers an envelope to a peer's routing server. Throws on failure —

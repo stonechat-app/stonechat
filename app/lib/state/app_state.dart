@@ -19,14 +19,27 @@ class AppState extends ChangeNotifier {
   late final ControlPlaneApi api;
   CryptoService? _crypto;
   String? zeonId;
+  String? handle; // zn-word-word-word
   String? displayName;
 
   bool get hasIdentity => _crypto != null && zeonId != null;
   CryptoService get crypto => _crypto!;
 
-  static String get defaultControlPlaneUrl => Platform.isAndroid
-      ? 'http://10.0.2.2:8000' // Android emulator → host machine
-      : 'http://127.0.0.1:8000';
+  /// Two modes: by default the app uses the hosted Zeon control plane;
+  /// advanced users can point it anywhere (onboarding → advanced, or
+  /// --dart-define=ZEON_CP=… for development).
+  static const hostedControlPlaneUrl = 'https://control.zeonchat.com';
+  static const _envUrl = String.fromEnvironment('ZEON_CP');
+
+  static String get defaultControlPlaneUrl {
+    if (_envUrl.isNotEmpty) return _envUrl;
+    if (kDebugMode) {
+      return Platform.isAndroid
+          ? 'http://10.0.2.2:8000' // Android emulator → host machine
+          : 'http://127.0.0.1:8000';
+    }
+    return hostedControlPlaneUrl;
+  }
 
   /// Load services and any stored identity. Called once before runApp.
   Future<void> init() async {
@@ -49,9 +62,25 @@ class AppState extends ChangeNotifier {
         secretKey: base64Decode(secret),
       );
       zeonId = await _storage.read(key: 'zn_id');
+      handle = await _storage.read(key: 'zn_handle');
       displayName = await _storage.read(key: 'zn_name');
+      if (handle == null && zeonId != null) {
+        await _fetchOwnHandle(); // account predates handles — self-heal
+      }
     } else {
       _sodium = sodium;
+    }
+  }
+
+  Future<void> _fetchOwnHandle() async {
+    try {
+      final entry = await api.directory(zeonId!);
+      if (entry.handle != null) {
+        handle = entry.handle;
+        await _storage.write(key: 'zn_handle', value: handle);
+      }
+    } catch (_) {
+      // offline — retry next launch
     }
   }
 
@@ -73,12 +102,14 @@ class AppState extends ChangeNotifier {
         key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
     await _storage.write(key: 'zn_id', value: result.zeonId);
+    await _storage.write(key: 'zn_handle', value: result.handle);
     await _storage.write(key: 'zn_token', value: result.accountToken);
     await _storage.write(key: 'zn_name', value: name);
     await _storage.write(key: 'zn_cp_url', value: controlPlaneUrl);
 
     _crypto = crypto;
     zeonId = result.zeonId;
+    handle = result.handle;
     displayName = name;
     notifyListeners();
   }

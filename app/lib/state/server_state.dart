@@ -13,6 +13,8 @@ class ServerState extends ChangeNotifier {
   final AppState app;
   final Future<void> Function(Envelope) onEnvelope;
   final Future<void> Function() onConnected; // e.g. retry pending outbox
+  final void Function(String? address, String? token)?
+      onMailbox; // own mailbox coordinates, for blob downloads
 
   ServerRecord record = ServerRecord(status: 'none');
   bool socketConnected = false;
@@ -21,7 +23,8 @@ class ServerState extends ChangeNotifier {
   MailboxSocket? _socket;
   Timer? _pollTimer;
 
-  ServerState(this.app, {required this.onEnvelope, required this.onConnected});
+  ServerState(this.app,
+      {required this.onEnvelope, required this.onConnected, this.onMailbox});
 
   bool get isRunning => record.status == 'running';
   bool get isProvisioning => record.status == 'provisioning';
@@ -42,8 +45,10 @@ class ServerState extends ChangeNotifier {
     }
 
     if (isRunning && record.address != null && record.serverToken != null) {
+      onMailbox?.call(record.address, record.serverToken);
       _ensureSocket(record.address!, record.serverToken!);
     } else {
+      onMailbox?.call(null, null);
       _dropSocket();
     }
     notifyListeners();

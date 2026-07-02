@@ -25,12 +25,12 @@ class HomeScreen extends StatelessWidget {
         actions: [
           IconButton(
             icon: const Icon(Icons.qr_code_2, color: Zn.muted),
-            tooltip: 'My ID',
+            tooltip: 'My code',
             onPressed: () => Navigator.pushNamed(context, '/my-id'),
           ),
           IconButton(
-            icon: const Icon(Icons.dns_outlined, color: Zn.muted),
-            tooltip: 'Relay',
+            icon: const Icon(Icons.markunread_mailbox_outlined, color: Zn.muted),
+            tooltip: 'Mailbox',
             onPressed: () => Navigator.pushNamed(context, '/server'),
           ),
         ],
@@ -44,11 +44,11 @@ class HomeScreen extends StatelessWidget {
                 : ListView(
                     children: [
                       if (requests.isNotEmpty) ...[
-                        _SectionLabel('REQUESTS · ${requests.length}'),
+                        _SectionLabel('Requests · ${requests.length}'),
                         ...requests.map((c) => _RequestTile(contact: c)),
                       ],
                       if (conversations.isNotEmpty) ...[
-                        const _SectionLabel('CONVERSATIONS'),
+                        const _SectionLabel('Chats'),
                         ...conversations.map((c) => _ConversationTile(contact: c)),
                       ],
                     ],
@@ -89,7 +89,11 @@ class _RequestTile extends StatelessWidget {
       leading: ZeonAvatar(zeonId: contact.zeonId, name: contact.displayName),
       title: Text(contact.displayName,
           style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text('wants to connect', style: Zn.mono(size: 11)),
+      subtitle: Text(
+          contact.handle == null
+              ? 'wants to connect'
+              : '${contact.handle} · wants to connect',
+          style: const TextStyle(color: Zn.muted, fontSize: 12)),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -131,7 +135,7 @@ class _ConversationTile extends StatelessWidget {
       subtitle: last == null
           ? Text('say hello', style: Zn.mono(size: 11))
           : Text(
-              '${last.outgoing ? '› ' : ''}${last.text}',
+              '${last.outgoing ? '› ' : ''}${last.preview}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Zn.muted, fontSize: 13),
@@ -167,11 +171,10 @@ class _EmptyState extends StatelessWidget {
         children: [
           Text('◇', style: Zn.mono(size: 40, color: Zn.line)),
           const SizedBox(height: 16),
-          const Text('No conversations yet',
-              style: TextStyle(color: Zn.muted)),
+          const Text('No chats yet', style: TextStyle(color: Zn.muted)),
           const SizedBox(height: 6),
-          Text('share your ID or add a contact',
-              style: Zn.mono(size: 11)),
+          const Text('Share your code, or add a friend with theirs',
+              style: TextStyle(color: Zn.muted, fontSize: 12)),
         ],
       ),
     );

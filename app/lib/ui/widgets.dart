@@ -7,8 +7,8 @@ import 'package:provider/provider.dart';
 import '../state/server_state.dart';
 import 'theme.dart';
 
-/// The signature element: a thin console line that always tells you where
-/// your relay stands. Tapping it opens the server screen.
+/// The signature element: a thin status line that always tells you whether
+/// you can receive messages. Tapping it opens the mailbox screen.
 class RelayStrip extends StatelessWidget {
   const RelayStrip({super.key});
 
@@ -17,15 +17,11 @@ class RelayStrip extends StatelessWidget {
     final server = context.watch<ServerState>();
 
     final (dot, label, color) = switch ((server.record.status, server.socketConnected)) {
-      ('running', true) => (
-          '●',
-          'RELAY ONLINE · ${server.record.provider?.toUpperCase()}',
-          Zn.ok
-        ),
-      ('running', false) => ('◐', 'RELAY UP · LINKING…', Zn.cyan),
-      ('provisioning', _) => ('◌', 'RELAY IGNITING…', Zn.cyan),
-      ('error', _) => ('✕', 'RELAY FAILED — TAP FOR DETAILS', Zn.danger),
-      _ => ('○', 'NO RELAY — TAP TO IGNITE', Zn.muted),
+      ('running', true) => ('●', "You're reachable", Zn.ok),
+      ('running', false) => ('◐', 'Connecting to your mailbox…', Zn.cyan),
+      ('provisioning', _) => ('◌', 'Setting up your mailbox…', Zn.cyan),
+      ('error', _) => ('✕', "Mailbox setup didn't work — tap to see why", Zn.danger),
+      _ => ('○', 'No mailbox yet — tap to set up', Zn.muted),
     };
 
     return InkWell(
@@ -44,7 +40,9 @@ class RelayStrip extends StatelessWidget {
           children: [
             Text(dot, style: Zn.mono(size: 11, color: color)),
             const SizedBox(width: 8),
-            Text(label, style: Zn.mono(size: 11, color: color, letterSpacing: 1.2)),
+            Text(label,
+                style: TextStyle(
+                    fontSize: 12.5, color: color, fontWeight: FontWeight.w500)),
           ],
         ),
       ),

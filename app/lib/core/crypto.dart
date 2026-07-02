@@ -145,6 +145,35 @@ class CryptoService {
     );
   }
 
+  // -- media blobs (secretbox: one-off symmetric key per file) ------------------
+
+  /// Encrypt a media file with a fresh random key. The key+nonce travel to
+  /// the recipient inside the crypto_box envelope payload; the blob itself is
+  /// opaque to every server that touches it.
+  ({Uint8List key, Uint8List nonce, Uint8List ciphertext}) sealBlob(
+      Uint8List data) {
+    final key = _sodium.crypto.secretBox.keygen();
+    final nonce = _sodium.randombytes.buf(_sodium.crypto.secretBox.nonceBytes);
+    final ciphertext =
+        _sodium.crypto.secretBox.easy(message: data, nonce: nonce, key: key);
+    final keyBytes = key.extractBytes();
+    key.dispose();
+    return (key: keyBytes, nonce: nonce, ciphertext: ciphertext);
+  }
+
+  /// Returns null on tamper/corruption.
+  Uint8List? openBlob(Uint8List ciphertext, Uint8List keyBytes, Uint8List nonce) {
+    final key = SecureKey.fromList(_sodium, keyBytes);
+    try {
+      return _sodium.crypto.secretBox
+          .openEasy(cipherText: ciphertext, nonce: nonce, key: key);
+    } catch (_) {
+      return null;
+    } finally {
+      key.dispose();
+    }
+  }
+
   /// Returns null if the envelope wasn't genuinely from the claimed sender
   /// (or was corrupted) — authentication failure, not an error to surface.
   String? decrypt(String nonceB64, String ciphertextB64, Uint8List senderPubkey) {

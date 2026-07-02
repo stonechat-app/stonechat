@@ -6,6 +6,7 @@ import 'state/chat_state.dart';
 import 'state/server_state.dart';
 import 'ui/add_contact_screen.dart';
 import 'ui/home_screen.dart';
+import 'ui/mailbox_setup_screen.dart';
 import 'ui/my_id_screen.dart';
 import 'ui/onboarding_screen.dart';
 import 'ui/server_screen.dart';
@@ -22,6 +23,7 @@ Future<void> main() async {
     app,
     onEnvelope: chat.handleIncoming,
     onConnected: chat.retryPending,
+    onMailbox: chat.setMailbox,
   );
 
   if (app.hasIdentity) {
@@ -82,6 +84,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
       initialRoute: app.hasIdentity ? '/home' : '/onboarding',
       routes: {
         '/onboarding': (_) => const OnboardingScreen(),
+        '/mailbox-setup': (_) => const MailboxSetupScreen(),
         '/home': (_) => const HomeScreen(),
         '/add-contact': (_) => const AddContactScreen(),
         '/my-id': (_) => const MyIdScreen(),

@@ -3,8 +3,11 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/api.dart';
@@ -20,7 +23,24 @@ class ChatState extends ChangeNotifier {
   final Map<String, List<Message>> _messages = {}; // by contact zeon_id
   final Map<String, Message?> lastMessage = {};
 
+  // Own mailbox coordinates, set by ServerState before the socket connects —
+  // needed to download incoming media blobs.
+  String? mailboxAddress;
+  String? mailboxToken;
+
   ChatState(this.app);
+
+  void setMailbox(String? address, String? token) {
+    mailboxAddress = address;
+    mailboxToken = token;
+  }
+
+  Future<Directory> _mediaDir() async {
+    final docs = await getApplicationDocumentsDirectory();
+    final dir = Directory(p.join(docs.path, 'media'));
+    await dir.create(recursive: true);
+    return dir;
+  }
 
   List<Contact> get acceptedContacts =>
       contacts.where((c) => c.isAccepted).toList();
@@ -67,7 +87,8 @@ class ChatState extends ChangeNotifier {
     }
     final entry = await _resolve(contact.zeonId);
     if (entry.serverAddress == null) {
-      throw ApiException('${contact.displayName} has no server online');
+      throw ApiException(
+          "${contact.displayName}'s mailbox is off right now — they'll get it when it's back");
     }
     contact.serverAddress = entry.serverAddress;
     await app.db.upsertContact(contact);
@@ -101,19 +122,33 @@ class ChatState extends ChangeNotifier {
 
   // -- contact lifecycle ---------------------------------------------------------
 
-  /// Add by Zeon ID: resolve, verify, store, send an encrypted contact request.
-  Future<Contact> addContact(String rawZeonId) async {
-    final zeonId = app.crypto.normalizeZeonId(rawZeonId);
-    if (zeonId == app.zeonId) {
-      throw ApiException("That's your own ID");
+  /// Add by Zeon code (zn-word-word-word) or full ZC- ID: resolve, verify,
+  /// store, send an encrypted contact request.
+  Future<Contact> addContact(String raw) async {
+    final input = raw.trim();
+    if (input.isEmpty) {
+      throw const FormatException('Enter a Zeon code');
     }
-    if (contactById(zeonId) != null) {
+    // Full IDs get local checksum validation; anything else is treated as a
+    // handle and resolved by the directory.
+    final String query;
+    if (input.toUpperCase().replaceAll(RegExp(r'[\s-]'), '').startsWith('ZC')) {
+      query = app.crypto.normalizeZeonId(input);
+    } else {
+      query = input.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+    }
+
+    final entry = await _resolve(query);
+    if (entry.zeonId == app.zeonId) {
+      throw ApiException("That's your own code");
+    }
+    if (contactById(entry.zeonId) != null) {
       throw ApiException('Already in your contacts');
     }
-    final entry = await _resolve(zeonId);
     final contact = Contact(
-      zeonId: zeonId,
-      displayName: zeonId.substring(3, 12), // placeholder until they accept
+      zeonId: entry.zeonId,
+      displayName: entry.handle ?? entry.zeonId.substring(3, 12),
+      handle: entry.handle,
       pubkeyB64: entry.pubkeyB64,
       status: ContactStatus.pendingOut,
       serverAddress: entry.serverAddress,
@@ -168,9 +203,46 @@ class ChatState extends ChangeNotifier {
     await _trySend(contact, message);
   }
 
-  Future<void> _trySend(Contact contact, Message message) async {
+  /// Send a photo or voice note. `sourcePath` is copied into the app's media
+  /// directory first — the local copy is the message history.
+  Future<void> sendMedia(
+    Contact contact,
+    String sourcePath, {
+    required String kind, // MessageKind.image | MessageKind.audio
+    required String mime,
+    int? durationMs,
+  }) async {
+    final id = _uuid.v4();
+    final dir = await _mediaDir();
+    final localPath = p.join(dir.path, '$id${p.extension(sourcePath)}');
+    await File(sourcePath).copy(localPath);
+
+    final message = Message(
+      id: id,
+      contactId: contact.zeonId,
+      outgoing: true,
+      text: '',
+      kind: kind,
+      mediaPath: localPath,
+      durationMs: durationMs,
+      sentAt: DateTime.now().millisecondsSinceEpoch,
+      status: MessageStatus.pending,
+    );
+    await app.db.insertMessage(message);
+    (_messages[contact.zeonId] ??= []).add(message);
+    lastMessage[contact.zeonId] = message;
+    notifyListeners();
+
+    await _trySend(contact, message, mime: mime);
+  }
+
+  Future<void> _trySend(Contact contact, Message message,
+      {String? mime}) async {
     try {
-      await _deliver(contact, _sealMessage(contact, message));
+      final envelope = message.kind == MessageKind.text
+          ? _sealMessage(contact, message)
+          : await _sealMedia(contact, message, mime: mime);
+      await _deliver(contact, envelope);
       message.status = MessageStatus.sent;
       await app.db.setMessageStatus(message.id, MessageStatus.sent);
     } catch (_) {
@@ -178,6 +250,56 @@ class ChatState extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  /// Media path: encrypt file with a one-off key, park the ciphertext on the
+  /// recipient's mailbox, reference it from a small normal envelope.
+  Future<Envelope> _sealMedia(Contact contact, Message message,
+      {String? mime}) async {
+    final bytes = await File(message.mediaPath!).readAsBytes();
+    final blob = app.crypto.sealBlob(bytes);
+    final address = await _addressFor(contact);
+    final blobId = await uploadBlob(address, blob.ciphertext);
+
+    final payload = {
+      'blob_id': blobId,
+      'key': base64Encode(blob.key),
+      'blob_nonce': base64Encode(blob.nonce),
+      'mime': mime ?? _mimeFromPath(message.mediaPath!),
+      'kind': message.kind,
+      'size': bytes.length,
+      if (message.durationMs != null) 'duration_ms': message.durationMs,
+    };
+    final sealed = app.crypto
+        .encrypt(jsonEncode(payload), base64Decode(contact.pubkeyB64));
+    return Envelope(
+      id: message.id,
+      type: EnvelopeType.media,
+      from: app.zeonId!,
+      to: contact.zeonId,
+      sentAt: DateTime.fromMillisecondsSinceEpoch(message.sentAt)
+          .toUtc()
+          .toIso8601String(),
+      nonceB64: sealed.nonceB64,
+      ciphertextB64: sealed.ciphertextB64,
+      blobId: blobId,
+    );
+  }
+
+  static String _mimeFromPath(String path) => switch (p.extension(path)) {
+        '.jpg' || '.jpeg' => 'image/jpeg',
+        '.png' => 'image/png',
+        '.heic' => 'image/heic',
+        '.m4a' => 'audio/mp4',
+        _ => 'application/octet-stream',
+      };
+
+  static String _extFromMime(String mime) => switch (mime) {
+        'image/jpeg' => '.jpg',
+        'image/png' => '.png',
+        'image/heic' => '.heic',
+        'audio/mp4' || 'audio/aac' => '.m4a',
+        _ => '.bin',
+      };
 
   Envelope _sealMessage(Contact contact, Message message) {
     final sealed = app.crypto
@@ -198,6 +320,20 @@ class ChatState extends ChangeNotifier {
 
   /// Re-attempt everything in the pending outbox (app resume, reconnect, …).
   Future<void> retryPending() async {
+    // Contact requests that never made it out (their mailbox was off when we
+    // added them). Receivers dedupe by sender, so re-sending is safe.
+    for (final contact
+        in contacts.where((c) => c.status == ContactStatus.pendingOut)) {
+      try {
+        await _deliver(
+          contact,
+          _seal(EnvelopeType.contactRequest, contact,
+              {'display_name': app.displayName}),
+        );
+      } catch (_) {
+        // still unreachable — next retry will try again
+      }
+    }
     for (final message in await app.db.pendingMessages()) {
       final contact = contactById(message.contactId);
       if (contact == null) continue;
@@ -220,9 +356,13 @@ class ChatState extends ChangeNotifier {
     if (envelope.to != app.zeonId) return;
 
     var contact = contactById(envelope.from);
+    final senderEntry =
+        contact == null ? await _resolveOrNull(envelope.from) : null;
     final senderPubkey = contact != null
         ? Uint8List.fromList(base64Decode(contact.pubkeyB64))
-        : await _pubkeyFromDirectory(envelope.from);
+        : senderEntry != null
+            ? Uint8List.fromList(base64Decode(senderEntry.pubkeyB64))
+            : null;
     if (senderPubkey == null) return; // unresolvable sender — drop
 
     final plaintext = app.crypto
@@ -236,8 +376,10 @@ class ChatState extends ChangeNotifier {
         if (contact != null) return; // duplicate request
         contact = Contact(
           zeonId: envelope.from,
-          displayName:
-              (payload['display_name'] as String?) ?? envelope.from.substring(3, 12),
+          displayName: (payload['display_name'] as String?) ??
+              senderEntry?.handle ??
+              envelope.from.substring(3, 12),
+          handle: senderEntry?.handle,
           pubkeyB64: base64Encode(senderPubkey),
           status: ContactStatus.pendingIn,
           createdAt: DateTime.now().millisecondsSinceEpoch,
@@ -256,32 +398,72 @@ class ChatState extends ChangeNotifier {
 
       case EnvelopeType.msg:
         if (contact == null || !contact.isAccepted) return; // strangers can't chat
-        final message = Message(
-          id: envelope.id,
-          contactId: contact.zeonId,
-          outgoing: false,
-          text: (payload['text'] as String?) ?? '',
-          sentAt: DateTime.tryParse(envelope.sentAt)
-                  ?.toLocal()
-                  .millisecondsSinceEpoch ??
-              DateTime.now().millisecondsSinceEpoch,
-          status: MessageStatus.sent,
+        await _storeIncoming(
+          contact,
+          Message(
+            id: envelope.id,
+            contactId: contact.zeonId,
+            outgoing: false,
+            text: (payload['text'] as String?) ?? '',
+            sentAt: _sentAtMs(envelope),
+            status: MessageStatus.sent,
+          ),
         );
-        await app.db.insertMessage(message);
-        final cache = _messages[contact.zeonId];
-        if (cache != null && !cache.any((m) => m.id == message.id)) {
-          cache.add(message);
-          cache.sort((a, b) => a.sentAt.compareTo(b.sentAt));
+
+      case EnvelopeType.media:
+        if (contact == null || !contact.isAccepted) return;
+        // Fetch + decrypt + persist BEFORE returning: returning acks the
+        // envelope, which deletes the blob from our mailbox.
+        if (mailboxAddress == null || mailboxToken == null) {
+          throw StateError('mailbox info missing'); // don't ack — retry later
         }
-        lastMessage[contact.zeonId] = message;
+        final ciphertext = await downloadBlob(
+            mailboxAddress!, payload['blob_id'] as String, mailboxToken!);
+        final data = app.crypto.openBlob(
+          Uint8List.fromList(ciphertext),
+          base64Decode(payload['key'] as String),
+          base64Decode(payload['blob_nonce'] as String),
+        );
+        if (data == null) return; // tampered blob — drop
+        final dir = await _mediaDir();
+        final ext = _extFromMime((payload['mime'] as String?) ?? '');
+        final path = p.join(dir.path, '${envelope.id}$ext');
+        await File(path).writeAsBytes(data);
+        await _storeIncoming(
+          contact,
+          Message(
+            id: envelope.id,
+            contactId: contact.zeonId,
+            outgoing: false,
+            text: '',
+            kind: (payload['kind'] as String?) ?? MessageKind.image,
+            mediaPath: path,
+            durationMs: payload['duration_ms'] as int?,
+            sentAt: _sentAtMs(envelope),
+            status: MessageStatus.sent,
+          ),
+        );
     }
     notifyListeners();
   }
 
-  Future<Uint8List?> _pubkeyFromDirectory(String zeonId) async {
+  static int _sentAtMs(Envelope envelope) =>
+      DateTime.tryParse(envelope.sentAt)?.toLocal().millisecondsSinceEpoch ??
+      DateTime.now().millisecondsSinceEpoch;
+
+  Future<void> _storeIncoming(Contact contact, Message message) async {
+    await app.db.insertMessage(message);
+    final cache = _messages[contact.zeonId];
+    if (cache != null && !cache.any((m) => m.id == message.id)) {
+      cache.add(message);
+      cache.sort((a, b) => a.sentAt.compareTo(b.sentAt));
+    }
+    lastMessage[contact.zeonId] = message;
+  }
+
+  Future<DirectoryEntry?> _resolveOrNull(String zeonId) async {
     try {
-      final entry = await _resolve(zeonId);
-      return Uint8List.fromList(base64Decode(entry.pubkeyB64));
+      return await _resolve(zeonId);
     } catch (_) {
       return null;
     }

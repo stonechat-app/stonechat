@@ -20,10 +20,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   bool _showAdvanced = false;
   bool _working = false;
 
-  Future<void> _forge() async {
+  Future<void> _createAccount() async {
     final name = _name.text.trim();
     if (name.isEmpty) {
-      showZnSnack(context, 'Pick a name your contacts will see', error: true);
+      showZnSnack(context, 'Pick a name your friends will see', error: true);
       return;
     }
     setState(() => _working = true);
@@ -33,13 +33,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       if (!mounted) return;
       await showDialog<void>(
         context: context,
-        builder: (_) => _IdentityRevealDialog(zeonId: app.zeonId!),
+        barrierDismissible: false,
+        builder: (_) => _CodeRevealDialog(
+            handle: app.handle ?? '', zeonId: app.zeonId ?? ''),
       );
       if (mounted) {
-        Navigator.pushReplacementNamed(context, '/home');
+        Navigator.pushReplacementNamed(context, '/mailbox-setup');
       }
     } catch (e) {
-      if (mounted) showZnSnack(context, 'Could not register: $e', error: true);
+      if (mounted) {
+        showZnSnack(context, "Couldn't create your account: $e", error: true);
+      }
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -63,58 +67,63 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       letterSpacing: 10)),
               const SizedBox(height: 8),
               const Text(
-                'Messaging that routes through a server you own.\n'
-                'No phone number. No cloud inbox. History lives here.',
+                'Private messaging through a mailbox only you own.\n'
+                'No phone number. No email. Your messages stay on your phone.',
                 style: TextStyle(color: Zn.muted, height: 1.5),
               ),
               const SizedBox(height: 40),
-              Text('DISPLAY NAME', style: Zn.mono(size: 10, letterSpacing: 2)),
+              const Text('Your name',
+                  style: TextStyle(
+                      color: Zn.text, fontSize: 13, fontWeight: FontWeight.w600)),
               const SizedBox(height: 8),
               TextField(
                 controller: _name,
                 maxLength: 32,
                 decoration: const InputDecoration(
-                    hintText: 'shown only to accepted contacts',
+                    hintText: 'Only your friends will ever see it',
                     counterText: ''),
               ),
-              const SizedBox(height: 12),
-              GestureDetector(
-                onTap: () => setState(() => _showAdvanced = !_showAdvanced),
-                child: Text(
-                  _showAdvanced ? '▾ CONTROL PLANE' : '▸ CONTROL PLANE',
-                  style: Zn.mono(size: 10, letterSpacing: 2),
-                ),
-              ),
-              if (_showAdvanced) ...[
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _url,
-                  style: Zn.mono(size: 13, color: Zn.text),
-                  decoration:
-                      const InputDecoration(hintText: 'http://host:8000'),
-                ),
-              ],
               const SizedBox(height: 28),
               SizedBox(
                 width: double.infinity,
                 height: 48,
                 child: FilledButton(
-                  onPressed: _working ? null : _forge,
+                  onPressed: _working ? null : _createAccount,
                   child: _working
                       ? const SizedBox(
                           width: 18,
                           height: 18,
                           child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('FORGE IDENTITY'),
+                      : const Text('Create account'),
                 ),
               ),
               const SizedBox(height: 12),
               const Text(
-                'Forging generates an encryption keypair on this device. '
-                'Your Zeon ID is derived from it — nothing else identifies you.',
+                'No sign-up form. Your account is an encryption key created '
+                'on this phone — we never learn who you are.',
                 style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
               ),
               const Spacer(flex: 2),
+              Center(
+                child: TextButton(
+                  onPressed: () => setState(() => _showAdvanced = !_showAdvanced),
+                  child: Text('Advanced',
+                      style: Zn.mono(size: 10, letterSpacing: 2)),
+                ),
+              ),
+              if (_showAdvanced) ...[
+                Text('Service address (self-hosters only)',
+                    style: Zn.mono(size: 10, letterSpacing: 1)),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: _url,
+                  style: Zn.mono(size: 13, color: Zn.text),
+                  decoration: InputDecoration(
+                      hintText: AppState.hostedControlPlaneUrl),
+                ),
+                const SizedBox(height: 12),
+              ],
+              const SizedBox(height: 8),
             ],
           ),
         ),
@@ -123,9 +132,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 }
 
-class _IdentityRevealDialog extends StatelessWidget {
+class _CodeRevealDialog extends StatelessWidget {
+  final String handle;
   final String zeonId;
-  const _IdentityRevealDialog({required this.zeonId});
+  const _CodeRevealDialog({required this.handle, required this.zeonId});
 
   @override
   Widget build(BuildContext context) {
@@ -135,33 +145,34 @@ class _IdentityRevealDialog extends StatelessWidget {
         borderRadius: BorderRadius.circular(Zn.radius),
         side: const BorderSide(color: Zn.line),
       ),
-      title: Text('YOUR ZEON ID',
-          style: Zn.mono(size: 12, letterSpacing: 2, color: Zn.ion)),
+      title: const Text('Your Zeon code',
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SelectableText(zeonId,
-              style: Zn.mono(size: 14, color: Zn.text, weight: FontWeight.w600)),
+          SelectableText(handle,
+              style:
+                  Zn.mono(size: 20, color: Zn.ion, weight: FontWeight.w700)),
           const SizedBox(height: 12),
           const Text(
-            'This is how people reach you. Share it freely — it reveals '
-            'nothing about you.',
-            style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
+            'Three words — that\'s how friends add you. Share it freely: '
+            'it says nothing about who you are.',
+            style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
           ),
         ],
       ),
       actions: [
         TextButton(
           onPressed: () {
-            Clipboard.setData(ClipboardData(text: zeonId));
+            Clipboard.setData(ClipboardData(text: handle));
             showZnSnack(context, 'Copied');
           },
-          child: const Text('COPY'),
+          child: const Text('Copy'),
         ),
         FilledButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('ENTER'),
+          child: const Text('Continue'),
         ),
       ],
     );
