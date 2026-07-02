@@ -244,6 +244,25 @@ def main():
     time.sleep(0.5)
     assert bob.queue_depth() == 0
 
+    push_gateway = os.environ.get("ZEON_TEST_PUSH_GATEWAY")
+    if push_gateway:
+        print("8b) offline owner triggers a content-free gateway ping")
+        r = httpx.post(
+            f"{bob.server['address']}/push-config",
+            params={"token": bob.server["server_token"]},
+            json={"device_token": "e2e-test-token-bob", "platform": "ios"},
+        )
+        r.raise_for_status()
+        alice.deliver_to(bob, alice.seal(bob, "msg", {"text": "wake up"}))
+        deadline = time.monotonic() + 10
+        seen = False
+        while time.monotonic() < deadline and not seen:
+            pings = httpx.get(f"{push_gateway}/v1/debug/pings").json()
+            seen = any(p["device_token"] == "e2e-test-token-bob" for p in pings)
+            time.sleep(0.5)
+        assert seen, "gateway never received the wake-up ping"
+        asyncio.run(bob.receive_one())  # drain before teardown
+
     print("9) destroy relays")
     alice.destroy()
     bob.destroy()

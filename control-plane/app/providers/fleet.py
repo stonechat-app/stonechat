@@ -126,6 +126,7 @@ class FleetProvider(CloudProvider):
             "-p", f"0:{SERVER_PORT}",
             "-e", f"ZEON_OWNER_ID={req.owner_id}",
             "-e", f"ZEON_OWNER_TOKEN={req.owner_token}",
+            "-e", f"ZEON_PUSH_GATEWAY={os.environ.get('ZEON_PUSH_GATEWAY', '')}",
             "--label", FLEET_LABEL,
             "--memory", MEMORY_LIMIT,
             "--cpus", CPU_LIMIT,

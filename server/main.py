@@ -30,6 +30,8 @@ OWNER_ID = os.environ["ZEON_OWNER_ID"]
 OWNER_TOKEN = os.environ["ZEON_OWNER_TOKEN"]
 DB_PATH = os.environ.get("ZEON_DB", "mailbox.db")
 BLOB_DIR = Path(os.environ.get("ZEON_BLOBS", "blobs"))
+PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "").rstrip("/")
+PUSH_DEBOUNCE_S = 5.0
 
 MAX_ENVELOPE_BYTES = 64 * 1024
 MAX_QUEUE_DEPTH = 10_000
@@ -56,7 +58,30 @@ class Mailbox:
             "  body TEXT NOT NULL,"
             "  received_at TEXT NOT NULL)"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS push_config ("
+            "  id INTEGER PRIMARY KEY CHECK (id = 1),"  # single owner, single row
+            "  device_token TEXT NOT NULL,"
+            "  platform TEXT NOT NULL)"
+        )
         self._db.commit()
+
+    def set_push_config(self, device_token: str, platform: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO push_config (id, device_token, platform) VALUES (1, ?, ?)"
+                " ON CONFLICT(id) DO UPDATE SET device_token=excluded.device_token,"
+                " platform=excluded.platform",
+                (device_token, platform),
+            )
+            self._db.commit()
+
+    def push_config(self) -> tuple[str, str] | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT device_token, platform FROM push_config WHERE id = 1"
+            ).fetchone()
+        return (row[0], row[1]) if row else None
 
     def put(self, envelope: dict) -> bool:
         with self._lock:
@@ -215,8 +240,55 @@ async def inbox(request: Request):
     if not mailbox.put(envelope):
         raise HTTPException(503, "mailbox full")
     # Best-effort immediate push; the row is only removed when the device acks.
-    await link.push(envelope)
+    delivered_live = await link.push(envelope)
+    if not delivered_live:
+        asyncio.get_running_loop().create_task(_ping_gateway())
     return {"status": "queued"}
+
+
+_last_gateway_ping = 0.0
+
+
+async def _ping_gateway() -> None:
+    """Owner is offline — ask the push gateway to wake their device.
+    Content-free: only the device token leaves this box. Best-effort."""
+    global _last_gateway_ping
+    if not PUSH_GATEWAY:
+        return
+    config = mailbox.push_config()
+    if config is None:
+        return
+    now = time.monotonic()
+    if now - _last_gateway_ping < PUSH_DEBOUNCE_S:
+        return
+    _last_gateway_ping = now
+    device_token, platform = config
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(
+                f"{PUSH_GATEWAY}/v1/ping",
+                json={"device_token": device_token, "platform": platform},
+            )
+    except Exception as e:  # push is best-effort; envelopes are safe regardless
+        log.debug("gateway ping failed: %s", e)
+
+
+@app.post("/push-config")
+async def push_config(request: Request, token: str = ""):
+    if token != OWNER_TOKEN:
+        raise HTTPException(401, "owner only")
+    try:
+        body = json.loads(await request.body())
+        device_token = body["device_token"]
+        platform = body["platform"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        raise HTTPException(400, "expected {device_token, platform}")
+    if platform not in ("ios", "android") or not isinstance(device_token, str):
+        raise HTTPException(400, "bad platform or token")
+    mailbox.set_push_config(device_token, platform)
+    return {"status": "ok"}
 
 
 @app.post("/blob")

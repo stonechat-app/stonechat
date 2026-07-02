@@ -19,6 +19,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 | `app/` | Flutter app (iOS/Android). Keys, history, encryption — all client-side. |
 | `server/` | Routing server ("relay"). Single-file FastAPI + SQLite mailbox that runs on the user's VM. Stores ciphertext only, deletes on ack. |
 | `control-plane/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Zeon IDs → pubkeys + current relay address. Never sees message content. |
+| `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
 
 ## Quick start (all local, no cloud account)
 

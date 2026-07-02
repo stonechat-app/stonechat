@@ -1,0 +1,5 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+httpx[http2]>=0.27
+pyjwt[crypto]>=2.9      # APNs provider tokens
+google-auth>=2.35       # FCM OAuth

@@ -29,7 +29,7 @@ elif command -v dnf >/dev/null; then
 fi
 
 python3 -m venv /opt/zeon/venv
-/opt/zeon/venv/bin/pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.32"
+/opt/zeon/venv/bin/pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.32" "httpx>=0.27"
 
 cat > /etc/systemd/system/zeon.service <<UNIT_EOF
 [Unit]
@@ -42,6 +42,7 @@ Environment=ZEON_OWNER_TOKEN={owner_token}
 Environment=ZEON_PORT={port}
 Environment=ZEON_DB=/var/lib/zeon/mailbox.db
 Environment=ZEON_BLOBS=/var/lib/zeon/blobs
+Environment=ZEON_PUSH_GATEWAY={push_gateway}
 ExecStart=/opt/zeon/venv/bin/python /opt/zeon/main.py
 Restart=always
 RestartSec=2
@@ -71,4 +72,5 @@ def build_startup_script(owner_id: str, owner_token: str) -> str:
         owner_id=owner_id,
         owner_token=owner_token,
         port=SERVER_PORT,
+        push_gateway=os.environ.get("ZEON_PUSH_GATEWAY", ""),
     )
