@@ -55,6 +55,7 @@ so an adapter is only "create VM, pass script, return IP".
 | `gcp` | `pip install google-cloud-compute`, set `ZEON_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier). |
 | `aws` | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`. |
 | `local` | Docker only. For development. |
+| `fleet` | Container-per-user across a pool of shared Docker hosts (`ZEON_FLEET_HOSTS="name=docker_endpoint\|advertise_host,…"`), with cgroup/pids limits and optional gVisor via `ZEON_FLEET_RUNTIME=runsc`. The managed-tier workhorse — see BUSINESS.md. |
 
 Adding one: subclass `CloudProvider` (two methods: `provision`, `destroy`) and
 register it in `providers/__init__.py`.
