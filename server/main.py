@@ -15,21 +15,30 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
+import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 
 OWNER_ID = os.environ["ZEON_OWNER_ID"]
 OWNER_TOKEN = os.environ["ZEON_OWNER_TOKEN"]
 DB_PATH = os.environ.get("ZEON_DB", "mailbox.db")
+BLOB_DIR = Path(os.environ.get("ZEON_BLOBS", "blobs"))
 
 MAX_ENVELOPE_BYTES = 64 * 1024
 MAX_QUEUE_DEPTH = 10_000
-ENVELOPE_TYPES = {"msg", "contact_request", "contact_accept"}
+MAX_BLOB_BYTES = 8 * 1024 * 1024
+MAX_TOTAL_BLOB_BYTES = 500 * 1024 * 1024
+BLOB_TTL_SECONDS = 14 * 24 * 3600
+ENVELOPE_TYPES = {"msg", "media", "contact_request", "contact_accept"}
 REQUIRED_FIELDS = {"v", "id", "type", "from", "to", "sent_at", "nonce", "ciphertext"}
+BLOB_ID_RE = re.compile(r"^[a-f0-9-]{36}$")
 
 log = logging.getLogger("zeon.server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -73,9 +82,17 @@ class Mailbox:
         return [json.loads(r[0]) for r in rows]
 
     def delete(self, envelope_id: str) -> None:
+        """Delete an acked envelope — and its blob, if it referenced one."""
         with self._lock:
+            row = self._db.execute(
+                "SELECT body FROM envelopes WHERE id = ?", (envelope_id,)
+            ).fetchone()
             self._db.execute("DELETE FROM envelopes WHERE id = ?", (envelope_id,))
             self._db.commit()
+        if row:
+            blob_id = json.loads(row[0]).get("blob_id")
+            if blob_id:
+                blobs.delete(blob_id)
 
     def depth(self) -> int:
         with self._lock:
@@ -113,6 +130,49 @@ class OwnerLink:
             return False
 
 
+class BlobStore:
+    """Encrypted media blobs, held only until their envelope is acked.
+    Plain files on disk; the server can't decrypt them (secretbox key travels
+    inside the envelope ciphertext)."""
+
+    def __init__(self, root: Path):
+        self._root = root
+        root.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, blob_id: str) -> Path:
+        if not BLOB_ID_RE.match(blob_id):
+            raise HTTPException(400, "bad blob id")
+        return self._root / blob_id
+
+    def put(self, data: bytes) -> str:
+        self.collect_garbage()
+        used = sum(f.stat().st_size for f in self._root.iterdir() if f.is_file())
+        if used + len(data) > MAX_TOTAL_BLOB_BYTES:
+            raise HTTPException(507, "blob storage full")
+        blob_id = str(uuid.uuid4())
+        (self._root / blob_id).write_bytes(data)
+        return blob_id
+
+    def get(self, blob_id: str) -> bytes:
+        path = self._path(blob_id)
+        if not path.is_file():
+            raise HTTPException(404, "no such blob")
+        return path.read_bytes()
+
+    def delete(self, blob_id: str) -> None:
+        try:
+            self._path(blob_id).unlink(missing_ok=True)
+        except HTTPException:
+            pass  # malformed id in an old envelope — nothing to delete
+
+    def collect_garbage(self) -> None:
+        cutoff = time.time() - BLOB_TTL_SECONDS
+        for f in self._root.iterdir():
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+
+
+blobs = BlobStore(BLOB_DIR)
 mailbox = Mailbox(DB_PATH)
 link = OwnerLink()
 
@@ -146,12 +206,34 @@ async def inbox(request: Request):
         raise HTTPException(400, "unknown envelope type")
     if envelope["to"] != OWNER_ID:
         raise HTTPException(403, "not this mailbox's owner")
+    blob_id = envelope.get("blob_id")
+    if blob_id is not None and (
+        not isinstance(blob_id, str) or not BLOB_ID_RE.match(blob_id)
+    ):
+        raise HTTPException(400, "bad blob_id")
 
     if not mailbox.put(envelope):
         raise HTTPException(503, "mailbox full")
     # Best-effort immediate push; the row is only removed when the device acks.
     await link.push(envelope)
     return {"status": "queued"}
+
+
+@app.post("/blob")
+async def blob_upload(request: Request):
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty blob")
+    if len(data) > MAX_BLOB_BYTES:
+        raise HTTPException(413, "blob too large")
+    return {"blob_id": blobs.put(data)}
+
+
+@app.get("/blob/{blob_id}")
+async def blob_download(blob_id: str, token: str = ""):
+    if token != OWNER_TOKEN:
+        raise HTTPException(401, "owner only")
+    return Response(content=blobs.get(blob_id), media_type="application/octet-stream")
 
 
 @app.websocket("/ws")

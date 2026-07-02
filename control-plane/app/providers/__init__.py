@@ -23,6 +23,7 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "gcp": ("app.providers.gcp", "GCPProvider"),
     "aws": ("app.providers.aws", "AWSProvider"),
     "local": ("app.providers.local", "LocalDockerProvider"),
+    "fleet": ("app.providers.fleet", "FleetProvider"),
     # To add e.g. DigitalOcean: create digitalocean.py implementing
     # CloudProvider and add: "digitalocean": ("app.providers.digitalocean", "DOProvider"),
 }

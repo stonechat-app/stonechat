@@ -9,6 +9,8 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 
+from .words import candidate_handles
+
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
@@ -29,6 +31,7 @@ class Store:
                 zeon_id    TEXT PRIMARY KEY,
                 pubkey     TEXT NOT NULL,          -- base64
                 token_hash TEXT NOT NULL UNIQUE,
+                handle     TEXT UNIQUE,            -- zn-word-word-word
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS servers (
@@ -46,20 +49,51 @@ class Store:
             """
         )
         self._db.commit()
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Dev-friendly: bring pre-handle databases up to date."""
+        with self._lock:
+            cols = {r[1] for r in self._db.execute("PRAGMA table_info(users)")}
+            if "handle" not in cols:
+                self._db.execute("ALTER TABLE users ADD COLUMN handle TEXT")
+                self._db.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle ON users(handle)"
+                )
+            for (zeon_id,) in self._db.execute(
+                "SELECT zeon_id FROM users WHERE handle IS NULL"
+            ).fetchall():
+                self._db.execute(
+                    "UPDATE users SET handle = ? WHERE zeon_id = ?",
+                    (self._free_handle(zeon_id), zeon_id),
+                )
+            self._db.commit()
+
+    def _free_handle(self, zeon_id: str) -> str:
+        for handle in candidate_handles(zeon_id):
+            taken = self._db.execute(
+                "SELECT 1 FROM users WHERE handle = ?", (handle,)
+            ).fetchone()
+            if not taken:
+                return handle
+        raise RuntimeError("unreachable")  # generator is infinite
 
     # -- users ---------------------------------------------------------------
 
-    def create_user(self, zeon_id: str, pubkey_b64: str, token: str) -> bool:
+    def create_user(self, zeon_id: str, pubkey_b64: str, token: str) -> str | None:
+        """Returns the assigned handle, or None if the key is already registered."""
         with self._lock:
+            handle = self._free_handle(zeon_id)
             try:
                 self._db.execute(
-                    "INSERT INTO users (zeon_id, pubkey, token_hash, created_at) VALUES (?, ?, ?, ?)",
-                    (zeon_id, pubkey_b64, hash_token(token), _now()),
+                    "INSERT INTO users (zeon_id, pubkey, token_hash, handle, created_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (zeon_id, pubkey_b64, hash_token(token), handle, _now()),
                 )
                 self._db.commit()
-                return True
+                return handle
             except sqlite3.IntegrityError:
-                return False
+                return None
 
     def user_by_token(self, token: str) -> dict | None:
         with self._lock:
@@ -72,6 +106,13 @@ class Store:
         with self._lock:
             row = self._db.execute(
                 "SELECT * FROM users WHERE zeon_id = ?", (zeon_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def user_by_handle(self, handle: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM users WHERE handle = ?", (handle,)
             ).fetchone()
         return dict(row) if row else None
 

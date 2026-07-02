@@ -41,6 +41,7 @@ Environment=ZEON_OWNER_ID={owner_id}
 Environment=ZEON_OWNER_TOKEN={owner_token}
 Environment=ZEON_PORT={port}
 Environment=ZEON_DB=/var/lib/zeon/mailbox.db
+Environment=ZEON_BLOBS=/var/lib/zeon/blobs
 ExecStart=/opt/zeon/venv/bin/python /opt/zeon/main.py
 Restart=always
 RestartSec=2

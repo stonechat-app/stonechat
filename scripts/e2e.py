@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 import httpx
 import websockets
 from nacl.public import Box, PrivateKey, PublicKey
+from nacl.secret import SecretBox
+from nacl.utils import random as nacl_random
 
 import os
 CP = os.environ.get("ZEON_CP", "http://127.0.0.1:8477")
@@ -38,9 +40,11 @@ class Phone:
         r.raise_for_status()
         data = r.json()
         self.zeon_id, self.token = data["zeon_id"], data["account_token"]
+        self.handle = data["handle"]
         expected = zeon_id_from_pubkey(bytes(self.key.public_key))
         assert self.zeon_id == expected, "server-derived ID != client-derived ID"
-        print(f"  {self.name}: {self.zeon_id}")
+        assert self.handle.startswith("zn-"), f"bad handle: {self.handle}"
+        print(f"  {self.name}: {self.zeon_id} ({self.handle})")
 
     @property
     def auth(self):
@@ -98,11 +102,15 @@ class Phone:
         r = httpx.post(f"{to.server['address']}/inbox", json=envelope, timeout=10)
         r.raise_for_status()
 
-    async def receive_one(self, timeout=15) -> dict:
+    async def receive_one(self, timeout=15, process=None) -> dict:
+        """Receive one envelope, run `process(envelope)` BEFORE acking (the
+        app does the same: persist/download first, ack last), then ack."""
         url = self.server["address"].replace("http", "ws") + f"/ws?token={self.server['server_token']}"
         async with websockets.connect(url) as ws:
             raw = await asyncio.wait_for(ws.recv(), timeout)
             envelope = json.loads(raw)
+            if process:
+                process(envelope)
             await ws.send(json.dumps({"ack": envelope["id"]}))
             await asyncio.sleep(0.3)  # let the ack land before closing
             return envelope
@@ -130,11 +138,33 @@ def main():
     lower = bob.zeon_id.lower().replace("-", "")
     assert httpx.get(f"{CP}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
 
+    print("2b) handle lookup resolves to the same record")
+    by_handle = httpx.get(f"{CP}/v1/directory/{bob.handle.upper()}").json()
+    assert by_handle["zeon_id"] == bob.zeon_id
+    assert by_handle["pubkey"] == bob.pubkey_b64
+    assert by_handle["handle"] == bob.handle
+    assert httpx.get(f"{CP}/v1/directory/zn-no-such-handle").status_code == 404
+
     print("3) provision relays (local docker)")
     alice.provision()
     bob.provision()
     alice.wait_running()
     bob.wait_running()
+
+    print("3b) fleet provider: container-per-user on a shared host")
+    carol = Phone("carol")
+    carol.register()
+    r = httpx.post(
+        f"{CP}/v1/server", headers=carol.auth,
+        json={"provider": "fleet",
+              "machine": {"machine_type": "container", "region": "fleet"}},
+    )
+    r.raise_for_status()
+    carol.wait_running()
+    health = httpx.get(f"{carol.server['address']}/health").json()
+    assert health["owner"] == carol.zeon_id
+    carol.destroy()
+    assert httpx.get(f"{CP}/v1/server", headers=carol.auth).json()["status"] == "none"
 
     print("4) one-server-per-user enforced")
     r = httpx.post(
@@ -159,6 +189,45 @@ def main():
     assert bob.open_envelope(msg, alice) == {"text": "hello from my own relay"}
     time.sleep(0.5)
     assert bob.queue_depth() == 0, "envelope should be deleted after ack"
+
+    print("6b) media blob: upload → envelope → download → decrypt → ack-deletes")
+    photo = nacl_random(200_000)  # stand-in for an encrypted JPEG
+    blob_key, blob_nonce = nacl_random(32), nacl_random(24)
+    sealed_blob = SecretBox(blob_key).encrypt(photo, blob_nonce).ciphertext
+    r = httpx.post(f"{bob.server['address']}/blob", content=sealed_blob, timeout=30)
+    r.raise_for_status()
+    blob_id = r.json()["blob_id"]
+
+    media_env = alice.seal(bob, "media", {
+        "blob_id": blob_id,
+        "key": base64.b64encode(blob_key).decode(),
+        "blob_nonce": base64.b64encode(blob_nonce).decode(),
+        "mime": "image/jpeg", "kind": "image", "size": len(photo),
+    })
+    media_env["blob_id"] = blob_id
+    alice.deliver_to(bob, media_env)
+
+    recovered_holder = {}
+
+    def fetch_and_decrypt(envelope):
+        payload = bob.open_envelope(envelope, alice)
+        dl = httpx.get(
+            f"{bob.server['address']}/blob/{payload['blob_id']}",
+            params={"token": bob.server["server_token"]}, timeout=30,
+        )
+        dl.raise_for_status()
+        recovered_holder["data"] = SecretBox(
+            base64.b64decode(payload["key"])
+        ).decrypt(dl.content, base64.b64decode(payload["blob_nonce"]))
+
+    asyncio.run(bob.receive_one(process=fetch_and_decrypt))
+    assert recovered_holder["data"] == photo, "media round-trip corrupted"
+    # unauthenticated download must fail; after ack the blob must be gone
+    assert httpx.get(f"{bob.server['address']}/blob/{blob_id}").status_code == 401
+    time.sleep(0.5)
+    gone = httpx.get(f"{bob.server['address']}/blob/{blob_id}",
+                     params={"token": bob.server["server_token"]})
+    assert gone.status_code == 404, "blob should be deleted after ack"
 
     print("7) wrong recipient rejected by mailbox")
     r = httpx.post(

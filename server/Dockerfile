@@ -6,6 +6,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 
 ENV ZEON_DB=/data/mailbox.db
+ENV ZEON_BLOBS=/data/blobs
 RUN mkdir -p /data
 
 EXPOSE 8080
