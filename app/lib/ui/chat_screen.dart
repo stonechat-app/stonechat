@@ -23,8 +23,12 @@ import 'theme.dart';
 import 'widgets.dart';
 
 class ChatScreen extends StatefulWidget {
-  final Contact contact;
-  const ChatScreen({super.key, required this.contact});
+  final Contact? contact;
+  final Group? group;
+
+  const ChatScreen({super.key, required Contact this.contact}) : group = null;
+  const ChatScreen.group({super.key, required Group this.group})
+      : contact = null;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -34,17 +38,25 @@ class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
 
+  bool get isGroup => widget.group != null;
+  String get conversationId => widget.contact?.zeonId ?? widget.group!.id;
+
   @override
   void initState() {
     super.initState();
-    context.read<ChatState>().openConversation(widget.contact.zeonId);
+    context.read<ChatState>().openConversation(conversationId);
   }
 
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty) return;
     _input.clear();
-    await context.read<ChatState>().sendMessage(widget.contact, text);
+    final chat = context.read<ChatState>();
+    if (isGroup) {
+      await chat.sendGroupMessage(widget.group!, text);
+    } else {
+      await chat.sendMessage(widget.contact!, text);
+    }
     _scrollToEnd();
   }
 
@@ -56,7 +68,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (picked == null || !mounted) return;
     await context.read<ChatState>().sendMedia(
-          widget.contact,
+          widget.contact!,
           picked.path,
           kind: MessageKind.image,
           mime: 'image/jpeg',
@@ -66,7 +78,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _sendVoice(String path, int durationMs) async {
     await context.read<ChatState>().sendMedia(
-          widget.contact,
+          widget.contact!,
           path,
           kind: MessageKind.audio,
           mime: 'audio/mp4',
@@ -85,8 +97,9 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     final chat = context.watch<ChatState>();
-    final messages = chat.messagesFor(widget.contact.zeonId);
-    final peerColor = Zn.idColor(widget.contact.zeonId);
+    final messages = chat.messagesFor(conversationId);
+    final title = widget.contact?.displayName ?? widget.group!.name;
+    final memberCount = isGroup ? chat.groupMembers[conversationId]?.length : null;
 
     return Scaffold(
       appBar: AppBar(
@@ -94,23 +107,44 @@ class _ChatScreenState extends State<ChatScreen> {
         title: Row(
           children: [
             ZeonAvatar(
-                zeonId: widget.contact.zeonId,
-                name: widget.contact.displayName,
+                zeonId: conversationId,
+                name: isGroup ? '◈ ${widget.group!.name}' : title,
                 size: 32),
             const SizedBox(width: 10),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(widget.contact.displayName,
-                    style: const TextStyle(fontSize: 16)),
+                Text(title, style: const TextStyle(fontSize: 16)),
                 Text(
-                    widget.contact.handle ??
-                        widget.contact.zeonId.substring(0, 12),
+                    isGroup
+                        ? '$memberCount members'
+                        : (widget.contact!.handle ??
+                            widget.contact!.zeonId.substring(0, 12)),
                     style: Zn.mono(size: 9, letterSpacing: 1)),
               ],
             ),
           ],
         ),
+        actions: [
+          if (isGroup)
+            PopupMenuButton<String>(
+              color: Zn.raised,
+              icon: const Icon(Icons.more_vert, color: Zn.muted),
+              onSelected: (value) async {
+                if (value == 'leave') {
+                  await chat.leaveGroup(widget.group!);
+                  if (context.mounted) Navigator.pop(context);
+                }
+              },
+              itemBuilder: (_) => const [
+                PopupMenuItem(
+                  value: 'leave',
+                  child: Text('Leave group',
+                      style: TextStyle(color: Zn.danger)),
+                ),
+              ],
+            ),
+        ],
       ),
       body: Column(
         children: [
@@ -122,16 +156,28 @@ class _ChatScreenState extends State<ChatScreen> {
               itemBuilder: (context, i) {
                 final m = messages[i];
                 final previous = i > 0 ? messages[i - 1] : null;
+                final senderName = m.outgoing
+                    ? 'YOU'
+                    : isGroup
+                        ? (chat
+                                .memberOf(conversationId, m.senderId ?? '')
+                                ?.displayName ??
+                            'former member')
+                        : title;
+                final railColor = m.outgoing
+                    ? Zn.ion
+                    : Zn.idColor(isGroup ? (m.senderId ?? '') : conversationId);
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     if (previous != null) _GapMarker.between(previous, m),
                     _LedgerEntry(
                       message: m,
-                      peerName: widget.contact.displayName,
-                      peerColor: peerColor,
-                      showSender:
-                          previous == null || previous.outgoing != m.outgoing,
+                      peerName: senderName,
+                      peerColor: railColor,
+                      showSender: previous == null ||
+                          previous.outgoing != m.outgoing ||
+                          previous.senderId != m.senderId,
                     ),
                   ],
                 );
@@ -141,8 +187,9 @@ class _ChatScreenState extends State<ChatScreen> {
           _Composer(
             controller: _input,
             onSend: _send,
-            onPickPhoto: _sendPhoto,
-            onVoiceRecorded: _sendVoice,
+            // Media in groups is v2 (see PROTOCOL.md) — DM-only for now.
+            onPickPhoto: isGroup ? null : _sendPhoto,
+            onVoiceRecorded: isGroup ? null : _sendVoice,
           ),
         ],
       ),
@@ -389,8 +436,8 @@ class _AudioEntryState extends State<_AudioEntry> {
 class _Composer extends StatefulWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
-  final VoidCallback onPickPhoto;
-  final void Function(String path, int durationMs) onVoiceRecorded;
+  final VoidCallback? onPickPhoto; // null → media disabled (groups, v1)
+  final void Function(String path, int durationMs)? onVoiceRecorded;
 
   const _Composer({
     required this.controller,
@@ -426,7 +473,7 @@ class _ComposerState extends State<_Composer> {
       if (path != null) {
         final duration = DateTime.now().difference(started);
         if (duration.inMilliseconds > 500) {
-          widget.onVoiceRecorded(path, duration.inMilliseconds);
+          widget.onVoiceRecorded?.call(path, duration.inMilliseconds);
         }
       }
       return;
@@ -468,10 +515,13 @@ class _ComposerState extends State<_Composer> {
       ),
       child: Row(
         children: [
-          IconButton(
-            onPressed: _recording ? null : widget.onPickPhoto,
-            icon: const Icon(Icons.photo_outlined, color: Zn.muted, size: 22),
-          ),
+          if (widget.onPickPhoto != null)
+            IconButton(
+              onPressed: _recording ? null : widget.onPickPhoto,
+              icon: const Icon(Icons.photo_outlined, color: Zn.muted, size: 22),
+            )
+          else
+            const SizedBox(width: 12),
           Expanded(
             child: _recording
                 ? Row(
@@ -506,14 +556,15 @@ class _ComposerState extends State<_Composer> {
                     ),
                   ),
           ),
-          IconButton(
-            onPressed: _toggleRecording,
-            icon: Icon(
-              _recording ? Icons.stop_circle_outlined : Icons.mic_none,
-              color: _recording ? Zn.danger : Zn.muted,
-              size: 22,
+          if (widget.onVoiceRecorded != null)
+            IconButton(
+              onPressed: _toggleRecording,
+              icon: Icon(
+                _recording ? Icons.stop_circle_outlined : Icons.mic_none,
+                color: _recording ? Zn.danger : Zn.muted,
+                size: 22,
+              ),
             ),
-          ),
           IconButton(
             onPressed: _recording ? null : widget.onSend,
             icon: Container(

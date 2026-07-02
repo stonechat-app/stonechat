@@ -62,7 +62,8 @@ class MessageKind {
 
 class Message {
   final String id;
-  final String contactId; // Zeon ID of the peer
+  final String contactId; // conversation id: a peer's Zeon ID, or a group id
+  final String? senderId; // group messages: which member sent it (null = DM/own)
   final bool outgoing;
   final String text;
   final String kind; // MessageKind
@@ -74,6 +75,7 @@ class Message {
   Message({
     required this.id,
     required this.contactId,
+    this.senderId,
     required this.outgoing,
     required this.text,
     this.kind = MessageKind.text,
@@ -86,6 +88,7 @@ class Message {
   Map<String, Object?> toRow() => {
         'id': id,
         'contact_id': contactId,
+        'sender_id': senderId,
         'outgoing': outgoing ? 1 : 0,
         'text': text,
         'kind': kind,
@@ -98,6 +101,7 @@ class Message {
   factory Message.fromRow(Map<String, Object?> r) => Message(
         id: r['id'] as String,
         contactId: r['contact_id'] as String,
+        senderId: r['sender_id'] as String?,
         outgoing: (r['outgoing'] as int) == 1,
         text: r['text'] as String,
         kind: (r['kind'] as String?) ?? MessageKind.text,
@@ -119,6 +123,75 @@ class EnvelopeType {
   static const media = 'media';
   static const contactRequest = 'contact_request';
   static const contactAccept = 'contact_accept';
+  static const groupCreate = 'group_create';
+  static const groupUpdate = 'group_update';
+  static const groupMsg = 'group_msg';
+  static const groupLeave = 'group_leave';
+}
+
+/// A group lives only on members' phones — no server knows it exists.
+class Group {
+  final String id;
+  String name;
+  final String adminId;
+  int version;
+  final int createdAt;
+
+  Group({
+    required this.id,
+    required this.name,
+    required this.adminId,
+    required this.version,
+    required this.createdAt,
+  });
+
+  Map<String, Object?> toRow() => {
+        'id': id,
+        'name': name,
+        'admin_id': adminId,
+        'version': version,
+        'created_at': createdAt,
+      };
+
+  factory Group.fromRow(Map<String, Object?> r) => Group(
+        id: r['id'] as String,
+        name: r['name'] as String,
+        adminId: r['admin_id'] as String,
+        version: r['version'] as int,
+        createdAt: r['created_at'] as int,
+      );
+}
+
+class GroupMember {
+  final String groupId;
+  final String zeonId;
+  final String pubkeyB64;
+  String displayName;
+  String? serverAddress; // cached, refreshed on delivery failure
+
+  GroupMember({
+    required this.groupId,
+    required this.zeonId,
+    required this.pubkeyB64,
+    required this.displayName,
+    this.serverAddress,
+  });
+
+  Map<String, Object?> toRow() => {
+        'group_id': groupId,
+        'zeon_id': zeonId,
+        'pubkey': pubkeyB64,
+        'display_name': displayName,
+        'server_address': serverAddress,
+      };
+
+  factory GroupMember.fromRow(Map<String, Object?> r) => GroupMember(
+        groupId: r['group_id'] as String,
+        zeonId: r['zeon_id'] as String,
+        pubkeyB64: r['pubkey'] as String,
+        displayName: r['display_name'] as String,
+        serverAddress: r['server_address'] as String?,
+      );
 }
 
 /// The wire format. Ciphertext only — servers never see anything else.

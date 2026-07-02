@@ -5,6 +5,7 @@ import 'state/app_state.dart';
 import 'state/chat_state.dart';
 import 'state/server_state.dart';
 import 'ui/add_contact_screen.dart';
+import 'ui/create_group_screen.dart';
 import 'ui/home_screen.dart';
 import 'ui/mailbox_setup_screen.dart';
 import 'ui/my_id_screen.dart';
@@ -87,6 +88,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
         '/mailbox-setup': (_) => const MailboxSetupScreen(),
         '/home': (_) => const HomeScreen(),
         '/add-contact': (_) => const AddContactScreen(),
+        '/create-group': (_) => const CreateGroupScreen(),
         '/my-id': (_) => const MyIdScreen(),
         '/server': (_) => const ServerScreen(),
       },

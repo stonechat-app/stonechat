@@ -20,7 +20,9 @@ class ChatState extends ChangeNotifier {
   final AppState app;
 
   List<Contact> contacts = [];
-  final Map<String, List<Message>> _messages = {}; // by contact zeon_id
+  List<Group> groups = [];
+  final Map<String, List<GroupMember>> groupMembers = {}; // by group id
+  final Map<String, List<Message>> _messages = {}; // by conversation id
   final Map<String, Message?> lastMessage = {};
 
   // Own mailbox coordinates, set by ServerState before the socket connects —
@@ -49,10 +51,29 @@ class ChatState extends ChangeNotifier {
 
   Future<void> load() async {
     contacts = await app.db.contacts();
+    groups = await app.db.groups();
     for (final c in contacts) {
       lastMessage[c.zeonId] = await app.db.lastMessageFor(c.zeonId);
     }
+    for (final g in groups) {
+      groupMembers[g.id] = await app.db.membersOf(g.id);
+      lastMessage[g.id] = await app.db.lastMessageFor(g.id);
+    }
     notifyListeners();
+  }
+
+  Group? groupById(String id) {
+    for (final g in groups) {
+      if (g.id == id) return g;
+    }
+    return null;
+  }
+
+  GroupMember? memberOf(String groupId, String zeonId) {
+    for (final m in groupMembers[groupId] ?? const <GroupMember>[]) {
+      if (m.zeonId == zeonId) return m;
+    }
+    return null;
   }
 
   List<Message> messagesFor(String contactId) => _messages[contactId] ?? [];
@@ -106,18 +127,48 @@ class ChatState extends ChangeNotifier {
     }
   }
 
-  Envelope _seal(String type, Contact contact, Map<String, Object?> payload) {
-    final sealed = app.crypto
-        .encrypt(jsonEncode(payload), base64Decode(contact.pubkeyB64));
+  Envelope _seal(String type, Contact contact, Map<String, Object?> payload) =>
+      _sealFor(type, contact.zeonId, contact.pubkeyB64, payload);
+
+  Envelope _sealFor(
+    String type,
+    String toZeonId,
+    String toPubkeyB64,
+    Map<String, Object?> payload, {
+    String? envelopeId,
+  }) {
+    final sealed =
+        app.crypto.encrypt(jsonEncode(payload), base64Decode(toPubkeyB64));
     return Envelope(
-      id: _uuid.v4(),
+      id: envelopeId ?? _uuid.v4(),
       type: type,
       from: app.zeonId!,
-      to: contact.zeonId,
+      to: toZeonId,
       sentAt: DateTime.now().toUtc().toIso8601String(),
       nonceB64: sealed.nonceB64,
       ciphertextB64: sealed.ciphertextB64,
     );
+  }
+
+  /// Resolve + deliver to a group member (same trust-but-verify as contacts).
+  Future<void> _deliverToMember(GroupMember member, Envelope envelope) async {
+    Future<String> resolve() async {
+      final entry = await _resolve(member.zeonId);
+      if (entry.serverAddress == null) {
+        throw ApiException('${member.displayName} is unreachable right now');
+      }
+      member.serverAddress = entry.serverAddress;
+      await app.db.updateMember(member);
+      return entry.serverAddress!;
+    }
+
+    var address = member.serverAddress ?? await resolve();
+    try {
+      await deliverEnvelope(address, envelope);
+    } on Exception {
+      address = await resolve(); // their mailbox may have moved
+      await deliverEnvelope(address, envelope);
+    }
   }
 
   // -- contact lifecycle ---------------------------------------------------------
@@ -181,6 +232,132 @@ class ChatState extends ChangeNotifier {
     await app.db.deleteContact(contact.zeonId);
     contacts.removeWhere((c) => c.zeonId == contact.zeonId);
     _messages.remove(contact.zeonId);
+    notifyListeners();
+  }
+
+  // -- groups ----------------------------------------------------------------------
+
+  Map<String, Object?> _membershipPayload(Group group, List<GroupMember> members) => {
+        'group_id': group.id,
+        'name': group.name,
+        'version': group.version,
+        'admin': group.adminId,
+        'members': [
+          for (final m in members)
+            {
+              'zeon_id': m.zeonId,
+              'pubkey': m.pubkeyB64,
+              'display_name': m.displayName,
+            }
+        ],
+      };
+
+  /// Create a group from accepted contacts. We are the admin.
+  Future<Group> createGroup(String name, List<Contact> selected) async {
+    final group = Group(
+      id: _uuid.v4(),
+      name: name,
+      adminId: app.zeonId!,
+      version: 1,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    final members = <GroupMember>[
+      GroupMember(
+        groupId: group.id,
+        zeonId: app.zeonId!,
+        pubkeyB64: app.crypto.publicKeyB64,
+        displayName: app.displayName ?? 'me',
+      ),
+      for (final c in selected)
+        GroupMember(
+          groupId: group.id,
+          zeonId: c.zeonId,
+          pubkeyB64: c.pubkeyB64,
+          displayName: c.displayName,
+          serverAddress: c.serverAddress,
+        ),
+    ];
+    await app.db.upsertGroup(group);
+    await app.db.replaceMembers(group.id, members);
+    groups.add(group);
+    groupMembers[group.id] = members;
+    notifyListeners();
+
+    final payload = _membershipPayload(group, members);
+    for (final m in members.where((m) => m.zeonId != app.zeonId)) {
+      try {
+        await _deliverToMember(
+            m, _sealFor(EnvelopeType.groupCreate, m.zeonId, m.pubkeyB64, payload));
+      } catch (_) {
+        // unreachable member hears about the group via the next groupUpdate
+        // or message retry; v1 accepts eventual delivery
+      }
+    }
+    return group;
+  }
+
+  Future<void> sendGroupMessage(Group group, String text) async {
+    final members = (groupMembers[group.id] ?? [])
+        .where((m) => m.zeonId != app.zeonId)
+        .toList();
+    final message = Message(
+      id: _uuid.v4(),
+      contactId: group.id,
+      outgoing: true,
+      text: text,
+      sentAt: DateTime.now().millisecondsSinceEpoch,
+      status: MessageStatus.pending,
+    );
+    await app.db.insertMessage(message);
+    await app.db.addOutbox(message.id, group.id, [for (final m in members) m.zeonId]);
+    (_messages[group.id] ??= []).add(message);
+    lastMessage[group.id] = message;
+    notifyListeners();
+
+    await _fanOut(group, message, members);
+  }
+
+  Future<void> _fanOut(Group group, Message message, List<GroupMember> members) async {
+    final payload = {'group_id': group.id, 'text': message.text};
+    for (final member in members) {
+      try {
+        // Envelope id == message id for every copy: mailboxes are per-member
+        // so ids never collide, and both mailbox and receiver dedupe retries.
+        await _deliverToMember(
+          member,
+          _sealFor(EnvelopeType.groupMsg, member.zeonId, member.pubkeyB64,
+              payload, envelopeId: message.id),
+        );
+        await app.db.clearOutbox(message.id, member.zeonId);
+      } catch (_) {
+        // stays in outbox; retryPending will re-attempt this member
+      }
+    }
+    if (await app.db.outboxRemaining(message.id) == 0) {
+      message.status = MessageStatus.sent;
+      await app.db.setMessageStatus(message.id, MessageStatus.sent);
+    }
+    notifyListeners();
+  }
+
+  /// Leave: announce to everyone, then delete locally.
+  Future<void> leaveGroup(Group group) async {
+    final members = (groupMembers[group.id] ?? [])
+        .where((m) => m.zeonId != app.zeonId)
+        .toList();
+    for (final m in members) {
+      try {
+        await _deliverToMember(
+            m,
+            _sealFor(EnvelopeType.groupLeave, m.zeonId, m.pubkeyB64,
+                {'group_id': group.id}));
+      } catch (_) {}
+    }
+    await app.db.deleteGroup(group.id);
+    groups.removeWhere((g) => g.id == group.id);
+    groupMembers.remove(group.id);
+    _messages.remove(group.id);
+    lastMessage.remove(group.id);
     notifyListeners();
   }
 
@@ -346,6 +523,20 @@ class ChatState extends ChangeNotifier {
             await app.db.lastMessageFor(message.contactId);
       }
     }
+    // Group fan-outs still owed to unreachable members.
+    final outbox = await app.db.pendingOutbox();
+    for (final entry in outbox.entries) {
+      final message = await app.db.messageById(entry.key);
+      if (message == null) continue;
+      final group = groupById(message.contactId);
+      if (group == null) continue;
+      final owed = (groupMembers[group.id] ?? [])
+          .where((m) => entry.value.contains(m.zeonId))
+          .toList();
+      if (owed.isNotEmpty) {
+        await _fanOut(group, message, owed);
+      }
+    }
   }
 
   // -- receiving ---------------------------------------------------------------------
@@ -356,14 +547,23 @@ class ChatState extends ChangeNotifier {
     if (envelope.to != app.zeonId) return;
 
     var contact = contactById(envelope.from);
+    // Sender's pubkey: known contact → known group member → directory.
+    String? knownPubkeyB64 = contact?.pubkeyB64;
+    if (knownPubkeyB64 == null) {
+      for (final members in groupMembers.values) {
+        for (final m in members) {
+          if (m.zeonId == envelope.from) {
+            knownPubkeyB64 = m.pubkeyB64;
+            break;
+          }
+        }
+      }
+    }
     final senderEntry =
-        contact == null ? await _resolveOrNull(envelope.from) : null;
-    final senderPubkey = contact != null
-        ? Uint8List.fromList(base64Decode(contact.pubkeyB64))
-        : senderEntry != null
-            ? Uint8List.fromList(base64Decode(senderEntry.pubkeyB64))
-            : null;
-    if (senderPubkey == null) return; // unresolvable sender — drop
+        knownPubkeyB64 == null ? await _resolveOrNull(envelope.from) : null;
+    knownPubkeyB64 ??= senderEntry?.pubkeyB64;
+    if (knownPubkeyB64 == null) return; // unresolvable sender — drop
+    final senderPubkey = Uint8List.fromList(base64Decode(knownPubkeyB64));
 
     final plaintext = app.crypto
         .decrypt(envelope.nonceB64, envelope.ciphertextB64, senderPubkey);
@@ -443,23 +643,121 @@ class ChatState extends ChangeNotifier {
             status: MessageStatus.sent,
           ),
         );
+
+      case EnvelopeType.groupCreate || EnvelopeType.groupUpdate:
+        await _applyMembership(envelope, payload);
+
+      case EnvelopeType.groupMsg:
+        final group = groupById(payload['group_id'] as String? ?? '');
+        if (group == null) return; // unknown group — drop (create not seen yet)
+        if (memberOf(group.id, envelope.from) == null) return; // non-member
+        await _storeIncomingConversation(
+          group.id,
+          Message(
+            id: envelope.id,
+            contactId: group.id,
+            senderId: envelope.from,
+            outgoing: false,
+            text: (payload['text'] as String?) ?? '',
+            sentAt: _sentAtMs(envelope),
+            status: MessageStatus.sent,
+          ),
+        );
+
+      case EnvelopeType.groupLeave:
+        final group = groupById(payload['group_id'] as String? ?? '');
+        if (group == null) return;
+        final member = memberOf(group.id, envelope.from);
+        if (member == null) return; // only a member can announce their own leave
+        groupMembers[group.id]?.removeWhere((m) => m.zeonId == envelope.from);
+        await app.db
+            .replaceMembers(group.id, groupMembers[group.id] ?? const []);
     }
     notifyListeners();
+  }
+
+  /// group_create / group_update: full-state membership replacement.
+  /// Only the admin's word counts, versions only move forward, and every
+  /// member key must hash to its claimed ID (offline commitment check).
+  Future<void> _applyMembership(
+      Envelope envelope, Map<String, dynamic> payload) async {
+    final groupId = payload['group_id'] as String?;
+    final admin = payload['admin'] as String?;
+    final name = payload['name'] as String?;
+    final version = payload['version'] as int?;
+    final rawMembers = payload['members'] as List?;
+    if (groupId == null || admin == null || name == null || version == null || rawMembers == null) {
+      return;
+    }
+    if (envelope.from != admin) return; // only the admin defines membership
+
+    final existing = groupById(groupId);
+    if (existing != null) {
+      if (envelope.from != existing.adminId) return;
+      if (version <= existing.version) return; // stale or replayed
+    }
+
+    final members = <GroupMember>[];
+    var includesUs = false;
+    for (final raw in rawMembers) {
+      if (raw is! Map) return;
+      final zeonId = raw['zeon_id'] as String?;
+      final pubkey = raw['pubkey'] as String?;
+      if (zeonId == null || pubkey == null) return;
+      if (!app.crypto.pubkeyMatchesId(pubkey, zeonId)) return; // forged key
+      if (zeonId == app.zeonId) includesUs = true;
+      members.add(GroupMember(
+        groupId: groupId,
+        zeonId: zeonId,
+        pubkeyB64: pubkey,
+        displayName: (raw['display_name'] as String?) ?? zeonId.substring(3, 12),
+      ));
+    }
+    if (!includesUs) {
+      // we were removed — drop the group locally, keep history? v1: keep
+      // nothing server-side to worry about; just delete membership records
+      if (existing != null) {
+        groupMembers[groupId] = [];
+        await app.db.replaceMembers(groupId, const []);
+      }
+      return;
+    }
+
+    final group = Group(
+      id: groupId,
+      name: name,
+      adminId: admin,
+      version: version,
+      createdAt: existing?.createdAt ?? DateTime.now().millisecondsSinceEpoch,
+    );
+    await app.db.upsertGroup(group);
+    await app.db.replaceMembers(groupId, members);
+    if (existing == null) {
+      groups.add(group);
+    } else {
+      existing.name = name;
+      existing.version = version;
+    }
+    groupMembers[groupId] = members;
+  }
+
+  Future<void> _storeIncomingConversation(
+      String conversationId, Message message) async {
+    await app.db.insertMessage(message);
+    final cache = _messages[conversationId];
+    if (cache != null && !cache.any((m) => m.id == message.id)) {
+      cache.add(message);
+      cache.sort((a, b) => a.sentAt.compareTo(b.sentAt));
+    }
+    lastMessage[conversationId] = message;
   }
 
   static int _sentAtMs(Envelope envelope) =>
       DateTime.tryParse(envelope.sentAt)?.toLocal().millisecondsSinceEpoch ??
       DateTime.now().millisecondsSinceEpoch;
 
-  Future<void> _storeIncoming(Contact contact, Message message) async {
-    await app.db.insertMessage(message);
-    final cache = _messages[contact.zeonId];
-    if (cache != null && !cache.any((m) => m.id == message.id)) {
-      cache.add(message);
-      cache.sort((a, b) => a.sentAt.compareTo(b.sentAt));
-    }
-    lastMessage[contact.zeonId] = message;
-  }
+  Future<void> _storeIncoming(Contact contact, Message message) =>
+      _storeIncomingConversation(contact.zeonId, message);
 
   Future<DirectoryEntry?> _resolveOrNull(String zeonId) async {
     try {

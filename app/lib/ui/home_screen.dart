@@ -15,7 +15,23 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final chat = context.watch<ChatState>();
     final requests = chat.incomingRequests;
-    final conversations = chat.acceptedContacts;
+
+    // One merged list: DMs and groups, most recent activity first.
+    int activity(String id, int fallback) =>
+        chat.lastMessage[id]?.sentAt ?? fallback;
+    final conversations = <Widget>[
+      for (final c in chat.acceptedContacts) _ConversationTile(contact: c),
+      for (final g in chat.groups) _GroupTile(group: g),
+    ];
+    final order = <Widget, int>{};
+    var i = 0;
+    for (final c in chat.acceptedContacts) {
+      order[conversations[i++]] = activity(c.zeonId, c.createdAt);
+    }
+    for (final g in chat.groups) {
+      order[conversations[i++]] = activity(g.id, g.createdAt);
+    }
+    conversations.sort((a, b) => (order[b] ?? 0).compareTo(order[a] ?? 0));
 
     return Scaffold(
       appBar: AppBar(
@@ -49,7 +65,7 @@ class HomeScreen extends StatelessWidget {
                       ],
                       if (conversations.isNotEmpty) ...[
                         const _SectionLabel('Chats'),
-                        ...conversations.map((c) => _ConversationTile(contact: c)),
+                        ...conversations,
                       ],
                     ],
                   ),
@@ -60,10 +76,84 @@ class HomeScreen extends StatelessWidget {
         backgroundColor: Zn.ion,
         foregroundColor: const Color(0xFF15200A),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Zn.radius)),
-        onPressed: () => Navigator.pushNamed(context, '/add-contact'),
-        child: const Icon(Icons.person_add_alt),
+        onPressed: () => _showNewMenu(context),
+        child: const Icon(Icons.add),
       ),
     );
+  }
+
+  void _showNewMenu(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.person_add_alt, color: Zn.ion),
+              title: const Text('Add a friend'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.pushNamed(context, '/add-contact');
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.group_add_outlined, color: Zn.cyan),
+              title: const Text('New group'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                Navigator.pushNamed(context, '/create-group');
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GroupTile extends StatelessWidget {
+  final Group group;
+  const _GroupTile({required this.group});
+
+  @override
+  Widget build(BuildContext context) {
+    final chat = context.watch<ChatState>();
+    final last = chat.lastMessage[group.id];
+    final memberCount = chat.groupMembers[group.id]?.length ?? 0;
+
+    return ListTile(
+      leading: ZeonAvatar(zeonId: group.id, name: '◈', size: 42),
+      title: Text(group.name,
+          style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: last == null
+          ? Text('$memberCount members', style: Zn.mono(size: 11))
+          : Text(
+              '${last.outgoing ? '› ' : ''}${last.preview}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Zn.muted, fontSize: 13),
+            ),
+      trailing:
+          last == null ? null : Text(_when(last.sentAt), style: Zn.mono(size: 10)),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => ChatScreen.group(group: group)),
+      ),
+    );
+  }
+
+  String _when(int ms) {
+    final t = DateTime.fromMillisecondsSinceEpoch(ms);
+    final now = DateTime.now();
+    if (t.year == now.year && t.month == now.month && t.day == now.day) {
+      return DateFormat('HH:mm').format(t);
+    }
+    return DateFormat('dd MMM').format(t);
   }
 }
 

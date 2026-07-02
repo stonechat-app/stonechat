@@ -183,6 +183,29 @@ def main():
     acc = asyncio.run(alice.receive_one())
     assert alice.open_envelope(acc, bob) == {"display_name": "Bob"}
 
+    print("5b) group wire format: create + message, key commitments verify")
+    group_id = str(uuid.uuid4())
+    membership = {
+        "group_id": group_id, "name": "e2e crew", "version": 1,
+        "admin": alice.zeon_id,
+        "members": [
+            {"zeon_id": p.zeon_id, "pubkey": p.pubkey_b64, "display_name": p.name}
+            for p in (alice, bob)
+        ],
+    }
+    alice.deliver_to(bob, alice.seal(bob, "group_create", membership))
+    created = asyncio.run(bob.receive_one())
+    got_membership = bob.open_envelope(created, alice)
+    assert created["from"] == got_membership["admin"], "admin must be the sender"
+    for m in got_membership["members"]:
+        derived = zeon_id_from_pubkey(base64.b64decode(m["pubkey"]))
+        assert derived == m["zeon_id"], "member key commitment must verify"
+
+    alice.deliver_to(bob, alice.seal(bob, "group_msg",
+                                     {"group_id": group_id, "text": "hi crew"}))
+    gm = asyncio.run(bob.receive_one())
+    assert bob.open_envelope(gm, alice) == {"group_id": group_id, "text": "hi crew"}
+
     print("6) message + delete-on-ack")
     alice.deliver_to(bob, alice.seal(bob, "msg", {"text": "hello from my own relay"}))
     msg = asyncio.run(bob.receive_one())

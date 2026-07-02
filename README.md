@@ -20,6 +20,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 | `server/` | Routing server ("relay"). Single-file FastAPI + SQLite mailbox that runs on the user's VM. Stores ciphertext only, deletes on ack. |
 | `control-plane/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Zeon IDs → pubkeys + current relay address. Never sees message content. |
 | `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
+| `landing/` | Marketing site (Astro). Static landing + pricing pages; `cd landing && npm install && npm run dev` (Node 22+). |
 
 ## Quick start (all local, no cloud account)
 
@@ -78,11 +79,12 @@ cd app && flutter test && flutter analyze
 - **The control plane is a centralized directory.** It stores routing metadata
   (ID → pubkey → relay IP), never content. Long term: self-hostable, or
   bring-your-own-cloud-credentials.
-- **No push notifications yet.** Messages arrive while the app is open (live
-  WebSocket) or on app resume. Content-free FCM/APNs wake-ups are the planned
-  fix.
+- **Push needs credentials to go live.** The gateway + relay plumbing exists
+  (content-free wake-ups); wiring the app to APNs/FCM requires an Apple
+  Developer account / Firebase project.
 - **Transport is plain HTTP.** Payloads are E2E-encrypted regardless, but
   metadata protection wants TLS + server key pinning next.
 - **No forward secrecy.** Static X25519 `crypto_box` per message; a Signal-style
   ratchet is a natural upgrade.
-- Group chats: deliberately out of scope for now.
+- **Groups are v1**: client-side fan-out, creator-as-admin, ~25 members,
+  text-only (media in groups is a planned v2 — see PROTOCOL.md).

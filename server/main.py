@@ -38,7 +38,10 @@ MAX_QUEUE_DEPTH = 10_000
 MAX_BLOB_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BLOB_BYTES = 500 * 1024 * 1024
 BLOB_TTL_SECONDS = 14 * 24 * 3600
-ENVELOPE_TYPES = {"msg", "media", "contact_request", "contact_accept"}
+ENVELOPE_TYPES = {
+    "msg", "media", "contact_request", "contact_accept",
+    "group_create", "group_update", "group_msg", "group_leave",
+}
 REQUIRED_FIELDS = {"v", "id", "type", "from", "to", "sent_at", "nonce", "ciphertext"}
 BLOB_ID_RE = re.compile(r"^[a-f0-9-]{36}$")
 
