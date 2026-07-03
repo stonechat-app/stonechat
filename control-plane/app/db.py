@@ -132,6 +132,21 @@ class Store:
             except sqlite3.IntegrityError:
                 return False
 
+    def create_external_server(self, zeon_id: str, address: str) -> bool:
+        """User provisioned their own relay; we only list its address.
+        No server_token stored — it never leaves the user's device."""
+        with self._lock:
+            try:
+                self._db.execute(
+                    "INSERT INTO servers (zeon_id, provider, status, machine, address, created_at)"
+                    " VALUES (?, 'external', 'running', '{}', ?, ?)",
+                    (zeon_id, address, _now()),
+                )
+                self._db.commit()
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
     def server_for(self, zeon_id: str) -> dict | None:
         with self._lock:
             row = self._db.execute(

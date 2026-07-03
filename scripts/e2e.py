@@ -8,6 +8,7 @@ message → ack → verify the relay queue is empty → destroy relays.
 import asyncio
 import base64
 import json
+import subprocess
 import sys
 import time
 import uuid
@@ -165,6 +166,61 @@ def main():
     assert health["owner"] == carol.zeon_id
     carol.destroy()
     assert httpx.get(f"{CP}/v1/server", headers=carol.auth).json()["status"] == "none"
+
+    print("3c) external relay: bring-your-own server, token stays client-side")
+    dave = Phone("dave")
+    dave.register()
+    dave_token = "dave-keeps-this-token-himself"
+    cid = subprocess.run(
+        ["docker", "run", "-d", "-p", "0:8080",
+         "-e", f"ZEON_OWNER_ID={dave.zeon_id}",
+         "-e", f"ZEON_OWNER_TOKEN={dave_token}",
+         "zeon-server:dev"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    try:
+        port = subprocess.run(
+            ["docker", "port", cid, "8080"], capture_output=True, text=True, check=True
+        ).stdout.strip().splitlines()[0].rsplit(":", 1)[1]
+        dave_address = f"http://127.0.0.1:{port}"
+        for _ in range(30):  # wait for the container to come up
+            try:
+                if httpx.get(f"{dave_address}/health", timeout=2).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.5)
+
+        # impersonation rejected: eve cannot claim dave's relay
+        eve = Phone("eve")
+        eve.register()
+        r = httpx.post(f"{CP}/v1/server/external", headers=eve.auth,
+                       json={"address": dave_address})
+        assert r.status_code == 400, f"expected 400, got {r.status_code}"
+
+        # dave registers his own relay; only the address reaches the directory
+        r = httpx.post(f"{CP}/v1/server/external", headers=dave.auth,
+                       json={"address": dave_address})
+        r.raise_for_status()
+        record = httpx.get(f"{CP}/v1/server", headers=dave.auth).json()
+        assert record["provider"] == "external" and record["server_token"] is None
+        entry = httpx.get(f"{CP}/v1/directory/{dave.zeon_id}").json()
+        assert entry["server"]["address"] == dave_address
+        dave.server = {"address": dave_address, "server_token": dave_token,
+                       "status": "running"}
+
+        # and he's a full participant: alice delivers, dave receives
+        alice.deliver_to(dave, alice.seal(dave, "msg", {"text": "hi dave"}))
+        got = asyncio.run(dave.receive_one())
+        assert dave.open_envelope(got, alice) == {"text": "hi dave"}
+
+        # disconnect = directory delisting only (no provider destroy)
+        httpx.delete(f"{CP}/v1/server", headers=dave.auth).raise_for_status()
+        entry = httpx.get(f"{CP}/v1/directory/{dave.zeon_id}").json()
+        assert entry["server"] is None
+        assert httpx.get(f"{dave_address}/health").status_code == 200, \
+            "dave's own server must keep running after disconnect"
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
 
     print("4) one-server-per-user enforced")
     r = httpx.post(

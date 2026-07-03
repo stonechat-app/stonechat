@@ -128,6 +128,27 @@ class ControlPlaneApi {
         await http.delete(Uri.parse('$baseUrl/v1/server'), headers: _auth);
     await _check(r, (_) => null);
   }
+
+  /// Free tier: list a self-provisioned relay in the directory. The relay's
+  /// token never goes to the control plane — only the address does.
+  Future<void> registerExternalServer(String address) async {
+    final r = await http.post(Uri.parse('$baseUrl/v1/server/external'),
+        headers: _auth, body: jsonEncode({'address': address}));
+    await _check(r, (_) => null);
+  }
+}
+
+/// Ask a mailbox who it belongs to (pre-registration sanity check).
+Future<String?> mailboxOwner(String address) async {
+  try {
+    final r = await http
+        .get(Uri.parse('$address/health'))
+        .timeout(const Duration(seconds: 8));
+    if (r.statusCode != 200) return null;
+    return (jsonDecode(r.body) as Map<String, dynamic>)['owner'] as String?;
+  } catch (_) {
+    return null;
+  }
 }
 
 /// Upload an encrypted media blob to a peer's mailbox. Returns the blob id

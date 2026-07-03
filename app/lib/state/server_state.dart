@@ -44,14 +44,42 @@ class ServerState extends ChangeNotifier {
       _pollTimer = null;
     }
 
-    if (isRunning && record.address != null && record.serverToken != null) {
-      onMailbox?.call(record.address, record.serverToken);
-      _ensureSocket(record.address!, record.serverToken!);
+    // External relays: the token never touched the control plane, so it
+    // comes from local secure storage instead of the server record.
+    final token = record.serverToken ?? app.externalMailboxToken;
+    if (isRunning && record.address != null && token != null) {
+      onMailbox?.call(record.address, token);
+      _ensureSocket(record.address!, token);
     } else {
       onMailbox?.call(null, null);
       _dropSocket();
     }
     notifyListeners();
+  }
+
+  bool get isExternal => record.provider == 'external';
+
+  /// Free tier: user runs their own relay; we verify it's really theirs,
+  /// list its address in the directory, and keep the token on-device only.
+  Future<void> connectExternal(String rawAddress, String token) async {
+    final address = rawAddress.trim().replaceAll(RegExp(r'/+$'), '');
+    busy = true;
+    notifyListeners();
+    try {
+      final owner = await mailboxOwner(address);
+      if (owner == null) {
+        throw ApiException("Couldn't reach a Zeon mailbox at that address");
+      }
+      if (owner != app.zeonId) {
+        throw ApiException('That mailbox belongs to a different Zeon ID');
+      }
+      await app.api.registerExternalServer(address);
+      await app.setExternalMailboxToken(token.trim());
+      await refresh();
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
   }
 
   Future<void> create({
@@ -81,6 +109,7 @@ class ServerState extends ChangeNotifier {
     notifyListeners();
     try {
       await app.api.deleteServer();
+      await app.setExternalMailboxToken(null);
       _dropSocket();
       await refresh();
     } finally {

@@ -9,6 +9,7 @@ Config (env):
 
 import base64
 import logging
+import re
 import secrets
 from typing import Annotated
 
@@ -67,6 +68,10 @@ class MachineIn(BaseModel):
 class ServerIn(BaseModel):
     provider: str
     machine: MachineIn
+
+
+class ExternalServerIn(BaseModel):
+    address: str = Field(max_length=200, examples=["http://203.0.113.7:8080"])
 
 
 # -- routes ---------------------------------------------------------------------
@@ -141,6 +146,34 @@ async def create_server(body: ServerIn, user: User, background: BackgroundTasks)
         _provision, user["zeon_id"], body.provider, body.machine, server_token
     )
     return {"status": "provisioning"}
+
+
+@app.post("/v1/server/external", status_code=201)
+async def register_external_server(body: ExternalServerIn, user: User):
+    """The free tier: the user runs their own relay anywhere and we list it in
+    the directory. Ownership is proven, not claimed: the relay at that address
+    must report this user's Zeon ID as its owner. We never see their token."""
+    address = body.address.strip().rstrip("/")
+    if not re.match(r"^https?://[a-zA-Z0-9.\-:\[\]]+$", address):
+        raise HTTPException(400, "address must look like http(s)://host[:port]")
+
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            resp = await client.get(f"{address}/health")
+        health = resp.json()
+    except Exception:
+        raise HTTPException(
+            400,
+            "couldn't reach a Zeon mailbox at that address — it must be "
+            "reachable from the internet",
+        )
+    if health.get("owner") != user["zeon_id"]:
+        raise HTTPException(400, "that mailbox belongs to a different Zeon ID")
+
+    if not store.create_external_server(user["zeon_id"], address):
+        raise HTTPException(409, "you already have a server (one per user)")
+    log.info("external relay registered for %s", user["zeon_id"][:12])
+    return {"status": "running", "address": address}
 
 
 @app.get("/v1/server")

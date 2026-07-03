@@ -21,6 +21,9 @@ class AppState extends ChangeNotifier {
   String? zeonId;
   String? handle; // zn-word-word-word
   String? displayName;
+  // Token for a self-provisioned ("external") mailbox. Lives only here —
+  // the control plane never sees it.
+  String? externalMailboxToken;
 
   bool get hasIdentity => _crypto != null && zeonId != null;
   CryptoService get crypto => _crypto!;
@@ -64,11 +67,21 @@ class AppState extends ChangeNotifier {
       zeonId = await _storage.read(key: 'zn_id');
       handle = await _storage.read(key: 'zn_handle');
       displayName = await _storage.read(key: 'zn_name');
+      externalMailboxToken = await _storage.read(key: 'zn_ext_token');
       if (handle == null && zeonId != null) {
         await _fetchOwnHandle(); // account predates handles — self-heal
       }
     } else {
       _sodium = sodium;
+    }
+  }
+
+  Future<void> setExternalMailboxToken(String? token) async {
+    externalMailboxToken = token;
+    if (token == null) {
+      await _storage.delete(key: 'zn_ext_token');
+    } else {
+      await _storage.write(key: 'zn_ext_token', value: token);
     }
   }
 

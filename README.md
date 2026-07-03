@@ -46,6 +46,22 @@ Testing from a real phone: start the control plane with
 `ZEON_LOCAL_HOST=<your-mac-LAN-IP>` and point the app's "control plane" field
 (onboarding → advanced) at `http://<your-mac-LAN-IP>:8000`.
 
+## Self-hosting your mailbox (free tier)
+
+Run the relay on any box you control — the directory lists your address so
+you can message everyone, and the mailbox token never leaves your phone:
+
+```bash
+docker run -d --restart unless-stopped -p 8080:8080 \
+  -e ZEON_OWNER_ID=<your ZC- id> \
+  -e ZEON_OWNER_TOKEN=<any long random secret you keep> \
+  zeon-server   # or: python server/main.py with the same env
+```
+
+In the app: Mailbox → **I already run a mailbox** → enter
+`http://<your-host>:8080` + your token → Connect. Registration only succeeds
+if the mailbox at that address reports *your* Zeon ID as its owner.
+
 ## Cloud providers
 
 The provider layer (`control-plane/app/providers/`) is deliberately thin:
@@ -77,8 +93,9 @@ cd app && flutter test && flutter analyze
 ## Honest limitations (v1)
 
 - **The control plane is a centralized directory.** It stores routing metadata
-  (ID → pubkey → relay IP), never content. Long term: self-hostable, or
-  bring-your-own-cloud-credentials.
+  (ID → pubkey → relay IP), never content. Self-hosted relays reduce its
+  knowledge further (it never sees their tokens); running your own control
+  plane is possible but puts you on a separate directory island.
 - **Push needs credentials to go live.** The gateway + relay plumbing exists
   (content-free wake-ups); wiring the app to APNs/FCM requires an Apple
   Developer account / Firebase project.

@@ -17,6 +17,7 @@ const _providerLabels = {
   'gcp': 'Google Cloud',
   'aws': 'Amazon',
   'local': 'This computer',
+  'external': 'Your own server',
 };
 
 class ServerScreen extends StatefulWidget {
@@ -34,6 +35,9 @@ class _ServerScreenState extends State<ServerScreen> {
       TextEditingController(text: _providerDefaults[_provider]!.region);
   double _diskGb = 10;
   bool _showAdvanced = false;
+  bool _showExternal = false;
+  final _extAddress = TextEditingController();
+  final _extToken = TextEditingController();
 
   void _applyProviderDefaults(String provider) {
     setState(() {
@@ -122,6 +126,40 @@ class _ServerScreenState extends State<ServerScreen> {
                     : const Text('Turn on my mailbox'),
               ),
             ),
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 8),
+            GestureDetector(
+              onTap: () => setState(() => _showExternal = !_showExternal),
+              child: Text(
+                _showExternal
+                    ? '▾ I already run a mailbox'
+                    : '▸ I already run a mailbox',
+                style: Zn.mono(size: 10, letterSpacing: 2),
+              ),
+            ),
+            if (_showExternal) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Run the Zeon mailbox on any server you like, then connect it '
+                'here. Its access token stays on this phone — we only list '
+                'the address so friends can find you. Free, forever.',
+                style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
+              ),
+              const SizedBox(height: 12),
+              _LabeledField(label: 'Address', controller: _extAddress),
+              const SizedBox(height: 12),
+              _LabeledField(label: 'Mailbox token', controller: _extToken),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: OutlinedButton(
+                  onPressed: server.busy ? null : () => _connectExternal(server),
+                  child: const Text('Connect my mailbox'),
+                ),
+              ),
+            ],
           ],
           if (server.isProvisioning)
             const Padding(
@@ -143,16 +181,22 @@ class _ServerScreenState extends State<ServerScreen> {
                   side: const BorderSide(color: Zn.danger),
                 ),
                 onPressed: server.busy ? null : () => _destroy(server),
-                child: const Text('Turn off mailbox'),
+                child: Text(server.isExternal
+                    ? 'Disconnect mailbox'
+                    : 'Turn off mailbox'),
               ),
             ),
             const SizedBox(height: 8),
-            const Text(
-              'While your mailbox is off you won\'t receive messages — '
-              'they\'ll wait on your friends\' phones and arrive once you '
-              'turn it back on. Your chat history on this phone is never '
-              'affected.',
-              style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
+            Text(
+              server.isExternal
+                  ? 'Disconnecting removes your address from the directory — '
+                      'your server keeps running and is yours to stop. Your '
+                      'chat history on this phone is never affected.'
+                  : 'While your mailbox is off you won\'t receive messages — '
+                      'they\'ll wait on your friends\' phones and arrive once '
+                      'you turn it back on. Your chat history on this phone '
+                      'is never affected.',
+              style: const TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
             ),
           ],
         ],
@@ -173,25 +217,47 @@ class _ServerScreenState extends State<ServerScreen> {
     }
   }
 
+  Future<void> _connectExternal(ServerState server) async {
+    final address = _extAddress.text.trim();
+    final token = _extToken.text.trim();
+    if (address.isEmpty || token.isEmpty) {
+      showZnSnack(context, 'Enter your mailbox address and token', error: true);
+      return;
+    }
+    try {
+      await server.connectExternal(address, token);
+      if (mounted) showZnSnack(context, 'Connected — friends can reach you now');
+    } catch (e) {
+      if (mounted) showZnSnack(context, '$e', error: true);
+    }
+  }
+
   Future<void> _destroy(ServerState server) async {
+    final external = server.isExternal;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: Zn.surface,
-        title: const Text('Turn off your mailbox?'),
-        content: const Text(
-            'You\'ll stop receiving messages until you turn it back on. '
-            'New messages will wait on your friends\' phones. Your chat '
-            'history stays on this phone.',
-            style: TextStyle(color: Zn.muted, height: 1.4)),
+        title: Text(external
+            ? 'Disconnect your mailbox?'
+            : 'Turn off your mailbox?'),
+        content: Text(
+            external
+                ? 'Your address is removed from the directory; the server '
+                    'itself keeps running and stays yours. Your chat history '
+                    'stays on this phone.'
+                : 'You\'ll stop receiving messages until you turn it back on. '
+                    'New messages will wait on your friends\' phones. Your '
+                    'chat history stays on this phone.',
+            style: const TextStyle(color: Zn.muted, height: 1.4)),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(context, false),
-              child: const Text('Keep it on')),
+              child: Text(external ? 'Stay connected' : 'Keep it on')),
           TextButton(
               onPressed: () => Navigator.pop(context, true),
-              child: const Text('Turn off',
-                  style: TextStyle(color: Zn.danger))),
+              child: Text(external ? 'Disconnect' : 'Turn off',
+                  style: const TextStyle(color: Zn.danger))),
         ],
       ),
     );
