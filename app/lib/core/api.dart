@@ -151,6 +151,48 @@ Future<String?> mailboxOwner(String address) async {
   }
 }
 
+/// Fetch a peer's prekey bundle from their mailbox (consumes a one-time
+/// prekey server-side). The caller must verify the SPK signature against the
+/// peer's directory identity key.
+Future<Map<String, dynamic>> fetchPrekeyBundle(String serverAddress) async {
+  final r = await http
+      .get(Uri.parse('$serverAddress/prekeys/bundle'))
+      .timeout(const Duration(seconds: 10));
+  if (r.statusCode >= 400) {
+    throw ApiException('prekey bundle unavailable (${r.statusCode})', r.statusCode);
+  }
+  return jsonDecode(r.body) as Map<String, dynamic>;
+}
+
+/// Publish our public prekeys to our own mailbox (owner token required).
+Future<void> uploadPrekeys(String serverAddress, String token,
+    Map<String, Object?> spk, List<Map<String, Object?>> opks) async {
+  final r = await http
+      .post(Uri.parse('$serverAddress/prekeys?token=$token'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'spk': spk, 'opks': opks}))
+      .timeout(const Duration(seconds: 10));
+  if (r.statusCode >= 400) {
+    throw ApiException('prekey upload failed (${r.statusCode})', r.statusCode);
+  }
+}
+
+/// Our own mailbox's prekey inventory, from /health (no auth needed).
+Future<({bool spk, int opks})?> mailboxPrekeyStatus(String address) async {
+  try {
+    final r = await http
+        .get(Uri.parse('$address/health'))
+        .timeout(const Duration(seconds: 8));
+    if (r.statusCode != 200) return null;
+    final prekeys =
+        (jsonDecode(r.body) as Map<String, dynamic>)['prekeys'] as Map<String, dynamic>?;
+    if (prekeys == null) return null;
+    return (spk: prekeys['spk'] as bool, opks: prekeys['opks'] as int);
+  } catch (_) {
+    return null;
+  }
+}
+
 /// Upload an encrypted media blob to a peer's mailbox. Returns the blob id
 /// to reference from the media envelope.
 Future<String> uploadBlob(String serverAddress, List<int> bytes) async {

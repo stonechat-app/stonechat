@@ -52,13 +52,17 @@ class AppState extends ChangeNotifier {
     final secret = await _storage.read(key: 'zn_secret');
     final public = await _storage.read(key: 'zn_public');
     final storedUrl = await _storage.read(key: 'zn_cp_url');
+    // Protocol v2 identities are Ed25519. Anything stored without the marker
+    // is a pre-v2 X25519 key — unusable, treat as no identity (dev-era only;
+    // v1 never shipped).
+    final algo = await _storage.read(key: 'zn_algo');
 
     api = ControlPlaneApi(
       baseUrl: storedUrl ?? defaultControlPlaneUrl,
       accountToken: await _storage.read(key: 'zn_token'),
     );
 
-    if (secret != null && public != null) {
+    if (secret != null && public != null && algo == 'ed25519') {
       _crypto = CryptoService.fromKeys(
         sodium,
         publicKey: base64Decode(public),
@@ -114,6 +118,7 @@ class AppState extends ChangeNotifier {
     await _storage.write(
         key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
+    await _storage.write(key: 'zn_algo', value: 'ed25519');
     await _storage.write(key: 'zn_id', value: result.zeonId);
     await _storage.write(key: 'zn_handle', value: result.handle);
     await _storage.write(key: 'zn_token', value: result.accountToken);

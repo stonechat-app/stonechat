@@ -56,7 +56,7 @@ User = Annotated[dict, Depends(current_user)]
 # -- schemas --------------------------------------------------------------------
 
 class RegisterIn(BaseModel):
-    pubkey: str  # base64-encoded X25519 public key
+    pubkey: str  # base64-encoded Ed25519 identity public key
 
 
 class MachineIn(BaseModel):

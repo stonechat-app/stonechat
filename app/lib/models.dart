@@ -194,9 +194,11 @@ class GroupMember {
       );
 }
 
-/// The wire format. Ciphertext only — servers never see anything else.
-/// `blobId` (media envelopes) is the one cleartext hint, used by the server
-/// purely to garbage-collect the blob on ack.
+/// The wire format (PROTOCOL.md v2). Ciphertext only — servers never see
+/// anything else. `ratchet` is the double-ratchet header; `x3dh` appears only
+/// on a session's initial envelopes. `blobId` (media envelopes) is the one
+/// other cleartext hint, used by the server purely to garbage-collect the
+/// blob on ack.
 class Envelope {
   final int v;
   final String id;
@@ -204,17 +206,21 @@ class Envelope {
   final String from;
   final String to;
   final String sentAt; // ISO-8601 UTC
+  final Map<String, Object?> ratchet; // {dh, pn, n}
+  final Map<String, Object?>? x3dh; // {ik, ek, spk_id, opk_id?}
   final String nonceB64;
   final String ciphertextB64;
   final String? blobId;
 
   Envelope({
-    this.v = 1,
+    this.v = 2,
     required this.id,
     required this.type,
     required this.from,
     required this.to,
     required this.sentAt,
+    required this.ratchet,
+    this.x3dh,
     required this.nonceB64,
     required this.ciphertextB64,
     this.blobId,
@@ -227,6 +233,8 @@ class Envelope {
         'from': from,
         'to': to,
         'sent_at': sentAt,
+        'ratchet': ratchet,
+        if (x3dh != null) 'x3dh': x3dh,
         'nonce': nonceB64,
         'ciphertext': ciphertextB64,
         if (blobId != null) 'blob_id': blobId,
@@ -239,6 +247,8 @@ class Envelope {
         from: j['from'] as String,
         to: j['to'] as String,
         sentAt: j['sent_at'] as String,
+        ratchet: (j['ratchet'] as Map).cast<String, Object?>(),
+        x3dh: (j['x3dh'] as Map?)?.cast<String, Object?>(),
         nonceB64: j['nonce'] as String,
         ciphertextB64: j['ciphertext'] as String,
         blobId: j['blob_id'] as String?,

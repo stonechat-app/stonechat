@@ -23,7 +23,16 @@ Future<void> main() async {
   final server = ServerState(
     app,
     onEnvelope: chat.handleIncoming,
-    onConnected: chat.retryPending,
+    onConnected: () async {
+      // Stock the mailbox with prekeys first — peers may be waiting on a
+      // bundle to start a session — then flush our own pending outbox.
+      try {
+        await chat.publishPrekeys();
+      } catch (_) {
+        // best-effort; retried on the next connect or app resume
+      }
+      await chat.retryPending();
+    },
     onMailbox: chat.setMailbox,
   );
 

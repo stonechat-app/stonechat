@@ -1,7 +1,7 @@
 """Zeon ID derivation and validation (see PROTOCOL.md).
 
-The ID is a BLAKE2b commitment to the user's X25519 public key, so this
-directory can never swap a key undetected — clients recompute the hash.
+The ID is a BLAKE2b commitment to the user's Ed25519 identity public key, so
+this directory can never swap a key undetected — clients recompute the hash.
 hashlib.blake2b(digest_size=n) is bit-identical to libsodium's
 crypto_generichash(outlen=n), which is what the Flutter client uses.
 """
@@ -11,7 +11,7 @@ import hashlib
 
 HASH_LEN = 20
 CHECKSUM_LEN = 2
-PUBKEY_LEN = 32  # X25519
+PUBKEY_LEN = 32  # Ed25519
 
 
 def zeon_id_from_pubkey(pubkey: bytes) -> str:

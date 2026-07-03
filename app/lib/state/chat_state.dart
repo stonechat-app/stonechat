@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/api.dart';
+import '../core/session.dart';
 import '../models.dart';
 import 'app_state.dart';
 
@@ -26,9 +27,12 @@ class ChatState extends ChangeNotifier {
   final Map<String, Message?> lastMessage = {};
 
   // Own mailbox coordinates, set by ServerState before the socket connects —
-  // needed to download incoming media blobs.
+  // needed to download incoming media blobs and publish prekeys.
   String? mailboxAddress;
   String? mailboxToken;
+
+  // Forward-secret ratchet sessions, one per peer, cached over the DB copy.
+  final Map<String, RatchetSession> _sessions = {};
 
   ChatState(this.app);
 
@@ -127,27 +131,213 @@ class ChatState extends ChangeNotifier {
     }
   }
 
-  Envelope _seal(String type, Contact contact, Map<String, Object?> payload) =>
-      _sealFor(type, contact.zeonId, contact.pubkeyB64, payload);
+  // -- forward-secret sessions (PROTOCOL.md "Session crypto") --------------------
 
-  Envelope _sealFor(
+  Future<RatchetSession?> _loadSession(String peerId) async {
+    final cached = _sessions[peerId];
+    if (cached != null) return cached;
+    final stateJson = await app.db.sessionState(peerId);
+    if (stateJson == null) return null;
+    final session = RatchetSession.fromJson(
+        app.crypto, peerId, jsonDecode(stateJson) as Map<String, dynamic>);
+    _sessions[peerId] = session;
+    return session;
+  }
+
+  Future<void> _saveSession(RatchetSession session) async {
+    _sessions[session.peerId] = session;
+    await app.db.saveSession(session.peerId, jsonEncode(session.toJson()));
+  }
+
+  /// The session for an outgoing message, establishing one via the peer's
+  /// prekey bundle when none exists yet.
+  Future<RatchetSession> _sessionFor(String peerId, String peerPubkeyB64,
+      {String? serverAddress}) async {
+    final existing = await _loadSession(peerId);
+    if (existing != null && existing.canSend) return existing;
+
+    Future<PrekeyBundle> fetchFrom(String address) async =>
+        PrekeyBundle.fromJson(await fetchPrekeyBundle(address));
+
+    PrekeyBundle bundle;
+    try {
+      if (serverAddress == null) throw ApiException('no cached address');
+      bundle = await fetchFrom(serverAddress);
+    } on Exception {
+      // No cached address, or their mailbox moved — ask the directory.
+      final entry = await _resolve(peerId);
+      if (entry.serverAddress == null) {
+        throw ApiException(
+            "Their mailbox is off right now — they'll get it when it's back");
+      }
+      bundle = await fetchFrom(entry.serverAddress!);
+    }
+
+    final peerEd = Uint8List.fromList(base64Decode(peerPubkeyB64));
+    if (!app.crypto.verifyPrekeySig(bundle.spkPub, bundle.spkSig, peerEd)) {
+      throw ApiException(
+          'Their mailbox served a forged prekey — refusing to send.');
+    }
+    final session =
+        RatchetSession.initiate(app.crypto, peerId, peerEd, bundle);
+    await _saveSession(session);
+    return session;
+  }
+
+  Future<Envelope> _seal(
+          String type, Contact contact, Map<String, Object?> payload) =>
+      _sealFor(type, contact.zeonId, contact.pubkeyB64, payload,
+          serverAddress: contact.serverAddress);
+
+  Future<Envelope> _sealFor(
     String type,
     String toZeonId,
     String toPubkeyB64,
     Map<String, Object?> payload, {
     String? envelopeId,
-  }) {
-    final sealed =
-        app.crypto.encrypt(jsonEncode(payload), base64Decode(toPubkeyB64));
+    String? serverAddress,
+    String? blobId,
+  }) async {
+    final session = await _sessionFor(toZeonId, toPubkeyB64,
+        serverAddress: serverAddress);
+    final adPrefix = 'zeon/v2|${app.zeonId}|$toZeonId|$type';
+    final sealed = session.encrypt(jsonEncode(payload), adPrefix);
+    final x3dh = session.pendingX3dh?.toJson();
+    // Persist the advanced chain before the envelope can leave: a crash after
+    // send must never reuse a message key.
+    await _saveSession(session);
     return Envelope(
       id: envelopeId ?? _uuid.v4(),
       type: type,
       from: app.zeonId!,
       to: toZeonId,
       sentAt: DateTime.now().toUtc().toIso8601String(),
-      nonceB64: sealed.nonceB64,
-      ciphertextB64: sealed.ciphertextB64,
+      ratchet: sealed.ratchet,
+      x3dh: x3dh,
+      nonceB64: base64Encode(sealed.nonce),
+      ciphertextB64: base64Encode(sealed.ciphertext),
+      blobId: blobId,
     );
+  }
+
+  /// Decrypt an incoming envelope on the sender's session, establishing a
+  /// responder session from the envelope's x3dh block when needed. Returns
+  /// null (drop silently) for anything that doesn't verify.
+  Future<String?> _openEnvelope(Envelope envelope) async {
+    final adPrefix =
+        'zeon/v2|${envelope.from}|${envelope.to}|${envelope.type}';
+    final header = envelope.ratchet.cast<String, dynamic>();
+    final nonce = Uint8List.fromList(base64Decode(envelope.nonceB64));
+    final ciphertext =
+        Uint8List.fromList(base64Decode(envelope.ciphertextB64));
+    final block =
+        X3dhBlock.fromJson(envelope.x3dh?.cast<String, dynamic>());
+    final session = await _loadSession(envelope.from);
+
+    if (session != null) {
+      // Simultaneous add: both sides initiated. The lower Zeon ID's session
+      // wins deterministically; if theirs wins, skip ours and adopt below.
+      final theirsWins = block != null &&
+          !session.confirmed &&
+          session.initiatedByUs &&
+          envelope.from.compareTo(app.zeonId!) < 0;
+      if (!theirsWins) {
+        final plain = session.decrypt(header, nonce, ciphertext, adPrefix);
+        if (plain != null) {
+          await _saveSession(session);
+          return plain;
+        }
+        if (block == null) return null; // forged/undecryptable — drop
+        // fall through: maybe a fresh prekey message replacing a stale session
+      }
+    }
+    if (block == null) return null;
+
+    // The identity key in the block must commit to the claimed sender.
+    if (!app.crypto.pubkeyMatchesId(block.ikB64, envelope.from)) return null;
+    final spkRow = await app.db.prekeyById(block.spkId, 'spk');
+    if (spkRow == null) return null; // rotated away — sender will re-encrypt
+    Map<String, Object?>? opkRow;
+    if (block.opkId != null) {
+      opkRow = await app.db.prekeyById(block.opkId!, 'opk');
+      if (opkRow == null) return null; // already consumed — replay
+    }
+    final fresh = RatchetSession.respond(
+      app.crypto,
+      envelope.from,
+      Uint8List.fromList(base64Decode(block.ikB64)),
+      block,
+      spkPub: Uint8List.fromList(base64Decode(spkRow['pub'] as String)),
+      spkSec: Uint8List.fromList(base64Decode(spkRow['sec'] as String)),
+      opkSec: opkRow == null
+          ? null
+          : Uint8List.fromList(base64Decode(opkRow['sec'] as String)),
+    );
+    final plain = fresh.decrypt(header, nonce, ciphertext, adPrefix);
+    if (plain == null) return null;
+    if (block.opkId != null) {
+      await app.db.deletePrekey(block.opkId!); // one-time means one time
+    }
+    await _saveSession(fresh); // replaces any prior session with this peer
+    return plain;
+  }
+
+  // -- prekey publishing -----------------------------------------------------------
+
+  static const _opkTarget = 32;
+  static const _spkRotateMs = 7 * 24 * 3600 * 1000;
+
+  /// Keep our mailbox stocked with public prekeys so peers can start
+  /// forward-secret sessions while we're offline. Called on every mailbox
+  /// connect; re-seeds from scratch when the mailbox lost its store
+  /// (recreated VM).
+  Future<void> publishPrekeys() async {
+    final address = mailboxAddress;
+    final token = mailboxToken;
+    if (address == null || token == null) return;
+
+    var spkRow = await app.db.currentSpk();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (spkRow == null || now - (spkRow['created_at'] as int) > _spkRotateMs) {
+      final kp = app.crypto.newX25519();
+      final sec = kp.secretKey.extractBytes();
+      kp.secretKey.dispose();
+      final id = await app.db.insertPrekey(
+          'spk', base64Encode(kp.publicKey), base64Encode(sec));
+      await app.db.pruneSpks();
+      spkRow = await app.db.prekeyById(id, 'spk');
+    }
+
+    final existing = await app.db.opks();
+    for (var i = existing.length; i < _opkTarget; i++) {
+      final kp = app.crypto.newX25519();
+      final sec = kp.secretKey.extractBytes();
+      kp.secretKey.dispose();
+      await app.db
+          .insertPrekey('opk', base64Encode(kp.publicKey), base64Encode(sec));
+    }
+
+    final status = await mailboxPrekeyStatus(address);
+    if (status != null && !status.spk) {
+      await app.db.markAllPrekeysUnpublished();
+    }
+    final toPublish = await app.db.opks(unpublishedOnly: true);
+    final spkPubBytes =
+        Uint8List.fromList(base64Decode(spkRow!['pub'] as String));
+    await uploadPrekeys(
+      address,
+      token,
+      {
+        'id': spkRow['id'],
+        'pub': spkRow['pub'],
+        'sig': base64Encode(app.crypto.signPrekey(spkPubBytes)),
+      },
+      [
+        for (final o in toPublish) {'id': o['id'], 'pub': o['pub']}
+      ],
+    );
+    await app.db
+        .markPrekeysPublished([for (final o in toPublish) o['id'] as int]);
   }
 
   /// Resolve + deliver to a group member (same trust-but-verify as contacts).
@@ -211,7 +401,7 @@ class ChatState extends ChangeNotifier {
 
     await _deliver(
       contact,
-      _seal(EnvelopeType.contactRequest, contact,
+      await _seal(EnvelopeType.contactRequest, contact,
           {'display_name': app.displayName}),
     );
     return contact;
@@ -223,7 +413,7 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
     await _deliver(
       contact,
-      _seal(EnvelopeType.contactAccept, contact,
+      await _seal(EnvelopeType.contactAccept, contact,
           {'display_name': app.displayName}),
     );
   }
@@ -287,7 +477,10 @@ class ChatState extends ChangeNotifier {
     for (final m in members.where((m) => m.zeonId != app.zeonId)) {
       try {
         await _deliverToMember(
-            m, _sealFor(EnvelopeType.groupCreate, m.zeonId, m.pubkeyB64, payload));
+            m,
+            await _sealFor(EnvelopeType.groupCreate, m.zeonId, m.pubkeyB64,
+                payload,
+                serverAddress: m.serverAddress));
       } catch (_) {
         // unreachable member hears about the group via the next groupUpdate
         // or message retry; v1 accepts eventual delivery
@@ -325,8 +518,9 @@ class ChatState extends ChangeNotifier {
         // so ids never collide, and both mailbox and receiver dedupe retries.
         await _deliverToMember(
           member,
-          _sealFor(EnvelopeType.groupMsg, member.zeonId, member.pubkeyB64,
-              payload, envelopeId: message.id),
+          await _sealFor(EnvelopeType.groupMsg, member.zeonId,
+              member.pubkeyB64, payload,
+              envelopeId: message.id, serverAddress: member.serverAddress),
         );
         await app.db.clearOutbox(message.id, member.zeonId);
       } catch (_) {
@@ -349,8 +543,9 @@ class ChatState extends ChangeNotifier {
       try {
         await _deliverToMember(
             m,
-            _sealFor(EnvelopeType.groupLeave, m.zeonId, m.pubkeyB64,
-                {'group_id': group.id}));
+            await _sealFor(EnvelopeType.groupLeave, m.zeonId, m.pubkeyB64,
+                {'group_id': group.id},
+                serverAddress: m.serverAddress));
       } catch (_) {}
     }
     await app.db.deleteGroup(group.id);
@@ -417,7 +612,7 @@ class ChatState extends ChangeNotifier {
       {String? mime}) async {
     try {
       final envelope = message.kind == MessageKind.text
-          ? _sealMessage(contact, message)
+          ? await _sealMessage(contact, message)
           : await _sealMedia(contact, message, mime: mime);
       await _deliver(contact, envelope);
       message.status = MessageStatus.sent;
@@ -446,20 +641,9 @@ class ChatState extends ChangeNotifier {
       'size': bytes.length,
       if (message.durationMs != null) 'duration_ms': message.durationMs,
     };
-    final sealed = app.crypto
-        .encrypt(jsonEncode(payload), base64Decode(contact.pubkeyB64));
-    return Envelope(
-      id: message.id,
-      type: EnvelopeType.media,
-      from: app.zeonId!,
-      to: contact.zeonId,
-      sentAt: DateTime.fromMillisecondsSinceEpoch(message.sentAt)
-          .toUtc()
-          .toIso8601String(),
-      nonceB64: sealed.nonceB64,
-      ciphertextB64: sealed.ciphertextB64,
-      blobId: blobId,
-    );
+    return _sealFor(EnvelopeType.media, contact.zeonId, contact.pubkeyB64,
+        payload,
+        envelopeId: message.id, serverAddress: address, blobId: blobId);
   }
 
   static String _mimeFromPath(String path) => switch (p.extension(path)) {
@@ -478,22 +662,12 @@ class ChatState extends ChangeNotifier {
         _ => '.bin',
       };
 
-  Envelope _sealMessage(Contact contact, Message message) {
-    final sealed = app.crypto
-        .encrypt(jsonEncode({'text': message.text}), base64Decode(contact.pubkeyB64));
-    return Envelope(
-      id: message.id, // envelope id == message id → dedupe on the other side
-      type: EnvelopeType.msg,
-      from: app.zeonId!,
-      to: contact.zeonId,
-      sentAt:
-          DateTime.fromMillisecondsSinceEpoch(message.sentAt, isUtc: false)
-              .toUtc()
-              .toIso8601String(),
-      nonceB64: sealed.nonceB64,
-      ciphertextB64: sealed.ciphertextB64,
-    );
-  }
+  Future<Envelope> _sealMessage(Contact contact, Message message) =>
+      _sealFor(EnvelopeType.msg, contact.zeonId, contact.pubkeyB64,
+          {'text': message.text},
+          // envelope id == message id → dedupe on the other side
+          envelopeId: message.id,
+          serverAddress: contact.serverAddress);
 
   /// Re-attempt everything in the pending outbox (app resume, reconnect, …).
   Future<void> retryPending() async {
@@ -504,7 +678,7 @@ class ChatState extends ChangeNotifier {
       try {
         await _deliver(
           contact,
-          _seal(EnvelopeType.contactRequest, contact,
+          await _seal(EnvelopeType.contactRequest, contact,
               {'display_name': app.displayName}),
         );
       } catch (_) {
@@ -547,40 +721,32 @@ class ChatState extends ChangeNotifier {
     if (envelope.to != app.zeonId) return;
 
     var contact = contactById(envelope.from);
-    // Sender's pubkey: known contact → known group member → directory.
-    String? knownPubkeyB64 = contact?.pubkeyB64;
-    if (knownPubkeyB64 == null) {
-      for (final members in groupMembers.values) {
-        for (final m in members) {
-          if (m.zeonId == envelope.from) {
-            knownPubkeyB64 = m.pubkeyB64;
-            break;
-          }
-        }
-      }
-    }
-    final senderEntry =
-        knownPubkeyB64 == null ? await _resolveOrNull(envelope.from) : null;
-    knownPubkeyB64 ??= senderEntry?.pubkeyB64;
-    if (knownPubkeyB64 == null) return; // unresolvable sender — drop
-    final senderPubkey = Uint8List.fromList(base64Decode(knownPubkeyB64));
 
-    final plaintext = app.crypto
-        .decrypt(envelope.nonceB64, envelope.ciphertextB64, senderPubkey);
-    if (plaintext == null) return; // forged or corrupted — drop silently
+    // Decryption is the authentication: the session (or the x3dh block's
+    // commitment-verified identity key) proves the sender holds the `from`
+    // ID's private key.
+    final plaintext = await _openEnvelope(envelope);
+    if (plaintext == null) return; // forged, corrupted, or no session — drop
 
     final payload = jsonDecode(plaintext) as Map<String, dynamic>;
 
     switch (envelope.type) {
       case EnvelopeType.contactRequest:
         if (contact != null) return; // duplicate request
+        // Identity key: the (already commitment-verified) x3dh block if this
+        // was a session-opening message, else the directory. Handle is
+        // directory-only, best-effort.
+        final senderEntry = await _resolveOrNull(envelope.from);
+        final pubkeyB64 =
+            (envelope.x3dh?['ik'] as String?) ?? senderEntry?.pubkeyB64;
+        if (pubkeyB64 == null) return; // unresolvable sender — drop
         contact = Contact(
           zeonId: envelope.from,
           displayName: (payload['display_name'] as String?) ??
               senderEntry?.handle ??
               envelope.from.substring(3, 12),
           handle: senderEntry?.handle,
-          pubkeyB64: base64Encode(senderPubkey),
+          pubkeyB64: pubkeyB64,
           status: ContactStatus.pendingIn,
           createdAt: DateTime.now().millisecondsSinceEpoch,
         );

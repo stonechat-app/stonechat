@@ -1,12 +1,18 @@
-"""End-to-end test of the Zeon stack, no Flutter needed.
+"""End-to-end test of the Zeon stack (protocol v2), no Flutter needed.
 
-Simulates two phones (Alice, Bob) with PyNaCl (same libsodium primitives the
-app uses): register → provision local-Docker relays → contact handshake →
-message → ack → verify the relay queue is empty → destroy relays.
+Simulates phones with PyNaCl (same libsodium primitives the app uses):
+register → provision local-Docker relays → publish prekeys → X3DH contact
+handshake → double-ratchet messages → ack → forward-secrecy proof → destroy.
+
+The X3DH + double-ratchet implementation below mirrors PROTOCOL.md "Session
+crypto" constant-for-constant; it doubles as the reference implementation the
+Dart client must interoperate with.
 """
 
 import asyncio
 import base64
+import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -16,8 +22,14 @@ from datetime import datetime, timezone
 
 import httpx
 import websockets
-from nacl.public import Box, PrivateKey, PublicKey
+from nacl.bindings import (
+    crypto_aead_xchacha20poly1305_ietf_decrypt,
+    crypto_aead_xchacha20poly1305_ietf_encrypt,
+    crypto_scalarmult,
+)
+from nacl.public import PrivateKey
 from nacl.secret import SecretBox
+from nacl.signing import SigningKey, VerifyKey
 from nacl.utils import random as nacl_random
 
 import os
@@ -27,14 +39,120 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]
 from app.identity import zeon_id_from_pubkey  # noqa: E402
 
 
+# -- session crypto (PROTOCOL.md v2) ------------------------------------------
+
+X3DH_KDF_KEY = b"zeon-v2-x3dh-kdf"
+SPK_SIG_CONTEXT = b"zeon-v2-spk"
+MAX_SKIP = 256
+
+
+def H(msg: bytes, key: bytes, n: int) -> bytes:
+    return hashlib.blake2b(msg, key=key, digest_size=n).digest()
+
+
+def kdf_rk(rk: bytes, dh: bytes) -> tuple[bytes, bytes]:
+    out = H(dh, rk, 64)
+    return out[:32], out[32:]
+
+
+def kdf_ck(ck: bytes) -> tuple[bytes, bytes]:
+    return H(b"\x01", ck, 32), H(b"\x02", ck, 32)  # (mk, ck')
+
+
+def b64(b: bytes) -> str:
+    return base64.b64encode(b).decode()
+
+
+def unb64(s: str) -> bytes:
+    return base64.b64decode(s)
+
+
+def ad_for(envelope: dict) -> bytes:
+    r = envelope["ratchet"]
+    return (
+        f"zeon/v2|{envelope['from']}|{envelope['to']}|{envelope['type']}"
+        f"|{r['dh']}|{r['pn']}|{r['n']}"
+    ).encode()
+
+
+def session_encrypt(state: dict, plaintext: bytes, meta: dict) -> dict:
+    """meta = {from,to,type}. Returns ratchet/nonce/ciphertext fields."""
+    mk, state["cks"] = kdf_ck(state["cks"])
+    header = {"dh": b64(state["dhs_pub"]), "pn": state["pn"], "n": state["ns"]}
+    state["ns"] += 1
+    nonce = nacl_random(24)
+    ad = (
+        f"zeon/v2|{meta['from']}|{meta['to']}|{meta['type']}"
+        f"|{header['dh']}|{header['pn']}|{header['n']}"
+    ).encode()
+    ct = crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, ad, nonce, mk)
+    return {"ratchet": header, "nonce": b64(nonce), "ciphertext": b64(ct)}
+
+
+def _skip_keys(state: dict, until: int) -> None:
+    if state["nr"] + MAX_SKIP < until:
+        raise ValueError("gap too large")
+    if state["ckr"] is None:
+        if state["nr"] < until:
+            raise ValueError("no receive chain")
+        return
+    dh_b64 = b64(state["dhr"])
+    while state["nr"] < until:
+        mk, state["ckr"] = kdf_ck(state["ckr"])
+        state["skipped"][(dh_b64, state["nr"])] = mk
+        state["nr"] += 1
+
+
+def _dh_ratchet(state: dict, header_dh: bytes) -> None:
+    state["pn"], state["ns"], state["nr"] = state["ns"], 0, 0
+    state["dhr"] = header_dh
+    state["rk"], state["ckr"] = kdf_rk(
+        state["rk"], crypto_scalarmult(state["dhs_priv"], header_dh))
+    fresh = PrivateKey.generate()
+    state["dhs_priv"], state["dhs_pub"] = bytes(fresh), bytes(fresh.public_key)
+    state["rk"], state["cks"] = kdf_rk(
+        state["rk"], crypto_scalarmult(state["dhs_priv"], header_dh))
+
+
+def session_decrypt(state: dict, envelope: dict) -> bytes:
+    """Mutates state on success; raises on failure (caller uses a copy)."""
+    header = envelope["ratchet"]
+    ad = ad_for(envelope)
+    nonce, ct = unb64(envelope["nonce"]), unb64(envelope["ciphertext"])
+    skipped_mk = state["skipped"].pop((header["dh"], header["n"]), None)
+    if skipped_mk is not None:
+        plain = crypto_aead_xchacha20poly1305_ietf_decrypt(ct, ad, nonce, skipped_mk)
+    else:
+        header_dh = unb64(header["dh"])
+        if state["dhr"] is None or header_dh != state["dhr"]:
+            _skip_keys(state, header["pn"])
+            _dh_ratchet(state, header_dh)
+        _skip_keys(state, header["n"])
+        mk, state["ckr"] = kdf_ck(state["ckr"])
+        state["nr"] += 1
+        plain = crypto_aead_xchacha20poly1305_ietf_decrypt(ct, ad, nonce, mk)
+    state["confirmed"] = True
+    state["pending_x3dh"] = None
+    return plain
+
+
+# -- a simulated phone -----------------------------------------------------------
+
+
 class Phone:
     def __init__(self, name):
         self.name = name
-        self.key = PrivateKey.generate()
-        self.pubkey_b64 = base64.b64encode(bytes(self.key.public_key)).decode()
+        self.identity = SigningKey.generate()  # Ed25519
+        self.pubkey_b64 = b64(bytes(self.identity.verify_key))
         self.zeon_id = None
         self.token = None
         self.server = None
+        self.sessions = {}  # peer zeon_id -> ratchet state dict
+        self.spk = None  # {"id", "priv", "pub"}
+        self.opks = {}  # id -> priv bytes
+        self._next_prekey_id = 1
+
+    # -- control plane -----------------------------------------------------------
 
     def register(self):
         r = httpx.post(f"{CP}/v1/register", json={"pubkey": self.pubkey_b64})
@@ -42,7 +160,7 @@ class Phone:
         data = r.json()
         self.zeon_id, self.token = data["zeon_id"], data["account_token"]
         self.handle = data["handle"]
-        expected = zeon_id_from_pubkey(bytes(self.key.public_key))
+        expected = zeon_id_from_pubkey(bytes(self.identity.verify_key))
         assert self.zeon_id == expected, "server-derived ID != client-derived ID"
         assert self.handle.startswith("zn-"), f"bad handle: {self.handle}"
         print(f"  {self.name}: {self.zeon_id} ({self.handle})")
@@ -77,27 +195,136 @@ class Phone:
             time.sleep(2)
         raise TimeoutError("relay never became running")
 
-    def seal(self, to: "Phone", type_: str, payload: dict, envelope_id=None) -> dict:
-        box = Box(self.key, PublicKey(bytes(to.key.public_key)))
-        sealed = box.encrypt(json.dumps(payload).encode())
-        return {
-            "v": 1,
+    # -- prekeys -------------------------------------------------------------------
+
+    def upload_prekeys(self, opk_count=8):
+        if self.spk is None:
+            kp = PrivateKey.generate()
+            self.spk = {"id": self._next_prekey_id, "priv": bytes(kp),
+                        "pub": bytes(kp.public_key)}
+            self._next_prekey_id += 1
+        new_opks = []
+        for _ in range(opk_count):
+            kp = PrivateKey.generate()
+            self.opks[self._next_prekey_id] = bytes(kp)
+            new_opks.append({"id": self._next_prekey_id, "pub": b64(bytes(kp.public_key))})
+            self._next_prekey_id += 1
+        sig = self.identity.sign(SPK_SIG_CONTEXT + self.spk["pub"]).signature
+        r = httpx.post(
+            f"{self.server['address']}/prekeys",
+            params={"token": self.server["server_token"]},
+            json={"spk": {"id": self.spk["id"], "pub": b64(self.spk["pub"]),
+                          "sig": b64(sig)},
+                  "opks": new_opks},
+        )
+        r.raise_for_status()
+
+    # -- sessions --------------------------------------------------------------------
+
+    def _initiate_session(self, to: "Phone"):
+        """Fetch the peer's bundle from their mailbox, verify, run X3DH."""
+        r = httpx.get(f"{to.server['address']}/prekeys/bundle", timeout=10)
+        r.raise_for_status()
+        bundle = r.json()
+        peer_ed = VerifyKey(unb64(to.pubkey_b64))
+        spk_pub = unb64(bundle["spk"]["pub"])
+        peer_ed.verify(SPK_SIG_CONTEXT + spk_pub, unb64(bundle["spk"]["sig"]))
+
+        ikx_priv = bytes(self.identity.to_curve25519_private_key())
+        peer_ikx = bytes(peer_ed.to_curve25519_public_key())
+        ek = PrivateKey.generate()
+        dhs = [
+            crypto_scalarmult(ikx_priv, spk_pub),
+            crypto_scalarmult(bytes(ek), peer_ikx),
+            crypto_scalarmult(bytes(ek), spk_pub),
+        ]
+        opk = bundle.get("opk")
+        if opk:
+            dhs.append(crypto_scalarmult(bytes(ek), unb64(opk["pub"])))
+        sk = H(b"".join(dhs), X3DH_KDF_KEY, 32)
+
+        ratchet = PrivateKey.generate()
+        rk, cks = kdf_rk(sk, crypto_scalarmult(bytes(ratchet), spk_pub))
+        self.sessions[to.zeon_id] = {
+            "rk": rk, "dhs_priv": bytes(ratchet), "dhs_pub": bytes(ratchet.public_key),
+            "dhr": spk_pub, "cks": cks, "ckr": None,
+            "ns": 0, "nr": 0, "pn": 0, "skipped": {}, "confirmed": False,
+            "pending_x3dh": {
+                "ik": self.pubkey_b64,
+                "ek": b64(bytes(ek.public_key)),
+                "spk_id": bundle["spk"]["id"],
+                **({"opk_id": opk["id"]} if opk else {}),
+            },
+        }
+
+    def _respond_session(self, envelope: dict):
+        """Responder X3DH from an initial envelope's x3dh block."""
+        block = envelope["x3dh"]
+        sender_ed = VerifyKey(unb64(block["ik"]))
+        assert zeon_id_from_pubkey(bytes(sender_ed)) == envelope["from"], \
+            "x3dh identity key must commit to the sender's Zeon ID"
+        assert block["spk_id"] == self.spk["id"]
+        ek_pub = unb64(block["ek"])
+        sender_ikx = bytes(sender_ed.to_curve25519_public_key())
+        my_ikx = bytes(self.identity.to_curve25519_private_key())
+        dhs = [
+            crypto_scalarmult(self.spk["priv"], sender_ikx),
+            crypto_scalarmult(my_ikx, ek_pub),
+            crypto_scalarmult(self.spk["priv"], ek_pub),
+        ]
+        opk_id = block.get("opk_id")
+        if opk_id is not None:
+            dhs.append(crypto_scalarmult(self.opks[opk_id], ek_pub))
+        sk = H(b"".join(dhs), X3DH_KDF_KEY, 32)
+        state = {
+            "rk": sk, "dhs_priv": self.spk["priv"], "dhs_pub": self.spk["pub"],
+            "dhr": None, "cks": None, "ckr": None,
+            "ns": 0, "nr": 0, "pn": 0, "skipped": {}, "confirmed": True,
+            "pending_x3dh": None,
+        }
+        return state, opk_id
+
+    def seal(self, to: "Phone", type_: str, payload: dict,
+             envelope_id=None, blob_id=None) -> dict:
+        if to.zeon_id not in self.sessions:
+            self._initiate_session(to)
+        state = self.sessions[to.zeon_id]
+        meta = {"from": self.zeon_id, "to": to.zeon_id, "type": type_}
+        sealed = session_encrypt(state, json.dumps(payload).encode(), meta)
+        envelope = {
+            "v": 2,
             "id": envelope_id or str(uuid.uuid4()),
             "type": type_,
             "from": self.zeon_id,
             "to": to.zeon_id,
             "sent_at": datetime.now(timezone.utc).isoformat(),
-            "nonce": base64.b64encode(sealed.nonce).decode(),
-            "ciphertext": base64.b64encode(sealed.ciphertext).decode(),
+            **sealed,
         }
+        if state["pending_x3dh"]:
+            envelope["x3dh"] = state["pending_x3dh"]
+        if blob_id:
+            envelope["blob_id"] = blob_id
+        return envelope
 
     def open_envelope(self, envelope: dict, sender: "Phone") -> dict:
-        box = Box(self.key, PublicKey(bytes(sender.key.public_key)))
-        plain = box.decrypt(
-            base64.b64decode(envelope["ciphertext"]),
-            base64.b64decode(envelope["nonce"]),
-        )
+        state = self.sessions.get(envelope["from"])
+        if state is not None:
+            try:
+                trial = copy.deepcopy(state)
+                plain = session_decrypt(trial, envelope)
+                self.sessions[envelope["from"]] = trial
+                return json.loads(plain)
+            except Exception:
+                if "x3dh" not in envelope:
+                    raise
+        fresh, opk_id = self._respond_session(envelope)
+        plain = session_decrypt(fresh, envelope)
+        if opk_id is not None:
+            del self.opks[opk_id]  # one-time means one time
+        self.sessions[envelope["from"]] = fresh
         return json.loads(plain)
+
+    # -- transport --------------------------------------------------------------------
 
     def deliver_to(self, to: "Phone", envelope: dict):
         r = httpx.post(f"{to.server['address']}/inbox", json=envelope, timeout=10)
@@ -151,6 +378,14 @@ def main():
     bob.provision()
     alice.wait_running()
     bob.wait_running()
+
+    print("3a) publish prekeys — mailboxes serve public halves only")
+    alice.upload_prekeys()
+    bob.upload_prekeys()
+    health = httpx.get(f"{bob.server['address']}/health").json()
+    assert health["prekeys"]["spk"] is True
+    opks_before = health["prekeys"]["opks"]
+    assert opks_before == 8
 
     print("3b) fleet provider: container-per-user on a shared host")
     carol = Phone("carol")
@@ -208,7 +443,8 @@ def main():
         dave.server = {"address": dave_address, "server_token": dave_token,
                        "status": "running"}
 
-        # and he's a full participant: alice delivers, dave receives
+        # and he's a full participant: prekeys up, alice delivers, dave receives
+        dave.upload_prekeys()
         alice.deliver_to(dave, alice.seal(dave, "msg", {"text": "hi dave"}))
         got = asyncio.run(dave.receive_one())
         assert dave.open_envelope(got, alice) == {"text": "hi dave"}
@@ -229,15 +465,21 @@ def main():
     )
     assert r.status_code == 409, f"expected 409, got {r.status_code}"
 
-    print("5) contact handshake")
-    alice.deliver_to(bob, alice.seal(bob, "contact_request", {"display_name": "Alice"}))
+    print("5) contact handshake = X3DH prekey message")
+    request_env = alice.seal(bob, "contact_request", {"display_name": "Alice"})
+    assert "x3dh" in request_env, "initial envelope must carry the x3dh block"
+    assert "opk_id" in request_env["x3dh"], "bundle had one-time prekeys"
+    alice.deliver_to(bob, request_env)
     req = asyncio.run(bob.receive_one())
     assert req["type"] == "contact_request"
     assert bob.open_envelope(req, alice) == {"display_name": "Alice"}
+    used_opk = request_env["x3dh"]["opk_id"]
+    assert used_opk not in bob.opks, "one-time prekey private must be consumed"
 
     bob.deliver_to(alice, bob.seal(alice, "contact_accept", {"display_name": "Bob"}))
     acc = asyncio.run(alice.receive_one())
     assert alice.open_envelope(acc, bob) == {"display_name": "Bob"}
+    assert alice.sessions[bob.zeon_id]["confirmed"], "round trip confirms the session"
 
     print("5b) group wire format: create + message, key commitments verify")
     group_id = str(uuid.uuid4())
@@ -263,13 +505,53 @@ def main():
     assert bob.open_envelope(gm, alice) == {"group_id": group_id, "text": "hi crew"}
 
     print("6) message + delete-on-ack")
-    alice.deliver_to(bob, alice.seal(bob, "msg", {"text": "hello from my own relay"}))
+    first_env = alice.seal(bob, "msg", {"text": "hello from my own relay"})
+    alice.deliver_to(bob, first_env)
     msg = asyncio.run(bob.receive_one())
     assert bob.open_envelope(msg, alice) == {"text": "hello from my own relay"}
     time.sleep(0.5)
     assert bob.queue_depth() == 0, "envelope should be deleted after ack"
 
-    print("6b) media blob: upload → envelope → download → decrypt → ack-deletes")
+    print("6a) forward secrecy: the ratchet turns and old keys die")
+    # a reply turns the DH ratchet…
+    bob.deliver_to(alice, bob.seal(alice, "msg", {"text": "roger"}))
+    asyncio.run(alice.receive_one(process=lambda e: alice.open_envelope(e, bob)))
+    later_env = alice.seal(bob, "msg", {"text": "post-ratchet"})
+    assert later_env["ratchet"]["dh"] != first_env["ratchet"]["dh"], \
+        "sender ratchet key must rotate after a round trip"
+    alice.deliver_to(bob, later_env)
+    asyncio.run(bob.receive_one(process=lambda e: bob.open_envelope(e, alice)))
+    # …and bob's CURRENT session state cannot decrypt the recorded envelope 6:
+    # the message key that sealed it was deleted on use. This is the property
+    # v1 lacked — compromise-now does not decrypt recorded-then.
+    compromised = copy.deepcopy(bob.sessions[alice.zeon_id])
+    try:
+        session_decrypt(compromised, first_env)
+        raise AssertionError("old ciphertext decrypted from current state — no FS!")
+    except AssertionError:
+        raise
+    except Exception:
+        pass  # expected: key material for that message no longer exists
+
+    print("6b) v1 envelopes are rejected outright")
+    v1_env = {
+        "v": 1, "id": str(uuid.uuid4()), "type": "msg",
+        "from": alice.zeon_id, "to": bob.zeon_id,
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+        "nonce": b64(nacl_random(24)), "ciphertext": b64(nacl_random(64)),
+    }
+    r = httpx.post(f"{bob.server['address']}/inbox", json=v1_env)
+    assert r.status_code == 400, f"expected 400 for v1 envelope, got {r.status_code}"
+
+    print("6c) one-time prekeys are consumed server-side")
+    ids = set()
+    for _ in range(2):
+        b = httpx.get(f"{bob.server['address']}/prekeys/bundle").json()
+        assert b["opk"] is not None
+        ids.add(b["opk"]["id"])
+    assert len(ids) == 2, "each bundle fetch must consume a distinct OPK"
+
+    print("6d) media blob: upload → envelope → download → decrypt → ack-deletes")
     photo = nacl_random(200_000)  # stand-in for an encrypted JPEG
     blob_key, blob_nonce = nacl_random(32), nacl_random(24)
     sealed_blob = SecretBox(blob_key).encrypt(photo, blob_nonce).ciphertext
@@ -282,8 +564,7 @@ def main():
         "key": base64.b64encode(blob_key).decode(),
         "blob_nonce": base64.b64encode(blob_nonce).decode(),
         "mime": "image/jpeg", "kind": "image", "size": len(photo),
-    })
-    media_env["blob_id"] = blob_id
+    }, blob_id=blob_id)
     alice.deliver_to(bob, media_env)
 
     recovered_holder = {}
@@ -340,7 +621,8 @@ def main():
             seen = any(p["device_token"] == "e2e-test-token-bob" for p in pings)
             time.sleep(0.5)
         assert seen, "gateway never received the wake-up ping"
-        asyncio.run(bob.receive_one())  # drain before teardown
+        asyncio.run(bob.receive_one(
+            process=lambda e: bob.open_envelope(e, alice)))  # drain before teardown
 
     print("9) destroy relays")
     alice.destroy()

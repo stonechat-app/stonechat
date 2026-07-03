@@ -2,7 +2,9 @@
 
 Runs on a VM the user owns. Stores only opaque encrypted envelopes addressed
 to its owner and deletes each one the moment the owner's device acks it.
-Plaintext never exists here.
+Plaintext never exists here. It also serves the owner's PUBLIC prekeys
+(PROTOCOL.md "Prekeys") so peers can start forward-secret sessions while the
+owner is offline — private halves never leave the owner's phone.
 
 Config (env):
     ZEON_OWNER_ID     Zeon ID of the owner (the only valid recipient)
@@ -38,12 +40,45 @@ MAX_QUEUE_DEPTH = 10_000
 MAX_BLOB_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BLOB_BYTES = 500 * 1024 * 1024
 BLOB_TTL_SECONDS = 14 * 24 * 3600
+MAX_OPKS = 256
 ENVELOPE_TYPES = {
     "msg", "media", "contact_request", "contact_accept",
     "group_create", "group_update", "group_msg", "group_leave",
 }
-REQUIRED_FIELDS = {"v", "id", "type", "from", "to", "sent_at", "nonce", "ciphertext"}
+REQUIRED_FIELDS = {"v", "id", "type", "from", "to", "sent_at", "ratchet", "nonce", "ciphertext"}
 BLOB_ID_RE = re.compile(r"^[a-f0-9-]{36}$")
+
+
+def validate_envelope(envelope: dict) -> None:
+    """Shape checks only — the ciphertext stays opaque. Raises HTTPException."""
+    if not isinstance(envelope, dict) or not REQUIRED_FIELDS.issubset(envelope):
+        raise HTTPException(400, "missing fields")
+    if envelope["v"] != 2:
+        raise HTTPException(400, "unsupported protocol version (v2 only)")
+    if envelope["type"] not in ENVELOPE_TYPES:
+        raise HTTPException(400, "unknown envelope type")
+    ratchet = envelope["ratchet"]
+    if not (
+        isinstance(ratchet, dict)
+        and isinstance(ratchet.get("dh"), str)
+        and isinstance(ratchet.get("pn"), int) and ratchet["pn"] >= 0
+        and isinstance(ratchet.get("n"), int) and ratchet["n"] >= 0
+    ):
+        raise HTTPException(400, "bad ratchet header")
+    x3dh = envelope.get("x3dh")
+    if x3dh is not None and not (
+        isinstance(x3dh, dict)
+        and isinstance(x3dh.get("ik"), str)
+        and isinstance(x3dh.get("ek"), str)
+        and isinstance(x3dh.get("spk_id"), int)
+        and (x3dh.get("opk_id") is None or isinstance(x3dh["opk_id"], int))
+    ):
+        raise HTTPException(400, "bad x3dh block")
+    blob_id = envelope.get("blob_id")
+    if blob_id is not None and (
+        not isinstance(blob_id, str) or not BLOB_ID_RE.match(blob_id)
+    ):
+        raise HTTPException(400, "bad blob_id")
 
 log = logging.getLogger("zeon.server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -67,7 +102,73 @@ class Mailbox:
             "  device_token TEXT NOT NULL,"
             "  platform TEXT NOT NULL)"
         )
+        # Public prekeys (PROTOCOL.md). Private halves never reach this box.
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS signed_prekey ("
+            "  row INTEGER PRIMARY KEY CHECK (row = 1),"
+            "  id INTEGER NOT NULL,"
+            "  pub TEXT NOT NULL,"
+            "  sig TEXT NOT NULL)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS one_time_prekeys ("
+            "  id INTEGER PRIMARY KEY,"
+            "  pub TEXT NOT NULL)"
+        )
         self._db.commit()
+
+    def set_prekeys(self, spk: dict, opks: list[dict]) -> None:
+        """Owner upload: replace the SPK, merge OPKs by id (cap MAX_OPKS)."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO signed_prekey (row, id, pub, sig) VALUES (1, ?, ?, ?)"
+                " ON CONFLICT(row) DO UPDATE SET id=excluded.id,"
+                " pub=excluded.pub, sig=excluded.sig",
+                (spk["id"], spk["pub"], spk["sig"]),
+            )
+            for opk in opks:
+                count = self._db.execute(
+                    "SELECT COUNT(*) FROM one_time_prekeys"
+                ).fetchone()[0]
+                if count >= MAX_OPKS:
+                    break
+                self._db.execute(
+                    "INSERT OR IGNORE INTO one_time_prekeys (id, pub) VALUES (?, ?)",
+                    (opk["id"], opk["pub"]),
+                )
+            self._db.commit()
+
+    def take_bundle(self) -> dict | None:
+        """The prekey bundle for a sender starting a session. Consumes the
+        returned one-time prekey — each is handed out at most once."""
+        with self._lock:
+            spk = self._db.execute(
+                "SELECT id, pub, sig FROM signed_prekey WHERE row = 1"
+            ).fetchone()
+            if spk is None:
+                return None
+            opk = self._db.execute(
+                "SELECT id, pub FROM one_time_prekeys ORDER BY id LIMIT 1"
+            ).fetchone()
+            if opk:
+                self._db.execute(
+                    "DELETE FROM one_time_prekeys WHERE id = ?", (opk[0],)
+                )
+            self._db.commit()
+        return {
+            "spk": {"id": spk[0], "pub": spk[1], "sig": spk[2]},
+            "opk": {"id": opk[0], "pub": opk[1]} if opk else None,
+        }
+
+    def prekey_status(self) -> dict:
+        with self._lock:
+            has_spk = self._db.execute(
+                "SELECT COUNT(*) FROM signed_prekey"
+            ).fetchone()[0] > 0
+            opks = self._db.execute(
+                "SELECT COUNT(*) FROM one_time_prekeys"
+            ).fetchone()[0]
+        return {"spk": has_spk, "opks": opks}
 
     def set_push_config(self, device_token: str, platform: str) -> None:
         with self._lock:
@@ -216,7 +317,44 @@ app = FastAPI(title="zeon-routing-server", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
-    return {"owner": OWNER_ID, "status": "ok", "queued": mailbox.depth()}
+    return {
+        "owner": OWNER_ID,
+        "status": "ok",
+        "queued": mailbox.depth(),
+        "prekeys": mailbox.prekey_status(),
+    }
+
+
+@app.post("/prekeys")
+async def upload_prekeys(request: Request, token: str = ""):
+    if token != OWNER_TOKEN:
+        raise HTTPException(401, "owner only")
+    raw = await request.body()
+    if len(raw) > MAX_ENVELOPE_BYTES:
+        raise HTTPException(413, "too large")
+    try:
+        body = json.loads(raw)
+        spk, opks = body["spk"], body.get("opks", [])
+        assert isinstance(spk["id"], int)
+        assert isinstance(spk["pub"], str) and isinstance(spk["sig"], str)
+        assert isinstance(opks, list) and len(opks) <= MAX_OPKS
+        assert all(
+            isinstance(o["id"], int) and isinstance(o["pub"], str) for o in opks
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, AssertionError):
+        raise HTTPException(400, "expected {spk: {id, pub, sig}, opks: [{id, pub}]}")
+    mailbox.set_prekeys(spk, opks)
+    return {"status": "ok", "prekeys": mailbox.prekey_status()}
+
+
+@app.get("/prekeys/bundle")
+async def prekey_bundle():
+    """Anyone may start a session (like /inbox). Consumes the returned OPK;
+    a drained pool returns opk=null and senders fall back to 3-DH."""
+    bundle = mailbox.take_bundle()
+    if bundle is None:
+        raise HTTPException(404, "owner has not published prekeys yet")
+    return bundle
 
 
 @app.post("/inbox")
@@ -228,17 +366,9 @@ async def inbox(request: Request):
         envelope = json.loads(raw)
     except json.JSONDecodeError:
         raise HTTPException(400, "not json")
-    if not isinstance(envelope, dict) or not REQUIRED_FIELDS.issubset(envelope):
-        raise HTTPException(400, "missing fields")
-    if envelope["type"] not in ENVELOPE_TYPES:
-        raise HTTPException(400, "unknown envelope type")
+    validate_envelope(envelope)
     if envelope["to"] != OWNER_ID:
         raise HTTPException(403, "not this mailbox's owner")
-    blob_id = envelope.get("blob_id")
-    if blob_id is not None and (
-        not isinstance(blob_id, str) or not BLOB_ID_RE.match(blob_id)
-    ):
-        raise HTTPException(400, "bad blob_id")
 
     if not mailbox.put(envelope):
         raise HTTPException(503, "mailbox full")

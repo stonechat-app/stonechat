@@ -15,7 +15,7 @@ class ChatDb {
     final path = p.join(await getDatabasesPath(), 'zeon.db');
     final db = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
           await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
@@ -31,6 +31,10 @@ class ChatDb {
           await db.execute(_createGroups);
           await db.execute(_createGroupMembers);
           await db.execute(_createGroupOutbox);
+        }
+        if (oldVersion < 5) {
+          await db.execute(_createSessions);
+          await db.execute(_createPrekeys);
         }
       },
       onCreate: (db, _) async {
@@ -63,6 +67,8 @@ class ChatDb {
         await db.execute(_createGroups);
         await db.execute(_createGroupMembers);
         await db.execute(_createGroupOutbox);
+        await db.execute(_createSessions);
+        await db.execute(_createPrekeys);
       },
     );
     return ChatDb._(db);
@@ -97,6 +103,29 @@ class ChatDb {
       group_id   TEXT NOT NULL,
       member_id  TEXT NOT NULL,
       PRIMARY KEY (message_id, member_id)
+    )
+  ''';
+
+  // One forward-secret ratchet session per peer (PROTOCOL.md v2). The state
+  // JSON holds the session's secret keys; it lives beside the plaintext
+  // history it protects, on this phone only.
+  static const _createSessions = '''
+    CREATE TABLE sessions (
+      peer_id TEXT PRIMARY KEY,
+      state   TEXT NOT NULL
+    )
+  ''';
+
+  // Our prekey private halves. Public halves are parked on our mailbox;
+  // `published` tracks which have made it there.
+  static const _createPrekeys = '''
+    CREATE TABLE prekeys (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind       TEXT NOT NULL,      -- 'spk' | 'opk'
+      pub        TEXT NOT NULL,
+      sec        TEXT NOT NULL,
+      published  INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
     )
   ''';
 
@@ -230,5 +259,77 @@ class ChatDb {
         orderBy: 'sent_at DESC',
         limit: 1);
     return rows.isEmpty ? null : Message.fromRow(rows.first);
+  }
+
+  // -- ratchet sessions -------------------------------------------------------
+
+  Future<String?> sessionState(String peerId) async {
+    final rows = await _db.query('sessions',
+        where: 'peer_id = ?', whereArgs: [peerId], limit: 1);
+    return rows.isEmpty ? null : rows.first['state'] as String;
+  }
+
+  Future<void> saveSession(String peerId, String stateJson) async {
+    await _db.insert('sessions', {'peer_id': peerId, 'state': stateJson},
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deleteSession(String peerId) async {
+    await _db.delete('sessions', where: 'peer_id = ?', whereArgs: [peerId]);
+  }
+
+  // -- prekey private halves ----------------------------------------------------
+
+  Future<int> insertPrekey(String kind, String pubB64, String secB64) async {
+    return _db.insert('prekeys', {
+      'kind': kind,
+      'pub': pubB64,
+      'sec': secB64,
+      'published': 0,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<Map<String, Object?>?> prekeyById(int id, String kind) async {
+    final rows = await _db.query('prekeys',
+        where: 'id = ? AND kind = ?', whereArgs: [id, kind], limit: 1);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  /// Newest signed prekey (the one we currently publish).
+  Future<Map<String, Object?>?> currentSpk() async {
+    final rows = await _db.query('prekeys',
+        where: "kind = 'spk'", orderBy: 'id DESC', limit: 1);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  Future<List<Map<String, Object?>>> opks({bool unpublishedOnly = false}) =>
+      _db.query('prekeys',
+          where: unpublishedOnly ? "kind = 'opk' AND published = 0" : "kind = 'opk'",
+          orderBy: 'id');
+
+  Future<void> markPrekeysPublished(List<int> ids) async {
+    if (ids.isEmpty) return;
+    await _db.update('prekeys', {'published': 1},
+        where: 'id IN (${List.filled(ids.length, '?').join(',')})',
+        whereArgs: ids);
+  }
+
+  Future<void> markAllPrekeysUnpublished() async {
+    await _db.update('prekeys', {'published': 0});
+  }
+
+  Future<void> deletePrekey(int id) async {
+    await _db.delete('prekeys', where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Drop retired signed prekeys (keep the newest two: current + previous,
+  /// so in-flight initial messages keep working across a rotation).
+  Future<void> pruneSpks() async {
+    await _db.execute('''
+      DELETE FROM prekeys WHERE kind = 'spk' AND id NOT IN (
+        SELECT id FROM prekeys WHERE kind = 'spk' ORDER BY id DESC LIMIT 2
+      )
+    ''');
   }
 }

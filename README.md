@@ -5,8 +5,11 @@ Privacy-first messaging where **every user runs their own server**.
 - No central message store. Your "relay" is a tiny VM you spin up (GCP, AWS, or
   a local Docker container for dev) whose only job is to hold **end-to-end
   encrypted envelopes** until your phone picks them up — then they're deleted.
+- **Forward secrecy**: X3DH + double ratchet (Signal-style), with prekeys
+  served by your own relay instead of a central server. Every message gets a
+  fresh key; stealing keys today can't decrypt traffic recorded yesterday.
 - Message history lives on your phone only. Uninstall the app and it's gone.
-- No phone number, no email. Your identity is an X25519 keypair generated on
+- No phone number, no email. Your identity is an Ed25519 keypair generated on
   device; your **Zeon ID** (`ZC-XXXX-…`) is a hash commitment to the public key.
   Share it by QR or text — it reveals nothing about you.
 
@@ -101,7 +104,8 @@ cd app && flutter test && flutter analyze
   Developer account / Firebase project.
 - **Transport is plain HTTP.** Payloads are E2E-encrypted regardless, but
   metadata protection wants TLS + server key pinning next.
-- **No forward secrecy.** Static X25519 `crypto_box` per message; a Signal-style
-  ratchet is a natural upgrade.
+- **The ratchet is young.** Protocol v2 implements X3DH + double ratchet to
+  spec (see PROTOCOL.md "Session crypto"), but it has not had an external
+  cryptographic review yet — get one before charging money for privacy.
 - **Groups are v1**: client-side fan-out, creator-as-admin, ~25 members,
   text-only (media in groups is a planned v2 — see PROTOCOL.md).
