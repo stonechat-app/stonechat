@@ -11,14 +11,24 @@ Config (env):
     ZEON_OWNER_TOKEN  shared secret the owner's device presents on /ws
     ZEON_PORT         listen port (default 8080)
     ZEON_DB           sqlite path (default ./mailbox.db)
+    ZEON_TLS_DIR      where the TLS key/cert live (default: the DB's directory)
+
+Transport: everything is served over TLS with a self-signed certificate
+generated on first boot. Clients don't trust it via any CA — they pin its
+fingerprint, which the owner signs with their identity key (PROTOCOL.md
+"Transport"). The TLS key protects the pipe only; messages are end-to-end
+encrypted before they reach it.
 """
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import os
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 import uuid
@@ -32,6 +42,7 @@ OWNER_ID = os.environ["ZEON_OWNER_ID"]
 OWNER_TOKEN = os.environ["ZEON_OWNER_TOKEN"]
 DB_PATH = os.environ.get("ZEON_DB", "mailbox.db")
 BLOB_DIR = Path(os.environ.get("ZEON_BLOBS", "blobs"))
+TLS_DIR = Path(os.environ.get("ZEON_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
 PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "").rstrip("/")
 PUSH_DEBOUNCE_S = 5.0
 
@@ -301,9 +312,36 @@ class BlobStore:
                 f.unlink(missing_ok=True)
 
 
+class Tls:
+    """Self-signed cert, generated once and kept for the mailbox's lifetime.
+    fingerprint = BLAKE2b-256 of the DER certificate (what clients pin)."""
+
+    def __init__(self, directory: Path):
+        directory.mkdir(parents=True, exist_ok=True)
+        self.key_file = directory / "tls_key.pem"
+        self.cert_file = directory / "tls_cert.pem"
+        if not (self.key_file.is_file() and self.cert_file.is_file()):
+            subprocess.run(
+                ["openssl", "req", "-x509", "-newkey", "ec",
+                 "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                 "-keyout", str(self.key_file), "-out", str(self.cert_file),
+                 "-days", "36500", "-nodes", "-subj", "/CN=zeon-mailbox"],
+                check=True, capture_output=True,
+            )
+            self.key_file.chmod(0o600)
+        der = subprocess.run(
+            ["openssl", "x509", "-in", str(self.cert_file), "-outform", "der"],
+            check=True, capture_output=True,
+        ).stdout
+        self.fingerprint_b64 = base64.b64encode(
+            hashlib.blake2b(der, digest_size=32).digest()
+        ).decode()
+
+
 blobs = BlobStore(BLOB_DIR)
 mailbox = Mailbox(DB_PATH)
 link = OwnerLink()
+tls = Tls(TLS_DIR)
 
 
 @asynccontextmanager
@@ -322,6 +360,7 @@ async def health():
         "status": "ok",
         "queued": mailbox.depth(),
         "prekeys": mailbox.prekey_status(),
+        "tls_fp": tls.fingerprint_b64,
     }
 
 
@@ -470,4 +509,10 @@ async def ws_owner(ws: WebSocket):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("ZEON_PORT", "8080")))
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=int(os.environ.get("ZEON_PORT", "8080")),
+        ssl_certfile=str(tls.cert_file),
+        ssl_keyfile=str(tls.key_file),
+    )

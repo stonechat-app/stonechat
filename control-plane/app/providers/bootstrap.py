@@ -21,11 +21,11 @@ cat > /opt/zeon/main.py.b64 <<'ZEON_EOF'
 ZEON_EOF
 base64 -d /opt/zeon/main.py.b64 > /opt/zeon/main.py
 
-# Debian/Ubuntu vs Amazon Linux/Fedora
+# Debian/Ubuntu vs Amazon Linux/Fedora (openssl: self-signed TLS cert at boot)
 if command -v apt-get >/dev/null; then
-  apt-get update -y && apt-get install -y python3-venv
+  apt-get update -y && apt-get install -y python3-venv openssl
 elif command -v dnf >/dev/null; then
-  dnf install -y python3 python3-pip
+  dnf install -y python3 python3-pip openssl
 fi
 
 python3 -m venv /opt/zeon/venv

@@ -15,7 +15,7 @@ class ChatDb {
     final path = p.join(await getDatabasesPath(), 'zeon.db');
     final db = await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
           await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
@@ -36,6 +36,10 @@ class ChatDb {
           await db.execute(_createSessions);
           await db.execute(_createPrekeys);
         }
+        if (oldVersion < 6) {
+          await db.execute('ALTER TABLE contacts ADD COLUMN tls_fp TEXT');
+          await db.execute('ALTER TABLE group_members ADD COLUMN tls_fp TEXT');
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -46,6 +50,7 @@ class ChatDb {
             pubkey         TEXT NOT NULL,
             status         TEXT NOT NULL,
             server_address TEXT,
+            tls_fp         TEXT,
             created_at     INTEGER NOT NULL
           )
         ''');
@@ -91,6 +96,7 @@ class ChatDb {
       pubkey         TEXT NOT NULL,
       display_name   TEXT NOT NULL,
       server_address TEXT,
+      tls_fp         TEXT,
       PRIMARY KEY (group_id, zeon_id)
     )
   ''';

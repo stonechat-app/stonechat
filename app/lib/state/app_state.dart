@@ -22,8 +22,10 @@ class AppState extends ChangeNotifier {
   String? handle; // zn-word-word-word
   String? displayName;
   // Token for a self-provisioned ("external") mailbox. Lives only here —
-  // the control plane never sees it.
+  // the control plane never sees it. The TLS fingerprint is the one WE
+  // observed at connect time (trust-on-first-use), not the control plane's.
   String? externalMailboxToken;
+  String? externalMailboxTlsFp;
 
   bool get hasIdentity => _crypto != null && zeonId != null;
   CryptoService get crypto => _crypto!;
@@ -48,6 +50,9 @@ class AppState extends ChangeNotifier {
   Future<void> init() async {
     db = await ChatDb.open();
     final sodium = await CryptoService.loadSodium();
+    // Mailbox TLS pinning (api.dart): fingerprint = BLAKE2b-256 of DER cert.
+    certFingerprinter =
+        (der) => base64Encode(sodium.crypto.genericHash(message: der, outLen: 32));
 
     final secret = await _storage.read(key: 'zn_secret');
     final public = await _storage.read(key: 'zn_public');
@@ -72,6 +77,7 @@ class AppState extends ChangeNotifier {
       handle = await _storage.read(key: 'zn_handle');
       displayName = await _storage.read(key: 'zn_name');
       externalMailboxToken = await _storage.read(key: 'zn_ext_token');
+      externalMailboxTlsFp = await _storage.read(key: 'zn_ext_tls_fp');
       if (handle == null && zeonId != null) {
         await _fetchOwnHandle(); // account predates handles — self-heal
       }
@@ -80,12 +86,15 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  Future<void> setExternalMailboxToken(String? token) async {
+  Future<void> setExternalMailbox(String? token, String? tlsFp) async {
     externalMailboxToken = token;
+    externalMailboxTlsFp = tlsFp;
     if (token == null) {
       await _storage.delete(key: 'zn_ext_token');
+      await _storage.delete(key: 'zn_ext_tls_fp');
     } else {
       await _storage.write(key: 'zn_ext_token', value: token);
+      await _storage.write(key: 'zn_ext_tls_fp', value: tlsFp);
     }
   }
 

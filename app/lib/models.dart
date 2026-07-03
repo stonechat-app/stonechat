@@ -14,6 +14,7 @@ class Contact {
   final String pubkeyB64;
   String status;
   String? serverAddress; // last known, refreshed from directory on demand
+  String? tlsFp; // pinned relay cert fingerprint, travels with the address
   final int createdAt;
 
   Contact({
@@ -23,6 +24,7 @@ class Contact {
     required this.pubkeyB64,
     required this.status,
     this.serverAddress,
+    this.tlsFp,
     required this.createdAt,
   });
 
@@ -35,6 +37,7 @@ class Contact {
         'pubkey': pubkeyB64,
         'status': status,
         'server_address': serverAddress,
+        'tls_fp': tlsFp,
         'created_at': createdAt,
       };
 
@@ -45,6 +48,7 @@ class Contact {
         pubkeyB64: r['pubkey'] as String,
         status: r['status'] as String,
         serverAddress: r['server_address'] as String?,
+        tlsFp: r['tls_fp'] as String?,
         createdAt: r['created_at'] as int,
       );
 }
@@ -168,6 +172,7 @@ class GroupMember {
   final String pubkeyB64;
   String displayName;
   String? serverAddress; // cached, refreshed on delivery failure
+  String? tlsFp; // pinned relay cert fingerprint, travels with the address
 
   GroupMember({
     required this.groupId,
@@ -175,6 +180,7 @@ class GroupMember {
     required this.pubkeyB64,
     required this.displayName,
     this.serverAddress,
+    this.tlsFp,
   });
 
   Map<String, Object?> toRow() => {
@@ -183,6 +189,7 @@ class GroupMember {
         'pubkey': pubkeyB64,
         'display_name': displayName,
         'server_address': serverAddress,
+        'tls_fp': tlsFp,
       };
 
   factory GroupMember.fromRow(Map<String, Object?> r) => GroupMember(
@@ -191,6 +198,7 @@ class GroupMember {
         pubkeyB64: r['pubkey'] as String,
         displayName: r['display_name'] as String,
         serverAddress: r['server_address'] as String?,
+        tlsFp: r['tls_fp'] as String?,
       );
 }
 

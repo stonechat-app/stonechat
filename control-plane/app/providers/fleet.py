@@ -140,7 +140,7 @@ class FleetProvider(CloudProvider):
         port = self._published_port(host, name)
         return ProvisionResult(
             resource_id=name,
-            address=f"http://{host.advertise}:{port}",
+            address=f"https://{host.advertise}:{port}",
             meta={"host": host.name},
         )
 

@@ -65,7 +65,7 @@ class AWSProvider(CloudProvider):
 
         return ProvisionResult(
             resource_id=instance_id,
-            address=f"http://{ip}:{SERVER_PORT}",
+            address=f"https://{ip}:{SERVER_PORT}",
             meta={"region": region},
         )
 

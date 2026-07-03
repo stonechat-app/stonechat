@@ -30,15 +30,17 @@ class ChatState extends ChangeNotifier {
   // needed to download incoming media blobs and publish prekeys.
   String? mailboxAddress;
   String? mailboxToken;
+  String? mailboxTlsFp;
 
   // Forward-secret ratchet sessions, one per peer, cached over the DB copy.
   final Map<String, RatchetSession> _sessions = {};
 
   ChatState(this.app);
 
-  void setMailbox(String? address, String? token) {
+  void setMailbox(String? address, String? token, String? tlsFp) {
     mailboxAddress = address;
     mailboxToken = token;
+    mailboxTlsFp = tlsFp;
   }
 
   Future<Directory> _mediaDir() async {
@@ -96,18 +98,37 @@ class ChatState extends ChangeNotifier {
 
   // -- resolving peers ---------------------------------------------------------
 
-  /// Directory lookup with the trust-but-verify step from PROTOCOL.md.
+  /// Directory lookup with the trust-but-verify steps from PROTOCOL.md: the
+  /// pubkey must hash to the ID, and any listed mailbox must carry a TLS
+  /// fingerprint signed by that pubkey. A server that fails the transport
+  /// check is treated as absent — never connected to.
   Future<DirectoryEntry> _resolve(String zeonId) async {
     final entry = await app.api.directory(zeonId);
     if (!app.crypto.pubkeyMatchesId(entry.pubkeyB64, entry.zeonId)) {
       throw ApiException(
           'Directory returned a key that does not match this ID — refusing.');
     }
+    if (entry.serverAddress != null) {
+      final fp = entry.serverTlsFp;
+      final sig = entry.serverTlsSig;
+      final vouched = fp != null &&
+          sig != null &&
+          app.crypto.verifyTlsSig(
+              fp, sig, Uint8List.fromList(base64Decode(entry.pubkeyB64)));
+      if (!vouched) {
+        return DirectoryEntry(
+          zeonId: entry.zeonId,
+          handle: entry.handle,
+          pubkeyB64: entry.pubkeyB64,
+          // no owner-signed transport key yet → unreachable, not unpinned
+        );
+      }
+    }
     return entry;
   }
 
   Future<String> _addressFor(Contact contact, {bool refresh = false}) async {
-    if (!refresh && contact.serverAddress != null) {
+    if (!refresh && contact.serverAddress != null && contact.tlsFp != null) {
       return contact.serverAddress!;
     }
     final entry = await _resolve(contact.zeonId);
@@ -116,6 +137,7 @@ class ChatState extends ChangeNotifier {
           "${contact.displayName}'s mailbox is off right now — they'll get it when it's back");
     }
     contact.serverAddress = entry.serverAddress;
+    contact.tlsFp = entry.serverTlsFp;
     await app.db.upsertContact(contact);
     return entry.serverAddress!;
   }
@@ -123,11 +145,12 @@ class ChatState extends ChangeNotifier {
   Future<void> _deliver(Contact contact, Envelope envelope) async {
     var address = await _addressFor(contact);
     try {
-      await deliverEnvelope(address, envelope);
+      await deliverEnvelope(address, envelope, contact.tlsFp!);
     } on Exception {
-      // Their server may have been recreated at a new IP — refresh and retry once.
+      // Their server may have been recreated at a new IP (or with a new TLS
+      // key) — refresh both and retry once.
       address = await _addressFor(contact, refresh: true);
-      await deliverEnvelope(address, envelope);
+      await deliverEnvelope(address, envelope, contact.tlsFp!);
     }
   }
 
@@ -152,17 +175,19 @@ class ChatState extends ChangeNotifier {
   /// The session for an outgoing message, establishing one via the peer's
   /// prekey bundle when none exists yet.
   Future<RatchetSession> _sessionFor(String peerId, String peerPubkeyB64,
-      {String? serverAddress}) async {
+      {String? serverAddress, String? serverTlsFp}) async {
     final existing = await _loadSession(peerId);
     if (existing != null && existing.canSend) return existing;
 
-    Future<PrekeyBundle> fetchFrom(String address) async =>
-        PrekeyBundle.fromJson(await fetchPrekeyBundle(address));
+    Future<PrekeyBundle> fetchFrom(String address, String tlsFp) async =>
+        PrekeyBundle.fromJson(await fetchPrekeyBundle(address, tlsFp));
 
     PrekeyBundle bundle;
     try {
-      if (serverAddress == null) throw ApiException('no cached address');
-      bundle = await fetchFrom(serverAddress);
+      if (serverAddress == null || serverTlsFp == null) {
+        throw ApiException('no cached address');
+      }
+      bundle = await fetchFrom(serverAddress, serverTlsFp);
     } on Exception {
       // No cached address, or their mailbox moved — ask the directory.
       final entry = await _resolve(peerId);
@@ -170,7 +195,7 @@ class ChatState extends ChangeNotifier {
         throw ApiException(
             "Their mailbox is off right now — they'll get it when it's back");
       }
-      bundle = await fetchFrom(entry.serverAddress!);
+      bundle = await fetchFrom(entry.serverAddress!, entry.serverTlsFp!);
     }
 
     final peerEd = Uint8List.fromList(base64Decode(peerPubkeyB64));
@@ -187,7 +212,7 @@ class ChatState extends ChangeNotifier {
   Future<Envelope> _seal(
           String type, Contact contact, Map<String, Object?> payload) =>
       _sealFor(type, contact.zeonId, contact.pubkeyB64, payload,
-          serverAddress: contact.serverAddress);
+          serverAddress: contact.serverAddress, serverTlsFp: contact.tlsFp);
 
   Future<Envelope> _sealFor(
     String type,
@@ -196,10 +221,11 @@ class ChatState extends ChangeNotifier {
     Map<String, Object?> payload, {
     String? envelopeId,
     String? serverAddress,
+    String? serverTlsFp,
     String? blobId,
   }) async {
     final session = await _sessionFor(toZeonId, toPubkeyB64,
-        serverAddress: serverAddress);
+        serverAddress: serverAddress, serverTlsFp: serverTlsFp);
     final adPrefix = 'zeon/v2|${app.zeonId}|$toZeonId|$type';
     final sealed = session.encrypt(jsonEncode(payload), adPrefix);
     final x3dh = session.pendingX3dh?.toJson();
@@ -294,7 +320,8 @@ class ChatState extends ChangeNotifier {
   Future<void> publishPrekeys() async {
     final address = mailboxAddress;
     final token = mailboxToken;
-    if (address == null || token == null) return;
+    final tlsFp = mailboxTlsFp;
+    if (address == null || token == null || tlsFp == null) return;
 
     var spkRow = await app.db.currentSpk();
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -317,7 +344,7 @@ class ChatState extends ChangeNotifier {
           .insertPrekey('opk', base64Encode(kp.publicKey), base64Encode(sec));
     }
 
-    final status = await mailboxPrekeyStatus(address);
+    final status = await mailboxPrekeyStatus(address, tlsFp);
     if (status != null && !status.spk) {
       await app.db.markAllPrekeysUnpublished();
     }
@@ -327,6 +354,7 @@ class ChatState extends ChangeNotifier {
     await uploadPrekeys(
       address,
       token,
+      tlsFp,
       {
         'id': spkRow['id'],
         'pub': spkRow['pub'],
@@ -348,16 +376,19 @@ class ChatState extends ChangeNotifier {
         throw ApiException('${member.displayName} is unreachable right now');
       }
       member.serverAddress = entry.serverAddress;
+      member.tlsFp = entry.serverTlsFp;
       await app.db.updateMember(member);
       return entry.serverAddress!;
     }
 
-    var address = member.serverAddress ?? await resolve();
+    var address = (member.serverAddress != null && member.tlsFp != null)
+        ? member.serverAddress!
+        : await resolve();
     try {
-      await deliverEnvelope(address, envelope);
+      await deliverEnvelope(address, envelope, member.tlsFp!);
     } on Exception {
       address = await resolve(); // their mailbox may have moved
-      await deliverEnvelope(address, envelope);
+      await deliverEnvelope(address, envelope, member.tlsFp!);
     }
   }
 
@@ -393,6 +424,7 @@ class ChatState extends ChangeNotifier {
       pubkeyB64: entry.pubkeyB64,
       status: ContactStatus.pendingOut,
       serverAddress: entry.serverAddress,
+      tlsFp: entry.serverTlsFp,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
     await app.db.upsertContact(contact);
@@ -465,6 +497,7 @@ class ChatState extends ChangeNotifier {
           pubkeyB64: c.pubkeyB64,
           displayName: c.displayName,
           serverAddress: c.serverAddress,
+          tlsFp: c.tlsFp,
         ),
     ];
     await app.db.upsertGroup(group);
@@ -480,7 +513,7 @@ class ChatState extends ChangeNotifier {
             m,
             await _sealFor(EnvelopeType.groupCreate, m.zeonId, m.pubkeyB64,
                 payload,
-                serverAddress: m.serverAddress));
+                serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
       } catch (_) {
         // unreachable member hears about the group via the next groupUpdate
         // or message retry; v1 accepts eventual delivery
@@ -520,7 +553,9 @@ class ChatState extends ChangeNotifier {
           member,
           await _sealFor(EnvelopeType.groupMsg, member.zeonId,
               member.pubkeyB64, payload,
-              envelopeId: message.id, serverAddress: member.serverAddress),
+              envelopeId: message.id,
+              serverAddress: member.serverAddress,
+              serverTlsFp: member.tlsFp),
         );
         await app.db.clearOutbox(message.id, member.zeonId);
       } catch (_) {
@@ -545,7 +580,7 @@ class ChatState extends ChangeNotifier {
             m,
             await _sealFor(EnvelopeType.groupLeave, m.zeonId, m.pubkeyB64,
                 {'group_id': group.id},
-                serverAddress: m.serverAddress));
+                serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
       } catch (_) {}
     }
     await app.db.deleteGroup(group.id);
@@ -630,7 +665,7 @@ class ChatState extends ChangeNotifier {
     final bytes = await File(message.mediaPath!).readAsBytes();
     final blob = app.crypto.sealBlob(bytes);
     final address = await _addressFor(contact);
-    final blobId = await uploadBlob(address, blob.ciphertext);
+    final blobId = await uploadBlob(address, blob.ciphertext, contact.tlsFp!);
 
     final payload = {
       'blob_id': blobId,
@@ -643,7 +678,10 @@ class ChatState extends ChangeNotifier {
     };
     return _sealFor(EnvelopeType.media, contact.zeonId, contact.pubkeyB64,
         payload,
-        envelopeId: message.id, serverAddress: address, blobId: blobId);
+        envelopeId: message.id,
+        serverAddress: address,
+        serverTlsFp: contact.tlsFp,
+        blobId: blobId);
   }
 
   static String _mimeFromPath(String path) => switch (p.extension(path)) {
@@ -667,7 +705,8 @@ class ChatState extends ChangeNotifier {
           {'text': message.text},
           // envelope id == message id → dedupe on the other side
           envelopeId: message.id,
-          serverAddress: contact.serverAddress);
+          serverAddress: contact.serverAddress,
+          serverTlsFp: contact.tlsFp);
 
   /// Re-attempt everything in the pending outbox (app resume, reconnect, …).
   Future<void> retryPending() async {
@@ -748,6 +787,8 @@ class ChatState extends ChangeNotifier {
           handle: senderEntry?.handle,
           pubkeyB64: pubkeyB64,
           status: ContactStatus.pendingIn,
+          serverAddress: senderEntry?.serverAddress,
+          tlsFp: senderEntry?.serverTlsFp,
           createdAt: DateTime.now().millisecondsSinceEpoch,
         );
         await app.db.upsertContact(contact);
@@ -780,11 +821,11 @@ class ChatState extends ChangeNotifier {
         if (contact == null || !contact.isAccepted) return;
         // Fetch + decrypt + persist BEFORE returning: returning acks the
         // envelope, which deletes the blob from our mailbox.
-        if (mailboxAddress == null || mailboxToken == null) {
+        if (mailboxAddress == null || mailboxToken == null || mailboxTlsFp == null) {
           throw StateError('mailbox info missing'); // don't ack — retry later
         }
-        final ciphertext = await downloadBlob(
-            mailboxAddress!, payload['blob_id'] as String, mailboxToken!);
+        final ciphertext = await downloadBlob(mailboxAddress!,
+            payload['blob_id'] as String, mailboxToken!, mailboxTlsFp!);
         final data = app.crypto.openBlob(
           Uint8List.fromList(ciphertext),
           base64Decode(payload['key'] as String),

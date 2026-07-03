@@ -57,7 +57,7 @@ class LocalDockerProvider(CloudProvider):
         host = os.environ.get("ZEON_LOCAL_HOST", "127.0.0.1")
         return ProvisionResult(
             resource_id=name,
-            address=f"http://{host}:{port}",
+            address=f"https://{host}:{port}",
             meta={},
         )
 

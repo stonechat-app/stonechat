@@ -1,12 +1,18 @@
 """End-to-end test of the Zeon stack (protocol v2), no Flutter needed.
 
 Simulates phones with PyNaCl (same libsodium primitives the app uses):
-register → provision local-Docker relays → publish prekeys → X3DH contact
-handshake → double-ratchet messages → ack → forward-secrecy proof → destroy.
+register → provision local-Docker relays → pin TLS + publish prekeys → X3DH
+contact handshake → double-ratchet messages → ack → forward-secrecy proof →
+destroy.
 
 The X3DH + double-ratchet implementation below mirrors PROTOCOL.md "Session
 crypto" constant-for-constant; it doubles as the reference implementation the
 Dart client must interoperate with.
+
+Transport: relays serve pinned TLS (PROTOCOL.md "Transport"). Mailbox
+requests here use verify=False because relay certs are self-signed BY DESIGN
+— the real check is the pin, which the test asserts explicitly:
+live certificate fingerprint == directory fingerprint, signed by the owner.
 """
 
 import asyncio
@@ -14,6 +20,7 @@ import base64
 import copy
 import hashlib
 import json
+import ssl
 import subprocess
 import sys
 import time
@@ -35,8 +42,38 @@ from nacl.utils import random as nacl_random
 import os
 CP = os.environ.get("ZEON_CP", "http://127.0.0.1:8477")
 
+# Mailbox client: no CA validation (self-signed by design); see module docstring.
+MX = httpx.Client(verify=False, timeout=10)
+WS_SSL = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+WS_SSL.check_hostname = False
+WS_SSL.verify_mode = ssl.CERT_NONE
+
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "control-plane"))
 from app.identity import zeon_id_from_pubkey  # noqa: E402
+
+TLS_SIG_CONTEXT = b"zeon-v2-tls"
+
+
+def live_cert_fp(address: str) -> str:
+    """What a pinning client computes during the handshake:
+    BLAKE2b-256 of the DER certificate the relay actually presents."""
+    host, port = address.removeprefix("https://").rsplit(":", 1)
+    pem = ssl.get_server_certificate((host, int(port)))
+    der = ssl.PEM_cert_to_DER_cert(pem)
+    return base64.b64encode(hashlib.blake2b(der, digest_size=32).digest()).decode()
+
+
+def assert_pinned(phone: "Phone") -> None:
+    """The full client-side transport check: directory fp is vouched for by
+    the owner's identity key AND matches the certificate actually served."""
+    entry = httpx.get(f"{CP}/v1/directory/{phone.zeon_id}").json()
+    srv = entry["server"]
+    VerifyKey(base64.b64decode(entry["pubkey"])).verify(
+        TLS_SIG_CONTEXT + base64.b64decode(srv["tls_fp"]),
+        base64.b64decode(srv["tls_sig"]),
+    )
+    assert srv["tls_fp"] == live_cert_fp(srv["address"]), \
+        "served certificate must match the owner-signed fingerprint"
 
 
 # -- session crypto (PROTOCOL.md v2) ------------------------------------------
@@ -210,7 +247,7 @@ class Phone:
             new_opks.append({"id": self._next_prekey_id, "pub": b64(bytes(kp.public_key))})
             self._next_prekey_id += 1
         sig = self.identity.sign(SPK_SIG_CONTEXT + self.spk["pub"]).signature
-        r = httpx.post(
+        r = MX.post(
             f"{self.server['address']}/prekeys",
             params={"token": self.server["server_token"]},
             json={"spk": {"id": self.spk["id"], "pub": b64(self.spk["pub"]),
@@ -219,11 +256,22 @@ class Phone:
         )
         r.raise_for_status()
 
+    def publish_tls_sig(self):
+        """The owner's half of pinned TLS: confirm the fingerprint the control
+        plane observed matches the live certificate, sign it, publish."""
+        record = httpx.get(f"{CP}/v1/server", headers=self.auth).json()
+        fp = record["tls_fp"]
+        assert fp == live_cert_fp(self.server["address"]), \
+            "control-plane fp must match the certificate the relay serves"
+        sig = self.identity.sign(TLS_SIG_CONTEXT + unb64(fp)).signature
+        httpx.post(f"{CP}/v1/server/tls", headers=self.auth,
+                   json={"tls_fp": fp, "tls_sig": b64(sig)}).raise_for_status()
+
     # -- sessions --------------------------------------------------------------------
 
     def _initiate_session(self, to: "Phone"):
         """Fetch the peer's bundle from their mailbox, verify, run X3DH."""
-        r = httpx.get(f"{to.server['address']}/prekeys/bundle", timeout=10)
+        r = MX.get(f"{to.server['address']}/prekeys/bundle")
         r.raise_for_status()
         bundle = r.json()
         peer_ed = VerifyKey(unb64(to.pubkey_b64))
@@ -327,14 +375,14 @@ class Phone:
     # -- transport --------------------------------------------------------------------
 
     def deliver_to(self, to: "Phone", envelope: dict):
-        r = httpx.post(f"{to.server['address']}/inbox", json=envelope, timeout=10)
+        r = MX.post(f"{to.server['address']}/inbox", json=envelope)
         r.raise_for_status()
 
     async def receive_one(self, timeout=15, process=None) -> dict:
         """Receive one envelope, run `process(envelope)` BEFORE acking (the
         app does the same: persist/download first, ack last), then ack."""
         url = self.server["address"].replace("http", "ws") + f"/ws?token={self.server['server_token']}"
-        async with websockets.connect(url) as ws:
+        async with websockets.connect(url, ssl=WS_SSL) as ws:
             raw = await asyncio.wait_for(ws.recv(), timeout)
             envelope = json.loads(raw)
             if process:
@@ -344,7 +392,7 @@ class Phone:
             return envelope
 
     def queue_depth(self):
-        return httpx.get(f"{self.server['address']}/health").json()["queued"]
+        return MX.get(f"{self.server['address']}/health").json()["queued"]
 
     def destroy(self):
         r = httpx.delete(f"{CP}/v1/server", headers=self.auth, timeout=30)
@@ -379,10 +427,33 @@ def main():
     alice.wait_running()
     bob.wait_running()
 
-    print("3a) publish prekeys — mailboxes serve public halves only")
+    print("3a) pinned TLS: owners vouch for their relays' certificates")
+    # before publication the directory has the fingerprint but no signature —
+    # pinning clients treat that as "no server"
+    entry = httpx.get(f"{CP}/v1/directory/{bob.zeon_id}").json()
+    assert entry["server"]["tls_sig"] is None
+    alice.publish_tls_sig()
+    bob.publish_tls_sig()
+    assert_pinned(alice)
+    assert_pinned(bob)
+
+    # a signature that doesn't verify against the identity key is rejected
+    wrong = alice.identity.sign(TLS_SIG_CONTEXT + b"\x00" * 32).signature
+    fp = httpx.get(f"{CP}/v1/server", headers=alice.auth).json()["tls_fp"]
+    r = httpx.post(f"{CP}/v1/server/tls", headers=alice.auth,
+                   json={"tls_fp": fp, "tls_sig": b64(wrong)})
+    assert r.status_code == 400, f"forged sig: expected 400, got {r.status_code}"
+    # and so is a signature over a fingerprint that isn't this mailbox's
+    other_fp = b64(b"\x11" * 32)
+    sig = alice.identity.sign(TLS_SIG_CONTEXT + unb64(other_fp)).signature
+    r = httpx.post(f"{CP}/v1/server/tls", headers=alice.auth,
+                   json={"tls_fp": other_fp, "tls_sig": b64(sig)})
+    assert r.status_code == 400, f"wrong fp: expected 400, got {r.status_code}"
+
+    print("3a2) publish prekeys — mailboxes serve public halves only")
     alice.upload_prekeys()
     bob.upload_prekeys()
-    health = httpx.get(f"{bob.server['address']}/health").json()
+    health = MX.get(f"{bob.server['address']}/health").json()
     assert health["prekeys"]["spk"] is True
     opks_before = health["prekeys"]["opks"]
     assert opks_before == 8
@@ -397,7 +468,7 @@ def main():
     )
     r.raise_for_status()
     carol.wait_running()
-    health = httpx.get(f"{carol.server['address']}/health").json()
+    health = MX.get(f"{carol.server['address']}/health").json()
     assert health["owner"] == carol.zeon_id
     carol.destroy()
     assert httpx.get(f"{CP}/v1/server", headers=carol.auth).json()["status"] == "none"
@@ -417,10 +488,10 @@ def main():
         port = subprocess.run(
             ["docker", "port", cid, "8080"], capture_output=True, text=True, check=True
         ).stdout.strip().splitlines()[0].rsplit(":", 1)[1]
-        dave_address = f"http://127.0.0.1:{port}"
+        dave_address = f"https://127.0.0.1:{port}"
         for _ in range(30):  # wait for the container to come up
             try:
-                if httpx.get(f"{dave_address}/health", timeout=2).status_code == 200:
+                if MX.get(f"{dave_address}/health", timeout=2).status_code == 200:
                     break
             except httpx.HTTPError:
                 time.sleep(0.5)
@@ -443,7 +514,10 @@ def main():
         dave.server = {"address": dave_address, "server_token": dave_token,
                        "status": "running"}
 
-        # and he's a full participant: prekeys up, alice delivers, dave receives
+        # and he's a full participant: TLS vouched, prekeys up, alice
+        # delivers, dave receives
+        dave.publish_tls_sig()
+        assert_pinned(dave)
         dave.upload_prekeys()
         alice.deliver_to(dave, alice.seal(dave, "msg", {"text": "hi dave"}))
         got = asyncio.run(dave.receive_one())
@@ -453,7 +527,7 @@ def main():
         httpx.delete(f"{CP}/v1/server", headers=dave.auth).raise_for_status()
         entry = httpx.get(f"{CP}/v1/directory/{dave.zeon_id}").json()
         assert entry["server"] is None
-        assert httpx.get(f"{dave_address}/health").status_code == 200, \
+        assert MX.get(f"{dave_address}/health").status_code == 200, \
             "dave's own server must keep running after disconnect"
     finally:
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
@@ -540,13 +614,13 @@ def main():
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "nonce": b64(nacl_random(24)), "ciphertext": b64(nacl_random(64)),
     }
-    r = httpx.post(f"{bob.server['address']}/inbox", json=v1_env)
+    r = MX.post(f"{bob.server['address']}/inbox", json=v1_env)
     assert r.status_code == 400, f"expected 400 for v1 envelope, got {r.status_code}"
 
     print("6c) one-time prekeys are consumed server-side")
     ids = set()
     for _ in range(2):
-        b = httpx.get(f"{bob.server['address']}/prekeys/bundle").json()
+        b = MX.get(f"{bob.server['address']}/prekeys/bundle").json()
         assert b["opk"] is not None
         ids.add(b["opk"]["id"])
     assert len(ids) == 2, "each bundle fetch must consume a distinct OPK"
@@ -555,7 +629,7 @@ def main():
     photo = nacl_random(200_000)  # stand-in for an encrypted JPEG
     blob_key, blob_nonce = nacl_random(32), nacl_random(24)
     sealed_blob = SecretBox(blob_key).encrypt(photo, blob_nonce).ciphertext
-    r = httpx.post(f"{bob.server['address']}/blob", content=sealed_blob, timeout=30)
+    r = MX.post(f"{bob.server['address']}/blob", content=sealed_blob, timeout=30)
     r.raise_for_status()
     blob_id = r.json()["blob_id"]
 
@@ -571,7 +645,7 @@ def main():
 
     def fetch_and_decrypt(envelope):
         payload = bob.open_envelope(envelope, alice)
-        dl = httpx.get(
+        dl = MX.get(
             f"{bob.server['address']}/blob/{payload['blob_id']}",
             params={"token": bob.server["server_token"]}, timeout=30,
         )
@@ -583,14 +657,14 @@ def main():
     asyncio.run(bob.receive_one(process=fetch_and_decrypt))
     assert recovered_holder["data"] == photo, "media round-trip corrupted"
     # unauthenticated download must fail; after ack the blob must be gone
-    assert httpx.get(f"{bob.server['address']}/blob/{blob_id}").status_code == 401
+    assert MX.get(f"{bob.server['address']}/blob/{blob_id}").status_code == 401
     time.sleep(0.5)
-    gone = httpx.get(f"{bob.server['address']}/blob/{blob_id}",
-                     params={"token": bob.server["server_token"]})
+    gone = MX.get(f"{bob.server['address']}/blob/{blob_id}",
+                  params={"token": bob.server["server_token"]})
     assert gone.status_code == 404, "blob should be deleted after ack"
 
     print("7) wrong recipient rejected by mailbox")
-    r = httpx.post(
+    r = MX.post(
         f"{bob.server['address']}/inbox",
         json=alice.seal(alice, "msg", {"text": "misrouted"}),
     )
@@ -607,7 +681,7 @@ def main():
     push_gateway = os.environ.get("ZEON_TEST_PUSH_GATEWAY")
     if push_gateway:
         print("8b) offline owner triggers a content-free gateway ping")
-        r = httpx.post(
+        r = MX.post(
             f"{bob.server['address']}/push-config",
             params={"token": bob.server["server_token"]},
             json={"device_token": "e2e-test-token-bob", "platform": "ios"},

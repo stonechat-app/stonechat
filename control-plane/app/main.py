@@ -71,7 +71,12 @@ class ServerIn(BaseModel):
 
 
 class ExternalServerIn(BaseModel):
-    address: str = Field(max_length=200, examples=["http://203.0.113.7:8080"])
+    address: str = Field(max_length=200, examples=["https://203.0.113.7:8080"])
+
+
+class TlsSigIn(BaseModel):
+    tls_fp: str = Field(max_length=64)  # base64 BLAKE2b-256 of the relay's DER cert
+    tls_sig: str = Field(max_length=128)  # owner's Ed25519 sig over "zeon-v2-tls"||fp
 
 
 # -- routes ---------------------------------------------------------------------
@@ -123,7 +128,12 @@ async def directory(id_or_handle: str):
         "handle": user["handle"],
         "pubkey": user["pubkey"],
         "server": (
-            {"address": server["address"], "status": server["status"]}
+            {
+                "address": server["address"],
+                "status": server["status"],
+                "tls_fp": server["tls_fp"],
+                "tls_sig": server["tls_sig"],
+            }
             if server and server["status"] == "running"
             else None
         ),
@@ -154,11 +164,13 @@ async def register_external_server(body: ExternalServerIn, user: User):
     the directory. Ownership is proven, not claimed: the relay at that address
     must report this user's Zeon ID as its owner. We never see their token."""
     address = body.address.strip().rstrip("/")
-    if not re.match(r"^https?://[a-zA-Z0-9.\-:\[\]]+$", address):
-        raise HTTPException(400, "address must look like http(s)://host[:port]")
+    if not re.match(r"^https://[a-zA-Z0-9.\-:\[\]]+$", address):
+        raise HTTPException(400, "address must look like https://host[:port]")
 
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
+        # verify=False: relay certs are self-signed by design; the client-side
+        # pin (owner-signed fingerprint) is the real trust anchor, not this probe.
+        async with httpx.AsyncClient(timeout=8, verify=False) as client:
             resp = await client.get(f"{address}/health")
         health = resp.json()
     except Exception:
@@ -170,10 +182,34 @@ async def register_external_server(body: ExternalServerIn, user: User):
     if health.get("owner") != user["zeon_id"]:
         raise HTTPException(400, "that mailbox belongs to a different Zeon ID")
 
-    if not store.create_external_server(user["zeon_id"], address):
+    if not store.create_external_server(user["zeon_id"], address, health.get("tls_fp")):
         raise HTTPException(409, "you already have a server (one per user)")
     log.info("external relay registered for %s", user["zeon_id"][:12])
-    return {"status": "running", "address": address}
+    return {"status": "running", "address": address, "tls_fp": health.get("tls_fp")}
+
+
+@app.post("/v1/server/tls")
+async def publish_tls_sig(body: TlsSigIn, user: User):
+    """The owner vouches for their mailbox's TLS key: an Ed25519 signature
+    over "zeon-v2-tls" || fingerprint, verifiable by anyone against the
+    identity key their Zeon ID commits to. We check it so the directory never
+    serves garbage, but clients re-verify — our word doesn't count."""
+    server = store.server_for(user["zeon_id"])
+    if not server or server["status"] != "running":
+        raise HTTPException(404, "no running server")
+    if server["tls_fp"] is not None and server["tls_fp"] != body.tls_fp:
+        raise HTTPException(400, "fingerprint does not match this mailbox's certificate")
+    try:
+        from nacl.signing import VerifyKey
+
+        VerifyKey(base64.b64decode(user["pubkey"])).verify(
+            b"zeon-v2-tls" + base64.b64decode(body.tls_fp),
+            base64.b64decode(body.tls_sig),
+        )
+    except Exception:
+        raise HTTPException(400, "signature does not verify against your identity key")
+    store.set_tls_sig(user["zeon_id"], body.tls_sig)
+    return {"status": "ok"}
 
 
 @app.get("/v1/server")
@@ -187,6 +223,7 @@ async def get_server(user: User):
         "machine": server["machine"],
         "address": server["address"],
         "server_token": server["server_token"],
+        "tls_fp": server["tls_fp"],
         "error": server["error"],
     }
 
@@ -219,24 +256,27 @@ def _provision(zeon_id: str, provider_name: str, machine: MachineIn, server_toke
                 spec=MachineSpec(**machine.model_dump()),
             )
         )
-        _wait_healthy(result.address)
-        store.mark_running(zeon_id, result.resource_id, result.address, result.meta)
+        tls_fp = _wait_healthy(result.address)
+        store.mark_running(zeon_id, result.resource_id, result.address, result.meta, tls_fp)
         log.info("server for %s running at %s", zeon_id[:12], result.address)
     except Exception as e:
         log.exception("provisioning failed for %s", zeon_id[:12])
         store.mark_error(zeon_id, str(e))
 
 
-def _wait_healthy(address: str) -> None:
+def _wait_healthy(address: str) -> str | None:
+    """Poll until the mailbox answers; returns the TLS fingerprint it reports.
+    verify=False is fine here: this fingerprint only bootstraps the owner, who
+    signs it — every other client trusts the signature, not this probe."""
     import time
 
     deadline = time.monotonic() + HEALTH_TIMEOUT_S
     last_error = "no response"
     while time.monotonic() < deadline:
         try:
-            resp = httpx.get(f"{address}/health", timeout=5)
+            resp = httpx.get(f"{address}/health", timeout=5, verify=False)
             if resp.status_code == 200:
-                return
+                return resp.json().get("tls_fp")
             last_error = f"HTTP {resp.status_code}"
         except httpx.HTTPError as e:
             last_error = str(e)

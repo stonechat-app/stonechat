@@ -13,8 +13,8 @@ class ServerState extends ChangeNotifier {
   final AppState app;
   final Future<void> Function(Envelope) onEnvelope;
   final Future<void> Function() onConnected; // e.g. retry pending outbox
-  final void Function(String? address, String? token)?
-      onMailbox; // own mailbox coordinates, for blob downloads
+  final void Function(String? address, String? token, String? tlsFp)?
+      onMailbox; // own mailbox coordinates, for blob downloads + prekeys
 
   ServerRecord record = ServerRecord(status: 'none');
   bool socketConnected = false;
@@ -22,6 +22,7 @@ class ServerState extends ChangeNotifier {
 
   MailboxSocket? _socket;
   Timer? _pollTimer;
+  String? _vouchedTlsFp; // fingerprint we already signed + published
 
   ServerState(this.app,
       {required this.onEnvelope, required this.onConnected, this.onMailbox});
@@ -44,37 +45,56 @@ class ServerState extends ChangeNotifier {
       _pollTimer = null;
     }
 
-    // External relays: the token never touched the control plane, so it
-    // comes from local secure storage instead of the server record.
+    // External relays: the token — and the trust-on-first-use fingerprint —
+    // never touched the control plane; they come from local secure storage.
     final token = record.serverToken ?? app.externalMailboxToken;
-    if (isRunning && record.address != null && token != null) {
-      onMailbox?.call(record.address, token);
-      _ensureSocket(record.address!, token);
+    final tlsFp = isExternal ? app.externalMailboxTlsFp : record.tlsFp;
+    if (isRunning && record.address != null && token != null && tlsFp != null) {
+      await _vouchForTls(tlsFp);
+      onMailbox?.call(record.address, token, tlsFp);
+      _ensureSocket(record.address!, token, tlsFp);
     } else {
-      onMailbox?.call(null, null);
+      onMailbox?.call(null, null, null);
       _dropSocket();
     }
     notifyListeners();
+  }
+
+  /// The owner's half of pinned TLS (PROTOCOL.md "Transport"): sign the
+  /// mailbox's certificate fingerprint with the identity key and publish it,
+  /// so peers can verify the pin against our Zeon ID. Idempotent per fp;
+  /// re-runs automatically when a recreated mailbox shows a new certificate.
+  Future<void> _vouchForTls(String tlsFp) async {
+    if (_vouchedTlsFp == tlsFp) return;
+    try {
+      await app.api.publishTlsSig(tlsFp, app.crypto.signTlsFp(tlsFp));
+      _vouchedTlsFp = tlsFp;
+    } on Exception {
+      // best-effort: peers can't reach us until this lands, but the next
+      // refresh() retries
+    }
   }
 
   bool get isExternal => record.provider == 'external';
 
   /// Free tier: user runs their own relay; we verify it's really theirs,
   /// list its address in the directory, and keep the token on-device only.
+  /// The TLS fingerprint is trust-on-first-use: this is the user's own box —
+  /// they provisioned it seconds ago — so the cert we observe now IS the pin.
   Future<void> connectExternal(String rawAddress, String token) async {
     final address = rawAddress.trim().replaceAll(RegExp(r'/+$'), '');
     busy = true;
     notifyListeners();
     try {
-      final owner = await mailboxOwner(address);
-      if (owner == null) {
+      final probe = await observeMailbox(address);
+      if (probe == null) {
         throw ApiException("Couldn't reach a Zeon mailbox at that address");
       }
-      if (owner != app.zeonId) {
+      if (probe.owner != app.zeonId) {
         throw ApiException('That mailbox belongs to a different Zeon ID');
       }
       await app.api.registerExternalServer(address);
-      await app.setExternalMailboxToken(token.trim());
+      await app.setExternalMailbox(token.trim(), probe.tlsFp);
       await refresh();
     } finally {
       busy = false;
@@ -109,7 +129,8 @@ class ServerState extends ChangeNotifier {
     notifyListeners();
     try {
       await app.api.deleteServer();
-      await app.setExternalMailboxToken(null);
+      await app.setExternalMailbox(null, null);
+      _vouchedTlsFp = null;
       _dropSocket();
       await refresh();
     } finally {
@@ -118,11 +139,15 @@ class ServerState extends ChangeNotifier {
     }
   }
 
-  void _ensureSocket(String address, String token) {
-    if (_socket != null) return;
+  void _ensureSocket(String address, String token, String tlsFp) {
+    if (_socket != null) {
+      if (_socket!.tlsFp == tlsFp && _socket!.address == address) return;
+      _dropSocket(); // recreated mailbox: new address or new cert
+    }
     _socket = MailboxSocket(
       address: address,
       token: token,
+      tlsFp: tlsFp,
       onEnvelope: onEnvelope,
       onStateChange: (connected) {
         final wasConnected = socketConnected;

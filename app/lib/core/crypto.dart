@@ -50,6 +50,7 @@ Uint8List base32Decode(String s) {
 /// Domain-separation constants — must match scripts/e2e.py and PROTOCOL.md.
 final x3dhKdfKey = utf8.encode('zeon-v2-x3dh-kdf'); // 16 bytes, generichash min
 final spkSigContext = utf8.encode('zeon-v2-spk');
+final tlsSigContext = utf8.encode('zeon-v2-tls');
 
 class CryptoService {
   final SodiumSumo sodium;
@@ -160,6 +161,31 @@ class CryptoService {
       return sodium.crypto.sign.verifyDetached(
         message: Uint8List.fromList([...spkSigContext, ...spkPub]),
         signature: sig,
+        publicKey: identityEdPub,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // -- pinned TLS (PROTOCOL.md "Transport") --------------------------------------
+
+  /// What clients pin: BLAKE2b-256 of the relay's DER certificate.
+  String certFingerprint(Uint8List certDer) =>
+      base64Encode(sodium.crypto.genericHash(message: certDer, outLen: 32));
+
+  /// The owner vouching for their mailbox's TLS key.
+  String signTlsFp(String fpB64) => base64Encode(sodium.crypto.sign.detached(
+        message: Uint8List.fromList([...tlsSigContext, ...base64Decode(fpB64)]),
+        secretKey: _identity.secretKey,
+      ));
+
+  bool verifyTlsSig(String fpB64, String sigB64, Uint8List identityEdPub) {
+    try {
+      return sodium.crypto.sign.verifyDetached(
+        message:
+            Uint8List.fromList([...tlsSigContext, ...base64Decode(fpB64)]),
+        signature: base64Decode(sigB64),
         publicKey: identityEdPub,
       );
     } catch (_) {

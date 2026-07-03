@@ -42,6 +42,8 @@ class Store:
                 resource_id  TEXT,
                 address      TEXT,
                 server_token TEXT,
+                tls_fp       TEXT,                 -- relay cert fingerprint (observed)
+                tls_sig      TEXT,                 -- owner's signature over it
                 meta         TEXT NOT NULL DEFAULT '{}',
                 error        TEXT,
                 created_at   TEXT NOT NULL
@@ -54,6 +56,10 @@ class Store:
     def _migrate(self) -> None:
         """Dev-friendly: bring pre-handle databases up to date."""
         with self._lock:
+            server_cols = {r[1] for r in self._db.execute("PRAGMA table_info(servers)")}
+            for col in ("tls_fp", "tls_sig"):
+                if col not in server_cols:
+                    self._db.execute(f"ALTER TABLE servers ADD COLUMN {col} TEXT")
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(users)")}
             if "handle" not in cols:
                 self._db.execute("ALTER TABLE users ADD COLUMN handle TEXT")
@@ -132,15 +138,15 @@ class Store:
             except sqlite3.IntegrityError:
                 return False
 
-    def create_external_server(self, zeon_id: str, address: str) -> bool:
+    def create_external_server(self, zeon_id: str, address: str, tls_fp: str | None) -> bool:
         """User provisioned their own relay; we only list its address.
         No server_token stored — it never leaves the user's device."""
         with self._lock:
             try:
                 self._db.execute(
-                    "INSERT INTO servers (zeon_id, provider, status, machine, address, created_at)"
-                    " VALUES (?, 'external', 'running', '{}', ?, ?)",
-                    (zeon_id, address, _now()),
+                    "INSERT INTO servers (zeon_id, provider, status, machine, address, tls_fp, created_at)"
+                    " VALUES (?, 'external', 'running', '{}', ?, ?, ?)",
+                    (zeon_id, address, tls_fp, _now()),
                 )
                 self._db.commit()
                 return True
@@ -159,12 +165,21 @@ class Store:
         server["meta"] = json.loads(server["meta"])
         return server
 
-    def mark_running(self, zeon_id: str, resource_id: str, address: str, meta: dict) -> None:
+    def mark_running(self, zeon_id: str, resource_id: str, address: str, meta: dict,
+                     tls_fp: str | None) -> None:
         with self._lock:
             self._db.execute(
-                "UPDATE servers SET status='running', resource_id=?, address=?, meta=?, error=NULL"
+                "UPDATE servers SET status='running', resource_id=?, address=?, meta=?,"
+                " tls_fp=?, tls_sig=NULL, error=NULL"  # new box, new cert — old sig is void
                 " WHERE zeon_id=?",
-                (resource_id, address, json.dumps(meta), zeon_id),
+                (resource_id, address, json.dumps(meta), tls_fp, zeon_id),
+            )
+            self._db.commit()
+
+    def set_tls_sig(self, zeon_id: str, tls_sig: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "UPDATE servers SET tls_sig=? WHERE zeon_id=?", (tls_sig, zeon_id)
             )
             self._db.commit()
 

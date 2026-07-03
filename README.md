@@ -8,6 +8,10 @@ Privacy-first messaging where **every user runs their own server**.
 - **Forward secrecy**: X3DH + double ratchet (Signal-style), with prekeys
   served by your own relay instead of a central server. Every message gets a
   fresh key; stealing keys today can't decrypt traffic recorded yesterday.
+- **Pinned TLS, no CAs**: relays self-sign their certificates; clients pin a
+  fingerprint the owner signs with their identity key and publishes in the
+  directory. Trust chains to the Zeon ID, not to any authority — same as
+  everything else in the protocol.
 - Message history lives on your phone only. Uninstall the app and it's gone.
 - No phone number, no email. Your identity is an Ed25519 keypair generated on
   device; your **Zeon ID** (`ZC-XXXX-…`) is a hash commitment to the public key.
@@ -102,8 +106,12 @@ cd app && flutter test && flutter analyze
 - **Push needs credentials to go live.** The gateway + relay plumbing exists
   (content-free wake-ups); wiring the app to APNs/FCM requires an Apple
   Developer account / Firebase project.
-- **Transport is plain HTTP.** Payloads are E2E-encrypted regardless, but
-  metadata protection wants TLS + server key pinning next.
+- **Metadata: the destination IP is unavoidable.** Transport is pinned TLS
+  (relays self-sign; clients pin an owner-signed fingerprint through the
+  directory — no CAs), so on-path observers no longer read envelope metadata
+  or the owner token. But one mailbox = one user, so *which IP you connect to*
+  still reveals *that* you contacted that person. Inherent to per-user servers;
+  hiding it (padding, onion routing) is a separate, larger project.
 - **The ratchet is young.** Protocol v2 implements X3DH + double ratchet to
   spec (see PROTOCOL.md "Session crypto"), but it has not had an external
   cryptographic review yet — get one before charging money for privacy.

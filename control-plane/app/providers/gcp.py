@@ -89,7 +89,7 @@ class GCPProvider(CloudProvider):
 
         return ProvisionResult(
             resource_id=instance_name,
-            address=f"http://{ip}:{SERVER_PORT}",
+            address=f"https://{ip}:{SERVER_PORT}",
             meta={"zone": zone},
         )
 
