@@ -77,5 +77,12 @@
 	<string>Record voice notes to send to your contacts.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Choose photos to send to your contacts.</string>
+	<!-- Content-free push wake-ups (see PROTOCOL.md "Push gateway"). Enabling
+	     push also needs the Push Notifications capability + an aps-environment
+	     entitlement, added in Xcode / Runner.entitlements. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

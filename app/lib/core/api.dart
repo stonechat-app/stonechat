@@ -259,6 +259,25 @@ Future<({bool spk, int opks})?> mailboxPrekeyStatus(
   }
 }
 
+/// Register this device's push token with our OWN mailbox (owner token +
+/// pinned TLS). The mailbox will ping the push gateway when we're offline.
+Future<void> setPushConfig(String serverAddress, String ownerToken,
+    String deviceToken, String platform, String tlsFp) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .post(Uri.parse('$serverAddress/push-config?token=$ownerToken'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'device_token': deviceToken, 'platform': platform}))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode >= 400) {
+      throw ApiException('push-config failed (${r.statusCode})', r.statusCode);
+    }
+  } finally {
+    client.close();
+  }
+}
+
 /// Upload an encrypted media blob to a peer's mailbox. Returns the blob id
 /// to reference from the media envelope.
 Future<String> uploadBlob(

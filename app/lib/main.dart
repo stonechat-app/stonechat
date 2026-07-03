@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'core/push.dart';
 import 'state/app_state.dart';
 import 'state/chat_state.dart';
 import 'state/server_state.dart';
@@ -40,6 +41,19 @@ Future<void> main() async {
     await chat.load();
     await server.refresh();
   }
+
+  // Optional content-free push wake-ups. No Firebase config → stays disabled,
+  // and the app relies on live-socket / on-resume delivery as before.
+  final push = PushService();
+  await push.init(
+    onToken: chat.setPushToken,
+    onWake: () {
+      if (app.hasIdentity) {
+        server.refresh();
+        chat.retryPending();
+      }
+    },
+  );
 
   runApp(
     MultiProvider(

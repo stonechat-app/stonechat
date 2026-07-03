@@ -103,9 +103,12 @@ cd app && flutter test && flutter analyze
   (ID → pubkey → relay IP), never content. Self-hosted relays reduce its
   knowledge further (it never sees their tokens); running your own control
   plane is possible but puts you on a separate directory island.
-- **Push needs credentials to go live.** The gateway + relay plumbing exists
-  (content-free wake-ups); wiring the app to APNs/FCM requires an Apple
-  Developer account / Firebase project.
+- **Push needs credentials to go live.** The full path is wired end to end —
+  app fetches a device token → registers it with its own mailbox → mailbox
+  pings the gateway → content-free wake-up. It stays dormant until you supply
+  APNs/FCM credentials and a Firebase config in the build (see
+  `deploy/README.md` "Enable push"); without them the app falls back to
+  live-socket / on-resume delivery.
 - **Metadata: the destination IP is unavoidable.** Transport is pinned TLS
   (relays self-sign; clients pin an owner-signed fingerprint through the
   directory — no CAs), so on-path observers no longer read envelope metadata

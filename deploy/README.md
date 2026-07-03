@@ -111,10 +111,58 @@ State that survives restarts: the control-plane DB at
 container volume. Destroying a mailbox from the app (or `docker rm -f`) is
 final — its undelivered ciphertext is gone, by design.
 
+## Enable push (optional)
+
+Without this, messages arrive only while the app is foregrounded or on resume —
+fine for a quick test. To get real background wake-ups, stand up the push
+gateway. It's the only component that holds APNs/FCM credentials, and it never
+learns identities (the relay pings it with just a device token). The app→relay→
+gateway wiring is already built; you only need credentials + the service.
+
+**1. Apple push key.** In your Apple Developer account: Certificates, IDs &
+Profiles → Keys → create an **APNs Auth Key** (`.p8`). Note the Key ID and your
+Team ID. Enable the **Push Notifications** capability on your app id.
+
+**2. App build.** In Xcode add the Push Notifications capability to the Runner
+target (creates `Runner.entitlements` with `aps-environment`), drop in the
+Firebase config the app uses to obtain the token (`GoogleService-Info.plist`
+for iOS, `google-services.json` for Android), and rebuild the IPA. Without these
+the app just runs push-disabled — no crash.
+
+> The app fetches the raw APNs token on iOS and sends it to your mailbox; our
+> gateway pushes APNs-direct. Firebase here is only the token-acquisition /
+> notification-lifecycle plumbing.
+
+**3. Run the gateway** on the same VM:
+
+```bash
+cd ~/zeonchat/gateway
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+sudo mkdir -p /etc/zeon && sudo cp /path/to/AuthKey_XXXX.p8 /etc/zeon/apns.p8
+sudo cp deploy/zeon-push-gateway.service /etc/systemd/system/
+sudo nano /etc/systemd/system/zeon-push-gateway.service   # fill in key id / team id / topic
+sudo systemctl daemon-reload && sudo systemctl enable --now zeon-push-gateway
+curl -s localhost:8100/health     # -> {"apns": true, ...}
+```
+
+Do **not** open port 8100 in the firewall — only the mailbox containers reach
+it, over the Docker bridge.
+
+**4. Point the control plane at it** and recreate mailboxes so they inherit the
+setting (mailbox containers reach the host at the Docker bridge address, not
+`127.0.0.1`):
+
+```bash
+cd ~/zeonchat
+sudo ZEON_PUBLIC_IP=<PUBLIC_IP> ZEON_PUSH_GATEWAY=http://172.17.0.1:8100 deploy/setup.sh
+```
+
+Existing mailboxes keep their old (empty) gateway setting until recreated —
+have each user **Turn off → Ignite** once, or destroy/re-provision. New Ignites
+get it automatically. Verify with a message to a user whose app is fully closed.
+
 ## What this setup skips (fine for two people)
 
-- **Push notifications** — the gateway exists but needs APNs credentials wired
-  in; without it, foreground/resume delivery only.
 - **The reconciler, billing, abuse handling** — the "before charging money"
   list in BUSINESS.md. Not needed for a test.
 - **A domain + HTTPS on the control plane** — the app talks to it over plain

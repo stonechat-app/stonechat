@@ -20,6 +20,10 @@ ZEON_CP_PORT="${ZEON_CP_PORT:-8000}"
 # ephemeral range; we open that range so phones can reach the mailboxes.
 MAILBOX_PORT_RANGE="${MAILBOX_PORT_RANGE:-32768:60999}"
 SERVICE_USER="${SERVICE_USER:-root}"
+# Optional: address of the push gateway, reachable from mailbox CONTAINERS.
+# On Linux that's the Docker bridge host address (172.17.0.1), not 127.0.0.1.
+# Leave empty to run without push (see deploy/README.md "Enable push").
+ZEON_PUSH_GATEWAY="${ZEON_PUSH_GATEWAY:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="$REPO_ROOT/control-plane/.venv"
@@ -76,6 +80,7 @@ User=$SERVICE_USER
 WorkingDirectory=$REPO_ROOT/control-plane
 Environment=ZEON_CP_DB=$DB_PATH
 Environment=ZEON_LOCAL_HOST=$ZEON_PUBLIC_IP
+Environment=ZEON_PUSH_GATEWAY=$ZEON_PUSH_GATEWAY
 ExecStart=$VENV/bin/uvicorn app.main:app --host 0.0.0.0 --port $ZEON_CP_PORT
 Restart=always
 RestartSec=2

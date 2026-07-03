@@ -35,12 +35,49 @@ class ChatState extends ChangeNotifier {
   // Forward-secret ratchet sessions, one per peer, cached over the DB copy.
   final Map<String, RatchetSession> _sessions = {};
 
+  // Push wake-ups: this device's token, registered with our mailbox once both
+  // exist (order of arrival between the two is not guaranteed).
+  String? _pushToken;
+  String? _pushPlatform;
+  String? _registeredPushToken; // avoid re-POSTing an unchanged token
+
   ChatState(this.app);
 
   void setMailbox(String? address, String? token, String? tlsFp) {
     mailboxAddress = address;
     mailboxToken = token;
     mailboxTlsFp = tlsFp;
+    _registeredPushToken = null; // new mailbox → re-register the token
+    _registerPush();
+  }
+
+  /// Called by PushService when we obtain or refresh a device token.
+  void setPushToken(String token, String platform) {
+    _pushToken = token;
+    _pushPlatform = platform;
+    _registerPush();
+  }
+
+  Future<void> _registerPush() async {
+    final address = mailboxAddress;
+    final ownerToken = mailboxToken;
+    final tlsFp = mailboxTlsFp;
+    final deviceToken = _pushToken;
+    final platform = _pushPlatform;
+    if (address == null ||
+        ownerToken == null ||
+        tlsFp == null ||
+        deviceToken == null ||
+        platform == null) {
+      return;
+    }
+    if (_registeredPushToken == deviceToken) return;
+    try {
+      await setPushConfig(address, ownerToken, deviceToken, platform, tlsFp);
+      _registeredPushToken = deviceToken;
+    } catch (_) {
+      // best-effort; retried on the next mailbox connect or token refresh
+    }
   }
 
   Future<Directory> _mediaDir() async {
