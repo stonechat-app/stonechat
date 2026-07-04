@@ -1,0 +1,366 @@
+"""Zeon host agent — "host your circle."
+
+Runs on a VM the host-owner owns. Lets them host their OWN mailbox plus
+*invited* friends' mailboxes on the one box — a shared host, but only with
+people they choose (PROTOCOL.md "Invite-hosted mailboxes", TODO.md design
+sketch).
+
+It is the ONLY thing with Docker access to the host — the control plane and
+Zeon-the-company never touch this machine. Each guest gets their own
+`zeon-server` container: own port, own token, own volume, own TLS cert,
+cgroup/pids caps. From the directory's point of view a guest's mailbox is just
+an ordinary self-hosted ("external") relay that happens to live on a friend's box.
+
+Trust model (show this to guests): messages stay end-to-end encrypted and
+unreadable, but the host-owner — who has root here — can see *that* a guest has
+a mailbox and its traffic metadata. Same exposure as any relay operator; the
+difference is the guest chose a friend as their operator, not a company.
+
+The agent serves pinned TLS just like a mailbox: the invite carries the agent's
+certificate fingerprint, so the guest's redeem call can't be MITM'd.
+
+Config (env):
+    ZEON_AGENT_ADMIN_TOKEN   admin secret the host-owner holds (required)
+    ZEON_AGENT_ADVERTISE_HOST public host/IP guests connect to (required)
+    ZEON_AGENT_DB            sqlite path (default agent.db)
+    ZEON_AGENT_TLS_DIR       cert/key dir (default: the DB's directory)
+    ZEON_AGENT_CAPACITY      max guest mailboxes (default 25)
+    ZEON_AGENT_IMAGE         mailbox image (default zeon-server:dev)
+    ZEON_AGENT_SERVER_DIR    build context if the image is missing (default ../server)
+    ZEON_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
+    ZEON_PUSH_GATEWAY        passed through to guest mailboxes (optional)
+    ZEON_AGENT_PORT          listen port (default 8200)
+"""
+
+import base64
+import hashlib
+import json
+import os
+import secrets
+import sqlite3
+import subprocess
+import threading
+import time
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+from fastapi import Depends, FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
+
+ADMIN_TOKEN = os.environ["ZEON_AGENT_ADMIN_TOKEN"]
+ADVERTISE_HOST = os.environ["ZEON_AGENT_ADVERTISE_HOST"]
+DB_PATH = os.environ.get("ZEON_AGENT_DB", "agent.db")
+TLS_DIR = Path(os.environ.get("ZEON_AGENT_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
+CAPACITY = int(os.environ.get("ZEON_AGENT_CAPACITY", "25"))
+IMAGE = os.environ.get("ZEON_AGENT_IMAGE", "zeon-server:dev")
+SERVER_DIR = Path(os.environ.get("ZEON_AGENT_SERVER_DIR",
+                                 str(Path(__file__).resolve().parents[1] / "server")))
+RUNTIME = os.environ.get("ZEON_AGENT_RUNTIME", "")
+PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "")
+SERVER_PORT = 8080
+
+FLEET_LABEL = "zeon.hosted=1"
+MEMORY_LIMIT = "192m"
+CPU_LIMIT = "0.5"
+PIDS_LIMIT = "128"
+HEALTH_TIMEOUT_S = 60
+
+ZEON_ID_RE = __import__("re").compile(r"^ZC-[A-Z2-7-]{36,}$")
+
+
+# -- pinned TLS (same scheme as the mailbox: self-signed, fingerprint pinned) --
+
+class Tls:
+    def __init__(self, directory: Path):
+        directory.mkdir(parents=True, exist_ok=True)
+        self.key_file = directory / "agent_tls_key.pem"
+        self.cert_file = directory / "agent_tls_cert.pem"
+        if not (self.key_file.is_file() and self.cert_file.is_file()):
+            subprocess.run(
+                ["openssl", "req", "-x509", "-newkey", "ec",
+                 "-pkeyopt", "ec_paramgen_curve:prime256v1",
+                 "-keyout", str(self.key_file), "-out", str(self.cert_file),
+                 "-days", "36500", "-nodes", "-subj", "/CN=zeon-host-agent"],
+                check=True, capture_output=True,
+            )
+            self.key_file.chmod(0o600)
+        der = subprocess.run(
+            ["openssl", "x509", "-in", str(self.cert_file), "-outform", "der"],
+            check=True, capture_output=True,
+        ).stdout
+        self.fingerprint_b64 = base64.b64encode(
+            hashlib.blake2b(der, digest_size=32).digest()
+        ).decode()
+
+
+# -- store --------------------------------------------------------------------
+
+class Store:
+    """Invites + guest containers. Small SQLite, host-local."""
+
+    def __init__(self, path: str):
+        self._lock = threading.Lock()
+        self._db = sqlite3.connect(path, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS invites (
+                token       TEXT PRIMARY KEY,
+                uses_left   INTEGER NOT NULL,
+                expires_at  REAL NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS guests (
+                owner_id     TEXT PRIMARY KEY,
+                container_id TEXT NOT NULL,
+                port         INTEGER NOT NULL,
+                created_at   TEXT NOT NULL
+            );
+            """
+        )
+        self._db.commit()
+
+    def add_invite(self, token: str, uses: int, ttl: float) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO invites (token, uses_left, expires_at, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (token, uses, time.time() + ttl, datetime.now(timezone.utc).isoformat()),
+            )
+            self._db.commit()
+
+    def consume_invite(self, token: str) -> bool:
+        """Atomically spend one use of a live invite. False if invalid/expired/spent."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT uses_left, expires_at FROM invites WHERE token = ?", (token,)
+            ).fetchone()
+            if not row or row["uses_left"] <= 0 or row["expires_at"] < time.time():
+                return False
+            self._db.execute(
+                "UPDATE invites SET uses_left = uses_left - 1 WHERE token = ?", (token,)
+            )
+            self._db.commit()
+            return True
+
+    def guest(self, owner_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM guests WHERE owner_id = ?", (owner_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def add_guest(self, owner_id: str, container_id: str, port: int) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT OR REPLACE INTO guests (owner_id, container_id, port, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (owner_id, container_id, port, datetime.now(timezone.utc).isoformat()),
+            )
+            self._db.commit()
+
+    def remove_guest(self, owner_id: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM guests WHERE owner_id = ?", (owner_id,))
+            self._db.commit()
+
+    def guests(self) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT owner_id, port, created_at FROM guests ORDER BY created_at")]
+
+    def guest_count(self) -> int:
+        with self._lock:
+            return self._db.execute("SELECT COUNT(*) FROM guests").fetchone()[0]
+
+
+# -- docker -------------------------------------------------------------------
+
+def _docker(*args: str) -> str:
+    proc = subprocess.run(["docker", *args], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise HTTPException(502, f"docker {args[0]} failed: {proc.stderr.strip()[:300]}")
+    return proc.stdout
+
+
+def _ensure_image() -> None:
+    if subprocess.run(["docker", "image", "inspect", IMAGE],
+                      capture_output=True).returncode != 0:
+        if not SERVER_DIR.is_dir():
+            raise HTTPException(500, f"image {IMAGE} missing and no build dir at {SERVER_DIR}")
+        _docker("build", "-t", IMAGE, str(SERVER_DIR))
+
+
+def _launch_container(owner_id: str, owner_token: str) -> tuple[str, int]:
+    _ensure_image()
+    name = f"zeon-hosted-{owner_id[3:11].lower().replace('-', '')}"
+    args = [
+        "run", "-d",
+        "--name", name,
+        "--restart", "unless-stopped",
+        "-p", f"0:{SERVER_PORT}",
+        "-e", f"ZEON_OWNER_ID={owner_id}",
+        "-e", f"ZEON_OWNER_TOKEN={owner_token}",
+        "-e", f"ZEON_PUSH_GATEWAY={PUSH_GATEWAY}",
+        "--label", FLEET_LABEL,
+        "--memory", MEMORY_LIMIT,
+        "--cpus", CPU_LIMIT,
+        "--pids-limit", PIDS_LIMIT,
+    ]
+    if RUNTIME:
+        args += ["--runtime", RUNTIME]
+    args.append(IMAGE)
+    _docker(*args)
+    info = json.loads(_docker("inspect", name))[0]
+    bindings = info["NetworkSettings"]["Ports"].get(f"{SERVER_PORT}/tcp")
+    if not bindings:
+        _docker("rm", "-f", name)
+        raise HTTPException(502, "container has no published port")
+    return name, int(bindings[0]["HostPort"])
+
+
+def _wait_health(address: str) -> str:
+    """Poll the guest mailbox until healthy; return its TLS fingerprint."""
+    deadline = time.monotonic() + HEALTH_TIMEOUT_S
+    last = "no response"
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(f"{address}/health", timeout=4, verify=False)
+            if r.status_code == 200:
+                return r.json().get("tls_fp")
+        except httpx.HTTPError as e:
+            last = str(e)
+        time.sleep(2)
+    raise HTTPException(504, f"guest mailbox never became healthy ({last})")
+
+
+# -- app ----------------------------------------------------------------------
+
+store = Store(DB_PATH)
+tls = Tls(TLS_DIR)
+app = FastAPI(title="zeon-host-agent")
+
+
+def require_admin(authorization: str | None = Header(default=None)) -> None:
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    if not secrets.compare_digest(token, ADMIN_TOKEN):
+        raise HTTPException(401, "admin only")
+
+
+class InviteIn(BaseModel):
+    uses: int = Field(default=1, ge=1, le=100)
+    ttl_hours: int = Field(default=72, ge=1, le=24 * 30)
+
+
+class RedeemIn(BaseModel):
+    invite: str = Field(min_length=8, max_length=256)
+    owner_id: str = Field(min_length=12, max_length=80)
+
+
+class ProvisionIn(BaseModel):
+    owner_id: str = Field(min_length=12, max_length=80)
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "guests": store.guest_count(),
+        "capacity": CAPACITY,
+        "tls_fp": tls.fingerprint_b64,
+    }
+
+
+@app.post("/v1/invite", dependencies=[Depends(require_admin)])
+async def create_invite(body: InviteIn):
+    """Host-owner mints an invite. The returned `invite` string is what a friend
+    scans/pastes — it bundles this agent's address, its TLS fingerprint, and a
+    single-/multi-use token."""
+    token = secrets.token_urlsafe(24)
+    store.add_invite(token, body.uses, body.ttl_hours * 3600)
+    blob = {
+        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('ZEON_AGENT_PORT', '8200')}",
+        "f": tls.fingerprint_b64,
+        "t": token,
+    }
+    invite = "zeon-host:" + base64.urlsafe_b64encode(
+        json.dumps(blob, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+    return {"invite": invite, "uses": body.uses, "ttl_hours": body.ttl_hours}
+
+
+@app.post("/v1/redeem")
+async def redeem(body: RedeemIn):
+    """A friend redeems an invite → gets a mailbox on this host. Returns the
+    address + token (kept on the guest's device) + TLS fingerprint. Idempotent:
+    re-redeeming for an existing guest returns the same mailbox without spending
+    another invite use."""
+    if not ZEON_ID_RE.match(body.owner_id):
+        raise HTTPException(400, "bad owner_id")
+
+    existing = store.guest(body.owner_id)
+    if existing:
+        # already hosted here — reconnect, don't consume an invite or relaunch
+        raise HTTPException(
+            409, "this Zeon ID already has a mailbox on this host; ask the host "
+                 "owner to evict it first if you want a fresh one")
+
+    if not store.consume_invite(body.invite.strip()):
+        raise HTTPException(403, "invite is invalid, expired, or fully used")
+    if store.guest_count() >= CAPACITY:
+        raise HTTPException(507, "this host is full")
+
+    return _provision_guest(body.owner_id)
+
+
+@app.post("/v1/guest", dependencies=[Depends(require_admin)])
+async def provision_direct(body: ProvisionIn):
+    """Host-owner provisions a mailbox directly (e.g. their OWN), no invite."""
+    if not ZEON_ID_RE.match(body.owner_id):
+        raise HTTPException(400, "bad owner_id")
+    if store.guest(body.owner_id):
+        raise HTTPException(409, "already hosted here")
+    if store.guest_count() >= CAPACITY:
+        raise HTTPException(507, "this host is full")
+    return _provision_guest(body.owner_id)
+
+
+def _provision_guest(owner_id: str) -> dict:
+    owner_token = secrets.token_urlsafe(32)
+    container_id, port = _launch_container(owner_id, owner_token)
+    address = f"https://{ADVERTISE_HOST}:{port}"
+    try:
+        tls_fp = _wait_health(address)
+    except HTTPException:
+        _docker("rm", "-f", container_id)
+        raise
+    store.add_guest(owner_id, container_id, port)
+    return {"address": address, "server_token": owner_token, "tls_fp": tls_fp}
+
+
+@app.get("/v1/guests", dependencies=[Depends(require_admin)])
+async def list_guests():
+    return {"guests": store.guests(), "capacity": CAPACITY}
+
+
+@app.delete("/v1/guest/{owner_id}", dependencies=[Depends(require_admin)])
+async def evict(owner_id: str):
+    """Host-owner removes a guest — destroys their container. The guest keeps
+    their local history and can re-home their mailbox elsewhere."""
+    guest = store.guest(owner_id)
+    if not guest:
+        raise HTTPException(404, "no such guest")
+    _docker("rm", "-f", guest["container_id"])
+    store.remove_guest(owner_id)
+    return {"status": "evicted"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app, host="0.0.0.0", port=int(os.environ.get("ZEON_AGENT_PORT", "8200")),
+        ssl_certfile=str(tls.cert_file), ssl_keyfile=str(tls.key_file),
+    )

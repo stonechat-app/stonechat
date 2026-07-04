@@ -102,6 +102,37 @@ class ServerState extends ChangeNotifier {
     }
   }
 
+  /// Guest side of "host your circle": redeem a friend's invite to get a
+  /// mailbox on their host, then connect it exactly like a self-hosted relay
+  /// (trust-on-first-use pin, owner-verified, token kept on-device).
+  Future<void> joinHost(String rawInvite) async {
+    final invite = HostInvite.parse(rawInvite); // may throw FormatException
+    busy = true;
+    notifyListeners();
+    ({String address, String serverToken, String tlsFp}) mailbox;
+    try {
+      mailbox = await redeemHostInvite(invite, app.zeonId!);
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+    // connectExternal manages its own busy flag + does the owner check / pin.
+    await connectExternal(mailbox.address, mailbox.serverToken);
+  }
+
+  /// Host-owner side: mint an invite through their own agent. [agentAddress] is
+  /// where they run the agent; [adminToken] is its ZEON_AGENT_ADMIN_TOKEN.
+  Future<String> mintInvite(String agentAddress, String adminToken,
+      {int uses = 1, int ttlHours = 72}) async {
+    final url = agentAddress.trim().replaceAll(RegExp(r'/+$'), '');
+    final fp = await observeCertFingerprint(url);
+    if (fp == null) {
+      throw ApiException("Couldn't reach a Zeon host agent at that address");
+    }
+    return createHostInvite(url, fp, adminToken.trim(),
+        uses: uses, ttlHours: ttlHours);
+  }
+
   Future<void> create({
     required String provider,
     required String machineType,

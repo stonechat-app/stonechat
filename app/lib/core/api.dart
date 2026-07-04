@@ -259,6 +259,103 @@ Future<({bool spk, int opks})?> mailboxPrekeyStatus(
   }
 }
 
+// -- invite-hosted mailboxes ("host your circle") -----------------------------
+
+/// A parsed host invite: where the agent is, its pinned fingerprint, and the
+/// one-time token. Encoded as "zeon-host:" + urlsafe-base64(JSON{u,f,t}).
+class HostInvite {
+  final String url; // agent base URL (https)
+  final String fp; // agent TLS fingerprint to pin
+  final String token; // invite token
+
+  HostInvite(this.url, this.fp, this.token);
+
+  static HostInvite parse(String raw) {
+    final s = raw.trim();
+    const prefix = 'zeon-host:';
+    if (!s.startsWith(prefix)) {
+      throw const FormatException('That is not a Zeon host invite');
+    }
+    var b64 = s.substring(prefix.length);
+    b64 += '=' * ((4 - b64.length % 4) % 4);
+    final j = jsonDecode(utf8.decode(base64Url.decode(b64))) as Map<String, dynamic>;
+    return HostInvite(j['u'] as String, j['f'] as String, j['t'] as String);
+  }
+}
+
+String _detail(http.Response r) {
+  try {
+    final b = jsonDecode(r.body);
+    if (b is Map && b['detail'] != null) return '${b['detail']}';
+  } catch (_) {}
+  return 'error ${r.statusCode}';
+}
+
+/// Redeem a host invite → a mailbox for [ownerId] on that host. Pinned to the
+/// agent fingerprint carried in the invite (no CA, no MITM).
+Future<({String address, String serverToken, String tlsFp})> redeemHostInvite(
+    HostInvite invite, String ownerId) async {
+  final client = pinnedClient(invite.fp);
+  try {
+    final r = await client
+        .post(Uri.parse('${invite.url}/v1/redeem'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'invite': invite.token, 'owner_id': ownerId}))
+        .timeout(const Duration(seconds: 90));
+    if (r.statusCode >= 400) throw ApiException(_detail(r), r.statusCode);
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return (
+      address: j['address'] as String,
+      serverToken: j['server_token'] as String,
+      tlsFp: j['tls_fp'] as String,
+    );
+  } finally {
+    client.close();
+  }
+}
+
+/// Observe a host agent's TLS fingerprint (trust-on-first-use). Used by the
+/// host-owner contacting their OWN agent to mint invites.
+Future<String?> observeCertFingerprint(String url) async {
+  String? seen;
+  final client = HttpClient()
+    ..badCertificateCallback = (cert, _, _) {
+      seen = certFingerprinter!(Uint8List.fromList(cert.der));
+      return true;
+    };
+  try {
+    final r = await IOClient(client)
+        .get(Uri.parse('$url/health'))
+        .timeout(const Duration(seconds: 8));
+    return r.statusCode == 200 ? seen : null;
+  } catch (_) {
+    return null;
+  } finally {
+    client.close();
+  }
+}
+
+/// Host-owner mints an invite through their agent's admin API (pinned).
+Future<String> createHostInvite(
+    String agentUrl, String agentFp, String adminToken,
+    {int uses = 1, int ttlHours = 72}) async {
+  final client = pinnedClient(agentFp);
+  try {
+    final r = await client
+        .post(Uri.parse('$agentUrl/v1/invite'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $adminToken',
+            },
+            body: jsonEncode({'uses': uses, 'ttl_hours': ttlHours}))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode >= 400) throw ApiException(_detail(r), r.statusCode);
+    return (jsonDecode(r.body) as Map<String, dynamic>)['invite'] as String;
+  } finally {
+    client.close();
+  }
+}
+
 /// Register this device's push token with our OWN mailbox (owner token +
 /// pinned TLS). The mailbox will ping the push gateway when we're offline.
 Future<void> setPushConfig(String serverAddress, String ownerToken,

@@ -1,0 +1,5 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+httpx>=0.27
+# Also needs the `openssl` and `docker` CLIs on the host (the agent runs
+# directly on the host so it can manage sibling mailbox containers).

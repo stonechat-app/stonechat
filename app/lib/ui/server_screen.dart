@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../state/server_state.dart';
@@ -36,8 +37,14 @@ class _ServerScreenState extends State<ServerScreen> {
   double _diskGb = 10;
   bool _showAdvanced = false;
   bool _showExternal = false;
+  bool _showJoin = false;
+  bool _showHost = false;
   final _extAddress = TextEditingController();
   final _extToken = TextEditingController();
+  final _inviteInput = TextEditingController();
+  final _agentAddress = TextEditingController();
+  final _agentAdminToken = TextEditingController();
+  String? _mintedInvite;
 
   void _applyProviderDefaults(String provider) {
     setState(() {
@@ -160,6 +167,71 @@ class _ServerScreenState extends State<ServerScreen> {
                 ),
               ),
             ],
+            const SizedBox(height: 16),
+            GestureDetector(
+              onTap: () => setState(() => _showJoin = !_showJoin),
+              child: Text(
+                _showJoin ? '▾ Join a friend\'s host' : '▸ Join a friend\'s host',
+                style: Zn.mono(size: 10, letterSpacing: 2),
+              ),
+            ),
+            if (_showJoin) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'A friend can host your mailbox on their own server. Paste the '
+                'invite they sent you. Your messages stay end-to-end encrypted — '
+                'but your host can see that you have a mailbox there and its '
+                'traffic timing. Only accept from someone you trust with that.',
+                style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
+              ),
+              const SizedBox(height: 12),
+              _LabeledField(label: 'Invite', controller: _inviteInput),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: OutlinedButton(
+                  onPressed: server.busy ? null : () => _joinHost(server),
+                  child: const Text('Join with invite'),
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            GestureDetector(
+              onTap: () => setState(() => _showHost = !_showHost),
+              child: Text(
+                _showHost
+                    ? '▾ Host friends on my server'
+                    : '▸ Host friends on my server',
+                style: Zn.mono(size: 10, letterSpacing: 2),
+              ),
+            ),
+            if (_showHost) ...[
+              const SizedBox(height: 8),
+              const Text(
+                'Running the Zeon host agent on your server? Create an invite for '
+                'a friend — their mailbox lives on your box alongside yours. You '
+                'can see that they host with you, never their messages.',
+                style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
+              ),
+              const SizedBox(height: 12),
+              _LabeledField(label: 'Agent address', controller: _agentAddress),
+              const SizedBox(height: 12),
+              _LabeledField(label: 'Admin token', controller: _agentAdminToken),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: OutlinedButton(
+                  onPressed: server.busy ? null : () => _mintInvite(server),
+                  child: const Text('Create an invite'),
+                ),
+              ),
+              if (_mintedInvite != null) ...[
+                const SizedBox(height: 12),
+                _InviteResult(invite: _mintedInvite!),
+              ],
+            ],
           ],
           if (server.isProvisioning)
             const Padding(
@@ -227,6 +299,37 @@ class _ServerScreenState extends State<ServerScreen> {
     try {
       await server.connectExternal(address, token);
       if (mounted) showZnSnack(context, 'Connected — friends can reach you now');
+    } catch (e) {
+      if (mounted) showZnSnack(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _joinHost(ServerState server) async {
+    final invite = _inviteInput.text.trim();
+    if (invite.isEmpty) {
+      showZnSnack(context, 'Paste the invite first', error: true);
+      return;
+    }
+    try {
+      await server.joinHost(invite);
+      if (mounted) {
+        showZnSnack(context, 'Joined — your mailbox is live on your friend\'s host');
+      }
+    } catch (e) {
+      if (mounted) showZnSnack(context, '$e', error: true);
+    }
+  }
+
+  Future<void> _mintInvite(ServerState server) async {
+    final addr = _agentAddress.text.trim();
+    final token = _agentAdminToken.text.trim();
+    if (addr.isEmpty || token.isEmpty) {
+      showZnSnack(context, 'Enter your agent address and admin token', error: true);
+      return;
+    }
+    try {
+      final invite = await server.mintInvite(addr, token);
+      if (mounted) setState(() => _mintedInvite = invite);
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
     }
@@ -367,6 +470,44 @@ class _ProviderChip extends StatelessWidget {
               color: selected ? Zn.ion : Zn.muted,
               fontWeight: FontWeight.w600),
         ),
+      ),
+    );
+  }
+}
+
+class _InviteResult extends StatelessWidget {
+  final String invite;
+  const _InviteResult({required this.invite});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Zn.surface,
+        borderRadius: BorderRadius.circular(Zn.radius),
+        border: Border.all(color: Zn.ion),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Share this with your friend',
+              style: Zn.mono(size: 10, letterSpacing: 2, color: Zn.ion)),
+          const SizedBox(height: 8),
+          SelectableText(invite, style: Zn.mono(size: 11, color: Zn.text)),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: () async {
+                await Clipboard.setData(ClipboardData(text: invite));
+                if (context.mounted) showZnSnack(context, 'Invite copied');
+              },
+              icon: const Icon(Icons.copy, size: 16),
+              label: const Text('Copy'),
+            ),
+          ),
+        ],
       ),
     );
   }

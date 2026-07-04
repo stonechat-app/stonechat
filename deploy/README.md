@@ -161,6 +161,15 @@ Existing mailboxes keep their old (empty) gateway setting until recreated —
 have each user **Turn off → Ignite** once, or destroy/re-provision. New Ignites
 get it automatically. Verify with a message to a user whose app is fully closed.
 
+## Host friends on your box ("host your circle")
+
+Want your VM to also host a few friends' mailboxes? Run the **host agent**
+(`agent/README.md`) alongside the control plane — it mints invites and spins up
+a container per invited friend on the same box, each end-to-end encrypted and
+unreadable to you. Open port 8200 (agent) plus the mailbox range, and share
+invites from the app ("Host friends on my server"). Friends redeem with
+"Join a friend's host."
+
 ## What this setup skips (fine for two people)
 
 - **The reconciler, billing, abuse handling** — the "before charging money"

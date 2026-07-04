@@ -27,6 +27,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 | `server/` | Routing server ("relay"). Single-file FastAPI + SQLite mailbox that runs on the user's VM. Stores ciphertext only, deletes on ack. |
 | `control-plane/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Zeon IDs → pubkeys + current relay address. Never sees message content. |
 | `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
+| `agent/` | Host agent ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
 | `landing/` | Marketing site (Astro). Static landing + pricing pages; `cd landing && npm install && npm run dev` (Node 22+). |
 
 ## Quick start (all local, no cloud account)

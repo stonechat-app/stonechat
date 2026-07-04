@@ -20,9 +20,11 @@ import base64
 import copy
 import hashlib
 import json
+import pathlib
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -531,6 +533,98 @@ def main():
             "dave's own server must keep running after disconnect"
     finally:
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+
+    print("3d) invite-hosted mailbox: host a friend on your own box")
+    agent_dir = pathlib.Path(__file__).resolve().parents[1] / "agent"
+    agent_admin = "e2e-agent-admin"
+    agent_port = "8290"
+    agent_data = tempfile.mkdtemp()
+    agent_url = f"https://127.0.0.1:{agent_port}"
+    agent_proc = subprocess.Popen(
+        [sys.executable, str(agent_dir / "main.py")],
+        env={**os.environ,
+             "ZEON_AGENT_ADMIN_TOKEN": agent_admin,
+             "ZEON_AGENT_ADVERTISE_HOST": "127.0.0.1",
+             "ZEON_AGENT_PORT": agent_port,
+             "ZEON_AGENT_DB": os.path.join(agent_data, "agent.db"),
+             "ZEON_AGENT_TLS_DIR": agent_data},
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    admin_hdr = {"Authorization": f"Bearer {agent_admin}"}
+    try:
+        for _ in range(30):
+            try:
+                if MX.get(f"{agent_url}/health", timeout=2).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.5)
+
+        # admin auth is enforced on invite minting
+        assert MX.post(f"{agent_url}/v1/invite", json={"uses": 1}).status_code == 401
+
+        # host-owner mints a single-use invite
+        r = MX.post(f"{agent_url}/v1/invite", headers=admin_hdr,
+                    json={"uses": 1, "ttl_hours": 24})
+        r.raise_for_status()
+        blob = r.json()["invite"]
+        assert blob.startswith("zeon-host:")
+        invite = json.loads(base64.urlsafe_b64decode(blob.split(":", 1)[1] + "=="))
+        assert invite["f"] == live_cert_fp(agent_url), \
+            "invite must pin the agent's real certificate"
+
+        # a bad token is rejected
+        assert MX.post(f"{agent_url}/v1/redeem",
+                       json={"invite": "not-a-real-invite-token",
+                             "owner_id": "ZC-" + "A" * 36}
+                       ).status_code == 403
+
+        # frank redeems it -> a mailbox on the host-owner's box
+        frank = Phone("frank")
+        frank.register()
+        r = MX.post(f"{agent_url}/v1/redeem",
+                    json={"invite": invite["t"], "owner_id": frank.zeon_id})
+        r.raise_for_status()
+        hosted = r.json()
+        assert hosted["tls_fp"] == live_cert_fp(hosted["address"]), \
+            "redeem fingerprint must match the guest mailbox's live cert"
+
+        # frank connects it exactly like a self-hosted relay: the control plane
+        # proves ownership via /health, the token never leaves frank's device
+        frank.server = {"address": hosted["address"],
+                        "server_token": hosted["server_token"], "status": "running"}
+        httpx.post(f"{CP}/v1/server/external", headers=frank.auth,
+                   json={"address": hosted["address"]}).raise_for_status()
+        frank.publish_tls_sig()
+        assert_pinned(frank)
+        frank.upload_prekeys()
+
+        # full participant: alice messages frank on his friend-hosted mailbox
+        alice.deliver_to(frank, alice.seal(frank, "msg", {"text": "hi frank"}))
+        got = asyncio.run(frank.receive_one())
+        assert frank.open_envelope(got, alice) == {"text": "hi frank"}
+
+        # single-use: a second redeem of the same invite fails
+        grace = Phone("grace")
+        grace.register()
+        assert MX.post(f"{agent_url}/v1/redeem",
+                       json={"invite": invite["t"], "owner_id": grace.zeon_id}
+                       ).status_code == 403, "single-use invite must not redeem twice"
+
+        # host-owner evicts frank -> his container is destroyed
+        MX.delete(f"{agent_url}/v1/guest/{frank.zeon_id}",
+                  headers=admin_hdr).raise_for_status()
+        httpx.delete(f"{CP}/v1/server", headers=frank.auth)  # tidy the directory
+    finally:
+        agent_proc.terminate()
+        try:
+            agent_proc.wait(timeout=5)
+        except Exception:
+            agent_proc.kill()
+        leftover = subprocess.run(
+            ["docker", "ps", "-aq", "--filter", "label=zeon.hosted=1"],
+            capture_output=True, text=True).stdout.split()
+        if leftover:
+            subprocess.run(["docker", "rm", "-f", *leftover], capture_output=True)
 
     print("4) one-server-per-user enforced")
     r = httpx.post(
