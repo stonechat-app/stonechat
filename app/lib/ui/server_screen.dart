@@ -11,12 +11,19 @@ import 'widgets.dart';
 const _providerDefaults = {
   'gcp': (machineType: 'e2-micro', region: 'us-central1-a'),
   'aws': (machineType: 't3.micro', region: 'us-east-1'),
+  'fleet': (machineType: 'container', region: 'shared'),
   'local': (machineType: 'container', region: 'localhost'),
 };
+
+// 'local' puts the mailbox on the machine running the control plane —
+// forbidden in production topology, so it's offered in dev builds only.
+const _providerChoices =
+    kDebugMode ? ['gcp', 'aws', 'fleet', 'local'] : ['gcp', 'aws', 'fleet'];
 
 const _providerLabels = {
   'gcp': 'Google Cloud',
   'aws': 'Amazon',
+  'fleet': 'Zeon cloud',
   'local': 'This computer',
   'external': 'Your own server',
 };
@@ -29,7 +36,12 @@ class ServerScreen extends StatefulWidget {
 }
 
 class _ServerScreenState extends State<ServerScreen> {
-  String _provider = kDebugMode ? 'local' : 'gcp';
+  // --dart-define=ZEON_PROVIDER overrides the default selection (must be one
+  // of _providerDefaults' keys), same as on the onboarding setup screen.
+  static const _envProvider = String.fromEnvironment('ZEON_PROVIDER');
+  String _provider = _envProvider != ''
+      ? _envProvider
+      : (kDebugMode ? 'local' : 'gcp');
   late final _machineType =
       TextEditingController(text: _providerDefaults[_provider]!.machineType);
   late final _region =
@@ -82,7 +94,7 @@ class _ServerScreenState extends State<ServerScreen> {
             const SizedBox(height: 10),
             Row(
               children: [
-                for (final p in _providerDefaults.keys) ...[
+                for (final p in _providerChoices) ...[
                   Expanded(
                     child: _ProviderChip(
                       name: _providerLabels[p]!,
@@ -90,7 +102,7 @@ class _ServerScreenState extends State<ServerScreen> {
                       onTap: () => _applyProviderDefaults(p),
                     ),
                   ),
-                  if (p != _providerDefaults.keys.last) const SizedBox(width: 8),
+                  if (p != _providerChoices.last) const SizedBox(width: 8),
                 ],
               ],
             ),

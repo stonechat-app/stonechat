@@ -23,9 +23,14 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
 
   // In debug builds default to a local Docker mailbox so development never
   // needs a cloud account; release builds default to the free-tier GCP VM.
-  static const _defaultProvider = kDebugMode ? 'local' : 'gcp';
+  // --dart-define=ZEON_PROVIDER overrides both (e.g. testing the gcp
+  // provider from a debug build in the simulator).
+  static const _envProvider = String.fromEnvironment('ZEON_PROVIDER');
+  static const _defaultProvider =
+      _envProvider != '' ? _envProvider : (kDebugMode ? 'local' : 'gcp');
   static const _defaults = {
     'gcp': (machineType: 'e2-micro', region: 'us-central1-a'),
+    'fleet': (machineType: 'container', region: 'shared'),
     'local': (machineType: 'container', region: 'localhost'),
   };
 

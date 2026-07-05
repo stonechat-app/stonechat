@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../models.dart';
 import '../state/chat_state.dart';
+import '../state/server_state.dart';
 import 'chat_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -15,6 +16,7 @@ class HomeScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final chat = context.watch<ChatState>();
     final requests = chat.incomingRequests;
+    final sent = chat.outgoingRequests;
 
     // One merged list: DMs and groups, most recent activity first.
     int activity(String id, int fallback) =>
@@ -55,20 +57,44 @@ class HomeScreen extends StatelessWidget {
         children: [
           const RelayStrip(),
           Expanded(
-            child: (requests.isEmpty && conversations.isEmpty)
-                ? const _EmptyState()
-                : ListView(
-                    children: [
-                      if (requests.isNotEmpty) ...[
-                        _SectionLabel('Requests · ${requests.length}'),
-                        ...requests.map((c) => _RequestTile(contact: c)),
+            // Pull down = "check for mail now": reconnect the mailbox socket
+            // (the relay re-drains its queue to a fresh connection) and
+            // retry anything still pending in our outbox.
+            child: RefreshIndicator(
+              color: Zn.ion,
+              onRefresh: () async {
+                final server = context.read<ServerState>();
+                await server.reconnectMailbox();
+                await chat.retryPending();
+              },
+              child: (requests.isEmpty && sent.isEmpty && conversations.isEmpty)
+                  ? LayoutBuilder(
+                      builder: (context, constraints) => ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        children: [
+                          SizedBox(
+                            height: constraints.maxHeight,
+                            child: const _EmptyState(),
+                          ),
+                        ],
+                      ),
+                    )
+                  : ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: [
+                        if (requests.isNotEmpty || sent.isNotEmpty) ...[
+                          _SectionLabel(
+                              'Requests · ${requests.length + sent.length}'),
+                          ...requests.map((c) => _RequestTile(contact: c)),
+                          ...sent.map((c) => _SentRequestTile(contact: c)),
+                        ],
+                        if (conversations.isNotEmpty) ...[
+                          const _SectionLabel('Chats'),
+                          ...conversations,
+                        ],
                       ],
-                      if (conversations.isNotEmpty) ...[
-                        const _SectionLabel('Chats'),
-                        ...conversations,
-                      ],
-                    ],
-                  ),
+                    ),
+            ),
           ),
         ],
       ),
@@ -199,6 +225,56 @@ class _RequestTile extends StatelessWidget {
               } catch (e) {
                 if (context.mounted) {
                   showZnSnack(context, 'Accepted — will notify them when reachable');
+                }
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A contact request WE sent that the other side hasn't accepted yet.
+/// Kept visible so a stuck handshake is never invisible; the arrow re-sends
+/// (receivers dedupe by sender) and the cross withdraws it locally.
+class _SentRequestTile extends StatelessWidget {
+  final Contact contact;
+  const _SentRequestTile({required this.contact});
+
+  @override
+  Widget build(BuildContext context) {
+    final chat = context.read<ChatState>();
+    return ListTile(
+      leading: ZeonAvatar(zeonId: contact.zeonId, name: contact.displayName),
+      title: Text(contact.displayName,
+          style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(
+          contact.handle == null
+              ? 'request sent · waiting'
+              : '${contact.handle} · request sent · waiting',
+          style: const TextStyle(color: Zn.muted, fontSize: 12)),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.close, color: Zn.danger, size: 20),
+            tooltip: 'Withdraw',
+            onPressed: () => chat.declineContact(contact),
+          ),
+          IconButton(
+            icon: const Icon(Icons.arrow_upward, color: Zn.ion, size: 20),
+            tooltip: 'Send again',
+            onPressed: () async {
+              try {
+                await chat.resendRequest(contact);
+                if (context.mounted) {
+                  showZnSnack(context, 'Request sent again');
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  showZnSnack(context, "Couldn't reach their mailbox: $e",
+                      error: true);
                 }
               }
             },

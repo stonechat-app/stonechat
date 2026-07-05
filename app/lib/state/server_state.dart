@@ -170,6 +170,15 @@ class ServerState extends ChangeNotifier {
     }
   }
 
+  /// Manual refresh (pull-to-refresh): tear the socket down and reconnect.
+  /// The relay drains its queue to a fresh owner connection, so this is
+  /// "check for mail now" — plus a server-record refresh for good measure.
+  Future<void> reconnectMailbox() async {
+    _dropSocket();
+    notifyListeners();
+    await refresh();
+  }
+
   void _ensureSocket(String address, String token, String tlsFp) {
     if (_socket != null) {
       if (_socket!.tlsFp == tlsFp && _socket!.address == address) return;
