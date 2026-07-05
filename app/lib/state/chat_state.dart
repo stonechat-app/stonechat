@@ -91,6 +91,8 @@ class ChatState extends ChangeNotifier {
       contacts.where((c) => c.isAccepted).toList();
   List<Contact> get incomingRequests =>
       contacts.where((c) => c.status == ContactStatus.pendingIn).toList();
+  List<Contact> get outgoingRequests =>
+      contacts.where((c) => c.status == ContactStatus.pendingOut).toList();
 
   Future<void> load() async {
     contacts = await app.db.contacts();
@@ -310,20 +312,35 @@ class ChatState extends ChangeNotifier {
           await _saveSession(session);
           return plain;
         }
-        if (block == null) return null; // forged/undecryptable — drop
+        if (block == null) {
+          _dropLog(envelope, 'session decrypt failed, no x3dh block');
+          return null; // forged/undecryptable — drop
+        }
         // fall through: maybe a fresh prekey message replacing a stale session
       }
     }
-    if (block == null) return null;
+    if (block == null) {
+      _dropLog(envelope, 'no session and no x3dh block');
+      return null;
+    }
 
     // The identity key in the block must commit to the claimed sender.
-    if (!app.crypto.pubkeyMatchesId(block.ikB64, envelope.from)) return null;
+    if (!app.crypto.pubkeyMatchesId(block.ikB64, envelope.from)) {
+      _dropLog(envelope, 'x3dh identity key does not commit to sender id');
+      return null;
+    }
     final spkRow = await app.db.prekeyById(block.spkId, 'spk');
-    if (spkRow == null) return null; // rotated away — sender will re-encrypt
+    if (spkRow == null) {
+      _dropLog(envelope, 'spk ${block.spkId} not held (rotated away?)');
+      return null; // sender will re-encrypt
+    }
     Map<String, Object?>? opkRow;
     if (block.opkId != null) {
       opkRow = await app.db.prekeyById(block.opkId!, 'opk');
-      if (opkRow == null) return null; // already consumed — replay
+      if (opkRow == null) {
+        _dropLog(envelope, 'opk ${block.opkId} not held (consumed/replay?)');
+        return null;
+      }
     }
     final fresh = RatchetSession.respond(
       app.crypto,
@@ -337,12 +354,22 @@ class ChatState extends ChangeNotifier {
           : Uint8List.fromList(base64Decode(opkRow['sec'] as String)),
     );
     final plain = fresh.decrypt(header, nonce, ciphertext, adPrefix);
-    if (plain == null) return null;
+    if (plain == null) {
+      _dropLog(envelope, 'x3dh responder decrypt failed');
+      return null;
+    }
     if (block.opkId != null) {
       await app.db.deletePrekey(block.opkId!); // one-time means one time
     }
     await _saveSession(fresh); // replaces any prior session with this peer
     return plain;
+  }
+
+  /// Dropped envelopes are invisible by design (they're acked and deleted);
+  /// leave a trace so "message never arrived" is diagnosable from logs.
+  static void _dropLog(Envelope envelope, String reason) {
+    debugPrint('zeon: dropped ${envelope.type} from '
+        '${envelope.from.substring(0, 12)}…: $reason');
   }
 
   // -- prekey publishing -----------------------------------------------------------
@@ -381,11 +408,11 @@ class ChatState extends ChangeNotifier {
           .insertPrekey('opk', base64Encode(kp.publicKey), base64Encode(sec));
     }
 
-    final status = await mailboxPrekeyStatus(address, tlsFp);
-    if (status != null && !status.spk) {
-      await app.db.markAllPrekeysUnpublished();
-    }
-    final toPublish = await app.db.opks(unpublishedOnly: true);
+    // Upload the FULL remaining stock; the mailbox replaces its store with
+    // it (PROTOCOL.md "Prekeys"). Consumed OPKs are deleted locally, so what
+    // we hold is exactly what we can decrypt — this heals a mailbox left
+    // holding keys from a previous install.
+    final toPublish = await app.db.opks();
     final spkPubBytes =
         Uint8List.fromList(base64Decode(spkRow!['pub'] as String));
     await uploadPrekeys(
@@ -401,8 +428,6 @@ class ChatState extends ChangeNotifier {
         for (final o in toPublish) {'id': o['id'], 'pub': o['pub']}
       ],
     );
-    await app.db
-        .markPrekeysPublished([for (final o in toPublish) o['id'] as int]);
   }
 
   /// Resolve + deliver to a group member (same trust-but-verify as contacts).
@@ -476,6 +501,16 @@ class ChatState extends ChangeNotifier {
     return contact;
   }
 
+  /// Re-send a still-pending contact request (manual nudge from the
+  /// Requests list; receivers dedupe by sender, so this is always safe).
+  Future<void> resendRequest(Contact contact) async {
+    await _deliver(
+      contact,
+      await _seal(EnvelopeType.contactRequest, contact,
+          {'display_name': app.displayName}),
+    );
+  }
+
   Future<void> acceptContact(Contact contact) async {
     contact.status = ContactStatus.accepted;
     await app.db.upsertContact(contact);
@@ -489,6 +524,11 @@ class ChatState extends ChangeNotifier {
 
   Future<void> declineContact(Contact contact) async {
     await app.db.deleteContact(contact.zeonId);
+    // Drop the ratchet too: a kept session would be silently reused if this
+    // peer is ever re-added, and it may be pinned to prekeys the other side
+    // no longer holds (the re-add does a fresh X3DH instead).
+    await app.db.deleteSession(contact.zeonId);
+    _sessions.remove(contact.zeonId);
     contacts.removeWhere((c) => c.zeonId == contact.zeonId);
     _messages.remove(contact.zeonId);
     notifyListeners();
@@ -808,7 +848,27 @@ class ChatState extends ChangeNotifier {
 
     switch (envelope.type) {
       case EnvelopeType.contactRequest:
-        if (contact != null) return; // duplicate request
+        if (contact != null) {
+          // Simultaneous add: we requested them too — two requests crossing
+          // is mutual consent, so accept instead of deadlocking on
+          // "duplicate". Same answer if we'd already accepted: our earlier
+          // accept may have been lost (their reinstall), so re-affirm.
+          if (contact.status == ContactStatus.pendingOut ||
+              contact.isAccepted) {
+            contact.status = ContactStatus.accepted;
+            contact.displayName =
+                (payload['display_name'] as String?) ?? contact.displayName;
+            await app.db.upsertContact(contact);
+            await _deliver(
+              contact,
+              await _seal(EnvelopeType.contactAccept, contact,
+                  {'display_name': app.displayName}),
+            );
+            break;
+          }
+          _dropLog(envelope, 'duplicate contact request (already ${contact.status})');
+          return;
+        }
         // Identity key: the (already commitment-verified) x3dh block if this
         // was a session-opening message, else the directory. Handle is
         // directory-only, best-effort.
@@ -841,7 +901,10 @@ class ChatState extends ChangeNotifier {
         await app.db.upsertContact(contact);
 
       case EnvelopeType.msg:
-        if (contact == null || !contact.isAccepted) return; // strangers can't chat
+        if (contact == null || !contact.isAccepted) {
+          _dropLog(envelope, 'msg from non-accepted contact — strangers cannot chat');
+          return;
+        }
         await _storeIncoming(
           contact,
           Message(

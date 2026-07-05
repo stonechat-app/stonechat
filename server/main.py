@@ -129,7 +129,10 @@ class Mailbox:
         self._db.commit()
 
     def set_prekeys(self, spk: dict, opks: list[dict]) -> None:
-        """Owner upload: replace the SPK, merge OPKs by id (cap MAX_OPKS)."""
+        """Owner upload: replace the SPK and the whole OPK stock. The owner
+        is the source of truth for which private halves it still holds —
+        merging by id kept keys from a previous install alive forever, and
+        senders got bundles the owner could no longer decrypt."""
         with self._lock:
             self._db.execute(
                 "INSERT INTO signed_prekey (row, id, pub, sig) VALUES (1, ?, ?, ?)"
@@ -137,12 +140,8 @@ class Mailbox:
                 " pub=excluded.pub, sig=excluded.sig",
                 (spk["id"], spk["pub"], spk["sig"]),
             )
-            for opk in opks:
-                count = self._db.execute(
-                    "SELECT COUNT(*) FROM one_time_prekeys"
-                ).fetchone()[0]
-                if count >= MAX_OPKS:
-                    break
+            self._db.execute("DELETE FROM one_time_prekeys")
+            for opk in opks[:MAX_OPKS]:
                 self._db.execute(
                     "INSERT OR IGNORE INTO one_time_prekeys (id, pub) VALUES (?, ?)",
                     (opk["id"], opk["pub"]),

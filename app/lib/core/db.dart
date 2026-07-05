@@ -15,7 +15,7 @@ class ChatDb {
     final path = p.join(await getDatabasesPath(), 'zeon.db');
     final db = await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
           await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
@@ -40,6 +40,14 @@ class ChatDb {
           await db.execute('ALTER TABLE contacts ADD COLUMN tls_fp TEXT');
           await db.execute('ALTER TABLE group_members ADD COLUMN tls_fp TEXT');
         }
+        if (oldVersion < 7) {
+          // Fresh installs at v4–v6 got a `messages` table without sender_id:
+          // the column only existed on this upgrade path, not in onCreate.
+          final cols = await db.rawQuery('PRAGMA table_info(messages)');
+          if (!cols.any((c) => c['name'] == 'sender_id')) {
+            await db.execute('ALTER TABLE messages ADD COLUMN sender_id TEXT');
+          }
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -58,6 +66,7 @@ class ChatDb {
           CREATE TABLE messages (
             id          TEXT PRIMARY KEY,
             contact_id  TEXT NOT NULL REFERENCES contacts(zeon_id),
+            sender_id   TEXT,
             outgoing    INTEGER NOT NULL,
             text        TEXT NOT NULL,
             kind        TEXT NOT NULL DEFAULT 'text',
@@ -122,8 +131,9 @@ class ChatDb {
     )
   ''';
 
-  // Our prekey private halves. Public halves are parked on our mailbox;
-  // `published` tracks which have made it there.
+  // Our prekey private halves. Public halves are parked on our mailbox
+  // (every publish uploads the full stock; the mailbox replaces its store).
+  // `published` is vestigial, kept to avoid a schema migration.
   static const _createPrekeys = '''
     CREATE TABLE prekeys (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -309,21 +319,8 @@ class ChatDb {
     return rows.isEmpty ? null : rows.first;
   }
 
-  Future<List<Map<String, Object?>>> opks({bool unpublishedOnly = false}) =>
-      _db.query('prekeys',
-          where: unpublishedOnly ? "kind = 'opk' AND published = 0" : "kind = 'opk'",
-          orderBy: 'id');
-
-  Future<void> markPrekeysPublished(List<int> ids) async {
-    if (ids.isEmpty) return;
-    await _db.update('prekeys', {'published': 1},
-        where: 'id IN (${List.filled(ids.length, '?').join(',')})',
-        whereArgs: ids);
-  }
-
-  Future<void> markAllPrekeysUnpublished() async {
-    await _db.update('prekeys', {'published': 0});
-  }
+  Future<List<Map<String, Object?>>> opks() =>
+      _db.query('prekeys', where: "kind = 'opk'", orderBy: 'id');
 
   Future<void> deletePrekey(int id) async {
     await _db.delete('prekeys', where: 'id = ?', whereArgs: [id]);
