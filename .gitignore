@@ -2,3 +2,7 @@
 __pycache__/
 *.db
 .DS_Store
+
+# App Store Connect credentials
+.env.appstore
+credentials/

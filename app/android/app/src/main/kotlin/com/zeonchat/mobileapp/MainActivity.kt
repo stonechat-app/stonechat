@@ -1,4 +1,4 @@
-package com.zeon.zeon_chat
+package com.zeonchat.mobileapp
 
 import io.flutter.embedding.android.FlutterActivity
 
