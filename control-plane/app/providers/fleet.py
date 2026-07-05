@@ -5,15 +5,16 @@ Placement is least-loaded (fewest zeon containers). Each container gets its
 own port, cgroup memory/CPU caps and a pids limit; the advertised address is
 ``http://<host advertise addr>:<port>``.
 
-Host pool config (env)::
+Host pool config (env, REQUIRED)::
 
-    ZEON_FLEET_HOSTS="berlin=ssh://root@10.0.0.5|203.0.113.5,local=|127.0.0.1"
+    ZEON_FLEET_HOSTS="berlin=ssh://zeon-fleet@10.0.0.5|203.0.113.5"
 
 Comma-separated ``name=docker_endpoint|advertise_host``. An empty endpoint
-means the local Docker daemon. SSH endpoints need key auth set up for the
-control-plane user. Unset → a single local-daemon host advertising
-ZEON_LOCAL_HOST (dev mode, same as the ``local`` provider but with fleet
-packing/limits).
+means the local Docker daemon — that is for LAPTOP DEV ONLY (e.g. the e2e
+harness uses ``local=|127.0.0.1``): mailboxes never run on the deployed
+control-plane machine, so there is deliberately no unset-fallback. SSH
+endpoints need key auth set up for the control-plane user (see
+deploy/fleet-host.sh).
 
 Optional hardening: ZEON_FLEET_RUNTIME=runsc runs every container under
 gVisor (host must have it installed).
@@ -44,13 +45,13 @@ class FleetHost:
 def _parse_hosts() -> list[FleetHost]:
     raw = os.environ.get("ZEON_FLEET_HOSTS", "").strip()
     if not raw:
-        return [
-            FleetHost(
-                name="local",
-                endpoint="",
-                advertise=os.environ.get("ZEON_LOCAL_HOST", "127.0.0.1"),
-            )
-        ]
+        # No silent local fallback: mailboxes must never land on the
+        # control-plane machine. Dev/e2e opts into localhost EXPLICITLY.
+        raise ProviderError(
+            "ZEON_FLEET_HOSTS is not set; the fleet provider never uses the "
+            "local daemon implicitly (mailboxes don't run on the "
+            'control-plane box). For laptop dev use "local=|127.0.0.1".'
+        )
     hosts = []
     for part in raw.split(","):
         try:

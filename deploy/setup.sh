@@ -16,14 +16,19 @@ set -euo pipefail
 
 : "${ZEON_PUBLIC_IP:?set ZEON_PUBLIC_IP to this VM public IP - the address phones connect to}"
 ZEON_CP_PORT="${ZEON_CP_PORT:-8000}"
-# Docker publishes each mailbox to a random host port from the kernel's
-# ephemeral range; we open that range so phones can reach the mailboxes.
-MAILBOX_PORT_RANGE="${MAILBOX_PORT_RANGE:-32768:60999}"
 SERVICE_USER="${SERVICE_USER:-root}"
+# Fleet host pool for the "fleet" provider (mailbox containers on SEPARATE
+# machines — mailboxes never run on this box; see deploy/README.md):
+#   ZEON_FLEET_HOSTS="fleet1=ssh://zeon-fleet@10.0.0.5|203.0.113.5"
+ZEON_FLEET_HOSTS="${ZEON_FLEET_HOSTS:-}"
 # Optional: address of the push gateway, reachable from mailbox CONTAINERS.
 # On Linux that's the Docker bridge host address (172.17.0.1), not 127.0.0.1.
 # Leave empty to run without push (see deploy/README.md "Enable push").
 ZEON_PUSH_GATEWAY="${ZEON_PUSH_GATEWAY:-}"
+# Optional: GCP project id. Set to enable the "gcp" provider (per-user mailbox
+# VMs on Compute Engine). Needs credentials via ADC — on GCE, attach a service
+# account with compute.instanceAdmin.v1 + compute.securityAdmin to this VM.
+ZEON_GCP_PROJECT="${ZEON_GCP_PROJECT:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="$REPO_ROOT/control-plane/.venv"
@@ -38,7 +43,8 @@ echo "==> Zeon deploy"
 echo "    repo:        $REPO_ROOT"
 echo "    public IP:   $ZEON_PUBLIC_IP"
 echo "    CP port:     $ZEON_CP_PORT"
-echo "    mailbox ports: $MAILBOX_PORT_RANGE"
+echo "    gcp project: ${ZEON_GCP_PROJECT:-(unset — gcp provider disabled)}"
+echo "    fleet hosts: ${ZEON_FLEET_HOSTS:-(unset — fleet provider disabled)}"
 
 # -- packages -----------------------------------------------------------------
 
@@ -59,12 +65,16 @@ echo "==> building control-plane venv"
 python3 -m venv "$VENV"
 "$VENV/bin/pip" install --quiet --upgrade pip
 "$VENV/bin/pip" install --quiet -r "$REPO_ROOT/control-plane/requirements.txt"
+if [[ -n "$ZEON_GCP_PROJECT" ]]; then
+  echo "==> installing GCP provider dependency (google-cloud-compute)"
+  "$VENV/bin/pip" install --quiet "google-cloud-compute>=1.19"
+fi
 
 mkdir -p "$(dirname "$DB_PATH")"
 
-# Prebuild the relay image so the first user's Ignite isn't slow / racy.
-echo "==> building the relay image (zeon-server:dev)"
-docker build -q -t zeon-server:dev "$REPO_ROOT/server" >/dev/null
+# No relay image is built here: mailboxes never run on this box. The fleet
+# provider ships the server/ build context to the fleet host's Docker daemon
+# over SSH on first ignite.
 
 # -- systemd unit -------------------------------------------------------------
 
@@ -81,6 +91,8 @@ WorkingDirectory=$REPO_ROOT/control-plane
 Environment=ZEON_CP_DB=$DB_PATH
 Environment=ZEON_LOCAL_HOST=$ZEON_PUBLIC_IP
 Environment=ZEON_PUSH_GATEWAY=$ZEON_PUSH_GATEWAY
+Environment=ZEON_GCP_PROJECT=$ZEON_GCP_PROJECT
+Environment="ZEON_FLEET_HOSTS=$ZEON_FLEET_HOSTS"
 ExecStart=$VENV/bin/uvicorn app.main:app --host 0.0.0.0 --port $ZEON_CP_PORT
 Restart=always
 RestartSec=2
@@ -95,18 +107,27 @@ systemctl restart zeon-control-plane
 
 # -- firewall -----------------------------------------------------------------
 
+# Mailboxes NEVER run on this box (they live on fleet hosts / their own VMs),
+# so only the control-plane port is opened here.
 echo "==> configuring firewall (ufw)"
 ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp
 ufw allow "${ZEON_CP_PORT}/tcp" comment "zeon control plane"
-ufw allow "${MAILBOX_PORT_RANGE%:*}:${MAILBOX_PORT_RANGE#*:}/tcp" comment "zeon mailboxes"
 ufw --force enable
 
 # -- done ---------------------------------------------------------------------
 
-sleep 2
 echo
 echo "==> health check"
-if curl -fsS "http://127.0.0.1:${ZEON_CP_PORT}/health"; then
+# uvicorn can take >10s to boot on the smallest VMs — retry, don't race it.
+health_ok=""
+for _ in $(seq 1 15); do
+  if curl -fsS "http://127.0.0.1:${ZEON_CP_PORT}/health"; then
+    health_ok=1
+    break
+  fi
+  sleep 2
+done
+if [[ -n "$health_ok" ]]; then
   echo
   echo
   echo "Control plane is up. Point the app at:"
@@ -115,9 +136,10 @@ if curl -fsS "http://127.0.0.1:${ZEON_CP_PORT}/health"; then
   echo "Build the app with that baked in:"
   echo "    flutter build ipa --dart-define=ZEON_CP=http://${ZEON_PUBLIC_IP}:${ZEON_CP_PORT}"
   echo
-  echo "IMPORTANT: also open port ${ZEON_CP_PORT} and range ${MAILBOX_PORT_RANGE}"
-  echo "in your CLOUD firewall / security group (ufw alone isn't enough on"
-  echo "AWS/GCP/Azure; on DigitalOcean/Hetzner cloud firewalls, add them too)."
+  echo "IMPORTANT: also open port ${ZEON_CP_PORT} to this box in your CLOUD"
+  echo "firewall / security group (ufw alone isn't enough on AWS/GCP/Azure)."
+  echo "Mailbox ports (32768-60999) are opened on the FLEET HOSTS, never here"
+  echo "— see deploy/fleet-host.sh."
 else
   echo
   echo "Health check failed — inspect logs with:"

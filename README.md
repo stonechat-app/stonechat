@@ -81,7 +81,7 @@ so an adapter is only "create VM, pass script, return IP".
 | `gcp` | `pip install google-cloud-compute`, set `ZEON_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier). |
 | `aws` | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`. |
 | `local` | Docker only. For development. |
-| `fleet` | Container-per-user across a pool of shared Docker hosts (`ZEON_FLEET_HOSTS="name=docker_endpoint\|advertise_host,…"`), with cgroup/pids limits and optional gVisor via `ZEON_FLEET_RUNTIME=runsc`. The managed-tier workhorse — see BUSINESS.md. |
+| `fleet` | Container-per-user across a pool of shared Docker hosts (`ZEON_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `ZEON_FLEET_RUNTIME=runsc`. Mailboxes never share the control-plane machine. The managed-tier workhorse — see BUSINESS.md. |
 
 Adding one: subclass `CloudProvider` (two methods: `provision`, `destroy`) and
 register it in `providers/__init__.py`.
@@ -90,8 +90,9 @@ register it in `providers/__init__.py`.
 
 ```bash
 # end-to-end: register → provision (docker) → handshake → message → ack → destroy
+# (ZEON_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only)
 cd control-plane && .venv/bin/pip install pynacl websockets
-.venv/bin/uvicorn app.main:app --port 8477 &
+ZEON_FLEET_HOSTS="local=|127.0.0.1" .venv/bin/uvicorn app.main:app --port 8477 &
 .venv/bin/python ../scripts/e2e.py
 
 # app unit tests + static analysis
