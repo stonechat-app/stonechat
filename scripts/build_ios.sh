@@ -40,9 +40,20 @@ rm "${PUBSPEC_FILE}.bak"
 echo "Build number incremented to $NEW_BUILD_NUMBER"
 echo ""
 
+# Bake the backend coordinates into the build. Without ZEON_CP a release
+# build points at the hosted control plane (control.zeonchat.com), which
+# doesn't exist yet — refuse rather than ship a dead app.
+if [ -z "$ZEON_CP" ]; then
+    echo "Error: set ZEON_CP (e.g. ZEON_CP=http://35.225.244.167:8000)"
+    exit 1
+fi
+ZEON_PROVIDER="${ZEON_PROVIDER:-fleet}"
+
 # Build the iOS app
-echo "Building iOS app..."
-flutter build ipa
+echo "Building iOS app (ZEON_CP=$ZEON_CP, ZEON_PROVIDER=$ZEON_PROVIDER)..."
+flutter build ipa \
+    --dart-define=ZEON_CP="$ZEON_CP" \
+    --dart-define=ZEON_PROVIDER="$ZEON_PROVIDER"
 
 # Find the generated IPA (name may vary)
 IPA_FILE=$(find build/ios/ipa -name "*.ipa" 2>/dev/null | head -1)
