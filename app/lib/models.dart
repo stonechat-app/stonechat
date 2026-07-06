@@ -202,11 +202,10 @@ class GroupMember {
       );
 }
 
-/// The wire format (PROTOCOL.md v2). Ciphertext only — servers never see
-/// anything else. `ratchet` is the double-ratchet header; `x3dh` appears only
-/// on a session's initial envelopes. `blobId` (media envelopes) is the one
-/// other cleartext hint, used by the server purely to garbage-collect the
-/// blob on ack.
+/// The inner envelope (PROTOCOL.md "Envelope") — what the recipient sees
+/// after opening the sealed wire form. `ratchet` is the double-ratchet
+/// header; `x3dh` appears only on a session's initial envelopes. Never
+/// travels unsealed: servers see only [SealedEnvelope].
 class Envelope {
   final int v;
   final String id;
@@ -221,7 +220,7 @@ class Envelope {
   final String? blobId;
 
   Envelope({
-    this.v = 2,
+    this.v = 1,
     required this.id,
     required this.type,
     required this.from,
@@ -259,6 +258,44 @@ class Envelope {
         x3dh: (j['x3dh'] as Map?)?.cast<String, Object?>(),
         nonceB64: j['nonce'] as String,
         ciphertextB64: j['ciphertext'] as String,
+        blobId: j['blob_id'] as String?,
+      );
+}
+
+/// The wire format (PROTOCOL.md "Envelope"). The recipient is the only
+/// cleartext routing fact; sender, type and session header ride inside
+/// `sealed` — an anonymous box only the recipient's identity key opens, so
+/// the mailbox never learns who wrote. `blobId` (media envelopes) is the one
+/// other cleartext hint, used by the server purely to garbage-collect the
+/// blob on ack.
+class SealedEnvelope {
+  final int v;
+  final String id;
+  final String to;
+  final String sealedB64;
+  final String? blobId;
+
+  SealedEnvelope({
+    this.v = 1,
+    required this.id,
+    required this.to,
+    required this.sealedB64,
+    this.blobId,
+  });
+
+  Map<String, Object?> toJson() => {
+        'v': v,
+        'id': id,
+        'to': to,
+        'sealed': sealedB64,
+        if (blobId != null) 'blob_id': blobId,
+      };
+
+  factory SealedEnvelope.fromJson(Map<String, dynamic> j) => SealedEnvelope(
+        v: j['v'] as int,
+        id: j['id'] as String,
+        to: j['to'] as String,
+        sealedB64: j['sealed'] as String,
         blobId: j['blob_id'] as String?,
       );
 }

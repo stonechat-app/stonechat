@@ -1,8 +1,8 @@
 /// Identity + end-to-end encryption primitives. The only place plaintext
 /// meets keys.
 ///
-/// v2 (PROTOCOL.md): the identity is an Ed25519 signing keypair; the Zeon ID
-/// is "ZC-" + base32(blake2b20(pubkey) || checksum2). Messages are encrypted
+/// PROTOCOL.md: the identity is an Ed25519 signing keypair; the Zeon ID is
+/// "ZC-" + base32(blake2b20(pubkey) || checksum2). Messages are encrypted
 /// with per-message keys from an X3DH + double-ratchet session (session.dart)
 /// — this file provides the identity and the shared primitives.
 library;
@@ -48,9 +48,9 @@ Uint8List base32Decode(String s) {
 }
 
 /// Domain-separation constants — must match scripts/e2e.py and PROTOCOL.md.
-final x3dhKdfKey = utf8.encode('zeon-v2-x3dh-kdf'); // 16 bytes, generichash min
-final spkSigContext = utf8.encode('zeon-v2-spk');
-final tlsSigContext = utf8.encode('zeon-v2-tls');
+final x3dhKdfKey = utf8.encode('zeon-v1-x3dh-kdf'); // 16 bytes, generichash min
+final spkSigContext = utf8.encode('zeon-v1-spk');
+final tlsSigContext = utf8.encode('zeon-v1-tls');
 
 class CryptoService {
   final SodiumSumo sodium;
@@ -96,6 +96,24 @@ class CryptoService {
   /// A peer's Ed25519 identity key as X25519.
   Uint8List toX25519(Uint8List edPubkey) =>
       sodium.crypto.sign.pkToCurve25519(edPubkey);
+
+  // -- sealed envelopes (PROTOCOL.md "Envelope") --------------------------------
+
+  /// Anonymous sealed box to a peer's identity key — the wrap that hides the
+  /// sender (and every other envelope field) from the recipient's mailbox.
+  Uint8List sealTo(Uint8List recipientEdPub, Uint8List message) =>
+      sodium.crypto.box
+          .seal(message: message, publicKey: toX25519(recipientEdPub));
+
+  /// Returns null when the box wasn't sealed to this identity (or is garbage).
+  Uint8List? unseal(Uint8List sealed) {
+    try {
+      return sodium.crypto.box.sealOpen(
+          cipherText: sealed, publicKey: identityXpk, secretKey: _identityXsk);
+    } catch (_) {
+      return null;
+    }
+  }
 
   // -- Zeon ID ----------------------------------------------------------------
 
@@ -211,7 +229,7 @@ class CryptoService {
     }
   }
 
-  /// SK = H(DH1 || DH2 || DH3 [|| DH4], key="zeon-v2-x3dh-kdf", 32)
+  /// SK = H(DH1 || DH2 || DH3 [|| DH4], key="zeon-v1-x3dh-kdf", 32)
   Uint8List x3dhSharedKey(List<Uint8List> dhs) => _keyedHash(
       Uint8List.fromList([for (final d in dhs) ...d]),
       Uint8List.fromList(x3dhKdfKey),

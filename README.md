@@ -117,8 +117,8 @@ cd app && flutter test && flutter analyze
   or the owner token. But one mailbox = one user, so *which IP you connect to*
   still reveals *that* you contacted that person. Inherent to per-user servers;
   hiding it (padding, onion routing) is a separate, larger project.
-- **The ratchet is young.** Protocol v2 implements X3DH + double ratchet to
+- **The ratchet is young.** The protocol implements X3DH + double ratchet to
   spec (see PROTOCOL.md "Session crypto"), but it has not had an external
   cryptographic review yet — get one before charging money for privacy.
-- **Groups are v1**: client-side fan-out, creator-as-admin, ~25 members,
-  text-only (media in groups is a planned v2 — see PROTOCOL.md).
+- **Groups are minimal**: client-side fan-out, creator-as-admin, ~25 members,
+  text-only (media in groups is planned — see PROTOCOL.md).

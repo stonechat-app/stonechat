@@ -181,15 +181,29 @@ class ChatState extends ChangeNotifier {
     return entry.serverAddress!;
   }
 
+  /// Transport wrap (PROTOCOL.md "Envelope"): seal the whole envelope to the
+  /// recipient's identity key. Their mailbox stores only {v, id, to, blob_id}
+  /// plus an opaque box — it never learns who wrote to its owner.
+  SealedEnvelope _wireSeal(Envelope envelope, String toPubkeyB64) =>
+      SealedEnvelope(
+        id: envelope.id,
+        to: envelope.to,
+        sealedB64: base64Encode(app.crypto.sealTo(
+            Uint8List.fromList(base64Decode(toPubkeyB64)),
+            utf8.encode(jsonEncode(envelope.toJson())))),
+        blobId: envelope.blobId,
+      );
+
   Future<void> _deliver(Contact contact, Envelope envelope) async {
+    final wire = _wireSeal(envelope, contact.pubkeyB64);
     var address = await _addressFor(contact);
     try {
-      await deliverEnvelope(address, envelope, contact.tlsFp!);
+      await deliverEnvelope(address, wire, contact.tlsFp!);
     } on Exception {
       // Their server may have been recreated at a new IP (or with a new TLS
       // key) — refresh both and retry once.
       address = await _addressFor(contact, refresh: true);
-      await deliverEnvelope(address, envelope, contact.tlsFp!);
+      await deliverEnvelope(address, wire, contact.tlsFp!);
     }
   }
 
@@ -265,7 +279,7 @@ class ChatState extends ChangeNotifier {
   }) async {
     final session = await _sessionFor(toZeonId, toPubkeyB64,
         serverAddress: serverAddress, serverTlsFp: serverTlsFp);
-    final adPrefix = 'zeon/v2|${app.zeonId}|$toZeonId|$type';
+    final adPrefix = 'zeon/v1|${app.zeonId}|$toZeonId|$type';
     final sealed = session.encrypt(jsonEncode(payload), adPrefix);
     final x3dh = session.pendingX3dh?.toJson();
     // Persist the advanced chain before the envelope can leave: a crash after
@@ -290,7 +304,7 @@ class ChatState extends ChangeNotifier {
   /// null (drop silently) for anything that doesn't verify.
   Future<String?> _openEnvelope(Envelope envelope) async {
     final adPrefix =
-        'zeon/v2|${envelope.from}|${envelope.to}|${envelope.type}';
+        'zeon/v1|${envelope.from}|${envelope.to}|${envelope.type}';
     final header = envelope.ratchet.cast<String, dynamic>();
     final nonce = Uint8List.fromList(base64Decode(envelope.nonceB64));
     final ciphertext =
@@ -443,14 +457,15 @@ class ChatState extends ChangeNotifier {
       return entry.serverAddress!;
     }
 
+    final wire = _wireSeal(envelope, member.pubkeyB64);
     var address = (member.serverAddress != null && member.tlsFp != null)
         ? member.serverAddress!
         : await resolve();
     try {
-      await deliverEnvelope(address, envelope, member.tlsFp!);
+      await deliverEnvelope(address, wire, member.tlsFp!);
     } on Exception {
       address = await resolve(); // their mailbox may have moved
-      await deliverEnvelope(address, envelope, member.tlsFp!);
+      await deliverEnvelope(address, wire, member.tlsFp!);
     }
   }
 
@@ -593,7 +608,7 @@ class ChatState extends ChangeNotifier {
                 serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
       } catch (_) {
         // unreachable member hears about the group via the next groupUpdate
-        // or message retry; v1 accepts eventual delivery
+        // or message retry; eventual delivery is accepted
       }
     }
     return group;
@@ -833,7 +848,25 @@ class ChatState extends ChangeNotifier {
 
   /// Called by the mailbox socket for every envelope. Returning normally acks
   /// (and thus deletes) it server-side, so persist before returning.
-  Future<void> handleIncoming(Envelope envelope) async {
+  Future<void> handleIncoming(SealedEnvelope wire) async {
+    if (wire.to != app.zeonId) return;
+
+    // Unwrap the transport seal; anything not sealed to this identity is
+    // dropped (and acked — same silent-drop rule as a failed session).
+    final Envelope envelope;
+    try {
+      final inner = app.crypto
+          .unseal(Uint8List.fromList(base64Decode(wire.sealedB64)));
+      if (inner == null) {
+        debugPrint('zeon: dropped envelope ${wire.id}: not sealed to us');
+        return;
+      }
+      envelope = Envelope.fromJson(
+          jsonDecode(utf8.decode(inner)) as Map<String, dynamic>);
+    } catch (_) {
+      debugPrint('zeon: dropped envelope ${wire.id}: malformed seal');
+      return;
+    }
     if (envelope.to != app.zeonId) return;
 
     var contact = contactById(envelope.from);
@@ -1021,7 +1054,7 @@ class ChatState extends ChangeNotifier {
       ));
     }
     if (!includesUs) {
-      // we were removed — drop the group locally, keep history? v1: keep
+      // we were removed — drop the group locally, keep history? for now: keep
       // nothing server-side to worry about; just delete membership records
       if (existing != null) {
         groupMembers[groupId] = [];

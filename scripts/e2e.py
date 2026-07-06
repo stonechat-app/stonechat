@@ -1,13 +1,13 @@
-"""End-to-end test of the Zeon stack (protocol v2), no Flutter needed.
+"""End-to-end test of the Zeon stack (protocol v1), no Flutter needed.
 
 Simulates phones with PyNaCl (same libsodium primitives the app uses):
 register → provision local-Docker relays → pin TLS + publish prekeys → X3DH
-contact handshake → double-ratchet messages → ack → forward-secrecy proof →
-destroy.
+contact handshake → double-ratchet messages inside sealed envelopes → ack →
+forward-secrecy + sealed-sender proofs → destroy.
 
-The X3DH + double-ratchet implementation below mirrors PROTOCOL.md "Session
-crypto" constant-for-constant; it doubles as the reference implementation the
-Dart client must interoperate with.
+The X3DH + double-ratchet + sealed-envelope implementation below mirrors
+PROTOCOL.md "Session crypto" and "Envelope" constant-for-constant; it doubles
+as the reference implementation the Dart client must interoperate with.
 
 Transport: relays serve pinned TLS (PROTOCOL.md "Transport"). Mailbox
 requests here use verify=False because relay certs are self-signed BY DESIGN
@@ -36,7 +36,7 @@ from nacl.bindings import (
     crypto_aead_xchacha20poly1305_ietf_encrypt,
     crypto_scalarmult,
 )
-from nacl.public import PrivateKey
+from nacl.public import PrivateKey, SealedBox
 from nacl.secret import SecretBox
 from nacl.signing import SigningKey, VerifyKey
 from nacl.utils import random as nacl_random
@@ -53,7 +53,7 @@ WS_SSL.verify_mode = ssl.CERT_NONE
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "control-plane"))
 from app.identity import zeon_id_from_pubkey  # noqa: E402
 
-TLS_SIG_CONTEXT = b"zeon-v2-tls"
+TLS_SIG_CONTEXT = b"zeon-v1-tls"
 
 
 def live_cert_fp(address: str) -> str:
@@ -78,10 +78,10 @@ def assert_pinned(phone: "Phone") -> None:
         "served certificate must match the owner-signed fingerprint"
 
 
-# -- session crypto (PROTOCOL.md v2) ------------------------------------------
+# -- session crypto (PROTOCOL.md) ----------------------------------------------
 
-X3DH_KDF_KEY = b"zeon-v2-x3dh-kdf"
-SPK_SIG_CONTEXT = b"zeon-v2-spk"
+X3DH_KDF_KEY = b"zeon-v1-x3dh-kdf"
+SPK_SIG_CONTEXT = b"zeon-v1-spk"
 MAX_SKIP = 256
 
 
@@ -109,7 +109,7 @@ def unb64(s: str) -> bytes:
 def ad_for(envelope: dict) -> bytes:
     r = envelope["ratchet"]
     return (
-        f"zeon/v2|{envelope['from']}|{envelope['to']}|{envelope['type']}"
+        f"zeon/v1|{envelope['from']}|{envelope['to']}|{envelope['type']}"
         f"|{r['dh']}|{r['pn']}|{r['n']}"
     ).encode()
 
@@ -121,7 +121,7 @@ def session_encrypt(state: dict, plaintext: bytes, meta: dict) -> dict:
     state["ns"] += 1
     nonce = nacl_random(24)
     ad = (
-        f"zeon/v2|{meta['from']}|{meta['to']}|{meta['type']}"
+        f"zeon/v1|{meta['from']}|{meta['to']}|{meta['type']}"
         f"|{header['dh']}|{header['pn']}|{header['n']}"
     ).encode()
     ct = crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, ad, nonce, mk)
@@ -334,15 +334,17 @@ class Phone:
         }
         return state, opk_id
 
-    def seal(self, to: "Phone", type_: str, payload: dict,
-             envelope_id=None, blob_id=None) -> dict:
+    def make_envelope(self, to: "Phone", type_: str, payload: dict,
+                      envelope_id=None, blob_id=None) -> dict:
+        """The inner envelope: session-encrypted payload + routing fields.
+        Only the recipient ever sees this — it travels inside wrap()."""
         if to.zeon_id not in self.sessions:
             self._initiate_session(to)
         state = self.sessions[to.zeon_id]
         meta = {"from": self.zeon_id, "to": to.zeon_id, "type": type_}
         sealed = session_encrypt(state, json.dumps(payload).encode(), meta)
         envelope = {
-            "v": 2,
+            "v": 1,
             "id": envelope_id or str(uuid.uuid4()),
             "type": type_,
             "from": self.zeon_id,
@@ -356,7 +358,33 @@ class Phone:
             envelope["blob_id"] = blob_id
         return envelope
 
+    def wrap(self, to: "Phone", inner: dict) -> dict:
+        """The wire form (PROTOCOL.md "Envelope"): an anonymous sealed box to
+        the recipient's identity key. The mailbox sees only the recipient."""
+        peer_ikx = VerifyKey(unb64(to.pubkey_b64)).to_curve25519_public_key()
+        outer = {
+            "v": 1,
+            "id": inner["id"],
+            "to": inner["to"],
+            "sealed": b64(SealedBox(peer_ikx).encrypt(json.dumps(inner).encode())),
+        }
+        if "blob_id" in inner:
+            outer["blob_id"] = inner["blob_id"]
+        return outer
+
+    def seal(self, to: "Phone", type_: str, payload: dict,
+             envelope_id=None, blob_id=None) -> dict:
+        return self.wrap(to, self.make_envelope(
+            to, type_, payload, envelope_id=envelope_id, blob_id=blob_id))
+
+    def unseal(self, outer: dict) -> dict:
+        """Recover the inner envelope from a sealed wire envelope."""
+        box = SealedBox(self.identity.to_curve25519_private_key())
+        return json.loads(box.decrypt(unb64(outer["sealed"])))
+
     def open_envelope(self, envelope: dict, sender: "Phone") -> dict:
+        if "sealed" in envelope:
+            envelope = self.unseal(envelope)
         state = self.sessions.get(envelope["from"])
         if state is not None:
             try:
@@ -633,15 +661,19 @@ def main():
     )
     assert r.status_code == 409, f"expected 409, got {r.status_code}"
 
-    print("5) contact handshake = X3DH prekey message")
-    request_env = alice.seal(bob, "contact_request", {"display_name": "Alice"})
-    assert "x3dh" in request_env, "initial envelope must carry the x3dh block"
-    assert "opk_id" in request_env["x3dh"], "bundle had one-time prekeys"
-    alice.deliver_to(bob, request_env)
+    print("5) contact handshake = X3DH prekey message, sealed sender on the wire")
+    request_inner = alice.make_envelope(bob, "contact_request", {"display_name": "Alice"})
+    assert "x3dh" in request_inner, "initial envelope must carry the x3dh block"
+    assert "opk_id" in request_inner["x3dh"], "bundle had one-time prekeys"
+    alice.deliver_to(bob, alice.wrap(bob, request_inner))
     req = asyncio.run(bob.receive_one())
-    assert req["type"] == "contact_request"
+    # Sealed sender: what the mailbox stored and forwarded names only the
+    # recipient — no from, no type, no identity key, no ratchet header.
+    assert set(req) <= {"v", "id", "to", "sealed", "blob_id"}, \
+        f"wire envelope leaks fields beyond the recipient: {sorted(req)}"
+    assert bob.unseal(req)["type"] == "contact_request"
     assert bob.open_envelope(req, alice) == {"display_name": "Alice"}
-    used_opk = request_env["x3dh"]["opk_id"]
+    used_opk = request_inner["x3dh"]["opk_id"]
     assert used_opk not in bob.opks, "one-time prekey private must be consumed"
 
     bob.deliver_to(alice, bob.seal(alice, "contact_accept", {"display_name": "Bob"}))
@@ -662,7 +694,8 @@ def main():
     alice.deliver_to(bob, alice.seal(bob, "group_create", membership))
     created = asyncio.run(bob.receive_one())
     got_membership = bob.open_envelope(created, alice)
-    assert created["from"] == got_membership["admin"], "admin must be the sender"
+    assert bob.unseal(created)["from"] == got_membership["admin"], \
+        "admin must be the sender"
     for m in got_membership["members"]:
         derived = zeon_id_from_pubkey(base64.b64decode(m["pubkey"]))
         assert derived == m["zeon_id"], "member key commitment must verify"
@@ -673,8 +706,8 @@ def main():
     assert bob.open_envelope(gm, alice) == {"group_id": group_id, "text": "hi crew"}
 
     print("6) message + delete-on-ack")
-    first_env = alice.seal(bob, "msg", {"text": "hello from my own relay"})
-    alice.deliver_to(bob, first_env)
+    first_inner = alice.make_envelope(bob, "msg", {"text": "hello from my own relay"})
+    alice.deliver_to(bob, alice.wrap(bob, first_inner))
     msg = asyncio.run(bob.receive_one())
     assert bob.open_envelope(msg, alice) == {"text": "hello from my own relay"}
     time.sleep(0.5)
@@ -684,32 +717,36 @@ def main():
     # a reply turns the DH ratchet…
     bob.deliver_to(alice, bob.seal(alice, "msg", {"text": "roger"}))
     asyncio.run(alice.receive_one(process=lambda e: alice.open_envelope(e, bob)))
-    later_env = alice.seal(bob, "msg", {"text": "post-ratchet"})
-    assert later_env["ratchet"]["dh"] != first_env["ratchet"]["dh"], \
+    later_inner = alice.make_envelope(bob, "msg", {"text": "post-ratchet"})
+    assert later_inner["ratchet"]["dh"] != first_inner["ratchet"]["dh"], \
         "sender ratchet key must rotate after a round trip"
-    alice.deliver_to(bob, later_env)
+    alice.deliver_to(bob, alice.wrap(bob, later_inner))
     asyncio.run(bob.receive_one(process=lambda e: bob.open_envelope(e, alice)))
     # …and bob's CURRENT session state cannot decrypt the recorded envelope 6:
-    # the message key that sealed it was deleted on use. This is the property
-    # v1 lacked — compromise-now does not decrypt recorded-then.
+    # the message key that sealed it was deleted on use — compromise-now does
+    # not decrypt recorded-then.
     compromised = copy.deepcopy(bob.sessions[alice.zeon_id])
     try:
-        session_decrypt(compromised, first_env)
+        session_decrypt(compromised, first_inner)
         raise AssertionError("old ciphertext decrypted from current state — no FS!")
     except AssertionError:
         raise
     except Exception:
         pass  # expected: key material for that message no longer exists
 
-    print("6b) v1 envelopes are rejected outright")
-    v1_env = {
+    print("6b) unsealed / wrong-version envelopes are rejected outright")
+    cleartext_env = {
         "v": 1, "id": str(uuid.uuid4()), "type": "msg",
         "from": alice.zeon_id, "to": bob.zeon_id,
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "nonce": b64(nacl_random(24)), "ciphertext": b64(nacl_random(64)),
     }
-    r = MX.post(f"{bob.server['address']}/inbox", json=v1_env)
-    assert r.status_code == 400, f"expected 400 for v1 envelope, got {r.status_code}"
+    r = MX.post(f"{bob.server['address']}/inbox", json=cleartext_env)
+    assert r.status_code == 400, f"expected 400 for unsealed envelope, got {r.status_code}"
+    wrong_version = {"v": 2, "id": str(uuid.uuid4()), "to": bob.zeon_id,
+                     "sealed": b64(nacl_random(64))}
+    r = MX.post(f"{bob.server['address']}/inbox", json=wrong_version)
+    assert r.status_code == 400, f"expected 400 for wrong version, got {r.status_code}"
 
     print("6c) one-time prekeys are consumed server-side")
     ids = set()

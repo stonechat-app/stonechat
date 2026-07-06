@@ -57,9 +57,9 @@ class AppState extends ChangeNotifier {
     final secret = await _storage.read(key: 'zn_secret');
     final public = await _storage.read(key: 'zn_public');
     final storedUrl = await _storage.read(key: 'zn_cp_url');
-    // Protocol v2 identities are Ed25519. Anything stored without the marker
-    // is a pre-v2 X25519 key — unusable, treat as no identity (dev-era only;
-    // v1 never shipped).
+    // Identities are Ed25519. Anything stored without the marker is a
+    // dev-era X25519 key from before the protocol settled — unusable,
+    // treat as no identity.
     final algo = await _storage.read(key: 'zn_algo');
 
     api = ControlPlaneApi(

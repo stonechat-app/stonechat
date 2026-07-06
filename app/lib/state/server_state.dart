@@ -11,7 +11,7 @@ import 'app_state.dart';
 
 class ServerState extends ChangeNotifier {
   final AppState app;
-  final Future<void> Function(Envelope) onEnvelope;
+  final Future<void> Function(SealedEnvelope) onEnvelope;
   final Future<void> Function() onConnected; // e.g. retry pending outbox
   final void Function(String? address, String? token, String? tlsFp)?
       onMailbox; // own mailbox coordinates, for blob downloads + prekeys

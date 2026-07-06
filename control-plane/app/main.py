@@ -76,7 +76,7 @@ class ExternalServerIn(BaseModel):
 
 class TlsSigIn(BaseModel):
     tls_fp: str = Field(max_length=64)  # base64 BLAKE2b-256 of the relay's DER cert
-    tls_sig: str = Field(max_length=128)  # owner's Ed25519 sig over "zeon-v2-tls"||fp
+    tls_sig: str = Field(max_length=128)  # owner's Ed25519 sig over "zeon-v1-tls"||fp
 
 
 # -- routes ---------------------------------------------------------------------
@@ -191,7 +191,7 @@ async def register_external_server(body: ExternalServerIn, user: User):
 @app.post("/v1/server/tls")
 async def publish_tls_sig(body: TlsSigIn, user: User):
     """The owner vouches for their mailbox's TLS key: an Ed25519 signature
-    over "zeon-v2-tls" || fingerprint, verifiable by anyone against the
+    over "zeon-v1-tls" || fingerprint, verifiable by anyone against the
     identity key their Zeon ID commits to. We check it so the directory never
     serves garbage, but clients re-verify — our word doesn't count."""
     server = store.server_for(user["zeon_id"])
@@ -203,7 +203,7 @@ async def publish_tls_sig(body: TlsSigIn, user: User):
         from nacl.signing import VerifyKey
 
         VerifyKey(base64.b64decode(user["pubkey"])).verify(
-            b"zeon-v2-tls" + base64.b64decode(body.tls_fp),
+            b"zeon-v1-tls" + base64.b64decode(body.tls_fp),
             base64.b64decode(body.tls_sig),
         )
     except Exception:

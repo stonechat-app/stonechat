@@ -1,10 +1,13 @@
 """Zeon routing server — a single user's encrypted mailbox.
 
-Runs on a VM the user owns. Stores only opaque encrypted envelopes addressed
-to its owner and deletes each one the moment the owner's device acks it.
-Plaintext never exists here. It also serves the owner's PUBLIC prekeys
-(PROTOCOL.md "Prekeys") so peers can start forward-secret sessions while the
-owner is offline — private halves never leave the owner's phone.
+Runs on a VM the user owns. Stores only sealed envelopes addressed to its
+owner and deletes each one the moment the owner's device acks it. Plaintext
+never exists here, and neither does sender identity: everything beyond the
+recipient rides inside an anonymous sealed box only the owner can open
+(PROTOCOL.md "Envelope") — this mailbox cannot tell who wrote to its owner.
+It also serves the owner's PUBLIC prekeys (PROTOCOL.md "Prekeys") so peers
+can start forward-secret sessions while the owner is offline — private
+halves never leave the owner's phone.
 
 Config (env):
     ZEON_OWNER_ID     Zeon ID of the owner (the only valid recipient)
@@ -52,39 +55,21 @@ MAX_BLOB_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BLOB_BYTES = 500 * 1024 * 1024
 BLOB_TTL_SECONDS = 14 * 24 * 3600
 MAX_OPKS = 256
-ENVELOPE_TYPES = {
-    "msg", "media", "contact_request", "contact_accept",
-    "group_create", "group_update", "group_msg", "group_leave",
-}
-REQUIRED_FIELDS = {"v", "id", "type", "from", "to", "sent_at", "ratchet", "nonce", "ciphertext"}
+REQUIRED_FIELDS = {"v", "id", "to", "sealed"}
 BLOB_ID_RE = re.compile(r"^[a-f0-9-]{36}$")
 
 
 def validate_envelope(envelope: dict) -> None:
-    """Shape checks only — the ciphertext stays opaque. Raises HTTPException."""
+    """Shape checks only — the sealed body is opaque by design; sender, type
+    and session header are all inside it. Raises HTTPException."""
     if not isinstance(envelope, dict) or not REQUIRED_FIELDS.issubset(envelope):
         raise HTTPException(400, "missing fields")
-    if envelope["v"] != 2:
-        raise HTTPException(400, "unsupported protocol version (v2 only)")
-    if envelope["type"] not in ENVELOPE_TYPES:
-        raise HTTPException(400, "unknown envelope type")
-    ratchet = envelope["ratchet"]
-    if not (
-        isinstance(ratchet, dict)
-        and isinstance(ratchet.get("dh"), str)
-        and isinstance(ratchet.get("pn"), int) and ratchet["pn"] >= 0
-        and isinstance(ratchet.get("n"), int) and ratchet["n"] >= 0
-    ):
-        raise HTTPException(400, "bad ratchet header")
-    x3dh = envelope.get("x3dh")
-    if x3dh is not None and not (
-        isinstance(x3dh, dict)
-        and isinstance(x3dh.get("ik"), str)
-        and isinstance(x3dh.get("ek"), str)
-        and isinstance(x3dh.get("spk_id"), int)
-        and (x3dh.get("opk_id") is None or isinstance(x3dh["opk_id"], int))
-    ):
-        raise HTTPException(400, "bad x3dh block")
+    if envelope["v"] != 1:
+        raise HTTPException(400, "unsupported protocol version (v1 only)")
+    if not isinstance(envelope["id"], str) or not envelope["id"]:
+        raise HTTPException(400, "bad id")
+    if not isinstance(envelope["sealed"], str) or not envelope["sealed"]:
+        raise HTTPException(400, "bad sealed body")
     blob_id = envelope.get("blob_id")
     if blob_id is not None and (
         not isinstance(blob_id, str) or not BLOB_ID_RE.match(blob_id)

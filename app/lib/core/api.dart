@@ -411,10 +411,10 @@ Future<List<int>> downloadBlob(
   }
 }
 
-/// Delivers an envelope to a peer's routing server. Throws on failure —
+/// Delivers a sealed envelope to a peer's routing server. Throws on failure —
 /// callers keep the message in the pending outbox and retry later.
 Future<void> deliverEnvelope(
-    String serverAddress, Envelope envelope, String tlsFp) async {
+    String serverAddress, SealedEnvelope envelope, String tlsFp) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
@@ -436,7 +436,7 @@ class MailboxSocket {
   final String address; // https://host:port
   final String token;
   final String tlsFp; // pinned relay certificate fingerprint
-  final Future<void> Function(Envelope) onEnvelope;
+  final Future<void> Function(SealedEnvelope) onEnvelope;
   final void Function(bool connected)? onStateChange;
 
   WebSocketChannel? _channel;
@@ -468,8 +468,8 @@ class MailboxSocket {
       channel.stream.listen(
         (raw) async {
           try {
-            final envelope =
-                Envelope.fromJson(jsonDecode(raw as String) as Map<String, dynamic>);
+            final envelope = SealedEnvelope.fromJson(
+                jsonDecode(raw as String) as Map<String, dynamic>);
             await onEnvelope(envelope);
             channel.sink.add(jsonEncode({'ack': envelope.id}));
           } catch (_) {

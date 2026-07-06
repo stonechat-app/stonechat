@@ -121,7 +121,7 @@ class ChatDb {
     )
   ''';
 
-  // One forward-secret ratchet session per peer (PROTOCOL.md v2). The state
+  // One forward-secret ratchet session per peer (PROTOCOL.md). The state
   // JSON holds the session's secret keys; it lives beside the plaintext
   // history it protects, on this phone only.
   static const _createSessions = '''

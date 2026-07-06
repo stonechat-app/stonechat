@@ -192,7 +192,7 @@ class RatchetSession {
   String _ad(String adPrefix, String dhB64, int pn, int n) =>
       '$adPrefix|$dhB64|$pn|$n';
 
-  /// Encrypt one message. [adPrefix] is "zeon/v2|from|to|type" — the cleartext
+  /// Encrypt one message. [adPrefix] is "zeon/v1|from|to|type" — the cleartext
   /// routing fields get bound into the AEAD. Mutates the session; persist it
   /// before handing the envelope to the network.
   ({Map<String, Object?> ratchet, Uint8List nonce, Uint8List ciphertext})

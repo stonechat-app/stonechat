@@ -130,8 +130,9 @@ async def _send_apns(device_token: str) -> None:
         if os.environ.get("ZEON_APNS_SANDBOX") == "1"
         else "https://api.push.apple.com"
     )
-    # Content-free by design: a generic visible alert. v2 is a Notification
-    # Service Extension that fetches + decrypts on-device and rewrites this.
+    # Content-free by design: a generic visible alert. Planned follow-up: a
+    # Notification Service Extension that fetches + decrypts on-device and
+    # rewrites this.
     payload = {
         "aps": {
             "alert": {"title": "Zeon", "body": "You have new messages"},

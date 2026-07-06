@@ -187,7 +187,7 @@ class _ChatScreenState extends State<ChatScreen> {
           _Composer(
             controller: _input,
             onSend: _send,
-            // Media in groups is v2 (see PROTOCOL.md) — DM-only for now.
+            // Media in groups is deferred (see PROTOCOL.md) — DM-only for now.
             onPickPhoto: isGroup ? null : _sendPhoto,
             onVoiceRecorded: isGroup ? null : _sendVoice,
           ),
@@ -436,7 +436,7 @@ class _AudioEntryState extends State<_AudioEntry> {
 class _Composer extends StatefulWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
-  final VoidCallback? onPickPhoto; // null → media disabled (groups, v1)
+  final VoidCallback? onPickPhoto; // null → media disabled (groups, deferred)
   final void Function(String path, int durationMs)? onVoiceRecorded;
 
   const _Composer({
