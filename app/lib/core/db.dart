@@ -16,6 +16,18 @@ class ChatDb {
 
   ChatDb._(this._db);
 
+  /// Delete the on-disk database and any migration artifacts. Called during a
+  /// fresh-install wipe (app_state): the SQLCipher key in the keystore is
+  /// being discarded, so a persisted DB encrypted under the old key would be
+  /// unopenable — drop it and let a clean one be created.
+  static Future<void> deleteDatabaseFiles() async {
+    final base = p.join(await getDatabasesPath(), 'zeon.db');
+    for (final suffix in ['', '-wal', '-shm', '.enc', '.bak']) {
+      final f = File('$base$suffix');
+      if (await f.exists()) await f.delete();
+    }
+  }
+
   static Future<ChatDb> open(String password) async {
     final path = p.join(await getDatabasesPath(), 'zeon.db');
     await _encryptLegacyDb(path, password);
@@ -234,6 +246,26 @@ class ChatDb {
       created_at INTEGER NOT NULL
     )
   ''';
+
+  /// Drop every conversation, contact, group, session and prekey. Used by
+  /// identity reset — the SQLCipher key is rotated separately by the caller.
+  Future<void> wipe() async {
+    await _db.transaction((tx) async {
+      for (final table in [
+        'messages',
+        'contacts',
+        'groups',
+        'group_members',
+        'group_outbox',
+        'sessions',
+        'prekeys',
+        'receipts',
+        'reactions',
+      ]) {
+        await tx.delete(table);
+      }
+    });
+  }
 
   // -- contacts ---------------------------------------------------------------
 

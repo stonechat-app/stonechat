@@ -59,9 +59,50 @@ class SettingsScreen extends StatelessWidget {
             leading: const Icon(Icons.enhanced_encryption_outlined,
                 color: Zn.muted, size: 20),
           ),
+          const _SectionLabel('Account'),
+          ListTile(
+            leading: const Icon(Icons.restart_alt, color: Zn.danger, size: 20),
+            title: const Text('Reset identity',
+                style: TextStyle(color: Zn.danger)),
+            subtitle: const Text(
+                'Delete this identity, its mailbox and all local history, and '
+                'start over. This cannot be undone.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            onTap: () => _resetIdentity(context, app),
+          ),
         ],
       ),
     );
+  }
+
+  Future<void> _resetIdentity(BuildContext context, AppState app) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Zn.surface,
+        title: const Text('Reset identity?'),
+        content: const Text(
+            'Your Zeon ID, mailbox and entire message history on this phone '
+            'are erased. Contacts keep only what they already received. '
+            'There is no way back.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Reset', style: TextStyle(color: Zn.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await app.resetIdentity();
+    // The identity is gone; drop every screen and land back on onboarding.
+    if (context.mounted) {
+      Navigator.of(context).pushNamedAndRemoveUntil('/onboarding', (_) => false);
+    }
   }
 
   /// Both directions require passing the device auth once — enabling proves

@@ -8,6 +8,8 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 
 import '../core/api.dart';
 import '../core/crypto.dart';
@@ -76,6 +78,7 @@ class AppState extends ChangeNotifier {
 
   /// Load services and any stored identity. Called once before runApp.
   Future<void> init() async {
+    await _clearKeychainOnFreshInstall();
     db = await ChatDb.open(await _databaseKey());
     final sodium = await CryptoService.loadSodium();
     // Mailbox TLS pinning (api.dart): fingerprint = BLAKE2b-256 of DER cert.
@@ -116,6 +119,50 @@ class AppState extends ChangeNotifier {
     } else {
       _sodium = sodium;
     }
+  }
+
+  /// iOS keeps Keychain items after an app is deleted, so a reinstalled app
+  /// silently resurrects the previous identity — including, after a directory
+  /// reset, its now-dead account token (the control plane answers every
+  /// authenticated call with 401 "invalid token"). The app *sandbox* is wiped
+  /// on uninstall, so a marker file there distinguishes a fresh install from
+  /// a normal launch. No marker ⇒ the keystore is orphaned: clear it so
+  /// onboarding starts clean. This makes the real behaviour match the
+  /// documented model — identity dies with the app (PROTOCOL.md), no backup.
+  Future<void> _clearKeychainOnFreshInstall() async {
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final marker = File(p.join(dir.path, '.zeon_installed'));
+      if (await marker.exists()) return;
+      await _storage.deleteAll();
+      // An in-place update keeps the sandbox: drop the DB too, since its
+      // SQLCipher key just went with the keystore.
+      await ChatDb.deleteDatabaseFiles();
+      await marker.create(recursive: true);
+    } catch (_) {
+      // Best-effort: if the sandbox probe fails, fall through to a normal
+      // load rather than risk wiping a valid identity.
+    }
+  }
+
+  /// Manual "start over": drop the identity, its mailbox token and the local
+  /// history, then the app returns to onboarding. Used when a directory reset
+  /// stranded the token, or to hand the phone a clean slate.
+  Future<void> resetIdentity() async {
+    // Keep the DB's SQLCipher key: db.wipe() empties the tables but keeps the
+    // file, so a new key here would leave it unopenable next launch.
+    final dbKey = await _storage.read(key: 'zn_db_key');
+    await _storage.deleteAll();
+    if (dbKey != null) await _storage.write(key: 'zn_db_key', value: dbKey);
+    await db.wipe();
+    _crypto = null;
+    zeonId = null;
+    handle = null;
+    displayName = null;
+    externalMailboxToken = null;
+    externalMailboxTlsFp = null;
+    api.accountToken = null;
+    notifyListeners();
   }
 
   /// SQLCipher key for the local history DB: 32 random bytes, minted once,
