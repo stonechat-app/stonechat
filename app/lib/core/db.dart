@@ -1,8 +1,13 @@
 /// Local history. This phone is the only place messages live — by design.
+/// The file itself is SQLCipher-encrypted; the key lives in the platform
+/// keystore next to the identity key, so a lifted filesystem image (or a
+/// device backup) yields ciphertext, not conversations.
 library;
 
+import 'dart:io';
+
 import 'package:path/path.dart' as p;
-import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../models.dart';
 
@@ -11,10 +16,12 @@ class ChatDb {
 
   ChatDb._(this._db);
 
-  static Future<ChatDb> open() async {
+  static Future<ChatDb> open(String password) async {
     final path = p.join(await getDatabasesPath(), 'zeon.db');
+    await _encryptLegacyDb(path, password);
     final db = await openDatabase(
       path,
+      password: password,
       version: 8,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
@@ -97,6 +104,52 @@ class ChatDb {
       },
     );
     return ChatDb._(db);
+  }
+
+  /// One-time migration: installs from before DB encryption hold zeon.db as
+  /// plaintext SQLite. Rewrite it through SQLCipher's own export (the
+  /// canonical encrypt-in-place flow) before the encrypted open.
+  static Future<void> _encryptLegacyDb(String path, String password) async {
+    final file = File(path);
+    final encFile = File('$path.enc');
+    final bakFile = File('$path.bak');
+    if (!await file.exists()) {
+      if (await encFile.exists() && await bakFile.exists()) {
+        // Crashed between the final two renames: the export had finished
+        // (the original is only moved aside after it), so promote it.
+        await encFile.rename(path);
+      } else if (await bakFile.exists()) {
+        await bakFile.rename(path); // resume: migrate it again below
+      } else {
+        return; // fresh install — nothing to migrate
+      }
+    }
+    if (await bakFile.exists()) await bakFile.delete();
+    // Encrypted databases don't carry the plaintext magic in their header.
+    final raf = await file.open();
+    final header = await raf.read(15);
+    await raf.close();
+    if (String.fromCharCodes(header) != 'SQLite format 3') return;
+
+    final encPath = '$path.enc';
+    await deleteDatabase(encPath); // stale half-migration from a crash
+    final plain = await openDatabase(path); // no password → plaintext open
+    try {
+      await plain
+          .execute('ATTACH DATABASE ? AS encrypted KEY ?', [encPath, password]);
+      await plain.rawQuery("SELECT sqlcipher_export('encrypted')");
+      final version = await plain.getVersion();
+      await plain.execute('PRAGMA encrypted.user_version = $version');
+      await plain.execute('DETACH DATABASE encrypted');
+    } finally {
+      await plain.close();
+    }
+    // Swap with a backup in between: a crash here leaves either the .bak or
+    // the new file, never nothing.
+    final backupPath = '$path.bak';
+    await file.rename(backupPath);
+    await File(encPath).rename(path);
+    await File(backupPath).delete();
   }
 
   static const _createGroups = '''

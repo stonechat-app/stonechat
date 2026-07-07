@@ -8,10 +8,12 @@ import 'state/server_state.dart';
 import 'ui/add_contact_screen.dart';
 import 'ui/create_group_screen.dart';
 import 'ui/home_screen.dart';
+import 'ui/lock_screen.dart';
 import 'ui/mailbox_setup_screen.dart';
 import 'ui/my_id_screen.dart';
 import 'ui/onboarding_screen.dart';
 import 'ui/server_screen.dart';
+import 'ui/settings_screen.dart';
 import 'ui/theme.dart';
 
 Future<void> main() async {
@@ -105,6 +107,8 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
       title: 'Zeon',
       debugShowCheckedModeBanner: false,
       theme: zeonTheme(),
+      // The lock gate sits above the Navigator so it covers every route.
+      builder: (context, child) => LockGate(child: child ?? const SizedBox()),
       initialRoute: app.hasIdentity ? '/home' : '/onboarding',
       routes: {
         '/onboarding': (_) => const OnboardingScreen(),
@@ -114,6 +118,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
         '/create-group': (_) => const CreateGroupScreen(),
         '/my-id': (_) => const MyIdScreen(),
         '/server': (_) => const ServerScreen(),
+        '/settings': (_) => const SettingsScreen(),
       },
     );
   }

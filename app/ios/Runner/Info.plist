@@ -75,6 +75,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan a contact's Zeon ID QR code.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlock Zeon with Face ID when app lock is on.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record voice notes to send to your contacts.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

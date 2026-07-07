@@ -16,7 +16,8 @@ dependencies:
   firebase_core: ^4.11.0
   firebase_messaging: ^16.4.1
   flutter_secure_storage: ^10.3.1
-  sqflite: ^2.4.2+1
+  sqflite_sqlcipher: ^3.4.0
+  local_auth: ^3.0.1
   path: ^1.9.1
   http: ^1.6.0
   web_socket_channel: ^3.0.3

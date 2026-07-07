@@ -4,6 +4,7 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -35,6 +36,7 @@ class AppState extends ChangeNotifier {
   // rendering the other side's. Delivery receipts are always sent.
   bool sendReadReceipts = true;
   bool sendTypingIndicators = true;
+  bool appLockEnabled = false;
 
   Future<void> setPreference(String key, bool value) async {
     switch (key) {
@@ -42,6 +44,8 @@ class AppState extends ChangeNotifier {
         sendReadReceipts = value;
       case 'typing_indicators':
         sendTypingIndicators = value;
+      case 'app_lock':
+        appLockEnabled = value;
     }
     await _storage.write(key: 'zn_pref_$key', value: value ? '1' : '0');
     notifyListeners();
@@ -72,7 +76,7 @@ class AppState extends ChangeNotifier {
 
   /// Load services and any stored identity. Called once before runApp.
   Future<void> init() async {
-    db = await ChatDb.open();
+    db = await ChatDb.open(await _databaseKey());
     final sodium = await CryptoService.loadSodium();
     // Mailbox TLS pinning (api.dart): fingerprint = BLAKE2b-256 of DER cert.
     certFingerprinter =
@@ -80,6 +84,7 @@ class AppState extends ChangeNotifier {
 
     sendReadReceipts = await _readPreference('read_receipts', true);
     sendTypingIndicators = await _readPreference('typing_indicators', true);
+    appLockEnabled = await _readPreference('app_lock', false);
 
     final secret = await _storage.read(key: 'zn_secret');
     final public = await _storage.read(key: 'zn_public');
@@ -111,6 +116,20 @@ class AppState extends ChangeNotifier {
     } else {
       _sodium = sodium;
     }
+  }
+
+  /// SQLCipher key for the local history DB: 32 random bytes, minted once,
+  /// kept in the platform keystore beside the identity key. Not derivable
+  /// from anything — losing the keystore loses the history, same deal as
+  /// the identity itself.
+  Future<String> _databaseKey() async {
+    final existing = await _storage.read(key: 'zn_db_key');
+    if (existing != null) return existing;
+    final rng = Random.secure();
+    final key = base64UrlEncode(
+        List<int>.generate(32, (_) => rng.nextInt(256)));
+    await _storage.write(key: 'zn_db_key', value: key);
+    return key;
   }
 
   Future<void> setExternalMailbox(String? token, String? tlsFp) async {

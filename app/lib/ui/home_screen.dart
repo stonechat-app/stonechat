@@ -51,6 +51,11 @@ class HomeScreen extends StatelessWidget {
             tooltip: 'Mailbox',
             onPressed: () => Navigator.pushNamed(context, '/server'),
           ),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined, color: Zn.muted),
+            tooltip: 'Settings',
+            onPressed: () => Navigator.pushNamed(context, '/settings'),
+          ),
         ],
       ),
       body: Column(
