@@ -26,6 +26,7 @@ encrypted before they reach it.
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -43,6 +44,12 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 
 OWNER_ID = os.environ["ZEON_OWNER_ID"]
 OWNER_TOKEN = os.environ["ZEON_OWNER_TOKEN"]
+# Optional TURN relay (PROTOCOL.md "Calls"): a coturn container beside this
+# server, sharing this secret (coturn: use-auth-secret + static-auth-secret).
+# Unset → /turn-credentials 404s and clients fall back to STUN-only.
+TURN_SECRET = os.environ.get("ZEON_TURN_SECRET", "")
+TURN_PORT = int(os.environ.get("ZEON_TURN_PORT", "3478"))
+TURN_TTL_S = 6 * 3600
 DB_PATH = os.environ.get("ZEON_DB", "mailbox.db")
 BLOB_DIR = Path(os.environ.get("ZEON_BLOBS", "blobs"))
 TLS_DIR = Path(os.environ.get("ZEON_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
@@ -75,11 +82,10 @@ def validate_envelope(envelope: dict) -> None:
         not isinstance(blob_id, str) or not BLOB_ID_RE.match(blob_id)
     ):
         raise HTTPException(400, "bad blob_id")
-    # Delivery hints (PROTOCOL.md "Envelope"): both optional, both booleans.
-    if "transient" in envelope and not isinstance(envelope["transient"], bool):
-        raise HTTPException(400, "bad transient flag")
-    if "push" in envelope and not isinstance(envelope["push"], bool):
-        raise HTTPException(400, "bad push flag")
+    # Delivery hints (PROTOCOL.md "Envelope"): all optional, all booleans.
+    for hint in ("transient", "push", "ring"):
+        if hint in envelope and not isinstance(envelope[hint], bool):
+            raise HTTPException(400, f"bad {hint} flag")
 
 log = logging.getLogger("zeon.server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -409,17 +415,22 @@ async def inbox(request: Request):
     # Best-effort immediate push; the row is only removed when the device acks.
     delivered_live = await link.push(envelope)
     if not delivered_live and envelope.get("push") is not False:
-        # push: false (receipts) → deliver on the next connect, don't wake the phone
-        asyncio.get_running_loop().create_task(_ping_gateway())
+        # push: false (receipts) → deliver on the next connect, don't wake the
+        # phone. ring: true (call offers) → always ping, skipping the debounce.
+        ring = envelope.get("ring") is True
+        asyncio.get_running_loop().create_task(_ping_gateway(ring=ring))
     return {"status": "queued"}
 
 
 _last_gateway_ping = 0.0
 
 
-async def _ping_gateway() -> None:
+async def _ping_gateway(ring: bool = False) -> None:
     """Owner is offline — ask the push gateway to wake their device.
-    Content-free: only the device token leaves this box. Best-effort."""
+    Content-free: only the device token leaves this box. Best-effort.
+    ring=True marks a call offer: never debounced, and flagged to the
+    gateway so it can escalate to a VoIP/high-priority push (the gateway
+    ignores the flag until it grows that path)."""
     global _last_gateway_ping
     if not PUSH_GATEWAY:
         return
@@ -427,7 +438,7 @@ async def _ping_gateway() -> None:
     if config is None:
         return
     now = time.monotonic()
-    if now - _last_gateway_ping < PUSH_DEBOUNCE_S:
+    if not ring and now - _last_gateway_ping < PUSH_DEBOUNCE_S:
         return
     _last_gateway_ping = now
     device_token, platform = config
@@ -437,7 +448,8 @@ async def _ping_gateway() -> None:
         async with httpx.AsyncClient(timeout=5) as client:
             await client.post(
                 f"{PUSH_GATEWAY}/v1/ping",
-                json={"device_token": device_token, "platform": platform},
+                json={"device_token": device_token, "platform": platform,
+                      "ring": ring},
             )
     except Exception as e:  # push is best-effort; envelopes are safe regardless
         log.debug("gateway ping failed: %s", e)
@@ -457,6 +469,28 @@ async def push_config(request: Request, token: str = ""):
         raise HTTPException(400, "bad platform or token")
     mailbox.set_push_config(device_token, platform)
     return {"status": "ok"}
+
+
+@app.get("/turn-credentials")
+async def turn_credentials(request: Request, token: str = ""):
+    """Ephemeral credentials for this box's coturn (TURN REST API scheme).
+    Owner-only: the relay carries the owner's call media, nobody else's.
+    The TURN host is the same address the owner reached this server at."""
+    if token != OWNER_TOKEN:
+        raise HTTPException(401, "owner only")
+    if not TURN_SECRET:
+        raise HTTPException(404, "no TURN relay on this mailbox")
+    username = f"{int(time.time()) + TURN_TTL_S}:zeon"
+    credential = base64.b64encode(
+        hmac.new(TURN_SECRET.encode(), username.encode(), hashlib.sha1).digest()
+    ).decode()
+    host = request.url.hostname
+    return {
+        "urls": [f"turn:{host}:{TURN_PORT}?transport=udp"],
+        "username": username,
+        "credential": credential,
+        "ttl": TURN_TTL_S,
+    }
 
 
 @app.post("/blob")

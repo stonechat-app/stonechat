@@ -10,7 +10,12 @@ resolved via the public SSM parameter so it never goes stale.
 import time
 
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
-from .bootstrap import SERVER_PORT, build_startup_script
+from .bootstrap import (
+    SERVER_PORT,
+    TURN_PORT,
+    TURN_RELAY_PORTS,
+    build_startup_script,
+)
 
 SECURITY_GROUP = "zeon-server"
 AL2023_SSM_PARAM = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
@@ -87,27 +92,41 @@ class AWSProvider(CloudProvider):
             Filters=[{"Name": "group-name", "Values": [SECURITY_GROUP]}]
         )["SecurityGroups"]
         if groups:
-            return groups[0]["GroupId"]
-
-        sg_id = ec2.create_security_group(
-            GroupName=SECURITY_GROUP,
-            Description="Zeon routing server inbound",
-        )["GroupId"]
-        try:
-            ec2.authorize_security_group_ingress(
-                GroupId=sg_id,
-                IpPermissions=[
-                    {
-                        "IpProtocol": "tcp",
-                        "FromPort": SERVER_PORT,
-                        "ToPort": SERVER_PORT,
-                        "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
-                    }
-                ],
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] != "InvalidPermission.Duplicate":
-                raise
+            sg_id = groups[0]["GroupId"]
+        else:
+            sg_id = ec2.create_security_group(
+                GroupName=SECURITY_GROUP,
+                Description="Zeon routing server inbound",
+            )["GroupId"]
+        # Re-assert ingress every time (duplicates are swallowed) so groups
+        # created before TURN existed grow the UDP rules on the next provision.
+        for permission in [
+            {
+                "IpProtocol": "tcp",
+                "FromPort": SERVER_PORT,
+                "ToPort": SERVER_PORT,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            },
+            {
+                "IpProtocol": "udp",
+                "FromPort": TURN_PORT,
+                "ToPort": TURN_PORT,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            },
+            {
+                "IpProtocol": "udp",
+                "FromPort": TURN_RELAY_PORTS[0],
+                "ToPort": TURN_RELAY_PORTS[1],
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            },
+        ]:
+            try:
+                ec2.authorize_security_group_ingress(
+                    GroupId=sg_id, IpPermissions=[permission]
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "InvalidPermission.Duplicate":
+                    raise
         return sg_id
 
     def _wait_public_ip(self, ec2, instance_id: str, timeout: int = 120) -> str:

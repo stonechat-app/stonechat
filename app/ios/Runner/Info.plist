@@ -74,7 +74,7 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan a contact's Zeon ID QR code.</string>
+	<string>Scan a contact's Zeon ID QR code and show yourself in video calls.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Unlock Zeon with Face ID when app lock is on.</string>
 	<key>NSMicrophoneUsageDescription</key>
@@ -87,6 +87,8 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
+		<!-- keep an active call's audio running when the app is backgrounded -->
+		<string>audio</string>
 	</array>
 </dict>
 </plist>

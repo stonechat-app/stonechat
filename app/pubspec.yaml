@@ -18,6 +18,7 @@ dependencies:
   flutter_secure_storage: ^10.3.1
   sqflite_sqlcipher: ^3.4.0
   local_auth: ^3.0.1
+  flutter_webrtc: ^1.5.2
   path: ^1.9.1
   http: ^1.6.0
   web_socket_channel: ^3.0.3

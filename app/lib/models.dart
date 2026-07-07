@@ -73,6 +73,7 @@ class MessageKind {
   static const text = 'text';
   static const image = 'image';
   static const audio = 'audio';
+  static const call = 'call'; // local call epitaph ("Missed voice call")
 }
 
 class Message {
@@ -160,6 +161,10 @@ class EnvelopeType {
   static const groupMsgDelete = 'group_msg_delete';
   static const reaction = 'reaction'; // emoji on a message ('' clears)
   static const groupReaction = 'group_reaction';
+  static const callOffer = 'call_offer'; // SDP; wire form rings
+  static const callAnswer = 'call_answer';
+  static const callIce = 'call_ice'; // transient, like typing
+  static const callEnd = 'call_end';
 }
 
 class ReceiptKind {
@@ -301,12 +306,13 @@ class Envelope {
 /// `sealed` — an anonymous box only the recipient's identity key opens, so
 /// the mailbox never learns who wrote. `blobId` (media envelopes) is the one
 /// other cleartext hint, used by the server purely to garbage-collect the
-/// blob on ack. Two optional delivery hints (PROTOCOL.md "Envelope"):
+/// blob on ack. Three optional delivery hints (PROTOCOL.md "Envelope"):
 /// `transient` — deliver only if the owner is connected right now, never
-/// queue, never push (typing indicators); `push: false` — queue and deliver
-/// normally but never wake the owner's phone (receipts). Both are
-/// server-visible by necessity; neither says anything an observer couldn't
-/// already infer from envelope size.
+/// queue, never push (typing, call ICE); `push: false` — queue and deliver
+/// normally but never wake the owner's phone (receipts); `ring: true` —
+/// queue and wake loudly (call offers). All are server-visible by
+/// necessity; none says anything an observer couldn't already infer from
+/// envelope size and timing.
 class SealedEnvelope {
   final int v;
   final String id;
@@ -315,6 +321,7 @@ class SealedEnvelope {
   final String? blobId;
   final bool transient;
   final bool noPush;
+  final bool ring;
 
   SealedEnvelope({
     this.v = 1,
@@ -324,6 +331,7 @@ class SealedEnvelope {
     this.blobId,
     this.transient = false,
     this.noPush = false,
+    this.ring = false,
   });
 
   Map<String, Object?> toJson() => {
@@ -334,6 +342,7 @@ class SealedEnvelope {
         if (blobId != null) 'blob_id': blobId,
         if (transient) 'transient': true,
         if (noPush) 'push': false,
+        if (ring) 'ring': true,
       };
 
   factory SealedEnvelope.fromJson(Map<String, dynamic> j) => SealedEnvelope(
@@ -344,5 +353,6 @@ class SealedEnvelope {
         blobId: j['blob_id'] as String?,
         transient: j['transient'] as bool? ?? false,
         noPush: (j['push'] as bool?) == false,
+        ring: j['ring'] as bool? ?? false,
       );
 }

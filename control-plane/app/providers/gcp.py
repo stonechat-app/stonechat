@@ -11,7 +11,12 @@ region = GCP *zone* ("us-central1-a").
 import os
 
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
-from .bootstrap import SERVER_PORT, build_startup_script
+from .bootstrap import (
+    SERVER_PORT,
+    TURN_PORT,
+    TURN_RELAY_PORTS,
+    build_startup_script,
+)
 
 FIREWALL_NAME = "zeon-allow-server"
 NETWORK_TAG = "zeon-server"
@@ -107,21 +112,41 @@ class GCPProvider(CloudProvider):
             pass  # already gone — destroy is idempotent
 
     def _ensure_firewall(self) -> None:
+        from google.cloud import compute_v1
+
+        # Two rules by name so pre-TURN deployments grow the UDP rule too:
+        # the mailbox itself, and coturn (TURN 3478 + its relay range).
+        self._ensure_firewall_rule(
+            FIREWALL_NAME,
+            [compute_v1.Allowed(I_p_protocol="tcp", ports=[str(SERVER_PORT)])],
+        )
+        self._ensure_firewall_rule(
+            f"{FIREWALL_NAME}-turn",
+            [
+                compute_v1.Allowed(
+                    I_p_protocol="udp",
+                    ports=[
+                        str(TURN_PORT),
+                        f"{TURN_RELAY_PORTS[0]}-{TURN_RELAY_PORTS[1]}",
+                    ],
+                )
+            ],
+        )
+
+    def _ensure_firewall_rule(self, name: str, allowed: list) -> None:
         from google.api_core.exceptions import Conflict, NotFound
         from google.cloud import compute_v1
 
         client = compute_v1.FirewallsClient()
         try:
-            client.get(project=self.project, firewall=FIREWALL_NAME)
+            client.get(project=self.project, firewall=name)
             return
         except NotFound:
             pass
         rule = compute_v1.Firewall(
-            name=FIREWALL_NAME,
+            name=name,
             direction="INGRESS",
-            allowed=[
-                compute_v1.Allowed(I_p_protocol="tcp", ports=[str(SERVER_PORT)])
-            ],
+            allowed=allowed,
             source_ranges=["0.0.0.0/0"],
             target_tags=[NETWORK_TAG],
         )

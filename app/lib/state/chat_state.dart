@@ -40,6 +40,12 @@ class ChatState extends ChangeNotifier {
   // read (and read-receipted) as they arrive.
   String? _openConversationId;
 
+  // Call signaling hook, set by CallState: call_* envelopes from accepted
+  // contacts are handed over instead of being handled here.
+  Future<void> Function(
+      Contact contact, Envelope envelope, Map<String, dynamic> payload)?
+      onCallSignal;
+
   // Emoji reactions: message id → (reactor Zeon ID → emoji). Loaded per
   // conversation on open, updated live.
   final Map<String, Map<String, String>> reactionsByMessage = {};
@@ -232,10 +238,10 @@ class ChatState extends ChangeNotifier {
   /// Transport wrap (PROTOCOL.md "Envelope"): seal the whole envelope to the
   /// recipient's identity key. Their mailbox stores only {v, id, to, blob_id}
   /// plus an opaque box — it never learns who wrote to its owner.
-  /// [transient] (typing) and [noPush] (receipts) are the two delivery hints
-  /// the mailbox is allowed to see.
+  /// [transient] (typing, call ICE), [noPush] (receipts) and [ring] (call
+  /// offers) are the delivery hints the mailbox is allowed to see.
   SealedEnvelope _wireSeal(Envelope envelope, String toPubkeyB64,
-          {bool transient = false, bool noPush = false}) =>
+          {bool transient = false, bool noPush = false, bool ring = false}) =>
       SealedEnvelope(
         id: envelope.id,
         to: envelope.to,
@@ -245,12 +251,13 @@ class ChatState extends ChangeNotifier {
         blobId: envelope.blobId,
         transient: transient,
         noPush: noPush,
+        ring: ring,
       );
 
   Future<void> _deliver(Contact contact, Envelope envelope,
-      {bool transient = false, bool noPush = false}) async {
+      {bool transient = false, bool noPush = false, bool ring = false}) async {
     final wire = _wireSeal(envelope, contact.pubkeyB64,
-        transient: transient, noPush: noPush);
+        transient: transient, noPush: noPush, ring: ring);
     var address = await _addressFor(contact);
     try {
       await deliverEnvelope(address, wire, contact.tlsFp!);
@@ -1374,6 +1381,38 @@ class ChatState extends ChangeNotifier {
     _recordReaction(id, envelope.from, emoji);
   }
 
+  // -- calls (PROTOCOL.md "Calls") ----------------------------------------------------
+
+  /// Send one call-signaling envelope on the pairwise session. Used only by
+  /// CallState; delivery failures propagate so the call fails fast.
+  Future<void> sendCallSignal(
+      Contact contact, String type, Map<String, Object?> payload,
+      {bool transient = false, bool ring = false}) async {
+    await _deliver(contact, await _seal(type, contact, payload),
+        transient: transient, ring: ring);
+  }
+
+  /// A call's epitaph in the conversation ("Missed voice call",
+  /// "Video call · 3:42"). Local-only bookkeeping — both sides write their
+  /// own — so no receipts are queued for it.
+  Future<void> recordCallEvent(Contact contact, String label,
+      {required bool outgoing}) async {
+    final message = Message(
+      id: _uuid.v4(),
+      contactId: contact.zeonId,
+      outgoing: outgoing,
+      text: label,
+      kind: MessageKind.call,
+      sentAt: DateTime.now().millisecondsSinceEpoch,
+      status: MessageStatus.read,
+    );
+    await app.db.insertMessage(message);
+    final cache = _messages[contact.zeonId];
+    if (cache != null) cache.add(message);
+    lastMessage[contact.zeonId] = message;
+    notifyListeners();
+  }
+
   // -- receiving ---------------------------------------------------------------------
 
   /// Called by the mailbox socket for every envelope. Returning normally acks
@@ -1569,6 +1608,13 @@ class ChatState extends ChangeNotifier {
 
       case EnvelopeType.groupReaction:
         await _applyRemoteReaction(envelope, payload, group: true);
+
+      case EnvelopeType.callOffer ||
+            EnvelopeType.callAnswer ||
+            EnvelopeType.callIce ||
+            EnvelopeType.callEnd:
+        if (contact == null || !contact.isAccepted) return;
+        await onCallSignal?.call(contact, envelope, payload);
     }
     notifyListeners();
   }

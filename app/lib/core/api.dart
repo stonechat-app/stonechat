@@ -356,6 +356,34 @@ Future<String> createHostInvite(
   }
 }
 
+/// Ephemeral TURN credentials from *your own* mailbox's relay (owner token).
+/// Returns null when the mailbox runs no TURN — callers fall back to
+/// STUN-only.
+Future<({List<String> urls, String username, String credential})?>
+    fetchTurnCredentials(
+        String serverAddress, String ownerToken, String tlsFp) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .get(Uri.parse('$serverAddress/turn-credentials?token=$ownerToken'))
+        .timeout(const Duration(seconds: 8));
+    if (r.statusCode == 404) return null;
+    if (r.statusCode >= 400) {
+      throw ApiException('turn credentials failed (${r.statusCode})', r.statusCode);
+    }
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return (
+      urls: (j['urls'] as List).cast<String>(),
+      username: j['username'] as String,
+      credential: j['credential'] as String,
+    );
+  } catch (_) {
+    return null; // TURN is an upgrade, never a blocker
+  } finally {
+    client.close();
+  }
+}
+
 /// Register this device's push token with our OWN mailbox (owner token +
 /// pinned TLS). The mailbox will ping the push gateway when we're offline.
 Future<void> setPushConfig(String serverAddress, String ownerToken,

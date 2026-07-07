@@ -19,6 +19,7 @@ import 'package:provider/provider.dart';
 import 'package:record/record.dart';
 
 import '../models.dart';
+import '../state/call_state.dart';
 import '../state/chat_state.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -91,6 +92,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _showMessageSheet(Message m) {
     final chat = context.read<ChatState>();
     if (m.deleted) return;
+    final isCallRow = m.kind == MessageKind.call; // local epitaph: delete-only
     final myEmoji = chat.myReactionTo(m);
     showModalBottomSheet<void>(
       context: context,
@@ -102,6 +104,7 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (!isCallRow)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
               child: Row(
@@ -129,7 +132,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
-            const Divider(height: 1),
+            if (!isCallRow) const Divider(height: 1),
             if (m.kind == MessageKind.text)
               ListTile(
                 leading: const Icon(Icons.copy_outlined, color: Zn.muted),
@@ -148,7 +151,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   _startEdit(m);
                 },
               ),
-            if (chat.canDeleteForEveryone(m))
+            if (chat.canDeleteForEveryone(m) && !isCallRow)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Zn.danger),
                 title: const Text('Delete for everyone',
@@ -255,6 +258,23 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
+          if (!isGroup) ...[
+            IconButton(
+              icon: const Icon(Icons.call_outlined, color: Zn.muted, size: 22),
+              tooltip: 'Voice call',
+              onPressed: () => context
+                  .read<CallState>()
+                  .startCall(widget.contact!, video: false),
+            ),
+            IconButton(
+              icon: const Icon(Icons.videocam_outlined,
+                  color: Zn.muted, size: 22),
+              tooltip: 'Video call',
+              onPressed: () => context
+                  .read<CallState>()
+                  .startCall(widget.contact!, video: true),
+            ),
+          ],
           if (isGroup)
             PopupMenuButton<String>(
               color: Zn.raised,
@@ -436,6 +456,23 @@ class _LedgerEntry extends StatelessWidget {
                       MessageKind.image => _ImageEntry(message: message),
                       MessageKind.audio =>
                         _AudioEntry(message: message, color: color),
+                      MessageKind.call => Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                                message.text.startsWith('Missed')
+                                    ? Icons.phone_missed
+                                    : message.text.contains('ideo')
+                                        ? Icons.videocam_outlined
+                                        : Icons.call_outlined,
+                                size: 14,
+                                color: message.text.startsWith('Missed')
+                                    ? Zn.danger
+                                    : Zn.muted),
+                            const SizedBox(width: 6),
+                            Text(message.text, style: Zn.mono(size: 12)),
+                          ],
+                        ),
                       _ => Text.rich(
                           TextSpan(
                             text: message.text,
