@@ -86,9 +86,12 @@ class _ChatScreenState extends State<ChatScreen> {
     _input.selection = TextSelection.collapsed(offset: m.text.length);
   }
 
+  static const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
+
   void _showMessageSheet(Message m) {
     final chat = context.read<ChatState>();
     if (m.deleted) return;
+    final myEmoji = chat.myReactionTo(m);
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Zn.surface,
@@ -99,6 +102,34 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  for (final emoji in _quickReactions)
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.pop(sheetContext);
+                        chat.react(m, emoji);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: myEmoji == emoji ? Zn.raised : null,
+                          borderRadius: BorderRadius.circular(Zn.radius),
+                          border: myEmoji == emoji
+                              ? Border.all(color: Zn.ion)
+                              : null,
+                        ),
+                        child: Text(emoji,
+                            style: const TextStyle(fontSize: 24)),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
             if (m.kind == MessageKind.text)
               ListTile(
                 leading: const Icon(Icons.copy_outlined, color: Zn.muted),
@@ -279,6 +310,10 @@ class _ChatScreenState extends State<ChatScreen> {
                         showSender: previous == null ||
                             previous.outgoing != m.outgoing ||
                             previous.senderId != m.senderId,
+                        reactions:
+                            chat.reactionsByMessage[m.id] ?? const {},
+                        myEmoji: chat.myReactionTo(m),
+                        onReact: (emoji) => chat.react(m, emoji),
                       ),
                     ),
                   ],
@@ -336,13 +371,28 @@ class _LedgerEntry extends StatelessWidget {
   final String peerName;
   final Color peerColor;
   final bool showSender;
+  final Map<String, String> reactions; // reactor Zeon ID → emoji
+  final String? myEmoji;
+  final void Function(String emoji)? onReact;
 
   const _LedgerEntry({
     required this.message,
     required this.peerName,
     required this.peerColor,
     required this.showSender,
+    this.reactions = const {},
+    this.myEmoji,
+    this.onReact,
   });
+
+  /// emoji → how many people picked it, insertion-ordered.
+  Map<String, int> _aggregated() {
+    final counts = <String, int>{};
+    for (final emoji in reactions.values) {
+      counts[emoji] = (counts[emoji] ?? 0) + 1;
+    }
+    return counts;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -398,6 +448,40 @@ class _LedgerEntry extends StatelessWidget {
                           style: const TextStyle(
                               color: Zn.text, fontSize: 15, height: 1.35)),
                     },
+                  if (reactions.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        children: [
+                          for (final entry in _aggregated().entries)
+                            GestureDetector(
+                              onTap: () => onReact?.call(entry.key),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Zn.raised,
+                                  borderRadius:
+                                      BorderRadius.circular(Zn.radius),
+                                  border: Border.all(
+                                      color: myEmoji == entry.key
+                                          ? Zn.ion
+                                          : Zn.line),
+                                ),
+                                child: Text(
+                                  entry.value > 1
+                                      ? '${entry.key} ${entry.value}'
+                                      : entry.key,
+                                  style: const TextStyle(
+                                      fontSize: 13, color: Zn.text),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             ),

@@ -40,6 +40,10 @@ class ChatState extends ChangeNotifier {
   // read (and read-receipted) as they arrive.
   String? _openConversationId;
 
+  // Emoji reactions: message id → (reactor Zeon ID → emoji). Loaded per
+  // conversation on open, updated live.
+  final Map<String, Map<String, String>> reactionsByMessage = {};
+
   // Outgoing receipts, batched per peer so a drained queue costs one envelope
   // per sender instead of one per message. peer → kind → message ids.
   final Map<String, Map<String, Set<String>>> _receiptQueue = {};
@@ -147,6 +151,7 @@ class ChatState extends ChangeNotifier {
   Future<void> openConversation(String contactId) async {
     _openConversationId = contactId;
     _messages[contactId] = await app.db.messagesFor(contactId);
+    reactionsByMessage.addAll(await app.db.reactionsFor(contactId));
     await _markConversationRead(contactId);
     notifyListeners();
   }
@@ -1215,6 +1220,7 @@ class ChatState extends ChangeNotifier {
     await _removeMediaFile(message);
     await app.db.deleteMessage(message.id);
     await app.db.clearOutboxMessage(message.id);
+    reactionsByMessage.remove(message.id);
     _messages[message.contactId]?.removeWhere((m) => m.id == message.id);
     if (lastMessage[message.contactId]?.id == message.id) {
       lastMessage[message.contactId] =
@@ -1226,6 +1232,8 @@ class ChatState extends ChangeNotifier {
   Future<void> _tombstone(Message message) async {
     await _removeMediaFile(message);
     await app.db.tombstoneMessage(message.id);
+    await app.db.clearReactions(message.id);
+    reactionsByMessage.remove(message.id);
     for (final m in [message, ..._cachedCopies(message)]) {
       m.deleted = true;
       m.text = '';
@@ -1290,6 +1298,80 @@ class ChatState extends ChangeNotifier {
       return null;
     }
     return message;
+  }
+
+  // -- reactions (PROTOCOL.md "reaction") ---------------------------------------------
+
+  String? myReactionTo(Message message) =>
+      reactionsByMessage[message.id]?[app.zeonId];
+
+  /// Set (or, when tapping the same emoji again, clear) our reaction on a
+  /// message. One reaction per person per message; a new one replaces the old.
+  Future<void> react(Message message, String emoji) async {
+    if (message.deleted) return;
+    final applied = myReactionTo(message) == emoji ? '' : emoji;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await app.db.setReaction(message.id, app.zeonId!, applied, now);
+    _recordReaction(message.id, app.zeonId!, applied);
+    notifyListeners();
+
+    final payload = {'id': message.id, 'emoji': applied};
+    final group = groupById(message.contactId);
+    try {
+      if (group == null) {
+        final contact = contactById(message.contactId);
+        if (contact == null) return;
+        await _deliver(
+            contact, await _seal(EnvelopeType.reaction, contact, payload));
+      } else {
+        final groupPayload = {...payload, 'group_id': group.id};
+        for (final m in (groupMembers[group.id] ?? [])
+            .where((m) => m.zeonId != app.zeonId)) {
+          try {
+            await _deliverToMember(
+                m,
+                await _sealFor(EnvelopeType.groupReaction, m.zeonId,
+                    m.pubkeyB64, groupPayload,
+                    serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+          } catch (_) {} // best-effort, like receipts
+        }
+      }
+    } catch (_) {
+      // unreachable peer keeps the stale (or no) reaction — best-effort tier
+    }
+  }
+
+  void _recordReaction(String messageId, String peerId, String emoji) {
+    if (emoji.isEmpty) {
+      reactionsByMessage[messageId]?.remove(peerId);
+    } else {
+      (reactionsByMessage[messageId] ??= {})[peerId] = emoji;
+    }
+  }
+
+  Future<void> _applyRemoteReaction(
+      Envelope envelope, Map<String, dynamic> payload,
+      {bool group = false}) async {
+    final id = payload['id'] as String?;
+    final emoji = payload['emoji'] as String?;
+    if (id == null || emoji == null || emoji.length > 16) return;
+    final message = await app.db.messageById(id);
+    if (message == null || message.deleted) return;
+    if (group) {
+      final groupId = payload['group_id'] as String?;
+      if (groupId == null || message.contactId != groupId) return;
+      if (groupById(groupId) == null ||
+          memberOf(groupId, envelope.from) == null) {
+        return;
+      }
+    } else {
+      // Either side of a DM may react; both directions live in the
+      // conversation keyed by the peer — which must be the sender.
+      if (message.contactId != envelope.from) return;
+    }
+    await app.db.setReaction(
+        id, envelope.from, emoji, _sentAtMs(envelope));
+    _recordReaction(id, envelope.from, emoji);
   }
 
   // -- receiving ---------------------------------------------------------------------
@@ -1480,6 +1562,13 @@ class ChatState extends ChangeNotifier {
 
       case EnvelopeType.groupMsgDelete:
         await _applyRemoteDelete(envelope, payload, group: true);
+
+      case EnvelopeType.reaction:
+        if (contact == null || !contact.isAccepted) return;
+        await _applyRemoteReaction(envelope, payload);
+
+      case EnvelopeType.groupReaction:
+        await _applyRemoteReaction(envelope, payload, group: true);
     }
     notifyListeners();
   }

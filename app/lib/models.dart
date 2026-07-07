@@ -158,6 +158,8 @@ class EnvelopeType {
   static const msgDelete = 'msg_delete';
   static const groupMsgEdit = 'group_msg_edit';
   static const groupMsgDelete = 'group_msg_delete';
+  static const reaction = 'reaction'; // emoji on a message ('' clears)
+  static const groupReaction = 'group_reaction';
 }
 
 class ReceiptKind {

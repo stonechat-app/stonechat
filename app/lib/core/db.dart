@@ -53,6 +53,7 @@ class ChatDb {
           await db.execute(
               'ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
           await db.execute(_createReceipts);
+          await db.execute(_createReactions);
         }
       },
       onCreate: (db, _) async {
@@ -92,6 +93,7 @@ class ChatDb {
         await db.execute(_createSessions);
         await db.execute(_createPrekeys);
         await db.execute(_createReceipts);
+        await db.execute(_createReactions);
       },
     );
     return ChatDb._(db);
@@ -153,6 +155,19 @@ class ChatDb {
     )
   ''';
 
+  // Emoji reactions, one per (message, reactor) — a new reaction replaces the
+  // old one, an empty emoji clears it. peer_id is the reactor's Zeon ID
+  // (our own for reactions we set).
+  static const _createReactions = '''
+    CREATE TABLE reactions (
+      message_id TEXT NOT NULL,
+      peer_id    TEXT NOT NULL,
+      emoji      TEXT NOT NULL,
+      at         INTEGER NOT NULL,
+      PRIMARY KEY (message_id, peer_id)
+    )
+  ''';
+
   // Our prekey private halves. Public halves are parked on our mailbox
   // (every publish uploads the full stock; the mailbox replaces its store).
   // `published` is vestigial, kept to avoid a schema migration.
@@ -186,7 +201,7 @@ class ChatDb {
   }
 
   Future<void> _purgeConversationExtras(String contactId) async {
-    for (final table in ['receipts']) {
+    for (final table in ['receipts', 'reactions']) {
       await _db.execute(
           'DELETE FROM $table WHERE message_id IN '
           '(SELECT id FROM messages WHERE contact_id = ?)',
@@ -233,6 +248,7 @@ class ChatDb {
   Future<void> deleteMessage(String id) async {
     await _db.delete('messages', where: 'id = ?', whereArgs: [id]);
     await _db.delete('receipts', where: 'message_id = ?', whereArgs: [id]);
+    await _db.delete('reactions', where: 'message_id = ?', whereArgs: [id]);
   }
 
   // -- receipts -----------------------------------------------------------------
@@ -262,6 +278,43 @@ class ChatDb {
       delivered += n;
     }
     return (delivered: delivered, read: read);
+  }
+
+  // -- reactions ----------------------------------------------------------------
+
+  Future<void> setReaction(
+      String messageId, String peerId, String emoji, int at) async {
+    if (emoji.isEmpty) {
+      await _db.delete('reactions',
+          where: 'message_id = ? AND peer_id = ?',
+          whereArgs: [messageId, peerId]);
+    } else {
+      await _db.insert(
+          'reactions',
+          {'message_id': messageId, 'peer_id': peerId, 'emoji': emoji, 'at': at},
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+  }
+
+  Future<void> clearReactions(String messageId) async {
+    await _db.delete('reactions',
+        where: 'message_id = ?', whereArgs: [messageId]);
+  }
+
+  /// All reactions on a conversation's messages: message id → (reactor → emoji).
+  Future<Map<String, Map<String, String>>> reactionsFor(
+      String contactId) async {
+    final rows = await _db.rawQuery('''
+      SELECT r.message_id, r.peer_id, r.emoji FROM reactions r
+      JOIN messages m ON m.id = r.message_id
+      WHERE m.contact_id = ?
+    ''', [contactId]);
+    final out = <String, Map<String, String>>{};
+    for (final r in rows) {
+      (out[r['message_id'] as String] ??= {})[r['peer_id'] as String] =
+          r['emoji'] as String;
+    }
+    return out;
   }
 
   Future<List<Message>> pendingMessages() async {
