@@ -2,6 +2,7 @@
 /// persists everything locally, keeps a pending outbox for unreachable peers.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -34,6 +35,26 @@ class ChatState extends ChangeNotifier {
 
   // Forward-secret ratchet sessions, one per peer, cached over the DB copy.
   final Map<String, RatchetSession> _sessions = {};
+
+  // The conversation currently on screen — its incoming messages are marked
+  // read (and read-receipted) as they arrive.
+  String? _openConversationId;
+
+  // Outgoing receipts, batched per peer so a drained queue costs one envelope
+  // per sender instead of one per message. peer → kind → message ids.
+  final Map<String, Map<String, Set<String>>> _receiptQueue = {};
+  Timer? _receiptFlushTimer;
+
+  // Who is typing where: conversation → (peer → expiry ms). Entries die on
+  // expiry, on the peer's "stopped", or when their message arrives.
+  final Map<String, Map<String, int>> _typing = {};
+  Timer? _typingSweep;
+  final Map<String, int> _typingSentAt = {}; // our own throttle, per conversation
+
+  static const _typingRefreshMs = 8 * 1000; // resend "started" at most this often
+  static const _typingTtlMs = 15 * 1000; // shown this long without a refresh
+  static const _editWindowMs = 24 * 3600 * 1000; // sender-side edit/delete window
+  static const _editGraceMs = 12 * 3600 * 1000; // receiver-side slack on top
 
   // Push wake-ups: this device's token, registered with our mailbox once both
   // exist (order of arrival between the two is not guaranteed).
@@ -124,8 +145,30 @@ class ChatState extends ChangeNotifier {
   List<Message> messagesFor(String contactId) => _messages[contactId] ?? [];
 
   Future<void> openConversation(String contactId) async {
+    _openConversationId = contactId;
     _messages[contactId] = await app.db.messagesFor(contactId);
+    await _markConversationRead(contactId);
     notifyListeners();
+  }
+
+  /// The chat screen is going away: stop read-receipting live arrivals and
+  /// withdraw any typing indicator we advertised.
+  void closeConversation(String contactId) {
+    if (_openConversationId == contactId) _openConversationId = null;
+    unawaited(stopTyping(contactId));
+  }
+
+  /// Everything on screen counts as read. Local state moves regardless of the
+  /// privacy setting; the receipt only leaves the phone when it's on.
+  Future<void> _markConversationRead(String conversationId) async {
+    for (final m in _messages[conversationId] ?? const <Message>[]) {
+      if (m.outgoing || m.status == MessageStatus.read) continue;
+      m.status = MessageStatus.read;
+      await app.db.setMessageStatus(m.id, MessageStatus.read);
+      if (app.sendReadReceipts) {
+        _queueReceipt(m.senderId ?? conversationId, ReceiptKind.read, m.id);
+      }
+    }
   }
 
   Contact? contactById(String zeonId) {
@@ -184,7 +227,10 @@ class ChatState extends ChangeNotifier {
   /// Transport wrap (PROTOCOL.md "Envelope"): seal the whole envelope to the
   /// recipient's identity key. Their mailbox stores only {v, id, to, blob_id}
   /// plus an opaque box — it never learns who wrote to its owner.
-  SealedEnvelope _wireSeal(Envelope envelope, String toPubkeyB64) =>
+  /// [transient] (typing) and [noPush] (receipts) are the two delivery hints
+  /// the mailbox is allowed to see.
+  SealedEnvelope _wireSeal(Envelope envelope, String toPubkeyB64,
+          {bool transient = false, bool noPush = false}) =>
       SealedEnvelope(
         id: envelope.id,
         to: envelope.to,
@@ -192,10 +238,14 @@ class ChatState extends ChangeNotifier {
             Uint8List.fromList(base64Decode(toPubkeyB64)),
             utf8.encode(jsonEncode(envelope.toJson())))),
         blobId: envelope.blobId,
+        transient: transient,
+        noPush: noPush,
       );
 
-  Future<void> _deliver(Contact contact, Envelope envelope) async {
-    final wire = _wireSeal(envelope, contact.pubkeyB64);
+  Future<void> _deliver(Contact contact, Envelope envelope,
+      {bool transient = false, bool noPush = false}) async {
+    final wire = _wireSeal(envelope, contact.pubkeyB64,
+        transient: transient, noPush: noPush);
     var address = await _addressFor(contact);
     try {
       await deliverEnvelope(address, wire, contact.tlsFp!);
@@ -445,7 +495,8 @@ class ChatState extends ChangeNotifier {
   }
 
   /// Resolve + deliver to a group member (same trust-but-verify as contacts).
-  Future<void> _deliverToMember(GroupMember member, Envelope envelope) async {
+  Future<void> _deliverToMember(GroupMember member, Envelope envelope,
+      {bool transient = false, bool noPush = false}) async {
     Future<String> resolve() async {
       final entry = await _resolve(member.zeonId);
       if (entry.serverAddress == null) {
@@ -457,7 +508,8 @@ class ChatState extends ChangeNotifier {
       return entry.serverAddress!;
     }
 
-    final wire = _wireSeal(envelope, member.pubkeyB64);
+    final wire =
+        _wireSeal(envelope, member.pubkeyB64, transient: transient, noPush: noPush);
     var address = (member.serverAddress != null && member.tlsFp != null)
         ? member.serverAddress!
         : await resolve();
@@ -615,6 +667,7 @@ class ChatState extends ChangeNotifier {
   }
 
   Future<void> sendGroupMessage(Group group, String text) async {
+    _typingSentAt.remove(group.id); // the message itself says "stopped typing"
     final members = (groupMembers[group.id] ?? [])
         .where((m) => m.zeonId != app.zeonId)
         .toList();
@@ -686,6 +739,7 @@ class ChatState extends ChangeNotifier {
   // -- messaging -------------------------------------------------------------------
 
   Future<void> sendMessage(Contact contact, String text) async {
+    _typingSentAt.remove(contact.zeonId); // the message itself says "stopped"
     final message = Message(
       id: _uuid.v4(),
       contactId: contact.zeonId,
@@ -842,6 +896,400 @@ class ChatState extends ChangeNotifier {
         await _fanOut(group, message, owed);
       }
     }
+  }
+
+  // -- receipts (PROTOCOL.md "receipt") ----------------------------------------------
+
+  /// Batch a receipt for [peerId]; flushed as one envelope per (peer, kind)
+  /// a couple of seconds later. Receipts are best-effort by design: a lost
+  /// one costs a stale checkmark, nothing more.
+  void _queueReceipt(String peerId, String kind, String messageId) {
+    ((_receiptQueue[peerId] ??= {})[kind] ??= <String>{}).add(messageId);
+    _receiptFlushTimer ??= Timer(const Duration(seconds: 2), () {
+      _receiptFlushTimer = null;
+      unawaited(_flushReceipts());
+    });
+  }
+
+  Future<void> _flushReceipts() async {
+    final batch = Map.of(_receiptQueue);
+    _receiptQueue.clear();
+    for (final peer in batch.entries) {
+      for (final kinds in peer.value.entries) {
+        try {
+          await _sendToPeer(peer.key, EnvelopeType.receipt,
+              {'kind': kinds.key, 'ids': kinds.value.toList()},
+              noPush: true); // never wake their phone for a checkmark
+        } catch (_) {
+          // unreachable mailbox — drop; the next receipt supersedes this one
+        }
+      }
+    }
+  }
+
+  /// Deliver to a peer we know either as a contact or as a fellow group
+  /// member (receipts for group messages go pairwise to the sender, who need
+  /// not be a direct contact).
+  Future<void> _sendToPeer(
+      String zeonId, String type, Map<String, Object?> payload,
+      {bool transient = false, bool noPush = false}) async {
+    final contact = contactById(zeonId);
+    if (contact != null) {
+      await _deliver(contact, await _seal(type, contact, payload),
+          transient: transient, noPush: noPush);
+      return;
+    }
+    for (final members in groupMembers.values) {
+      for (final m in members) {
+        if (m.zeonId != zeonId) continue;
+        await _deliverToMember(
+            m,
+            await _sealFor(type, m.zeonId, m.pubkeyB64, payload,
+                serverAddress: m.serverAddress, serverTlsFp: m.tlsFp),
+            transient: transient,
+            noPush: noPush);
+        return;
+      }
+    }
+  }
+
+  /// A peer told us which of our messages reached their screen. Statuses only
+  /// move forward; group messages advance when *every* current member is
+  /// there (per-member rows in the receipts table).
+  Future<void> _applyReceipt(
+      Envelope envelope, Map<String, dynamic> payload) async {
+    final kind = payload['kind'] as String?;
+    if (kind != ReceiptKind.delivered && kind != ReceiptKind.read) return;
+    final ids = (payload['ids'] as List?)?.whereType<String>() ?? const <String>[];
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final id in ids) {
+      final message = await app.db.messageById(id);
+      if (message == null || !message.outgoing) continue;
+      final group = groupById(message.contactId);
+      String? next;
+      if (group == null) {
+        // A DM receipt is only valid from the person the message went to.
+        if (message.contactId != envelope.from) continue;
+        next =
+            kind == ReceiptKind.read ? MessageStatus.read : MessageStatus.delivered;
+      } else {
+        if (memberOf(group.id, envelope.from) == null) continue;
+        await app.db.upsertReceipt(id, envelope.from, kind!, now);
+        final others = (groupMembers[group.id] ?? [])
+            .where((m) => m.zeonId != app.zeonId)
+            .length;
+        if (others == 0) continue;
+        final counts = await app.db.receiptCounts(id);
+        if (counts.read >= others) {
+          next = MessageStatus.read;
+        } else if (counts.delivered >= others) {
+          next = MessageStatus.delivered;
+        }
+      }
+      if (next == null ||
+          MessageStatus.rank(next) <= MessageStatus.rank(message.status)) {
+        continue;
+      }
+      await _setStatusEverywhere(message, next);
+    }
+  }
+
+  /// DB row + whatever cached copies the UI is holding.
+  Future<void> _setStatusEverywhere(Message message, String status) async {
+    await app.db.setMessageStatus(message.id, status);
+    message.status = status;
+    _cachedCopies(message).forEach((m) => m.status = status);
+  }
+
+  /// The list cache and lastMessage may hold instances distinct from a
+  /// DB-loaded one — mutations must reach all of them.
+  List<Message> _cachedCopies(Message message) => [
+        ...?_messages[message.contactId]?.where((m) => m.id == message.id),
+        if (lastMessage[message.contactId]?.id == message.id)
+          lastMessage[message.contactId]!,
+      ];
+
+  // -- typing indicators (PROTOCOL.md "typing") ---------------------------------------
+
+  /// Peers currently typing in a conversation (Zeon IDs), expired on read.
+  List<String> typersIn(String conversationId) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final peers = _typing[conversationId];
+    if (peers == null) return const [];
+    peers.removeWhere((_, until) => until <= now);
+    return peers.keys.toList();
+  }
+
+  /// Called on every keystroke; throttled to one "started" per ~8s. Only
+  /// rides existing sessions — a typing hint is never worth an X3DH.
+  Future<void> notifyTyping(String conversationId) async {
+    if (!app.sendTypingIndicators) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - (_typingSentAt[conversationId] ?? 0) < _typingRefreshMs) return;
+    _typingSentAt[conversationId] = now;
+    await _sendTypingState(conversationId, 'started');
+  }
+
+  Future<void> stopTyping(String conversationId) async {
+    if (_typingSentAt.remove(conversationId) == null) return;
+    await _sendTypingState(conversationId, 'stopped');
+  }
+
+  Future<void> _sendTypingState(String conversationId, String state) async {
+    try {
+      final group = groupById(conversationId);
+      if (group == null) {
+        final contact = contactById(conversationId);
+        if (contact == null || !contact.isAccepted) return;
+        if (!((await _loadSession(contact.zeonId))?.canSend ?? false)) return;
+        await _deliver(
+            contact, await _seal(EnvelopeType.typing, contact, {'state': state}),
+            transient: true);
+      } else {
+        final payload = {'group_id': group.id, 'state': state};
+        for (final m in (groupMembers[group.id] ?? [])
+            .where((m) => m.zeonId != app.zeonId)) {
+          if (!((await _loadSession(m.zeonId))?.canSend ?? false)) continue;
+          try {
+            await _deliverToMember(
+                m,
+                await _sealFor(EnvelopeType.typing, m.zeonId, m.pubkeyB64,
+                    payload,
+                    serverAddress: m.serverAddress, serverTlsFp: m.tlsFp),
+                transient: true);
+          } catch (_) {} // per-member fire-and-forget
+        }
+      }
+    } catch (_) {
+      // fire-and-forget: a lost typing signal costs nothing
+    }
+  }
+
+  void _applyTyping(Envelope envelope, Map<String, dynamic> payload) {
+    final String conversationId;
+    final groupId = payload['group_id'] as String?;
+    if (groupId != null) {
+      if (groupById(groupId) == null ||
+          memberOf(groupId, envelope.from) == null) {
+        return;
+      }
+      conversationId = groupId;
+    } else {
+      final contact = contactById(envelope.from);
+      if (contact == null || !contact.isAccepted) return;
+      conversationId = envelope.from;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Transient envelopes only arrive live, but guard against clock skew.
+    if ((now - _sentAtMs(envelope)).abs() > 60 * 1000) return;
+    if (payload['state'] == 'started') {
+      (_typing[conversationId] ??= {})[envelope.from] = now + _typingTtlMs;
+      _scheduleTypingSweep();
+    } else {
+      _typing[conversationId]?.remove(envelope.from);
+    }
+  }
+
+  /// Repaint listeners when a stale "typing" entry expires without an
+  /// explicit "stopped".
+  void _scheduleTypingSweep() {
+    _typingSweep ??= Timer(const Duration(seconds: 5), () {
+      _typingSweep = null;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final peers in _typing.values) {
+        peers.removeWhere((_, until) => until <= now);
+      }
+      if (_typing.values.any((peers) => peers.isNotEmpty)) {
+        _scheduleTypingSweep();
+      }
+      notifyListeners();
+    });
+  }
+
+  // -- edit / delete (PROTOCOL.md "msg_edit" / "msg_delete") --------------------------
+
+  bool canEdit(Message m) =>
+      m.outgoing &&
+      !m.deleted &&
+      m.kind == MessageKind.text &&
+      DateTime.now().millisecondsSinceEpoch - m.sentAt < _editWindowMs;
+
+  bool canDeleteForEveryone(Message m) =>
+      m.outgoing &&
+      !m.deleted &&
+      DateTime.now().millisecondsSinceEpoch - m.sentAt < _editWindowMs;
+
+  /// Edit an outgoing message. Returns false when some recipient could not
+  /// be told (they keep the old text until their mailbox is reachable —
+  /// there is no durable retry for edits, matching their best-effort tier).
+  Future<bool> editMessage(Message message, String newText) async {
+    final text = newText.trim();
+    if (text.isEmpty || text == message.text || !canEdit(message)) return true;
+    final group = groupById(message.contactId);
+    final stillPending = message.status == MessageStatus.pending;
+    // A message that never left the phone just gets rewritten: the pending
+    // retry ships the new text, no edit envelope, no "edited" tag.
+    final editedAt = (stillPending && group == null)
+        ? null
+        : DateTime.now().millisecondsSinceEpoch;
+    message.text = text;
+    message.editedAt = editedAt ?? message.editedAt;
+    await app.db.setMessageText(message.id, text, editedAt);
+    for (final m in _cachedCopies(message)) {
+      m.text = text;
+      m.editedAt = message.editedAt;
+    }
+    notifyListeners();
+    if (stillPending && group == null) return true;
+
+    var reachedEveryone = true;
+    if (group == null) {
+      final contact = contactById(message.contactId);
+      if (contact == null) return false;
+      try {
+        await _deliver(contact,
+            await _seal(EnvelopeType.msgEdit, contact, {'id': message.id, 'text': text}));
+      } catch (_) {
+        reachedEveryone = false;
+      }
+    } else {
+      final payload = {'group_id': group.id, 'id': message.id, 'text': text};
+      for (final m in (groupMembers[group.id] ?? [])
+          .where((m) => m.zeonId != app.zeonId)) {
+        try {
+          await _deliverToMember(
+              m,
+              await _sealFor(EnvelopeType.groupMsgEdit, m.zeonId, m.pubkeyB64,
+                  payload,
+                  serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+        } catch (_) {
+          reachedEveryone = false;
+        }
+      }
+    }
+    return reachedEveryone;
+  }
+
+  /// Delete-for-everyone: tombstone locally, announce to recipients.
+  /// Cooperative like Signal's — an honest client blanks it, that's all.
+  Future<bool> deleteMessageForEveryone(Message message) async {
+    if (!canDeleteForEveryone(message)) return true;
+    final group = groupById(message.contactId);
+    final neverLeft =
+        message.status == MessageStatus.pending && group == null;
+    await _tombstone(message);
+    await app.db.clearOutboxMessage(message.id); // stop owing group copies
+    notifyListeners();
+    if (neverLeft) return true;
+
+    var reachedEveryone = true;
+    if (group == null) {
+      final contact = contactById(message.contactId);
+      if (contact == null) return false;
+      try {
+        await _deliver(contact,
+            await _seal(EnvelopeType.msgDelete, contact, {'id': message.id}));
+      } catch (_) {
+        reachedEveryone = false;
+      }
+    } else {
+      final payload = {'group_id': group.id, 'id': message.id};
+      for (final m in (groupMembers[group.id] ?? [])
+          .where((m) => m.zeonId != app.zeonId)) {
+        try {
+          await _deliverToMember(
+              m,
+              await _sealFor(EnvelopeType.groupMsgDelete, m.zeonId,
+                  m.pubkeyB64, payload,
+                  serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+        } catch (_) {
+          reachedEveryone = false;
+        }
+      }
+    }
+    return reachedEveryone;
+  }
+
+  /// Delete-for-me: purely local, any message.
+  Future<void> deleteMessageForMe(Message message) async {
+    await _removeMediaFile(message);
+    await app.db.deleteMessage(message.id);
+    await app.db.clearOutboxMessage(message.id);
+    _messages[message.contactId]?.removeWhere((m) => m.id == message.id);
+    if (lastMessage[message.contactId]?.id == message.id) {
+      lastMessage[message.contactId] =
+          await app.db.lastMessageFor(message.contactId);
+    }
+    notifyListeners();
+  }
+
+  Future<void> _tombstone(Message message) async {
+    await _removeMediaFile(message);
+    await app.db.tombstoneMessage(message.id);
+    for (final m in [message, ..._cachedCopies(message)]) {
+      m.deleted = true;
+      m.text = '';
+      m.mediaPath = null;
+    }
+  }
+
+  Future<void> _removeMediaFile(Message message) async {
+    final path = message.mediaPath;
+    if (path == null) return;
+    try {
+      await File(path).delete();
+    } catch (_) {}
+  }
+
+  /// The peer edited one of their messages. The session already authenticated
+  /// them; what's left is checking the target is really theirs.
+  Future<void> _applyRemoteEdit(
+      Envelope envelope, Map<String, dynamic> payload,
+      {bool group = false}) async {
+    final message = await _remoteEditTarget(envelope, payload, group: group);
+    final text = (payload['text'] as String?)?.trim();
+    if (message == null || text == null || text.isEmpty) return;
+    if (message.kind != MessageKind.text) return;
+    final editedAt = _sentAtMs(envelope);
+    await app.db.setMessageText(message.id, text, editedAt);
+    for (final m in [message, ..._cachedCopies(message)]) {
+      m.text = text;
+      m.editedAt = editedAt;
+    }
+  }
+
+  Future<void> _applyRemoteDelete(
+      Envelope envelope, Map<String, dynamic> payload,
+      {bool group = false}) async {
+    final message = await _remoteEditTarget(envelope, payload, group: group);
+    if (message == null) return;
+    await _tombstone(message);
+  }
+
+  /// Shared validation for msg_edit / msg_delete: the referenced message must
+  /// exist, be incoming, belong to the right conversation, have been written
+  /// by the envelope's (session-authenticated) sender, and still be inside
+  /// the edit window plus receiver-side grace.
+  Future<Message?> _remoteEditTarget(
+      Envelope envelope, Map<String, dynamic> payload,
+      {required bool group}) async {
+    final id = payload['id'] as String?;
+    if (id == null) return null;
+    final message = await app.db.messageById(id);
+    if (message == null || message.outgoing || message.deleted) return null;
+    if (group) {
+      final groupId = payload['group_id'] as String?;
+      if (groupId == null || message.contactId != groupId) return null;
+      if (groupById(groupId) == null) return null;
+      if (memberOf(groupId, envelope.from) == null) return null;
+      if (message.senderId != envelope.from) return null;
+    } else {
+      if (message.contactId != envelope.from) return null;
+    }
+    if (_sentAtMs(envelope) - message.sentAt > _editWindowMs + _editGraceMs) {
+      return null;
+    }
+    return message;
   }
 
   // -- receiving ---------------------------------------------------------------------
@@ -1012,6 +1460,26 @@ class ChatState extends ChangeNotifier {
         groupMembers[group.id]?.removeWhere((m) => m.zeonId == envelope.from);
         await app.db
             .replaceMembers(group.id, groupMembers[group.id] ?? const []);
+
+      case EnvelopeType.receipt:
+        await _applyReceipt(envelope, payload);
+
+      case EnvelopeType.typing:
+        _applyTyping(envelope, payload);
+
+      case EnvelopeType.msgEdit:
+        if (contact == null || !contact.isAccepted) return;
+        await _applyRemoteEdit(envelope, payload);
+
+      case EnvelopeType.msgDelete:
+        if (contact == null || !contact.isAccepted) return;
+        await _applyRemoteDelete(envelope, payload);
+
+      case EnvelopeType.groupMsgEdit:
+        await _applyRemoteEdit(envelope, payload, group: true);
+
+      case EnvelopeType.groupMsgDelete:
+        await _applyRemoteDelete(envelope, payload, group: true);
     }
     notifyListeners();
   }
@@ -1083,6 +1551,12 @@ class ChatState extends ChangeNotifier {
 
   Future<void> _storeIncomingConversation(
       String conversationId, Message message) async {
+    // Their message just landed — whatever they were typing, this is it.
+    final sender = message.senderId ?? conversationId;
+    _typing[conversationId]?.remove(sender);
+
+    final onScreen = _openConversationId == conversationId;
+    if (onScreen) message.status = MessageStatus.read;
     await app.db.insertMessage(message);
     final cache = _messages[conversationId];
     if (cache != null && !cache.any((m) => m.id == message.id)) {
@@ -1090,6 +1564,14 @@ class ChatState extends ChangeNotifier {
       cache.sort((a, b) => a.sentAt.compareTo(b.sentAt));
     }
     lastMessage[conversationId] = message;
+
+    // Tell the sender it arrived — "read" straight away if it's on screen
+    // (and the privacy setting allows), else "delivered". Delivery receipts
+    // are unconditional, Signal-style.
+    _queueReceipt(
+        sender,
+        onScreen && app.sendReadReceipts ? ReceiptKind.read : ReceiptKind.delivered,
+        message.id);
   }
 
   static int _sentAtMs(Envelope envelope) =>
@@ -1105,5 +1587,12 @@ class ChatState extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  @override
+  void dispose() {
+    _receiptFlushTimer?.cancel();
+    _typingSweep?.cancel();
+    super.dispose();
   }
 }

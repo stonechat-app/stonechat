@@ -15,7 +15,7 @@ class ChatDb {
     final path = p.join(await getDatabasesPath(), 'zeon.db');
     final db = await openDatabase(
       path,
-      version: 7,
+      version: 8,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
           await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
@@ -48,6 +48,12 @@ class ChatDb {
             await db.execute('ALTER TABLE messages ADD COLUMN sender_id TEXT');
           }
         }
+        if (oldVersion < 8) {
+          await db.execute('ALTER TABLE messages ADD COLUMN edited_at INTEGER');
+          await db.execute(
+              'ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+          await db.execute(_createReceipts);
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -73,7 +79,9 @@ class ChatDb {
             media_path  TEXT,
             duration_ms INTEGER,
             sent_at     INTEGER NOT NULL,
-            status      TEXT NOT NULL
+            status      TEXT NOT NULL,
+            edited_at   INTEGER,
+            deleted     INTEGER NOT NULL DEFAULT 0
           )
         ''');
         await db.execute(
@@ -83,6 +91,7 @@ class ChatDb {
         await db.execute(_createGroupOutbox);
         await db.execute(_createSessions);
         await db.execute(_createPrekeys);
+        await db.execute(_createReceipts);
       },
     );
     return ChatDb._(db);
@@ -131,6 +140,19 @@ class ChatDb {
     )
   ''';
 
+  // Per-peer delivery/read receipts for our outgoing messages. DMs collapse
+  // straight into messages.status; group messages need one row per member to
+  // know when *everyone* has the message.
+  static const _createReceipts = '''
+    CREATE TABLE receipts (
+      message_id TEXT NOT NULL,
+      peer_id    TEXT NOT NULL,
+      kind       TEXT NOT NULL,      -- 'delivered' | 'read'
+      at         INTEGER NOT NULL,
+      PRIMARY KEY (message_id, peer_id)
+    )
+  ''';
+
   // Our prekey private halves. Public halves are parked on our mailbox
   // (every publish uploads the full stock; the mailbox replaces its store).
   // `published` is vestigial, kept to avoid a schema migration.
@@ -158,8 +180,18 @@ class ChatDb {
   }
 
   Future<void> deleteContact(String zeonId) async {
+    await _purgeConversationExtras(zeonId);
     await _db.delete('messages', where: 'contact_id = ?', whereArgs: [zeonId]);
     await _db.delete('contacts', where: 'zeon_id = ?', whereArgs: [zeonId]);
+  }
+
+  Future<void> _purgeConversationExtras(String contactId) async {
+    for (final table in ['receipts']) {
+      await _db.execute(
+          'DELETE FROM $table WHERE message_id IN '
+          '(SELECT id FROM messages WHERE contact_id = ?)',
+          [contactId]);
+    }
   }
 
   // -- messages ---------------------------------------------------------------
@@ -180,9 +212,62 @@ class ChatDb {
         where: 'id = ?', whereArgs: [id]);
   }
 
+  /// [editedAt] is null when rewriting a still-pending message — the new
+  /// text ships with the original send, so nothing was "edited".
+  Future<void> setMessageText(String id, String text, int? editedAt) async {
+    await _db.update('messages', {'text': text, 'edited_at': ?editedAt},
+        where: 'id = ?', whereArgs: [id]);
+  }
+
+  /// Delete-for-everyone tombstone: the row stays (so the conversation shows
+  /// "message deleted"), the content goes.
+  Future<void> tombstoneMessage(String id) async {
+    await _db.update(
+        'messages',
+        {'text': '', 'media_path': null, 'deleted': 1},
+        where: 'id = ?',
+        whereArgs: [id]);
+  }
+
+  /// Delete-for-me: the row itself goes.
+  Future<void> deleteMessage(String id) async {
+    await _db.delete('messages', where: 'id = ?', whereArgs: [id]);
+    await _db.delete('receipts', where: 'message_id = ?', whereArgs: [id]);
+  }
+
+  // -- receipts -----------------------------------------------------------------
+
+  /// Record a peer's receipt; read replaces delivered, never the reverse.
+  Future<void> upsertReceipt(
+      String messageId, String peerId, String kind, int at) async {
+    await _db.execute('''
+      INSERT INTO receipts (message_id, peer_id, kind, at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT (message_id, peer_id) DO UPDATE SET kind = excluded.kind,
+        at = excluded.at
+        WHERE receipts.kind = 'delivered' AND excluded.kind = 'read'
+    ''', [messageId, peerId, kind, at]);
+  }
+
+  /// How many distinct peers have at least delivered / read this message.
+  /// (A read receipt implies delivery.)
+  Future<({int delivered, int read})> receiptCounts(String messageId) async {
+    final rows = await _db.rawQuery(
+        'SELECT kind, COUNT(*) AS n FROM receipts WHERE message_id = ? GROUP BY kind',
+        [messageId]);
+    var delivered = 0, read = 0;
+    for (final r in rows) {
+      final n = r['n'] as int;
+      if (r['kind'] == ReceiptKind.read) read += n;
+      delivered += n;
+    }
+    return (delivered: delivered, read: read);
+  }
+
   Future<List<Message>> pendingMessages() async {
+    // deleted = 0: a tombstoned pending message must never leave the phone.
     final rows = await _db.query('messages',
-        where: 'status = ? AND outgoing = 1',
+        where: 'status = ? AND outgoing = 1 AND deleted = 0',
         whereArgs: [MessageStatus.pending],
         orderBy: 'sent_at');
     return rows.map(Message.fromRow).toList();
@@ -223,6 +308,7 @@ class ChatDb {
   }
 
   Future<void> deleteGroup(String groupId) async {
+    await _purgeConversationExtras(groupId);
     await _db.delete('messages', where: 'contact_id = ?', whereArgs: [groupId]);
     await _db.delete('group_outbox', where: 'group_id = ?', whereArgs: [groupId]);
     await _db.delete('group_members', where: 'group_id = ?', whereArgs: [groupId]);
@@ -245,6 +331,12 @@ class ChatDb {
   Future<void> clearOutbox(String messageId, String memberId) async {
     await _db.delete('group_outbox',
         where: 'message_id = ? AND member_id = ?', whereArgs: [messageId, memberId]);
+  }
+
+  /// Stop owing every remaining copy (the message was deleted).
+  Future<void> clearOutboxMessage(String messageId) async {
+    await _db.delete('group_outbox',
+        where: 'message_id = ?', whereArgs: [messageId]);
   }
 
   Future<int> outboxRemaining(String messageId) async {

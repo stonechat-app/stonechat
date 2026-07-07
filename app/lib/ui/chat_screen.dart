@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:just_audio/just_audio.dart';
@@ -37,6 +38,8 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
+  late final ChatState _chat;
+  Message? _editing; // composer is rewriting this message instead of sending
 
   bool get isGroup => widget.group != null;
   String get conversationId => widget.contact?.zeonId ?? widget.group!.id;
@@ -44,7 +47,14 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    context.read<ChatState>().openConversation(conversationId);
+    _chat = context.read<ChatState>();
+    _chat.openConversation(conversationId);
+  }
+
+  @override
+  void dispose() {
+    _chat.closeConversation(conversationId);
+    super.dispose();
   }
 
   Future<void> _send() async {
@@ -52,12 +62,100 @@ class _ChatScreenState extends State<ChatScreen> {
     if (text.isEmpty) return;
     _input.clear();
     final chat = context.read<ChatState>();
+    final editing = _editing;
+    if (editing != null) {
+      setState(() => _editing = null);
+      final reachedEveryone = await chat.editMessage(editing, text);
+      if (!reachedEveryone && mounted) {
+        showZnSnack(context, "Edit couldn't reach everyone — they still see the old text",
+            error: true);
+      }
+      return;
+    }
     if (isGroup) {
       await chat.sendGroupMessage(widget.group!, text);
     } else {
       await chat.sendMessage(widget.contact!, text);
     }
     _scrollToEnd();
+  }
+
+  void _startEdit(Message m) {
+    setState(() => _editing = m);
+    _input.text = m.text;
+    _input.selection = TextSelection.collapsed(offset: m.text.length);
+  }
+
+  void _showMessageSheet(Message m) {
+    final chat = context.read<ChatState>();
+    if (m.deleted) return;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (m.kind == MessageKind.text)
+              ListTile(
+                leading: const Icon(Icons.copy_outlined, color: Zn.muted),
+                title: const Text('Copy'),
+                onTap: () {
+                  Clipboard.setData(ClipboardData(text: m.text));
+                  Navigator.pop(sheetContext);
+                },
+              ),
+            if (chat.canEdit(m))
+              ListTile(
+                leading: const Icon(Icons.edit_outlined, color: Zn.ion),
+                title: const Text('Edit'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _startEdit(m);
+                },
+              ),
+            if (chat.canDeleteForEveryone(m))
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Zn.danger),
+                title: const Text('Delete for everyone',
+                    style: TextStyle(color: Zn.danger)),
+                onTap: () async {
+                  Navigator.pop(sheetContext);
+                  final reachedEveryone =
+                      await chat.deleteMessageForEveryone(m);
+                  if (!reachedEveryone && mounted) {
+                    showZnSnack(context,
+                        "Couldn't reach everyone — some may still see it",
+                        error: true);
+                  }
+                },
+              ),
+            ListTile(
+              leading: const Icon(Icons.delete_sweep_outlined, color: Zn.muted),
+              title: const Text('Delete for me'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                chat.deleteMessageForMe(m);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _typingLabel(ChatState chat) {
+    final typers = chat.typersIn(conversationId);
+    if (typers.isEmpty) return '';
+    if (!isGroup) return 'typing ···';
+    final names = typers
+        .map((id) =>
+            chat.memberOf(conversationId, id)?.displayName ?? 'someone')
+        .toList();
+    return '${names.join(', ')} ${names.length == 1 ? 'is' : 'are'} typing ···';
   }
 
   Future<void> _sendPhoto() async {
@@ -171,22 +269,58 @@ class _ChatScreenState extends State<ChatScreen> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     if (previous != null) _GapMarker.between(previous, m),
-                    _LedgerEntry(
-                      message: m,
-                      peerName: senderName,
-                      peerColor: railColor,
-                      showSender: previous == null ||
-                          previous.outgoing != m.outgoing ||
-                          previous.senderId != m.senderId,
+                    GestureDetector(
+                      onLongPress: () => _showMessageSheet(m),
+                      behavior: HitTestBehavior.opaque,
+                      child: _LedgerEntry(
+                        message: m,
+                        peerName: senderName,
+                        peerColor: railColor,
+                        showSender: previous == null ||
+                            previous.outgoing != m.outgoing ||
+                            previous.senderId != m.senderId,
+                      ),
                     ),
                   ],
                 );
               },
             ),
           ),
+          if (_typingLabel(chat).isNotEmpty)
+            Container(
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              child: Text(_typingLabel(chat),
+                  style: Zn.mono(size: 10, color: Zn.cyan, letterSpacing: 1)),
+            ),
+          if (_editing != null)
+            Container(
+              color: Zn.surface,
+              padding: const EdgeInsets.fromLTRB(16, 6, 4, 0),
+              child: Row(
+                children: [
+                  const Icon(Icons.edit_outlined, size: 14, color: Zn.ion),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('Editing message',
+                        style: Zn.mono(size: 10, color: Zn.ion, letterSpacing: 1)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 16, color: Zn.muted),
+                    onPressed: () {
+                      _input.clear();
+                      setState(() => _editing = null);
+                    },
+                  ),
+                ],
+              ),
+            ),
           _Composer(
             controller: _input,
             onSend: _send,
+            onTyping: _editing == null
+                ? () => context.read<ChatState>().notifyTyping(conversationId)
+                : null,
             // Media in groups is deferred (see PROTOCOL.md) — DM-only for now.
             onPickPhoto: isGroup ? null : _sendPhoto,
             onVoiceRecorded: isGroup ? null : _sendVoice,
@@ -243,14 +377,27 @@ class _LedgerEntry extends StatelessWidget {
                               weight: FontWeight.w700,
                               letterSpacing: 2)),
                     ),
-                  switch (message.kind) {
-                    MessageKind.image => _ImageEntry(message: message),
-                    MessageKind.audio =>
-                      _AudioEntry(message: message, color: color),
-                    _ => Text(message.text,
-                        style: const TextStyle(
-                            color: Zn.text, fontSize: 15, height: 1.35)),
-                  },
+                  if (message.deleted)
+                    Text('message deleted',
+                        style: Zn.mono(size: 12).copyWith(
+                            fontStyle: FontStyle.italic, color: Zn.muted))
+                  else
+                    switch (message.kind) {
+                      MessageKind.image => _ImageEntry(message: message),
+                      MessageKind.audio =>
+                        _AudioEntry(message: message, color: color),
+                      _ => Text.rich(
+                          TextSpan(
+                            text: message.text,
+                            children: [
+                              if (message.editedAt != null)
+                                TextSpan(
+                                    text: '  · edited', style: Zn.mono(size: 9)),
+                            ],
+                          ),
+                          style: const TextStyle(
+                              color: Zn.text, fontSize: 15, height: 1.35)),
+                    },
                 ],
               ),
             ),
@@ -258,10 +405,30 @@ class _LedgerEntry extends StatelessWidget {
             Column(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
-                Text(
-                  '${DateFormat('HH:mm').format(DateTime.fromMillisecondsSinceEpoch(message.sentAt))}'
-                  '${message.outgoing ? (message.status == MessageStatus.pending ? ' ◌' : ' ●') : ''}',
-                  style: Zn.mono(size: 9),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      DateFormat('HH:mm').format(
+                          DateTime.fromMillisecondsSinceEpoch(message.sentAt)),
+                      style: Zn.mono(size: 9),
+                    ),
+                    if (message.outgoing) ...[
+                      const SizedBox(width: 4),
+                      Text(
+                        switch (message.status) {
+                          MessageStatus.pending => '◌',
+                          MessageStatus.sent => '●',
+                          _ => '●●', // delivered / read, read lights up
+                        },
+                        style: Zn.mono(
+                            size: 9,
+                            color: message.status == MessageStatus.read
+                                ? Zn.cyan
+                                : Zn.muted),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),
@@ -436,12 +603,14 @@ class _AudioEntryState extends State<_AudioEntry> {
 class _Composer extends StatefulWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
+  final VoidCallback? onTyping; // keystroke → typing indicator (throttled upstream)
   final VoidCallback? onPickPhoto; // null → media disabled (groups, deferred)
   final void Function(String path, int durationMs)? onVoiceRecorded;
 
   const _Composer({
     required this.controller,
     required this.onSend,
+    this.onTyping,
     required this.onPickPhoto,
     required this.onVoiceRecorded,
   });
@@ -544,6 +713,9 @@ class _ComposerState extends State<_Composer> {
                     minLines: 1,
                     maxLines: 5,
                     textInputAction: TextInputAction.send,
+                    onChanged: (text) {
+                      if (text.trim().isNotEmpty) widget.onTyping?.call();
+                    },
                     onSubmitted: (_) => widget.onSend(),
                     style: const TextStyle(color: Zn.text, fontSize: 15),
                     decoration: InputDecoration(

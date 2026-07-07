@@ -30,6 +30,30 @@ class AppState extends ChangeNotifier {
   bool get hasIdentity => _crypto != null && zeonId != null;
   CryptoService get crypto => _crypto!;
 
+  // Preferences. Stored beside the keys — small values, no extra dependency.
+  // Read receipts are mutual (Signal-style): turning them off also stops us
+  // rendering the other side's. Delivery receipts are always sent.
+  bool sendReadReceipts = true;
+  bool sendTypingIndicators = true;
+
+  Future<void> setPreference(String key, bool value) async {
+    switch (key) {
+      case 'read_receipts':
+        sendReadReceipts = value;
+      case 'typing_indicators':
+        sendTypingIndicators = value;
+    }
+    await _storage.write(key: 'zn_pref_$key', value: value ? '1' : '0');
+    notifyListeners();
+  }
+
+  Future<bool> _readPreference(String key, bool fallback) async =>
+      switch (await _storage.read(key: 'zn_pref_$key')) {
+        '1' => true,
+        '0' => false,
+        _ => fallback,
+      };
+
   /// Two modes: by default the app uses the hosted Zeon control plane;
   /// advanced users can point it anywhere (onboarding → advanced, or
   /// --dart-define=ZEON_CP=… for development).
@@ -53,6 +77,9 @@ class AppState extends ChangeNotifier {
     // Mailbox TLS pinning (api.dart): fingerprint = BLAKE2b-256 of DER cert.
     certFingerprinter =
         (der) => base64Encode(sodium.crypto.genericHash(message: der, outLen: 32));
+
+    sendReadReceipts = await _readPreference('read_receipts', true);
+    sendTypingIndicators = await _readPreference('typing_indicators', true);
 
     final secret = await _storage.read(key: 'zn_secret');
     final public = await _storage.read(key: 'zn_public');

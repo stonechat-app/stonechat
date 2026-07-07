@@ -75,6 +75,11 @@ def validate_envelope(envelope: dict) -> None:
         not isinstance(blob_id, str) or not BLOB_ID_RE.match(blob_id)
     ):
         raise HTTPException(400, "bad blob_id")
+    # Delivery hints (PROTOCOL.md "Envelope"): both optional, both booleans.
+    if "transient" in envelope and not isinstance(envelope["transient"], bool):
+        raise HTTPException(400, "bad transient flag")
+    if "push" in envelope and not isinstance(envelope["push"], bool):
+        raise HTTPException(400, "bad push flag")
 
 log = logging.getLogger("zeon.server")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -393,11 +398,18 @@ async def inbox(request: Request):
     if envelope["to"] != OWNER_ID:
         raise HTTPException(403, "not this mailbox's owner")
 
+    # Transient envelopes (typing indicators) are only worth anything live:
+    # never queued, never woken for. If the owner isn't connected they vanish.
+    if envelope.get("transient") is True:
+        delivered_live = await link.push(envelope)
+        return {"status": "delivered" if delivered_live else "dropped"}
+
     if not mailbox.put(envelope):
         raise HTTPException(503, "mailbox full")
     # Best-effort immediate push; the row is only removed when the device acks.
     delivered_live = await link.push(envelope)
-    if not delivered_live:
+    if not delivered_live and envelope.get("push") is not False:
+        # push: false (receipts) → deliver on the next connect, don't wake the phone
         asyncio.get_running_loop().create_task(_ping_gateway())
     return {"status": "queued"}
 

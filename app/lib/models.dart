@@ -56,6 +56,17 @@ class Contact {
 class MessageStatus {
   static const pending = 'pending'; // queued locally, recipient unreachable
   static const sent = 'sent'; // accepted by their routing server
+  static const delivered = 'delivered'; // their device persisted it
+  static const read = 'read'; // displayed on their screen
+
+  /// Receipts only move a message forward: sent → delivered → read.
+  static int rank(String s) => switch (s) {
+        pending => 0,
+        sent => 1,
+        delivered => 2,
+        read => 3,
+        _ => 0,
+      };
 }
 
 class MessageKind {
@@ -69,12 +80,14 @@ class Message {
   final String contactId; // conversation id: a peer's Zeon ID, or a group id
   final String? senderId; // group messages: which member sent it (null = DM/own)
   final bool outgoing;
-  final String text;
+  String text;
   final String kind; // MessageKind
-  final String? mediaPath; // local file for image/audio — never leaves the phone
+  String? mediaPath; // local file for image/audio — never leaves the phone
   final int? durationMs; // audio only
   final int sentAt; // ms since epoch
   String status;
+  int? editedAt; // ms since epoch, set when the sender edited the text
+  bool deleted; // tombstone: sender deleted it for everyone
 
   Message({
     required this.id,
@@ -87,6 +100,8 @@ class Message {
     this.durationMs,
     required this.sentAt,
     required this.status,
+    this.editedAt,
+    this.deleted = false,
   });
 
   Map<String, Object?> toRow() => {
@@ -100,6 +115,8 @@ class Message {
         'duration_ms': durationMs,
         'sent_at': sentAt,
         'status': status,
+        'edited_at': editedAt,
+        'deleted': deleted ? 1 : 0,
       };
 
   factory Message.fromRow(Map<String, Object?> r) => Message(
@@ -113,13 +130,17 @@ class Message {
         durationMs: r['duration_ms'] as int?,
         sentAt: r['sent_at'] as int,
         status: r['status'] as String,
+        editedAt: r['edited_at'] as int?,
+        deleted: (r['deleted'] as int? ?? 0) == 1,
       );
 
-  String get preview => switch (kind) {
-        MessageKind.image => '📷 Photo',
-        MessageKind.audio => '🎤 Voice note',
-        _ => text,
-      };
+  String get preview => deleted
+      ? 'Message deleted'
+      : switch (kind) {
+          MessageKind.image => '📷 Photo',
+          MessageKind.audio => '🎤 Voice note',
+          _ => text,
+        };
 }
 
 class EnvelopeType {
@@ -131,6 +152,17 @@ class EnvelopeType {
   static const groupUpdate = 'group_update';
   static const groupMsg = 'group_msg';
   static const groupLeave = 'group_leave';
+  static const receipt = 'receipt'; // delivered/read, batched message ids
+  static const typing = 'typing'; // transient, never queued or pushed
+  static const msgEdit = 'msg_edit';
+  static const msgDelete = 'msg_delete';
+  static const groupMsgEdit = 'group_msg_edit';
+  static const groupMsgDelete = 'group_msg_delete';
+}
+
+class ReceiptKind {
+  static const delivered = 'delivered';
+  static const read = 'read';
 }
 
 /// A group lives only on members' phones — no server knows it exists.
@@ -267,13 +299,20 @@ class Envelope {
 /// `sealed` — an anonymous box only the recipient's identity key opens, so
 /// the mailbox never learns who wrote. `blobId` (media envelopes) is the one
 /// other cleartext hint, used by the server purely to garbage-collect the
-/// blob on ack.
+/// blob on ack. Two optional delivery hints (PROTOCOL.md "Envelope"):
+/// `transient` — deliver only if the owner is connected right now, never
+/// queue, never push (typing indicators); `push: false` — queue and deliver
+/// normally but never wake the owner's phone (receipts). Both are
+/// server-visible by necessity; neither says anything an observer couldn't
+/// already infer from envelope size.
 class SealedEnvelope {
   final int v;
   final String id;
   final String to;
   final String sealedB64;
   final String? blobId;
+  final bool transient;
+  final bool noPush;
 
   SealedEnvelope({
     this.v = 1,
@@ -281,6 +320,8 @@ class SealedEnvelope {
     required this.to,
     required this.sealedB64,
     this.blobId,
+    this.transient = false,
+    this.noPush = false,
   });
 
   Map<String, Object?> toJson() => {
@@ -289,6 +330,8 @@ class SealedEnvelope {
         'to': to,
         'sealed': sealedB64,
         if (blobId != null) 'blob_id': blobId,
+        if (transient) 'transient': true,
+        if (noPush) 'push': false,
       };
 
   factory SealedEnvelope.fromJson(Map<String, dynamic> j) => SealedEnvelope(
@@ -297,5 +340,7 @@ class SealedEnvelope {
         to: j['to'] as String,
         sealedB64: j['sealed'] as String,
         blobId: j['blob_id'] as String?,
+        transient: j['transient'] as bool? ?? false,
+        noPush: (j['push'] as bool?) == false,
       );
 }
