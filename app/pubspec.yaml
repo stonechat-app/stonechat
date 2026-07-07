@@ -2,7 +2,7 @@ name: zeon_chat
 description: "Zeon — privacy-first messaging over your own server."
 publish_to: 'none'
 
-version: 0.1.0+3
+version: 0.1.0+4
 
 environment:
   sdk: ^3.11.5
