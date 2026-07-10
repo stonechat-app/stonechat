@@ -9,8 +9,15 @@ import 'chat_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  int _tab = 0; // 0 = direct chats, 1 = groups
 
   @override
   Widget build(BuildContext context) {
@@ -18,22 +25,27 @@ class HomeScreen extends StatelessWidget {
     final requests = chat.incomingRequests;
     final sent = chat.outgoingRequests;
 
-    // One merged list: DMs and groups, most recent activity first.
+    // Pinned first (most recently pinned on top), then most recent activity.
     int activity(String id, int fallback) =>
         chat.lastMessage[id]?.sentAt ?? fallback;
-    final conversations = <Widget>[
-      for (final c in chat.acceptedContacts) _ConversationTile(contact: c),
-      for (final g in chat.groups) _GroupTile(group: g),
-    ];
-    final order = <Widget, int>{};
-    var i = 0;
-    for (final c in chat.acceptedContacts) {
-      order[conversations[i++]] = activity(c.zeonId, c.createdAt);
+    int compare(int? pinA, int? pinB, int activityA, int activityB) {
+      if ((pinA != null) != (pinB != null)) return pinA != null ? -1 : 1;
+      if (pinA != null && pinB != null && pinA != pinB) {
+        return pinB.compareTo(pinA);
+      }
+      return activityB.compareTo(activityA);
     }
-    for (final g in chat.groups) {
-      order[conversations[i++]] = activity(g.id, g.createdAt);
-    }
-    conversations.sort((a, b) => (order[b] ?? 0).compareTo(order[a] ?? 0));
+
+    final contacts = [...chat.acceptedContacts]..sort((a, b) => compare(
+        a.pinnedAt,
+        b.pinnedAt,
+        activity(a.zeonId, a.createdAt),
+        activity(b.zeonId, b.createdAt)));
+    final groups = [...chat.groups]..sort((a, b) => compare(a.pinnedAt,
+        b.pinnedAt, activity(a.id, a.createdAt), activity(b.id, b.createdAt)));
+
+    final chatsEmpty = requests.isEmpty && sent.isEmpty && contacts.isEmpty;
+    final tabEmpty = _tab == 0 ? chatsEmpty : groups.isEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -72,35 +84,57 @@ class HomeScreen extends StatelessWidget {
                 await server.reconnectMailbox();
                 await chat.retryPending();
               },
-              child: (requests.isEmpty && sent.isEmpty && conversations.isEmpty)
+              child: tabEmpty
                   ? LayoutBuilder(
                       builder: (context, constraints) => ListView(
                         physics: const AlwaysScrollableScrollPhysics(),
                         children: [
                           SizedBox(
                             height: constraints.maxHeight,
-                            child: const _EmptyState(),
+                            child: _tab == 0
+                                ? const _EmptyState()
+                                : const _EmptyState(
+                                    title: 'No groups yet',
+                                    hint: 'Start one with + · New group',
+                                  ),
                           ),
                         ],
                       ),
                     )
                   : ListView(
                       physics: const AlwaysScrollableScrollPhysics(),
-                      children: [
-                        if (requests.isNotEmpty || sent.isNotEmpty) ...[
-                          _SectionLabel(
-                              'Requests · ${requests.length + sent.length}'),
-                          ...requests.map((c) => _RequestTile(contact: c)),
-                          ...sent.map((c) => _SentRequestTile(contact: c)),
-                        ],
-                        if (conversations.isNotEmpty) ...[
-                          const _SectionLabel('Chats'),
-                          ...conversations,
-                        ],
-                      ],
+                      children: _tab == 0
+                          ? [
+                              if (requests.isNotEmpty || sent.isNotEmpty) ...[
+                                _SectionLabel(
+                                    'Requests · ${requests.length + sent.length}'),
+                                ...requests
+                                    .map((c) => _RequestTile(contact: c)),
+                                ...sent
+                                    .map((c) => _SentRequestTile(contact: c)),
+                              ],
+                              if (contacts.isNotEmpty) ...[
+                                const _SectionLabel('Chats'),
+                                ...contacts.map(
+                                    (c) => _ConversationTile(contact: c)),
+                              ],
+                            ]
+                          : [
+                              const _SectionLabel('Groups'),
+                              ...groups.map((g) => _GroupTile(group: g)),
+                            ],
                     ),
             ),
           ),
+        ],
+      ),
+      bottomNavigationBar: ZnTabBar(
+        index: _tab,
+        onChanged: (i) => setState(() => _tab = i),
+        tabs: [
+          // The dot keeps pending handshakes visible from the Groups tab.
+          ZnTab('Chats', dot: requests.isNotEmpty),
+          const ZnTab('Groups'),
         ],
       ),
       floatingActionButton: FloatingActionButton(
@@ -147,6 +181,60 @@ class HomeScreen extends StatelessWidget {
   }
 }
 
+String _when(int ms) {
+  final t = DateTime.fromMillisecondsSinceEpoch(ms);
+  final now = DateTime.now();
+  if (t.year == now.year && t.month == now.month && t.day == now.day) {
+    return DateFormat('HH:mm').format(t);
+  }
+  return DateFormat('dd MMM').format(t);
+}
+
+Widget? _tileTrailing(Message? last, bool pinned) {
+  if (last == null && !pinned) return null;
+  return Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      if (pinned)
+        Padding(
+          padding: EdgeInsets.only(right: last == null ? 0 : 6),
+          child: const Icon(Icons.push_pin, size: 12, color: Zn.muted),
+        ),
+      if (last != null) Text(_when(last.sentAt), style: Zn.mono(size: 10)),
+    ],
+  );
+}
+
+/// Long-press menu for a conversation tile. One action today (pin/unpin);
+/// mute/archive would slot in here.
+void _showConversationSheet(BuildContext context,
+    {required bool pinned, required Future<void> Function() onTogglePin}) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Zn.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: Icon(
+                pinned ? Icons.push_pin_outlined : Icons.push_pin,
+                color: Zn.muted),
+            title: Text(pinned ? 'Unpin' : 'Pin to top'),
+            onTap: () {
+              Navigator.pop(sheetContext);
+              onTogglePin();
+            },
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 class _GroupTile extends StatelessWidget {
   final Group group;
   const _GroupTile({required this.group});
@@ -169,22 +257,15 @@ class _GroupTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Zn.muted, fontSize: 13),
             ),
-      trailing:
-          last == null ? null : Text(_when(last.sentAt), style: Zn.mono(size: 10)),
+      trailing: _tileTrailing(last, group.isPinned),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatScreen.group(group: group)),
       ),
+      onLongPress: () => _showConversationSheet(context,
+          pinned: group.isPinned,
+          onTogglePin: () => chat.togglePinGroup(group)),
     );
-  }
-
-  String _when(int ms) {
-    final t = DateTime.fromMillisecondsSinceEpoch(ms);
-    final now = DateTime.now();
-    if (t.year == now.year && t.month == now.month && t.day == now.day) {
-      return DateFormat('HH:mm').format(t);
-    }
-    return DateFormat('dd MMM').format(t);
   }
 }
 
@@ -311,28 +392,26 @@ class _ConversationTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Zn.muted, fontSize: 13),
             ),
-      trailing: last == null
-          ? null
-          : Text(_when(last.sentAt), style: Zn.mono(size: 10)),
+      trailing: _tileTrailing(last, contact.isPinned),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatScreen(contact: contact)),
       ),
+      onLongPress: () => _showConversationSheet(context,
+          pinned: contact.isPinned,
+          onTogglePin: () => chat.togglePinContact(contact)),
     );
-  }
-
-  String _when(int ms) {
-    final t = DateTime.fromMillisecondsSinceEpoch(ms);
-    final now = DateTime.now();
-    if (t.year == now.year && t.month == now.month && t.day == now.day) {
-      return DateFormat('HH:mm').format(t);
-    }
-    return DateFormat('dd MMM').format(t);
   }
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  final String title;
+  final String hint;
+
+  const _EmptyState({
+    this.title = 'No chats yet',
+    this.hint = 'Share your code, or add a friend with theirs',
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -342,10 +421,9 @@ class _EmptyState extends StatelessWidget {
         children: [
           Text('◇', style: Zn.mono(size: 40, color: Zn.line)),
           const SizedBox(height: 16),
-          const Text('No chats yet', style: TextStyle(color: Zn.muted)),
+          Text(title, style: const TextStyle(color: Zn.muted)),
           const SizedBox(height: 6),
-          const Text('Share your code, or add a friend with theirs',
-              style: TextStyle(color: Zn.muted, fontSize: 12)),
+          Text(hint, style: const TextStyle(color: Zn.muted, fontSize: 12)),
         ],
       ),
     );

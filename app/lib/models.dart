@@ -16,6 +16,7 @@ class Contact {
   String? serverAddress; // last known, refreshed from directory on demand
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
   final int createdAt;
+  int? pinnedAt; // ms epoch when the user pinned this conversation
 
   Contact({
     required this.zeonId,
@@ -26,9 +27,11 @@ class Contact {
     this.serverAddress,
     this.tlsFp,
     required this.createdAt,
+    this.pinnedAt,
   });
 
   bool get isAccepted => status == ContactStatus.accepted;
+  bool get isPinned => pinnedAt != null;
 
   Map<String, Object?> toRow() => {
         'zeon_id': zeonId,
@@ -39,6 +42,7 @@ class Contact {
         'server_address': serverAddress,
         'tls_fp': tlsFp,
         'created_at': createdAt,
+        'pinned_at': pinnedAt,
       };
 
   factory Contact.fromRow(Map<String, Object?> r) => Contact(
@@ -50,6 +54,7 @@ class Contact {
         serverAddress: r['server_address'] as String?,
         tlsFp: r['tls_fp'] as String?,
         createdAt: r['created_at'] as int,
+        pinnedAt: r['pinned_at'] as int?,
       );
 }
 
@@ -179,6 +184,7 @@ class Group {
   final String adminId;
   int version;
   final int createdAt;
+  int? pinnedAt; // ms epoch when the user pinned this conversation
 
   Group({
     required this.id,
@@ -186,7 +192,10 @@ class Group {
     required this.adminId,
     required this.version,
     required this.createdAt,
+    this.pinnedAt,
   });
+
+  bool get isPinned => pinnedAt != null;
 
   Map<String, Object?> toRow() => {
         'id': id,
@@ -194,6 +203,7 @@ class Group {
         'admin_id': adminId,
         'version': version,
         'created_at': createdAt,
+        'pinned_at': pinnedAt,
       };
 
   factory Group.fromRow(Map<String, Object?> r) => Group(
@@ -202,6 +212,7 @@ class Group {
         adminId: r['admin_id'] as String,
         version: r['version'] as int,
         createdAt: r['created_at'] as int,
+        pinnedAt: r['pinned_at'] as int?,
       );
 }
 

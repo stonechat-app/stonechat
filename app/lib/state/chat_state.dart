@@ -118,6 +118,18 @@ class ChatState extends ChangeNotifier {
     return dir;
   }
 
+  Future<void> togglePinContact(Contact c) async {
+    c.pinnedAt = c.isPinned ? null : DateTime.now().millisecondsSinceEpoch;
+    await app.db.setContactPinned(c.zeonId, c.pinnedAt);
+    notifyListeners();
+  }
+
+  Future<void> togglePinGroup(Group g) async {
+    g.pinnedAt = g.isPinned ? null : DateTime.now().millisecondsSinceEpoch;
+    await app.db.setGroupPinned(g.id, g.pinnedAt);
+    notifyListeners();
+  }
+
   List<Contact> get acceptedContacts =>
       contacts.where((c) => c.isAccepted).toList();
   List<Contact> get incomingRequests =>
@@ -766,6 +778,25 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
 
     await _trySend(contact, message);
+  }
+
+  /// Forward an existing message to another conversation. A forward is an
+  /// ordinary new message — fresh id, own outbox lifecycle, no link back to
+  /// the original. Media forwards re-copy and re-encrypt the local file, so
+  /// they only work while it still exists on this device.
+  Future<void> forwardMessage(Message m,
+      {Contact? toContact, Group? toGroup}) async {
+    assert((toContact == null) != (toGroup == null));
+    if (toGroup != null) {
+      await sendGroupMessage(toGroup, m.text);
+    } else if (m.kind == MessageKind.text) {
+      await sendMessage(toContact!, m.text);
+    } else {
+      await sendMedia(toContact!, m.mediaPath!,
+          kind: m.kind,
+          mime: _mimeFromPath(m.mediaPath!),
+          durationMs: m.durationMs);
+    }
   }
 
   /// Send a photo or voice note. `sourcePath` is copied into the app's media
@@ -1672,6 +1703,7 @@ class ChatState extends ChangeNotifier {
       adminId: admin,
       version: version,
       createdAt: existing?.createdAt ?? DateTime.now().millisecondsSinceEpoch,
+      pinnedAt: existing?.pinnedAt, // upsert REPLACEs the row — keep the pin
     );
     await app.db.upsertGroup(group);
     await app.db.replaceMembers(groupId, members);

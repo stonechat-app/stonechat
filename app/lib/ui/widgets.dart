@@ -84,6 +84,89 @@ class ZeonAvatar extends StatelessWidget {
   }
 }
 
+/// A bottom tab in [ZnTabBar]. `dot` marks the tab with a small ion dot —
+/// used so pending contact requests are never invisible from another tab.
+class ZnTab {
+  final String label;
+  final bool dot;
+  const ZnTab(this.label, {this.dot = false});
+}
+
+/// Slim bottom tab bar in the ledger idiom: hairline top border, uppercase
+/// mono labels, a 2px ion indicator segment instead of a Material pill.
+class ZnTabBar extends StatelessWidget {
+  final int index;
+  final ValueChanged<int> onChanged;
+  final List<ZnTab> tabs;
+
+  const ZnTabBar({
+    super.key,
+    required this.index,
+    required this.onChanged,
+    required this.tabs,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Zn.bg,
+        border: Border(top: BorderSide(color: Zn.line)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 52,
+          child: Row(
+            children: [
+              for (var i = 0; i < tabs.length; i++)
+                Expanded(
+                  child: InkWell(
+                    onTap: () => onChanged(i),
+                    child: Stack(
+                      children: [
+                        if (i == index)
+                          Align(
+                            alignment: Alignment.topCenter,
+                            child: Container(
+                                width: 56, height: 2, color: Zn.ion),
+                          ),
+                        Center(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                tabs[i].label.toUpperCase(),
+                                style: Zn.mono(
+                                    size: 10,
+                                    letterSpacing: 2,
+                                    weight: FontWeight.w700,
+                                    color: i == index ? Zn.ion : Zn.muted),
+                              ),
+                              if (tabs[i].dot) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  width: 6,
+                                  height: 6,
+                                  decoration: const BoxDecoration(
+                                      color: Zn.ion, shape: BoxShape.circle),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 void showZnSnack(BuildContext context, String message, {bool error = false}) {
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(

@@ -34,7 +34,7 @@ class ChatDb {
     final db = await openDatabase(
       path,
       password: password,
-      version: 8,
+      version: 9,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
           await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
@@ -74,6 +74,18 @@ class ChatDb {
           await db.execute(_createReceipts);
           await db.execute(_createReactions);
         }
+        if (oldVersion < 9) {
+          // The `< 4` branch above creates `groups` from the current
+          // _createGroups, which already has pinned_at — guard the ALTER so
+          // pre-v4 databases upgrading through both branches don't crash.
+          for (final table in ['contacts', 'groups']) {
+            final cols = await db.rawQuery('PRAGMA table_info($table)');
+            if (!cols.any((c) => c['name'] == 'pinned_at')) {
+              await db
+                  .execute('ALTER TABLE $table ADD COLUMN pinned_at INTEGER');
+            }
+          }
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -85,7 +97,8 @@ class ChatDb {
             status         TEXT NOT NULL,
             server_address TEXT,
             tls_fp         TEXT,
-            created_at     INTEGER NOT NULL
+            created_at     INTEGER NOT NULL,
+            pinned_at      INTEGER
           )
         ''');
         await db.execute('''
@@ -170,7 +183,8 @@ class ChatDb {
       name       TEXT NOT NULL,
       admin_id   TEXT NOT NULL,
       version    INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
+      created_at INTEGER NOT NULL,
+      pinned_at  INTEGER
     )
   ''';
 
@@ -277,6 +291,11 @@ class ChatDb {
   Future<void> upsertContact(Contact c) async {
     await _db.insert('contacts', c.toRow(),
         conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> setContactPinned(String zeonId, int? pinnedAt) async {
+    await _db.update('contacts', {'pinned_at': pinnedAt},
+        where: 'zeon_id = ?', whereArgs: [zeonId]);
   }
 
   Future<void> deleteContact(String zeonId) async {
@@ -416,6 +435,11 @@ class ChatDb {
   Future<List<Group>> groups() async {
     final rows = await _db.query('groups', orderBy: 'created_at');
     return rows.map(Group.fromRow).toList();
+  }
+
+  Future<void> setGroupPinned(String id, int? pinnedAt) async {
+    await _db.update('groups', {'pinned_at': pinnedAt},
+        where: 'id = ?', whereArgs: [id]);
   }
 
   Future<void> upsertGroup(Group g) async {

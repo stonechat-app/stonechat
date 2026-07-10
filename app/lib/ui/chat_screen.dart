@@ -142,6 +142,15 @@ class _ChatScreenState extends State<ChatScreen> {
                   Navigator.pop(sheetContext);
                 },
               ),
+            if (!isCallRow)
+              ListTile(
+                leading: const Icon(Icons.shortcut_outlined, color: Zn.muted),
+                title: const Text('Forward'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _showForwardPicker(m);
+                },
+              ),
             if (chat.canEdit(m))
               ListTile(
                 leading: const Icon(Icons.edit_outlined, color: Zn.ion),
@@ -176,6 +185,94 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// Pick a destination and re-send `m` there. Media can only go to direct
+  /// chats — groups don't carry media yet (see PROTOCOL.md).
+  void _showForwardPicker(Message m) {
+    final chat = context.read<ChatState>();
+    final isMedia = m.kind != MessageKind.text;
+    if (isMedia && !File(m.mediaPath ?? '').existsSync()) {
+      showZnSnack(context, 'That file is no longer on this device',
+          error: true);
+      return;
+    }
+    final contacts = chat.acceptedContacts;
+    final groups = isMedia ? const <Group>[] : chat.groups;
+    if (contacts.isEmpty && groups.isEmpty) {
+      showZnSnack(context, 'No one to forward to yet');
+      return;
+    }
+
+    Future<void> forward(
+        {Contact? toContact, Group? toGroup, required String name}) async {
+      await chat.forwardMessage(m, toContact: toContact, toGroup: toGroup);
+      if (mounted) showZnSnack(context, 'Forwarded to $name');
+    }
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('FORWARD TO',
+                      style: Zn.mono(size: 10, letterSpacing: 2)),
+                ),
+              ),
+              if (isMedia)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                        'Photos and voice notes can only go to direct chats',
+                        style: Zn.mono(size: 9, color: Zn.muted)),
+                  ),
+                ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final c in contacts)
+                      ListTile(
+                        leading: ZeonAvatar(
+                            zeonId: c.zeonId, name: c.displayName, size: 34),
+                        title: Text(c.displayName),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          forward(toContact: c, name: c.displayName);
+                        },
+                      ),
+                    for (final g in groups)
+                      ListTile(
+                        leading: ZeonAvatar(
+                            zeonId: g.id, name: '◈ ${g.name}', size: 34),
+                        title: Text(g.name),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          forward(toGroup: g, name: g.name);
+                        },
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
