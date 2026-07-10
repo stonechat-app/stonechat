@@ -43,6 +43,8 @@ from nacl.utils import random as nacl_random
 
 import os
 CP = os.environ.get("ZEON_CP", "http://127.0.0.1:8477")
+# must match the ZEON_ADMIN_TOKEN the control plane was started with (README)
+ADMIN_TOKEN = os.environ.get("ZEON_ADMIN_TOKEN", "test-admin")
 
 # Mailbox client: no CA validation (self-signed by design); see module docstring.
 MX = httpx.Client(verify=False, timeout=10)
@@ -488,14 +490,36 @@ def main():
     opks_before = health["prekeys"]["opks"]
     assert opks_before == 8
 
-    print("3b) fleet provider: container-per-user on a shared host")
+    print("3b) fleet provider: plan-gated, container-per-user on a shared host")
     carol = Phone("carol")
     carol.register()
-    r = httpx.post(
-        f"{CP}/v1/server", headers=carol.auth,
-        json={"provider": "fleet",
-              "machine": {"machine_type": "container", "region": "fleet"}},
-    )
+    fleet_req = {"provider": "fleet",
+                 "machine": {"machine_type": "container", "region": "fleet"}}
+
+    # paid providers 402 without an entitlement (PROTOCOL.md "Billing")
+    r = httpx.post(f"{CP}/v1/server", headers=carol.auth, json=fleet_req)
+    assert r.status_code == 402, f"unpaid fleet: expected 402, got {r.status_code}"
+    assert r.json()["detail"]["code"] == "subscription_required"
+    assert r.json()["detail"]["plan_required"] == "private"
+
+    # comp grant → redeem → entitlement live (same path a paid code takes)
+    r = httpx.post(f"{CP}/v1/billing/comp",
+                   headers={"X-Admin-Token": ADMIN_TOKEN},
+                   json={"plan": "private", "note": "e2e"})
+    assert r.status_code == 201, (
+        f"comp grant failed ({r.status_code}) — start the control plane with "
+        f"ZEON_ADMIN_TOKEN={ADMIN_TOKEN}")
+    code = r.json()["code"]
+    httpx.post(f"{CP}/v1/billing/redeem", headers=carol.auth,
+               json={"code": code}).raise_for_status()
+    ent = httpx.get(f"{CP}/v1/billing/entitlement", headers=carol.auth).json()
+    assert ent["plan"] == "private" and ent["status"] == "active"
+    # a code is single-use
+    r = httpx.post(f"{CP}/v1/billing/redeem", headers=carol.auth,
+                   json={"code": code})
+    assert r.status_code == 409, f"re-redeem: expected 409, got {r.status_code}"
+
+    r = httpx.post(f"{CP}/v1/server", headers=carol.auth, json=fleet_req)
     r.raise_for_status()
     carol.wait_running()
     health = MX.get(f"{carol.server['address']}/health").json()

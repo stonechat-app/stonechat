@@ -7,7 +7,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/api.dart';
+import '../state/app_state.dart';
 import '../state/server_state.dart';
+import 'redeem_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -22,28 +25,59 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
   bool _requested = false;
 
   // In debug builds default to a local Docker mailbox so development never
-  // needs a cloud account; release builds default to the free-tier GCP VM.
-  // --dart-define=ZEON_PROVIDER overrides both (e.g. testing the gcp
-  // provider from a debug build in the simulator).
+  // needs a cloud account; release builds pick the provider the account's
+  // plan entitles it to (PROTOCOL.md "Billing"): private → fleet,
+  // sovereign → gcp. --dart-define=ZEON_PROVIDER overrides everything
+  // (e.g. testing the gcp provider from a debug build in the simulator).
   static const _envProvider = String.fromEnvironment('ZEON_PROVIDER');
-  static const _defaultProvider =
-      _envProvider != '' ? _envProvider : (kDebugMode ? 'local' : 'gcp');
   static const _defaults = {
     'gcp': (machineType: 'e2-micro', region: 'us-central1-a'),
+    'aws': (machineType: 't3.micro', region: 'us-east-1'),
     'fleet': (machineType: 'container', region: 'shared'),
     'local': (machineType: 'container', region: 'localhost'),
   };
 
+  /// null → no plan on this account yet (caller offers the redeem sheet).
+  Future<String?> _resolveProvider() async {
+    if (_envProvider != '') return _envProvider;
+    if (kDebugMode) return 'local';
+    final entitlement =
+        await context.read<AppState>().api.getEntitlement();
+    if (entitlement == null) return null;
+    return entitlement.plan == 'sovereign' ? 'gcp' : 'fleet';
+  }
+
   Future<void> _setup() async {
     setState(() => _requested = true);
     final server = context.read<ServerState>();
-    final d = _defaults[_defaultProvider]!;
     try {
+      var provider = await _resolveProvider();
+      if (provider == null) {
+        if (!mounted) return;
+        final activated = await showRedeemSheet(context);
+        provider = activated && mounted ? await _resolveProvider() : null;
+        if (provider == null) {
+          if (mounted) setState(() => _requested = false);
+          return;
+        }
+      }
+      final d = _defaults[provider] ?? _defaults['gcp']!;
       await server.create(
-        provider: _defaultProvider,
+        provider: provider,
         machineType: d.machineType,
         region: d.region,
       );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _requested = false);
+      if (e.code == 'subscription_required') {
+        // Belt and braces: the server re-checks the entitlement (it may have
+        // lapsed since we looked). Offer the code path and retry.
+        final activated = await showRedeemSheet(context);
+        if (activated && mounted) await _setup();
+      } else {
+        showZnSnack(context, "Couldn't start setup: $e", error: true);
+      }
     } catch (e) {
       if (mounted) {
         showZnSnack(context, "Couldn't start setup: $e", error: true);

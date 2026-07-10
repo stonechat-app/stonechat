@@ -58,7 +58,15 @@ Future<({String owner, String tlsFp})?> observeMailbox(String address) async {
 class ApiException implements Exception {
   final String message;
   final int? status;
-  ApiException(this.message, [this.status]);
+  final Object? detail; // parsed JSON `detail` when the server sent one
+
+  ApiException(this.message, [this.status, this.detail]);
+
+  /// Machine-readable error code (e.g. 'subscription_required'), when the
+  /// control plane sent a structured detail.
+  String? get code =>
+      detail is Map ? (detail as Map)['code'] as String? : null;
+
   @override
   String toString() => message;
 }
@@ -112,9 +120,11 @@ class ControlPlaneApi {
   Future<T> _check<T>(http.Response r, T Function(Map<String, dynamic>) parse) {
     final body = r.body.isEmpty ? <String, dynamic>{} : jsonDecode(r.body);
     if (r.statusCode >= 400) {
-      final detail =
-          body is Map && body['detail'] != null ? '${body['detail']}' : r.body;
-      throw ApiException(detail, r.statusCode);
+      final detail = body is Map ? body['detail'] : null;
+      final message = detail is Map
+          ? (detail['message'] as String? ?? '$detail')
+          : (detail?.toString() ?? r.body);
+      throw ApiException(message, r.statusCode, detail);
     }
     return Future.value(parse(body as Map<String, dynamic>));
   }
@@ -199,6 +209,33 @@ class ControlPlaneApi {
     final r = await http.post(Uri.parse('$baseUrl/v1/server/external'),
         headers: _auth, body: jsonEncode({'address': address}));
     await _check(r, (_) => null);
+  }
+
+  /// The account's live plan, or null (PROTOCOL.md "Billing").
+  Future<({String plan, String status, String? currentPeriodEnd})?>
+      getEntitlement() async {
+    final r = await http.get(Uri.parse('$baseUrl/v1/billing/entitlement'),
+        headers: _auth);
+    return _check(r, (j) {
+      final plan = j['plan'] as String?;
+      if (plan == null) return null;
+      return (
+        plan: plan,
+        status: j['status'] as String,
+        currentPeriodEnd: j['current_period_end'] as String?,
+      );
+    });
+  }
+
+  /// Redeem an activation code from a landing-page purchase (or a comp
+  /// grant), binding its subscription to this account.
+  Future<({String plan, String status})> redeemCode(String code) async {
+    final r = await http.post(Uri.parse('$baseUrl/v1/billing/redeem'),
+        headers: _auth, body: jsonEncode({'code': code}));
+    return _check(r, (j) => (
+          plan: j['plan'] as String,
+          status: j['status'] as String,
+        ));
   }
 }
 

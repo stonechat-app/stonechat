@@ -2,24 +2,28 @@
 
 Run: uvicorn app.main:app --port 8000
 Config (env):
-    ZEON_CP_DB          sqlite path (default control_plane.db)
-    ZEON_GCP_PROJECT    required for provider=gcp
-    ZEON_LOCAL_HOST     advertised host for provider=local (default 127.0.0.1)
+    ZEON_CP_DB                  sqlite path (default control_plane.db)
+    ZEON_GCP_PROJECT            required for provider=gcp
+    ZEON_LOCAL_HOST             advertised host for provider=local (default 127.0.0.1)
+    ZEON_STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (billing.py)
+    ZEON_ADMIN_TOKEN            enables comp grants (billing.py)
+    ZEON_CORS_EXTRA             comma-separated extra CORS origins (dev)
 """
 
 import base64
 import logging
 import re
 import secrets
-from typing import Annotated
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 import os
 
-from .db import Store
+from .billing import router as billing_router
+from .deps import User, store
 from .identity import PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
 from .words import looks_like_handle, normalize_handle
 from .providers import (
@@ -33,24 +37,29 @@ from .providers import (
 log = logging.getLogger("zeon.control-plane")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-store = Store(os.environ.get("ZEON_CP_DB", "control_plane.db"))
 app = FastAPI(title="zeon-control-plane")
+app.include_router(billing_router)
+
+# Browser access is only the landing page's activation lookup (GET); the
+# webhook is server-to-server and the app is not a browser.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://zeonchat.com",
+        "https://www.zeonchat.com",
+        *[o for o in os.environ.get("ZEON_CORS_EXTRA", "").split(",") if o],
+    ],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 HEALTH_TIMEOUT_S = 240  # cloud VMs need to apt-get + pip install on first boot
 
-
-# -- auth ---------------------------------------------------------------------
-
-def current_user(authorization: Annotated[str | None, Header()] = None) -> dict:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "missing bearer token")
-    user = store.user_by_token(authorization.removeprefix("Bearer ").strip())
-    if not user:
-        raise HTTPException(401, "invalid token")
-    return user
-
-
-User = Annotated[dict, Depends(current_user)]
+# Paid providers and the plan each requires. Sovereign outranks private, so a
+# Sovereign subscriber may also run on the shared fleet. `local` and
+# `external` (self-hosted free tier) stay ungated.
+GATED_PROVIDERS = {"fleet": "private", "gcp": "sovereign", "aws": "sovereign"}
+PLAN_RANK = {"private": 1, "sovereign": 2}
 
 
 # -- schemas --------------------------------------------------------------------
@@ -146,6 +155,18 @@ async def create_server(body: ServerIn, user: User, background: BackgroundTasks)
         raise HTTPException(
             400, f"unknown provider; available: {', '.join(available_providers())}"
         )
+    required = GATED_PROVIDERS.get(body.provider)
+    if required is not None:
+        entitlement = store.entitlement_for(user["zeon_id"])
+        if entitlement is None or (
+            PLAN_RANK.get(entitlement["plan"], 0) < PLAN_RANK[required]
+        ):
+            raise HTTPException(402, {
+                "code": "subscription_required",
+                "plan_required": required,
+                "message": f"the '{body.provider}' provider requires an active"
+                           f" {required} plan",
+            })
     server_token = secrets.token_urlsafe(32)
     if not store.create_server(
         user["zeon_id"], body.provider, body.machine.model_dump(), server_token
