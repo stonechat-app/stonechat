@@ -9,18 +9,27 @@ library;
 import 'dart:async';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:record/record.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:video_player/video_player.dart';
 
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+
+import '../core/stickers.dart';
 import '../models.dart';
 import '../state/call_state.dart';
 import '../state/chat_state.dart';
+import 'group_info_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -38,9 +47,19 @@ class ChatScreen extends StatefulWidget {
 
 class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
-  final _scroll = ScrollController();
+  final _itemScroll = ItemScrollController();
   late final ChatState _chat;
   Message? _editing; // composer is rewriting this message instead of sending
+  Message? _replyingTo; // composer sends the next message as a reply to this
+  bool _jumpedToEnd = false; // first non-empty build lands on the last message
+
+  // In-chat search: null query = closed. Matches are message ids; the
+  // current one is scrolled to and every hit is highlighted in place.
+  final _searchInput = TextEditingController();
+  bool _searching = false;
+  int _searchPos = 0; // index into the match list (newest first)
+  String? _flashId; // briefly tinted row after a jump (reply tap, search)
+  Timer? _flashTimer;
 
   bool get isGroup => widget.group != null;
   String get conversationId => widget.contact?.zeonId ?? widget.group!.id;
@@ -54,6 +73,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _flashTimer?.cancel();
+    _searchInput.dispose();
     _chat.closeConversation(conversationId);
     super.dispose();
   }
@@ -73,18 +94,116 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       return;
     }
+    final replyTo = _replyingTo;
+    if (replyTo != null) setState(() => _replyingTo = null);
     if (isGroup) {
-      await chat.sendGroupMessage(widget.group!, text);
+      await chat.sendGroupMessage(widget.group!, text, replyTo: replyTo);
     } else {
-      await chat.sendMessage(widget.contact!, text);
+      await chat.sendMessage(widget.contact!, text, replyTo: replyTo);
     }
     _scrollToEnd();
   }
 
   void _startEdit(Message m) {
-    setState(() => _editing = m);
+    setState(() {
+      _editing = m;
+      _replyingTo = null;
+    });
     _input.text = m.text;
     _input.selection = TextSelection.collapsed(offset: m.text.length);
+  }
+
+  void _startReply(Message m) {
+    setState(() {
+      _replyingTo = m;
+      _editing = null;
+    });
+  }
+
+  /// Consume the composer's reply context for an outgoing attachment —
+  /// replies ride photos, videos, voice notes and documents too.
+  Message? _takeReply() {
+    final r = _replyingTo;
+    if (r != null) setState(() => _replyingTo = null);
+    return r;
+  }
+
+  /// Briefly tint a row after a jump so the eye lands on it.
+  void _flash(String id) {
+    _flashTimer?.cancel();
+    setState(() => _flashId = id);
+    _flashTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted) setState(() => _flashId = null);
+    });
+  }
+
+  void _jumpToMessage(String id) {
+    final messages = _chat.messagesFor(conversationId);
+    final index = messages.indexWhere((m) => m.id == id);
+    if (index < 0) {
+      showZnSnack(context, 'Original message is no longer on this device');
+      return;
+    }
+    _flash(id);
+    if (_itemScroll.isAttached) {
+      _itemScroll.scrollTo(
+          index: index,
+          alignment: 0.3,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut);
+    }
+  }
+
+  // -- in-chat search -------------------------------------------------------
+
+  /// Indices of messages matching the query (text and document names).
+  List<int> _searchMatches(List<Message> messages) {
+    final q = _searchInput.text.trim().toLowerCase();
+    if (q.isEmpty) return const [];
+    return [
+      for (var i = 0; i < messages.length; i++)
+        if (!messages[i].deleted &&
+            (messages[i].text.toLowerCase().contains(q) ||
+                (messages[i].fileName?.toLowerCase().contains(q) ?? false)))
+          i
+    ];
+  }
+
+  void _onSearchChanged() {
+    final messages = _chat.messagesFor(conversationId);
+    final matches = _searchMatches(messages);
+    // Start at the newest match, WhatsApp-style, and work backwards.
+    setState(() => _searchPos = matches.isEmpty ? 0 : matches.length - 1);
+    if (matches.isNotEmpty) _goToMatch(messages, matches, matches.length - 1);
+  }
+
+  void _stepSearch(int delta) {
+    final messages = _chat.messagesFor(conversationId);
+    final matches = _searchMatches(messages);
+    if (matches.isEmpty) return;
+    final pos = (_searchPos + delta).clamp(0, matches.length - 1);
+    setState(() => _searchPos = pos);
+    _goToMatch(messages, matches, pos);
+  }
+
+  void _goToMatch(List<Message> messages, List<int> matches, int pos) {
+    final index = matches[pos];
+    _flash(messages[index].id);
+    if (_itemScroll.isAttached) {
+      _itemScroll.scrollTo(
+          index: index,
+          alignment: 0.3,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut);
+    }
+  }
+
+  void _closeSearch() {
+    _searchInput.clear();
+    setState(() {
+      _searching = false;
+      _searchPos = 0;
+    });
   }
 
   static const _quickReactions = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
@@ -95,6 +214,9 @@ class _ChatScreenState extends State<ChatScreen> {
     // Local rows (call epitaphs, system notices): delete-for-me only.
     final isLocalRow =
         m.kind == MessageKind.call || m.kind == MessageKind.notice;
+    // A blocked DM is read-only: anything that would send to the blocked
+    // peer is withheld (forwarding elsewhere and delete-for-me stay).
+    final blocked = !isGroup && widget.contact!.isBlocked;
     final myEmoji = chat.myReactionTo(m);
     showModalBottomSheet<void>(
       context: context,
@@ -106,7 +228,7 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!isLocalRow)
+            if (!isLocalRow && !blocked)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
               child: Row(
@@ -131,10 +253,36 @@ class _ChatScreenState extends State<ChatScreen> {
                             style: const TextStyle(fontSize: 24)),
                       ),
                     ),
+                  // The full collection lives one tap further.
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.pop(sheetContext);
+                      _showEmojiPicker(m);
+                    },
+                    child: Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: Zn.raised,
+                        borderRadius: BorderRadius.circular(Zn.radius),
+                        border: Border.all(color: Zn.line),
+                      ),
+                      child: const Icon(Icons.add, size: 20, color: Zn.muted),
+                    ),
+                  ),
                 ],
               ),
             ),
-            if (!isLocalRow) const Divider(height: 1),
+            if (!isLocalRow && !blocked) const Divider(height: 1),
+            if (!isLocalRow && !blocked)
+              ListTile(
+                leading: const Icon(Icons.reply_outlined, color: Zn.muted),
+                title: const Text('Reply'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _startReply(m);
+                },
+              ),
             if (m.kind == MessageKind.text)
               ListTile(
                 leading: const Icon(Icons.copy_outlined, color: Zn.muted),
@@ -153,7 +301,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   _showForwardPicker(m);
                 },
               ),
-            if (chat.canEdit(m))
+            if (chat.canEdit(m) && !blocked)
               ListTile(
                 leading: const Icon(Icons.edit_outlined, color: Zn.ion),
                 title: const Text('Edit'),
@@ -162,7 +310,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   _startEdit(m);
                 },
               ),
-            if (chat.canDeleteForEveryone(m) && !isLocalRow)
+            if (chat.canDeleteForEveryone(m) && !isLocalRow && !blocked)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Zn.danger),
                 title: const Text('Delete for everyone',
@@ -192,6 +340,46 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// React with anything: the full categorized emoji collection, with
+  /// search and recents, WhatsApp-style.
+  void _showEmojiPicker(Message m) {
+    final chat = context.read<ChatState>();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: EmojiPicker(
+          onEmojiSelected: (category, emoji) {
+            Navigator.pop(sheetContext);
+            chat.react(m, emoji.emoji);
+          },
+          config: const Config(
+            height: 320,
+            checkPlatformCompatibility: true,
+            emojiViewConfig: EmojiViewConfig(
+              backgroundColor: Zn.surface,
+              emojiSizeMax: 28,
+            ),
+            categoryViewConfig: CategoryViewConfig(
+              backgroundColor: Zn.surface,
+              indicatorColor: Zn.ion,
+              iconColorSelected: Zn.ion,
+              dividerColor: Zn.line,
+            ),
+            bottomActionBarConfig: BottomActionBarConfig(enabled: false),
+            searchViewConfig: SearchViewConfig(
+              backgroundColor: Zn.surface,
+              buttonIconColor: Zn.muted,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   /// Pick a destination and re-send `m` there. Media can only go to direct
   /// chats — groups don't carry media yet (see PROTOCOL.md).
   void _showForwardPicker(Message m) {
@@ -202,7 +390,9 @@ class _ChatScreenState extends State<ChatScreen> {
           error: true);
       return;
     }
-    final contacts = chat.acceptedContacts;
+    // No forwarding to blocked contacts — the composer is closed to them too.
+    final contacts =
+        chat.acceptedContacts.where((c) => !c.isBlocked).toList();
     final groups = isMedia ? const <Group>[] : chat.groups;
     if (contacts.isEmpty && groups.isEmpty) {
       showZnSnack(context, 'No one to forward to yet');
@@ -242,7 +432,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
-                        'Photos and voice notes can only go to direct chats',
+                        'Photos, videos, documents and voice notes can only go to direct chats',
                         style: Zn.mono(size: 9, color: Zn.muted)),
                   ),
                 ),
@@ -344,6 +534,47 @@ class _ChatScreenState extends State<ChatScreen> {
     return '${names.join(', ')} ${names.length == 1 ? 'is' : 'are'} typing ···';
   }
 
+  void _showAttachSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_outlined, color: Zn.muted),
+              title: const Text('Photo'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _sendPhoto();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.videocam_outlined, color: Zn.muted),
+              title: const Text('Video'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _sendVideo();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.description_outlined, color: Zn.muted),
+              title: const Text('Document'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _sendFile();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _sendPhoto() async {
     final picked = await ImagePicker().pickImage(
       source: ImageSource.gallery,
@@ -356,6 +587,190 @@ class _ChatScreenState extends State<ChatScreen> {
           picked.path,
           kind: MessageKind.image,
           mime: 'image/jpeg',
+          replyTo: _takeReply(),
+        );
+    _scrollToEnd();
+  }
+
+  Future<void> _sendVideo() async {
+    final picked = await ImagePicker().pickVideo(source: ImageSource.gallery);
+    if (picked == null || !mounted) return;
+    if (!await _fitsBlobCap(picked.path)) return;
+    // Probe the duration for the bubble label — best-effort, the video
+    // still sends without it.
+    int? durationMs;
+    try {
+      final probe = VideoPlayerController.file(File(picked.path));
+      await probe.initialize();
+      durationMs = probe.value.duration.inMilliseconds;
+      await probe.dispose();
+    } catch (_) {}
+    if (!mounted) return;
+    await context.read<ChatState>().sendMedia(
+          widget.contact!,
+          picked.path,
+          kind: MessageKind.video,
+          mime: picked.path.toLowerCase().endsWith('.mov')
+              ? 'video/quicktime'
+              : 'video/mp4',
+          durationMs: durationMs,
+          replyTo: _takeReply(),
+        );
+    _scrollToEnd();
+  }
+
+  Future<void> _sendFile() async {
+    final result = await FilePicker.pickFiles();
+    final file = result?.files.single;
+    if (file?.path == null || !mounted) return;
+    if (!await _fitsBlobCap(file!.path!)) return;
+    if (!mounted) return;
+    await context.read<ChatState>().sendMedia(
+          widget.contact!,
+          file.path!,
+          kind: MessageKind.file,
+          mime: 'application/octet-stream',
+          fileName: file.name,
+          replyTo: _takeReply(),
+        );
+    _scrollToEnd();
+  }
+
+  /// The relay caps blobs (PROTOCOL.md) — fail with words, not a 413.
+  Future<bool> _fitsBlobCap(String path) async {
+    final size = await File(path).length();
+    if (size <= ChatState.maxBlobBytes) return true;
+    if (mounted) {
+      showZnSnack(context,
+          'Too big — attachments can be at most ${ChatState.maxBlobBytes ~/ (1024 * 1024)} MB',
+          error: true);
+    }
+    return false;
+  }
+
+  void _showStickerPicker() {
+    final store = StickerStore.instance;
+    unawaited(store.load());
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: 400,
+          child: ListenableBuilder(
+            listenable: store,
+            builder: (context, _) {
+              final packs = [
+                if (store.recents.isNotEmpty)
+                  StickerPack(
+                      name: 'Recent', bundled: true, refs: store.recents),
+                ...store.packs,
+              ];
+              if (packs.isEmpty) {
+                return Center(
+                    child: Text('No stickers yet — import some below',
+                        style: Zn.mono(size: 11, color: Zn.muted)));
+              }
+              return DefaultTabController(
+                length: packs.length,
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TabBar(
+                            isScrollable: true,
+                            tabAlignment: TabAlignment.start,
+                            indicatorColor: Zn.ion,
+                            labelColor: Zn.ion,
+                            unselectedLabelColor: Zn.muted,
+                            labelStyle: Zn.mono(size: 10, letterSpacing: 1),
+                            dividerColor: Zn.line,
+                            tabs: [
+                              for (final pack in packs)
+                                Tab(text: pack.name.toUpperCase(), height: 40),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.add_photo_alternate_outlined,
+                              color: Zn.muted, size: 20),
+                          tooltip: 'Import stickers (transparent WebP/PNG)',
+                          onPressed: () => _importStickers(sheetContext),
+                        ),
+                      ],
+                    ),
+                    Expanded(
+                      child: TabBarView(
+                        children: [
+                          for (final pack in packs)
+                            GridView.builder(
+                              padding: const EdgeInsets.all(12),
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 4,
+                                mainAxisSpacing: 10,
+                                crossAxisSpacing: 10,
+                              ),
+                              itemCount: pack.refs.length,
+                              itemBuilder: (context, i) => GestureDetector(
+                                onTap: () {
+                                  Navigator.pop(sheetContext);
+                                  _sendSticker(pack.refs[i]);
+                                },
+                                child: Image(
+                                    image: store.imageFor(pack.refs[i]),
+                                    fit: BoxFit.contain),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _importStickers(BuildContext sheetContext) async {
+    final result = await FilePicker.pickFiles(
+        allowMultiple: true,
+        type: FileType.custom,
+        allowedExtensions: ['webp', 'png', 'jpg', 'jpeg']);
+    final paths =
+        result?.files.map((f) => f.path).whereType<String>().toList() ?? [];
+    if (paths.isEmpty) return;
+    await StickerStore.instance.importFiles(paths);
+    if (sheetContext.mounted) {
+      showZnSnack(sheetContext,
+          'Imported ${paths.length} ${paths.length == 1 ? 'sticker' : 'stickers'}');
+    }
+  }
+
+  Future<void> _sendSticker(String ref) async {
+    final store = StickerStore.instance;
+    final file = await store.materialize(ref);
+    await store.recordRecent(ref);
+    if (!mounted) return;
+    final mime = switch (p.extension(file.path).toLowerCase()) {
+      '.png' => 'image/png',
+      '.jpg' || '.jpeg' => 'image/jpeg',
+      _ => 'image/webp',
+    };
+    await context.read<ChatState>().sendMedia(
+          widget.contact!,
+          file.path,
+          kind: MessageKind.sticker,
+          mime: mime,
+          replyTo: _takeReply(),
         );
     _scrollToEnd();
   }
@@ -367,15 +782,82 @@ class _ChatScreenState extends State<ChatScreen> {
           kind: MessageKind.audio,
           mime: 'audio/mp4',
           durationMs: durationMs,
+          replyTo: _takeReply(),
         );
     _scrollToEnd();
   }
 
   void _scrollToEnd() {
-    if (_scroll.hasClients) {
-      _scroll.animateTo(_scroll.position.maxScrollExtent + 120,
-          duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    // Post-frame: a just-sent message is in state but not yet in the list.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final count = _chat.messagesFor(conversationId).length;
+      if (count == 0 || !_itemScroll.isAttached) return;
+      _itemScroll.scrollTo(
+          index: count - 1,
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut);
+    });
+  }
+
+  /// Who wrote [zeonId]'s messages, for quote headers: "You", a member's
+  /// name, or the DM peer.
+  String _senderName(String? zeonId, ChatState chat) {
+    if (zeonId == null) return isGroup ? 'someone' : widget.contact!.displayName;
+    if (zeonId == chat.app.zeonId) return 'You';
+    if (isGroup) {
+      return chat.memberOf(conversationId, zeonId)?.displayName ??
+          'former member';
     }
+    return widget.contact!.displayName;
+  }
+
+  /// The search-mode app bar: query field, match counter, older/newer.
+  PreferredSizeWidget _searchAppBar(List<Message> messages) {
+    final matches = _searchMatches(messages);
+    final pos = matches.isEmpty ? 0 : _searchPos.clamp(0, matches.length - 1);
+    return AppBar(
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back, color: Zn.muted),
+        onPressed: _closeSearch,
+      ),
+      titleSpacing: 0,
+      title: TextField(
+        controller: _searchInput,
+        autofocus: true,
+        onChanged: (_) => _onSearchChanged(),
+        style: const TextStyle(color: Zn.text, fontSize: 15),
+        decoration: InputDecoration(
+          hintText: 'search ›',
+          hintStyle: Zn.mono(size: 13),
+          border: InputBorder.none,
+          enabledBorder: InputBorder.none,
+          focusedBorder: InputBorder.none,
+          filled: false,
+        ),
+      ),
+      actions: [
+        if (_searchInput.text.trim().isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(right: 2),
+            child: Center(
+              child: Text(
+                matches.isEmpty ? '0/0' : '${pos + 1}/${matches.length}',
+                style: Zn.mono(size: 11, color: Zn.muted),
+              ),
+            ),
+          ),
+        IconButton(
+          icon: const Icon(Icons.keyboard_arrow_up, color: Zn.muted),
+          tooltip: 'Older match',
+          onPressed: () => _stepSearch(-1),
+        ),
+        IconButton(
+          icon: const Icon(Icons.keyboard_arrow_down, color: Zn.muted),
+          tooltip: 'Newer match',
+          onPressed: () => _stepSearch(1),
+        ),
+      ],
+    );
   }
 
   @override
@@ -384,11 +866,32 @@ class _ChatScreenState extends State<ChatScreen> {
     final messages = chat.messagesFor(conversationId);
     final title = widget.contact?.displayName ?? widget.group!.name;
     final memberCount = isGroup ? chat.groupMembers[conversationId]?.length : null;
+    final searchQuery = _searching ? _searchInput.text.trim() : '';
+
+    // First frame with content: land on the newest message.
+    if (!_jumpedToEnd && messages.isNotEmpty) {
+      _jumpedToEnd = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _itemScroll.isAttached) {
+          _itemScroll.jumpTo(index: messages.length - 1);
+        }
+      });
+    }
 
     return Scaffold(
-      appBar: AppBar(
+      appBar: _searching ? _searchAppBar(messages) : AppBar(
         titleSpacing: 0,
-        title: Row(
+        title: GestureDetector(
+          // Group header opens the member ledger, WhatsApp-style.
+          onTap: isGroup
+              ? () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) =>
+                            GroupInfoScreen(group: widget.group!)),
+                  )
+              : null,
+          child: Row(
           children: [
             ZeonAvatar(
                 zeonId: conversationId,
@@ -418,9 +921,10 @@ class _ChatScreenState extends State<ChatScreen> {
               ],
             ),
           ],
+          ),
         ),
         actions: [
-          if (!isGroup) ...[
+          if (!isGroup && !widget.contact!.isBlocked) ...[
             IconButton(
               icon: const Icon(Icons.call_outlined, color: Zn.muted, size: 22),
               tooltip: 'Voice call',
@@ -441,8 +945,24 @@ class _ChatScreenState extends State<ChatScreen> {
             color: Zn.raised,
             icon: const Icon(Icons.more_vert, color: Zn.muted),
             onSelected: (value) async {
+              if (value == 'search') {
+                setState(() => _searching = true);
+                return;
+              }
               if (value == 'timer') {
                 _showTimerSheet();
+                return;
+              }
+              if (value == 'info') {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (_) => GroupInfoScreen(group: widget.group!)),
+                );
+                return;
+              }
+              if (value == 'block') {
+                await chat.toggleBlock(widget.contact!);
                 return;
               }
               if (value == 'leave') {
@@ -451,10 +971,27 @@ class _ChatScreenState extends State<ChatScreen> {
               }
             },
             itemBuilder: (_) => [
+              if (isGroup)
+                const PopupMenuItem(
+                  value: 'info',
+                  child: Text('Group info'),
+                ),
+              const PopupMenuItem(
+                value: 'search',
+                child: Text('Search'),
+              ),
               const PopupMenuItem(
                 value: 'timer',
                 child: Text('Disappearing messages'),
               ),
+              if (!isGroup)
+                PopupMenuItem(
+                  value: 'block',
+                  child: widget.contact!.isBlocked
+                      ? const Text('Unblock')
+                      : const Text('Block',
+                          style: TextStyle(color: Zn.danger)),
+                ),
               if (isGroup)
                 const PopupMenuItem(
                   value: 'leave',
@@ -468,8 +1005,8 @@ class _ChatScreenState extends State<ChatScreen> {
       body: Column(
         children: [
           Expanded(
-            child: ListView.builder(
-              controller: _scroll,
+            child: ScrollablePositionedList.builder(
+              itemScrollController: _itemScroll,
               padding: const EdgeInsets.symmetric(vertical: 12),
               itemCount: messages.length,
               itemBuilder: (context, i) {
@@ -495,8 +1032,12 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Icon(Icons.timer_outlined,
-                              size: 11, color: Zn.muted),
+                          Icon(
+                              m.text.contains('disappearing messages')
+                                  ? Icons.timer_outlined
+                                  : Icons.info_outline,
+                              size: 11,
+                              color: Zn.muted),
                           const SizedBox(width: 5),
                           Flexible(
                             child: Text(m.text,
@@ -515,19 +1056,32 @@ class _ChatScreenState extends State<ChatScreen> {
                     GestureDetector(
                       onLongPress: () => _showMessageSheet(m),
                       behavior: HitTestBehavior.opaque,
-                      child: _LedgerEntry(
-                        message: m,
-                        peerName: senderName,
-                        peerColor: railColor,
-                        // A notice breaks the run: re-show the sender after it.
-                        showSender: previous == null ||
-                            previous.kind == MessageKind.notice ||
-                            previous.outgoing != m.outgoing ||
-                            previous.senderId != m.senderId,
-                        reactions:
-                            chat.reactionsByMessage[m.id] ?? const {},
-                        myEmoji: chat.myReactionTo(m),
-                        onReact: (emoji) => chat.react(m, emoji),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        color: _flashId == m.id
+                            ? Zn.ion.withValues(alpha: 0.08)
+                            : Colors.transparent,
+                        child: _LedgerEntry(
+                          message: m,
+                          peerName: senderName,
+                          peerColor: railColor,
+                          // A notice breaks the run: re-show the sender after it.
+                          showSender: previous == null ||
+                              previous.kind == MessageKind.notice ||
+                              previous.outgoing != m.outgoing ||
+                              previous.senderId != m.senderId,
+                          reactions:
+                              chat.reactionsByMessage[m.id] ?? const {},
+                          myEmoji: chat.myReactionTo(m),
+                          onReact: (emoji) => chat.react(m, emoji),
+                          quoteSender: m.replyToId == null
+                              ? null
+                              : _senderName(m.replyToSender, chat),
+                          onQuoteTap: m.replyToId == null
+                              ? null
+                              : () => _jumpToMessage(m.replyToId!),
+                          searchQuery: searchQuery,
+                        ),
                       ),
                     ),
                   ],
@@ -564,16 +1118,84 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
-          _Composer(
-            controller: _input,
-            onSend: _send,
-            onTyping: _editing == null
-                ? () => context.read<ChatState>().notifyTyping(conversationId)
-                : null,
-            // Media in groups is deferred (see PROTOCOL.md) — DM-only for now.
-            onPickPhoto: isGroup ? null : _sendPhoto,
-            onVoiceRecorded: isGroup ? null : _sendVoice,
-          ),
+          if (_replyingTo != null)
+            Container(
+              color: Zn.surface,
+              padding: const EdgeInsets.fromLTRB(16, 6, 4, 0),
+              child: Row(
+                children: [
+                  const Icon(Icons.reply_outlined, size: 14, color: Zn.ion),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                            _senderName(
+                                    _replyingTo!.outgoing
+                                        ? chat.app.zeonId
+                                        : (_replyingTo!.senderId ??
+                                            _replyingTo!.contactId),
+                                    chat)
+                                .toUpperCase(),
+                            style: Zn.mono(
+                                size: 9, color: Zn.ion, letterSpacing: 1)),
+                        Text(_replyingTo!.preview,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style:
+                                const TextStyle(fontSize: 12, color: Zn.muted)),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 16, color: Zn.muted),
+                    onPressed: () => setState(() => _replyingTo = null),
+                  ),
+                ],
+              ),
+            ),
+          if (!isGroup && widget.contact!.isBlocked)
+            Container(
+              decoration: const BoxDecoration(
+                color: Zn.surface,
+                border: Border(top: BorderSide(color: Zn.line)),
+              ),
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 8,
+                top: 6,
+                bottom: 6 + MediaQuery.of(context).padding.bottom,
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.block, size: 14, color: Zn.danger),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('You blocked $title',
+                        style: Zn.mono(size: 10, color: Zn.muted)),
+                  ),
+                  TextButton(
+                    onPressed: () => chat.toggleBlock(widget.contact!),
+                    child: Text('UNBLOCK',
+                        style: Zn.mono(
+                            size: 10, color: Zn.ion, letterSpacing: 1)),
+                  ),
+                ],
+              ),
+            )
+          else
+            _Composer(
+              controller: _input,
+              onSend: _send,
+              onTyping: _editing == null
+                  ? () => context.read<ChatState>().notifyTyping(conversationId)
+                  : null,
+              // Media in groups is deferred (see PROTOCOL.md) — DM-only for now.
+              onAttach: isGroup ? null : _showAttachSheet,
+              onSticker: isGroup ? null : _showStickerPicker,
+              onVoiceRecorded: isGroup ? null : _sendVoice,
+            ),
         ],
       ),
     );
@@ -588,6 +1210,9 @@ class _LedgerEntry extends StatelessWidget {
   final Map<String, String> reactions; // reactor Zeon ID → emoji
   final String? myEmoji;
   final void Function(String emoji)? onReact;
+  final String? quoteSender; // display name for the reply_to header
+  final VoidCallback? onQuoteTap;
+  final String searchQuery; // non-empty → highlight matches in the text
 
   const _LedgerEntry({
     required this.message,
@@ -597,7 +1222,34 @@ class _LedgerEntry extends StatelessWidget {
     this.reactions = const {},
     this.myEmoji,
     this.onReact,
+    this.quoteSender,
+    this.onQuoteTap,
+    this.searchQuery = '',
   });
+
+  /// The message text as spans, query matches tinted.
+  List<TextSpan> _highlighted(String text) {
+    if (searchQuery.isEmpty) return [TextSpan(text: text)];
+    final lower = text.toLowerCase();
+    final q = searchQuery.toLowerCase();
+    final spans = <TextSpan>[];
+    var start = 0;
+    while (start < text.length) {
+      final i = lower.indexOf(q, start);
+      if (i < 0) {
+        spans.add(TextSpan(text: text.substring(start)));
+        break;
+      }
+      if (i > start) spans.add(TextSpan(text: text.substring(start, i)));
+      spans.add(TextSpan(
+          text: text.substring(i, i + q.length),
+          style: TextStyle(
+              backgroundColor: Zn.ion.withValues(alpha: 0.35),
+              color: Zn.text)));
+      start = i + q.length;
+    }
+    return spans;
+  }
 
   /// emoji → how many people picked it, insertion-ordered.
   Map<String, int> _aggregated() {
@@ -641,6 +1293,39 @@ class _LedgerEntry extends StatelessWidget {
                               weight: FontWeight.w700,
                               letterSpacing: 2)),
                     ),
+                  if (!message.deleted && message.replyToId != null)
+                    GestureDetector(
+                      onTap: onQuoteTap,
+                      child: Container(
+                        margin: const EdgeInsets.only(bottom: 4),
+                        padding: const EdgeInsets.fromLTRB(8, 5, 10, 5),
+                        decoration: BoxDecoration(
+                          color: Zn.raised,
+                          borderRadius: BorderRadius.circular(Zn.radius),
+                          border: Border(
+                              left: BorderSide(
+                                  color: color.withValues(alpha: 0.7),
+                                  width: 2)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text((quoteSender ?? '').toUpperCase(),
+                                style: Zn.mono(
+                                    size: 8,
+                                    color: color,
+                                    weight: FontWeight.w700,
+                                    letterSpacing: 1)),
+                            const SizedBox(height: 1),
+                            Text(message.replyToPreview ?? 'Message',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 12, color: Zn.muted)),
+                          ],
+                        ),
+                      ),
+                    ),
                   if (message.deleted)
                     Text('message deleted',
                         style: Zn.mono(size: 12).copyWith(
@@ -650,6 +1335,13 @@ class _LedgerEntry extends StatelessWidget {
                       MessageKind.image => _ImageEntry(message: message),
                       MessageKind.audio =>
                         _AudioEntry(message: message, color: color),
+                      MessageKind.video =>
+                        _VideoEntry(message: message, color: color),
+                      MessageKind.sticker => _StickerEntry(message: message),
+                      MessageKind.file => _FileEntry(
+                          message: message,
+                          color: color,
+                          searchQuery: searchQuery),
                       MessageKind.call => Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -669,8 +1361,8 @@ class _LedgerEntry extends StatelessWidget {
                         ),
                       _ => Text.rich(
                           TextSpan(
-                            text: message.text,
                             children: [
+                              ..._highlighted(message.text),
                               if (message.editedAt != null)
                                 TextSpan(
                                     text: '  · edited', style: Zn.mono(size: 9)),
@@ -819,6 +1511,231 @@ class _ImageEntry extends StatelessWidget {
   }
 }
 
+/// A sticker: rendered plain at a fixed size — no frame, no background,
+/// no zoom dialog. The transparency is the point.
+class _StickerEntry extends StatelessWidget {
+  final Message message;
+  const _StickerEntry({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final file = File(message.mediaPath ?? '');
+    if (!file.existsSync()) {
+      return Text('💟 sticker unavailable', style: Zn.mono(size: 12));
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Image.file(file, width: 160, height: 160, fit: BoxFit.contain,
+          alignment: Alignment.centerLeft),
+    );
+  }
+}
+
+class _VideoEntry extends StatelessWidget {
+  final Message message;
+  final Color color;
+  const _VideoEntry({required this.message, required this.color});
+
+  static String _fmt(Duration d) =>
+      '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+
+  @override
+  Widget build(BuildContext context) {
+    final path = message.mediaPath;
+    if (path == null || !File(path).existsSync()) {
+      return Text('🎬 video unavailable', style: Zn.mono(size: 12));
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: GestureDetector(
+        onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+            builder: (_) => _VideoPlayerPage(path: path))),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(Zn.radius),
+          child: Container(
+            width: 240,
+            height: 150,
+            color: Colors.black,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(Zn.radius),
+                    border: Border.all(color: color.withValues(alpha: 0.5)),
+                  ),
+                  child: Icon(Icons.play_arrow, size: 26, color: color),
+                ),
+                if (message.durationMs != null)
+                  Positioned(
+                    right: 8,
+                    bottom: 6,
+                    child: Text(
+                        _fmt(Duration(milliseconds: message.durationMs!)),
+                        style: Zn.mono(size: 10, color: Zn.text)),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Full-screen playback; tap toggles play/pause.
+class _VideoPlayerPage extends StatefulWidget {
+  final String path;
+  const _VideoPlayerPage({required this.path});
+
+  @override
+  State<_VideoPlayerPage> createState() => _VideoPlayerPageState();
+}
+
+class _VideoPlayerPageState extends State<_VideoPlayerPage> {
+  late final VideoPlayerController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.file(File(widget.path))
+      ..initialize().then((_) {
+        if (mounted) {
+          setState(() {});
+          _controller.play();
+        }
+      });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        leading: IconButton(
+          icon: const Icon(Icons.close, color: Zn.text),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: _controller.value.isInitialized
+          ? GestureDetector(
+              onTap: () => setState(() => _controller.value.isPlaying
+                  ? _controller.pause()
+                  : _controller.play()),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio: _controller.value.aspectRatio,
+                        child: VideoPlayer(_controller),
+                      ),
+                    ),
+                  ),
+                  SafeArea(
+                    top: false,
+                    child: VideoProgressIndicator(
+                      _controller,
+                      allowScrubbing: true,
+                      padding: const EdgeInsets.all(12),
+                      colors: const VideoProgressColors(
+                          playedColor: Zn.ion, backgroundColor: Zn.line),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          : const Center(child: CircularProgressIndicator(color: Zn.ion)),
+    );
+  }
+}
+
+/// A document row: icon, name, size — tap opens it with the OS handler.
+class _FileEntry extends StatelessWidget {
+  final Message message;
+  final Color color;
+  final String searchQuery;
+  const _FileEntry(
+      {required this.message, required this.color, this.searchQuery = ''});
+
+  static String _sizeLabel(int bytes) => bytes >= 1024 * 1024
+      ? '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB'
+      : '${(bytes / 1024).ceil()} KB';
+
+  @override
+  Widget build(BuildContext context) {
+    final path = message.mediaPath;
+    final exists = path != null && File(path).existsSync();
+    final name = message.fileName ?? 'Document';
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: GestureDetector(
+        onTap: !exists
+            ? null
+            : () async {
+                final result = await OpenFilex.open(path);
+                if (result.type != ResultType.done && context.mounted) {
+                  showZnSnack(context, "Couldn't open ${message.fileName}",
+                      error: true);
+                }
+              },
+        child: Container(
+          padding: const EdgeInsets.all(8),
+          constraints: const BoxConstraints(maxWidth: 260),
+          decoration: BoxDecoration(
+            color: Zn.raised,
+            borderRadius: BorderRadius.circular(Zn.radius),
+            border: Border.all(color: Zn.line),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(Zn.radius),
+                  border: Border.all(color: color.withValues(alpha: 0.5)),
+                ),
+                child: Icon(Icons.description_outlined, size: 18, color: color),
+              ),
+              const SizedBox(width: 10),
+              Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13, color: Zn.text)),
+                    const SizedBox(height: 2),
+                    Text(
+                        exists
+                            ? _sizeLabel(File(path).lengthSync())
+                            : 'no longer on this device',
+                        style: Zn.mono(size: 9, color: Zn.muted)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _AudioEntry extends StatefulWidget {
   final Message message;
   final Color color;
@@ -919,14 +1836,16 @@ class _Composer extends StatefulWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
   final VoidCallback? onTyping; // keystroke → typing indicator (throttled upstream)
-  final VoidCallback? onPickPhoto; // null → media disabled (groups, deferred)
+  final VoidCallback? onAttach; // null → media disabled (groups, deferred)
+  final VoidCallback? onSticker; // opens the sticker picker (DM-only, like media)
   final void Function(String path, int durationMs)? onVoiceRecorded;
 
   const _Composer({
     required this.controller,
     required this.onSend,
     this.onTyping,
-    required this.onPickPhoto,
+    required this.onAttach,
+    required this.onSticker,
     required this.onVoiceRecorded,
   });
 
@@ -999,13 +1918,20 @@ class _ComposerState extends State<_Composer> {
       ),
       child: Row(
         children: [
-          if (widget.onPickPhoto != null)
+          if (widget.onAttach != null)
             IconButton(
-              onPressed: _recording ? null : widget.onPickPhoto,
-              icon: const Icon(Icons.photo_outlined, color: Zn.muted, size: 22),
+              onPressed: _recording ? null : widget.onAttach,
+              icon: const Icon(Icons.add_circle_outline,
+                  color: Zn.muted, size: 22),
             )
           else
             const SizedBox(width: 12),
+          if (widget.onSticker != null)
+            IconButton(
+              onPressed: _recording ? null : widget.onSticker,
+              icon: const Icon(Icons.emoji_emotions_outlined,
+                  color: Zn.muted, size: 22),
+            ),
           Expanded(
             child: _recording
                 ? Row(

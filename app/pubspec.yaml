@@ -31,6 +31,11 @@ dependencies:
   record: ^6.2.1
   just_audio: ^0.10.6
   path_provider: ^2.1.6
+  video_player: ^2.11.1
+  file_picker: ^11.0.2
+  open_filex: ^4.7.0
+  scrollable_positioned_list: ^0.3.8
+  emoji_picker_flutter: ^4.4.0
 
 dev_dependencies:
   flutter_test:
@@ -39,3 +44,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  assets:
+    - assets/stickers/essentials/

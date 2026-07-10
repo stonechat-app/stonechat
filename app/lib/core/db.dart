@@ -34,7 +34,7 @@ class ChatDb {
     final db = await openDatabase(
       path,
       password: password,
-      version: 10,
+      version: 12,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
           await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
@@ -102,6 +102,28 @@ class ChatDb {
           await db.execute(
               'CREATE INDEX idx_messages_expires ON messages(expires_at)');
         }
+        if (oldVersion < 11) {
+          await db.execute('ALTER TABLE messages ADD COLUMN file_name TEXT');
+          await db.execute('ALTER TABLE messages ADD COLUMN reply_to_id TEXT');
+          await db
+              .execute('ALTER TABLE messages ADD COLUMN reply_to_sender TEXT');
+          await db
+              .execute('ALTER TABLE messages ADD COLUMN reply_to_preview TEXT');
+        }
+        if (oldVersion < 12) {
+          await db.execute('ALTER TABLE contacts ADD COLUMN blocked_at INTEGER');
+          // Same double-create guard as v9/v10: pre-v4 upgrades get `groups`
+          // from the current _createGroups, which already has the columns.
+          for (final table in ['contacts', 'groups']) {
+            final cols = await db.rawQuery('PRAGMA table_info($table)');
+            if (!cols.any((c) => c['name'] == 'muted_until')) {
+              await db
+                  .execute('ALTER TABLE $table ADD COLUMN muted_until INTEGER');
+              await db
+                  .execute('ALTER TABLE $table ADD COLUMN archived_at INTEGER');
+            }
+          }
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -116,7 +138,10 @@ class ChatDb {
             created_at     INTEGER NOT NULL,
             pinned_at      INTEGER,
             expire_timer_ms INTEGER NOT NULL DEFAULT 0,
-            expire_timer_at INTEGER NOT NULL DEFAULT 0
+            expire_timer_at INTEGER NOT NULL DEFAULT 0,
+            blocked_at     INTEGER,
+            muted_until    INTEGER,
+            archived_at    INTEGER
           )
         ''');
         await db.execute('''
@@ -129,11 +154,15 @@ class ChatDb {
             kind        TEXT NOT NULL DEFAULT 'text',
             media_path  TEXT,
             duration_ms INTEGER,
+            file_name   TEXT,
             sent_at     INTEGER NOT NULL,
             status      TEXT NOT NULL,
             edited_at   INTEGER,
             deleted     INTEGER NOT NULL DEFAULT 0,
-            expires_at  INTEGER
+            expires_at  INTEGER,
+            reply_to_id      TEXT,
+            reply_to_sender  TEXT,
+            reply_to_preview TEXT
           )
         ''');
         await db.execute(
@@ -207,7 +236,9 @@ class ChatDb {
       created_at INTEGER NOT NULL,
       pinned_at  INTEGER,
       expire_timer_ms INTEGER NOT NULL DEFAULT 0,
-      expire_timer_at INTEGER NOT NULL DEFAULT 0
+      expire_timer_at INTEGER NOT NULL DEFAULT 0,
+      muted_until INTEGER,
+      archived_at INTEGER
     )
   ''';
 

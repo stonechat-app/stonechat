@@ -65,6 +65,11 @@ class ChatState extends ChangeNotifier {
   static const _typingTtlMs = 15 * 1000; // shown this long without a refresh
   static const _editWindowMs = 24 * 3600 * 1000; // sender-side edit/delete window
   static const _editGraceMs = 12 * 3600 * 1000; // receiver-side slack on top
+  static const _replyPreviewMax = 140; // reply_to snapshot cap (chars)
+
+  /// Mirror of the relay's MAX_BLOB_BYTES — checked before upload so a too-big
+  /// video/document fails with a message instead of a 413.
+  static const maxBlobBytes = 64 * 1024 * 1024;
 
   // Push wake-ups: this device's token, registered with our mailbox once both
   // exist (order of arrival between the two is not guaranteed).
@@ -127,6 +132,42 @@ class ChatState extends ChangeNotifier {
   Future<void> togglePinGroup(Group g) async {
     g.pinnedAt = g.isPinned ? null : DateTime.now().millisecondsSinceEpoch;
     await app.db.setGroupPinned(g.id, g.pinnedAt);
+    notifyListeners();
+  }
+
+  /// Block/unblock is local-only enforcement: we stop rendering their DM
+  /// traffic and stop sending them anything; they are never told.
+  Future<void> toggleBlock(Contact c) async {
+    c.blockedAt = c.isBlocked ? null : DateTime.now().millisecondsSinceEpoch;
+    await app.db.upsertContact(c);
+    notifyListeners();
+  }
+
+  /// Mute until [untilMs] (null = unmute). Local-only presentation.
+  Future<void> setMute(String conversationId, int? untilMs) async {
+    final group = groupById(conversationId);
+    final contact = group == null ? contactById(conversationId) : null;
+    if (group != null) {
+      group.mutedUntil = untilMs;
+      await app.db.upsertGroup(group);
+    } else if (contact != null) {
+      contact.mutedUntil = untilMs;
+      await app.db.upsertContact(contact);
+    }
+    notifyListeners();
+  }
+
+  Future<void> toggleArchive(String conversationId) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final group = groupById(conversationId);
+    final contact = group == null ? contactById(conversationId) : null;
+    if (group != null) {
+      group.archivedAt = group.isArchived ? null : now;
+      await app.db.upsertGroup(group);
+    } else if (contact != null) {
+      contact.archivedAt = contact.isArchived ? null : now;
+      await app.db.upsertContact(contact);
+    }
     notifyListeners();
   }
 
@@ -697,7 +738,118 @@ class ChatState extends ChangeNotifier {
     return group;
   }
 
-  Future<void> sendGroupMessage(Group group, String text) async {
+  /// The quoted author's Zeon ID: us for our own messages, the group sender
+  /// for group messages, the DM peer otherwise.
+  String _quotedSenderOf(Message quoted) => quoted.outgoing
+      ? app.zeonId!
+      : (quoted.senderId ?? quoted.contactId);
+
+  static String _clipPreview(String s) =>
+      s.length <= _replyPreviewMax ? s : '${s.substring(0, _replyPreviewMax)}…';
+
+  /// The wire form of a message's stored reply snapshot (PROTOCOL.md
+  /// "reply_to"). Built from the message's own fields so pending-outbox
+  /// retries carry exactly what the original send did.
+  static Map<String, Object?>? _replyPayloadOf(Message m) =>
+      m.replyToId == null
+          ? null
+          : {
+              'id': m.replyToId,
+              if (m.replyToSender != null) 'sender': m.replyToSender,
+              if (m.replyToPreview != null) 'preview': m.replyToPreview,
+            };
+
+  /// Incoming reply_to block → (id, sender, preview), all null when absent
+  /// or malformed. Cooperative display data — never trusted beyond shape.
+  static (String?, String?, String?) _replyFrom(Map<String, dynamic> payload) {
+    final r = payload['reply_to'];
+    if (r is! Map) return (null, null, null);
+    final id = r['id'];
+    if (id is! String || id.isEmpty) return (null, null, null);
+    final sender = r['sender'];
+    final preview = r['preview'];
+    return (
+      id,
+      sender is String ? sender : null,
+      preview is String ? _clipPreview(preview) : null,
+    );
+  }
+
+  /// Admin-only: change the member set and/or rename, bump the version, and
+  /// fan the new full state to everyone — including just-removed members,
+  /// whose clients clear their membership on seeing a list without them
+  /// (PROTOCOL.md "Groups"). Best-effort like group_create: an unreachable
+  /// member hears about it on the next update.
+  Future<void> updateGroupMembership(
+    Group group, {
+    String? name,
+    List<Contact> addContacts = const [],
+    Set<String> removeIds = const {},
+  }) async {
+    if (group.adminId != app.zeonId) return;
+    final current = groupMembers[group.id] ?? const <GroupMember>[];
+    final added = [
+      for (final c in addContacts)
+        if (!current.any((m) => m.zeonId == c.zeonId)) c
+    ];
+    final removed =
+        current.where((m) => removeIds.contains(m.zeonId)).toList();
+    final newName = name?.trim();
+    final renamed =
+        newName != null && newName.isNotEmpty && newName != group.name;
+    if (added.isEmpty && removed.isEmpty && !renamed) return;
+
+    final members = <GroupMember>[
+      for (final m in current)
+        if (!removeIds.contains(m.zeonId)) m,
+      for (final c in added)
+        GroupMember(
+          groupId: group.id,
+          zeonId: c.zeonId,
+          pubkeyB64: c.pubkeyB64,
+          displayName: c.displayName,
+          serverAddress: c.serverAddress,
+          tlsFp: c.tlsFp,
+        ),
+    ];
+    final oldName = group.name;
+    if (renamed) group.name = newName;
+    group.version += 1;
+    await app.db.upsertGroup(group);
+    await app.db.replaceMembers(group.id, members);
+    groupMembers[group.id] = members;
+
+    if (renamed) {
+      await _insertNotice(group.id, 'You renamed "$oldName" to "$newName"');
+    }
+    for (final c in added) {
+      await _insertNotice(group.id, 'You added ${c.displayName}');
+    }
+    for (final m in removed) {
+      await _insertNotice(group.id, 'You removed ${m.displayName}');
+    }
+    notifyListeners();
+
+    final payload = _membershipPayload(group, members);
+    final recipients = [
+      ...members.where((m) => m.zeonId != app.zeonId),
+      ...removed,
+    ];
+    for (final m in recipients) {
+      try {
+        await _deliverToMember(
+            m,
+            await _sealFor(EnvelopeType.groupUpdate, m.zeonId, m.pubkeyB64,
+                payload,
+                serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+      } catch (_) {
+        // unreachable member keeps the old view until the next update
+      }
+    }
+  }
+
+  Future<void> sendGroupMessage(Group group, String text,
+      {Message? replyTo}) async {
     _typingSentAt.remove(group.id); // the message itself says "stopped typing"
     final members = (groupMembers[group.id] ?? [])
         .where((m) => m.zeonId != app.zeonId)
@@ -712,6 +864,9 @@ class ChatState extends ChangeNotifier {
       status: MessageStatus.pending,
       expiresAt:
           group.expireTimerMs > 0 ? sentAt + group.expireTimerMs : null,
+      replyToId: replyTo?.id,
+      replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
+      replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
     );
     await app.db.insertMessage(message);
     await app.db.addOutbox(message.id, group.id, [for (final m in members) m.zeonId]);
@@ -731,6 +886,7 @@ class ChatState extends ChangeNotifier {
       'text': message.text,
       if (message.expiresAt != null)
         'expire_after_ms': message.expiresAt! - message.sentAt,
+      if (_replyPayloadOf(message) != null) 'reply_to': _replyPayloadOf(message),
     };
     for (final member in members) {
       try {
@@ -780,7 +936,8 @@ class ChatState extends ChangeNotifier {
 
   // -- messaging -------------------------------------------------------------------
 
-  Future<void> sendMessage(Contact contact, String text) async {
+  Future<void> sendMessage(Contact contact, String text,
+      {Message? replyTo}) async {
     _typingSentAt.remove(contact.zeonId); // the message itself says "stopped"
     final sentAt = DateTime.now().millisecondsSinceEpoch;
     final message = Message(
@@ -792,6 +949,9 @@ class ChatState extends ChangeNotifier {
       status: MessageStatus.pending,
       expiresAt:
           contact.expireTimerMs > 0 ? sentAt + contact.expireTimerMs : null,
+      replyToId: replyTo?.id,
+      replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
+      replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
     );
     await app.db.insertMessage(message);
     (_messages[contact.zeonId] ??= []).add(message);
@@ -817,18 +977,21 @@ class ChatState extends ChangeNotifier {
       await sendMedia(toContact!, m.mediaPath!,
           kind: m.kind,
           mime: _mimeFromPath(m.mediaPath!),
-          durationMs: m.durationMs);
+          durationMs: m.durationMs,
+          fileName: m.fileName);
     }
   }
 
-  /// Send a photo or voice note. `sourcePath` is copied into the app's media
-  /// directory first — the local copy is the message history.
+  /// Send a photo, video, voice note or document. `sourcePath` is copied into
+  /// the app's media directory first — the local copy is the message history.
   Future<void> sendMedia(
     Contact contact,
     String sourcePath, {
-    required String kind, // MessageKind.image | MessageKind.audio
+    required String kind, // MessageKind.image | audio | video | file
     required String mime,
     int? durationMs,
+    String? fileName, // kind=file: the document's original name
+    Message? replyTo,
   }) async {
     final id = _uuid.v4();
     final dir = await _mediaDir();
@@ -844,10 +1007,14 @@ class ChatState extends ChangeNotifier {
       kind: kind,
       mediaPath: localPath,
       durationMs: durationMs,
+      fileName: fileName,
       sentAt: sentAt,
       status: MessageStatus.pending,
       expiresAt:
           contact.expireTimerMs > 0 ? sentAt + contact.expireTimerMs : null,
+      replyToId: replyTo?.id,
+      replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
+      replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
     );
     await app.db.insertMessage(message);
     (_messages[contact.zeonId] ??= []).add(message);
@@ -890,8 +1057,10 @@ class ChatState extends ChangeNotifier {
       'kind': message.kind,
       'size': bytes.length,
       if (message.durationMs != null) 'duration_ms': message.durationMs,
+      if (message.fileName != null) 'name': message.fileName,
       if (message.expiresAt != null)
         'expire_after_ms': message.expiresAt! - message.sentAt,
+      if (_replyPayloadOf(message) != null) 'reply_to': _replyPayloadOf(message),
     };
     return _sealFor(EnvelopeType.media, contact.zeonId, contact.pubkeyB64,
         payload,
@@ -901,11 +1070,16 @@ class ChatState extends ChangeNotifier {
         blobId: blobId);
   }
 
-  static String _mimeFromPath(String path) => switch (p.extension(path)) {
+  static String _mimeFromPath(String path) =>
+      switch (p.extension(path).toLowerCase()) {
         '.jpg' || '.jpeg' => 'image/jpeg',
         '.png' => 'image/png',
         '.heic' => 'image/heic',
+        '.webp' => 'image/webp',
         '.m4a' => 'audio/mp4',
+        '.mp4' => 'video/mp4',
+        '.mov' => 'video/quicktime',
+        '.pdf' => 'application/pdf',
         _ => 'application/octet-stream',
       };
 
@@ -913,7 +1087,11 @@ class ChatState extends ChangeNotifier {
         'image/jpeg' => '.jpg',
         'image/png' => '.png',
         'image/heic' => '.heic',
+        'image/webp' => '.webp',
         'audio/mp4' || 'audio/aac' => '.m4a',
+        'video/mp4' => '.mp4',
+        'video/quicktime' => '.mov',
+        'application/pdf' => '.pdf',
         _ => '.bin',
       };
 
@@ -926,6 +1104,8 @@ class ChatState extends ChangeNotifier {
             'text': message.text,
             if (message.expiresAt != null)
               'expire_after_ms': message.expiresAt! - message.sentAt,
+            if (_replyPayloadOf(message) != null)
+              'reply_to': _replyPayloadOf(message),
           },
           // envelope id == message id → dedupe on the other side
           envelopeId: message.id,
@@ -953,7 +1133,8 @@ class ChatState extends ChangeNotifier {
     }
     for (final message in await app.db.pendingMessages()) {
       final contact = contactById(message.contactId);
-      if (contact == null) continue;
+      // Blocked: hold their pending sends — they resume if ever unblocked.
+      if (contact == null || contact.isBlocked) continue;
       final cached = _messages[message.contactId]
           ?.where((m) => m.id == message.id)
           .firstOrNull;
@@ -985,6 +1166,9 @@ class ChatState extends ChangeNotifier {
   /// a couple of seconds later. Receipts are best-effort by design: a lost
   /// one costs a stale checkmark, nothing more.
   void _queueReceipt(String peerId, String kind, String messageId) {
+    // A blocked peer gets nothing from us — not even checkmarks. Local read
+    // state still moves; only the receipt is withheld.
+    if (contactById(peerId)?.isBlocked ?? false) return;
     ((_receiptQueue[peerId] ??= {})[kind] ??= <String>{}).add(messageId);
     _receiptFlushTimer ??= Timer(const Duration(seconds: 2), () {
       _receiptFlushTimer = null;
@@ -1121,7 +1305,9 @@ class ChatState extends ChangeNotifier {
       final group = groupById(conversationId);
       if (group == null) {
         final contact = contactById(conversationId);
-        if (contact == null || !contact.isAccepted) return;
+        if (contact == null || !contact.isAccepted || contact.isBlocked) {
+          return;
+        }
         if (!((await _loadSession(contact.zeonId))?.canSend ?? false)) return;
         await _deliver(
             contact, await _seal(EnvelopeType.typing, contact, {'state': state}),
@@ -1503,6 +1689,11 @@ class ChatState extends ChangeNotifier {
   /// message. One reaction per person per message; a new one replaces the old.
   Future<void> react(Message message, String emoji) async {
     if (message.deleted) return;
+    // A blocked DM is read-only: nothing may leave for that peer.
+    if (groupById(message.contactId) == null &&
+        (contactById(message.contactId)?.isBlocked ?? false)) {
+      return;
+    }
     final applied = myReactionTo(message) == emoji ? '' : emoji;
     final now = DateTime.now().millisecondsSinceEpoch;
     await app.db.setReaction(message.id, app.zeonId!, applied, now);
@@ -1548,7 +1739,9 @@ class ChatState extends ChangeNotifier {
       {bool group = false}) async {
     final id = payload['id'] as String?;
     final emoji = payload['emoji'] as String?;
-    if (id == null || emoji == null || emoji.length > 16) return;
+    // 32 UTF-16 units of headroom: ZWJ sequences (families, skin-tone
+    // couples) run well past a single code point.
+    if (id == null || emoji == null || emoji.length > 32) return;
     final message = await app.db.messageById(id);
     if (message == null || message.deleted) return;
     if (group) {
@@ -1635,6 +1828,28 @@ class ChatState extends ChangeNotifier {
 
     final payload = jsonDecode(plaintext) as Map<String, dynamic>;
 
+    // Blocked senders: their DM traffic and calls stop at the door. Decrypt
+    // first (above) so the ratchet stays current for a later unblock; group
+    // envelopes still flow — leaving the group is the remedy there.
+    if (contact != null && contact.isBlocked) {
+      switch (envelope.type) {
+        case EnvelopeType.contactRequest ||
+              EnvelopeType.msg ||
+              EnvelopeType.media ||
+              EnvelopeType.typing ||
+              EnvelopeType.msgEdit ||
+              EnvelopeType.msgDelete ||
+              EnvelopeType.reaction ||
+              EnvelopeType.timerUpdate ||
+              EnvelopeType.callOffer ||
+              EnvelopeType.callAnswer ||
+              EnvelopeType.callIce ||
+              EnvelopeType.callEnd:
+          _dropLog(envelope, 'sender is blocked');
+          return;
+      }
+    }
+
     switch (envelope.type) {
       case EnvelopeType.contactRequest:
         if (contact != null) {
@@ -1694,6 +1909,7 @@ class ChatState extends ChangeNotifier {
           _dropLog(envelope, 'msg from non-accepted contact — strangers cannot chat');
           return;
         }
+        final (replyId, replySender, replyPreview) = _replyFrom(payload);
         await _storeIncoming(
           contact,
           Message(
@@ -1704,6 +1920,9 @@ class ChatState extends ChangeNotifier {
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
             expiresAt: _expiresAtFrom(envelope, payload),
+            replyToId: replyId,
+            replyToSender: replySender,
+            replyToPreview: replyPreview,
           ),
         );
 
@@ -1722,10 +1941,25 @@ class ChatState extends ChangeNotifier {
           base64Decode(payload['blob_nonce'] as String),
         );
         if (data == null) return; // tampered blob — drop
+        final kind = switch (payload['kind']) {
+          MessageKind.image ||
+          MessageKind.audio ||
+          MessageKind.video ||
+          MessageKind.file ||
+          MessageKind.sticker =>
+            payload['kind'] as String,
+          _ => MessageKind.image,
+        };
+        final name = payload['name'] as String?;
         final dir = await _mediaDir();
-        final ext = _extFromMime((payload['mime'] as String?) ?? '');
+        // Documents keep their original extension so the OS opens them with
+        // the right app; everything else derives it from the mime type.
+        final ext = kind == MessageKind.file && name != null
+            ? p.extension(name)
+            : _extFromMime((payload['mime'] as String?) ?? '');
         final path = p.join(dir.path, '${envelope.id}$ext');
         await File(path).writeAsBytes(data);
+        final (replyId, replySender, replyPreview) = _replyFrom(payload);
         await _storeIncoming(
           contact,
           Message(
@@ -1733,12 +1967,16 @@ class ChatState extends ChangeNotifier {
             contactId: contact.zeonId,
             outgoing: false,
             text: '',
-            kind: (payload['kind'] as String?) ?? MessageKind.image,
+            kind: kind,
             mediaPath: path,
             durationMs: payload['duration_ms'] as int?,
+            fileName: name == null ? null : p.basename(name),
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
             expiresAt: _expiresAtFrom(envelope, payload),
+            replyToId: replyId,
+            replyToSender: replySender,
+            replyToPreview: replyPreview,
           ),
         );
 
@@ -1749,6 +1987,7 @@ class ChatState extends ChangeNotifier {
         final group = groupById(payload['group_id'] as String? ?? '');
         if (group == null) return; // unknown group — drop (create not seen yet)
         if (memberOf(group.id, envelope.from) == null) return; // non-member
+        final (replyId, replySender, replyPreview) = _replyFrom(payload);
         await _storeIncomingConversation(
           group.id,
           Message(
@@ -1760,6 +1999,9 @@ class ChatState extends ChangeNotifier {
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
             expiresAt: _expiresAtFrom(envelope, payload),
+            replyToId: replyId,
+            replyToSender: replySender,
+            replyToPreview: replyPreview,
           ),
         );
 
@@ -1771,6 +2013,8 @@ class ChatState extends ChangeNotifier {
         groupMembers[group.id]?.removeWhere((m) => m.zeonId == envelope.from);
         await app.db
             .replaceMembers(group.id, groupMembers[group.id] ?? const []);
+        await _insertNotice(group.id, '${member.displayName} left',
+            id: envelope.id);
 
       case EnvelopeType.receipt:
         await _applyReceipt(envelope, payload);
@@ -1881,6 +2125,8 @@ class ChatState extends ChangeNotifier {
       if (existing != null) {
         groupMembers[groupId] = [];
         await app.db.replaceMembers(groupId, const []);
+        await _insertNotice(groupId, 'You were removed from this group',
+            id: envelope.id);
       }
       return;
     }
@@ -1901,7 +2147,11 @@ class ChatState extends ChangeNotifier {
       expireTimerMs: existing?.expireTimerMs ?? (bootstrapTimer ? expireMs : 0),
       expireTimerAt:
           existing?.expireTimerAt ?? (bootstrapTimer ? _sentAtMs(envelope) : 0),
+      mutedUntil: existing?.mutedUntil, // local settings survive the REPLACE
+      archivedAt: existing?.archivedAt,
     );
+    final before = groupMembers[groupId] ?? const <GroupMember>[];
+    final oldName = existing?.name;
     await app.db.upsertGroup(group);
     await app.db.replaceMembers(groupId, members);
     if (existing == null) {
@@ -1911,6 +2161,29 @@ class ChatState extends ChangeNotifier {
       existing.version = version;
     }
     groupMembers[groupId] = members;
+
+    // Surface what changed (idempotent per envelope: notice ids derive from
+    // it). First sight of the group renders no diff — it just appears.
+    if (existing != null) {
+      if (oldName != null && oldName != name) {
+        await _insertNotice(groupId, 'Group renamed to "$name"',
+            id: '${envelope.id}-rename');
+      }
+      for (final m in members) {
+        if (m.zeonId != app.zeonId &&
+            !before.any((b) => b.zeonId == m.zeonId)) {
+          await _insertNotice(groupId, '${m.displayName} was added',
+              id: '${envelope.id}-add-${m.zeonId}');
+        }
+      }
+      for (final b in before) {
+        if (b.zeonId != app.zeonId &&
+            !members.any((m) => m.zeonId == b.zeonId)) {
+          await _insertNotice(groupId, '${b.displayName} was removed',
+              id: '${envelope.id}-rm-${b.zeonId}');
+        }
+      }
+    }
   }
 
   Future<void> _storeIncomingConversation(

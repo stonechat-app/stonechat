@@ -19,6 +19,9 @@ class Contact {
   int? pinnedAt; // ms epoch when the user pinned this conversation
   int expireTimerMs; // disappearing-messages TTL, 0 = off
   int expireTimerAt; // ms epoch of the last timer change (last-writer-wins)
+  int? blockedAt; // ms epoch when the user blocked this contact (local-only)
+  int? mutedUntil; // ms epoch until which the conversation is muted
+  int? archivedAt; // ms epoch when the user archived this conversation
 
   Contact({
     required this.zeonId,
@@ -32,10 +35,17 @@ class Contact {
     this.pinnedAt,
     this.expireTimerMs = 0,
     this.expireTimerAt = 0,
+    this.blockedAt,
+    this.mutedUntil,
+    this.archivedAt,
   });
 
   bool get isAccepted => status == ContactStatus.accepted;
   bool get isPinned => pinnedAt != null;
+  bool get isBlocked => blockedAt != null;
+  bool get isMuted =>
+      (mutedUntil ?? 0) > DateTime.now().millisecondsSinceEpoch;
+  bool get isArchived => archivedAt != null;
 
   Map<String, Object?> toRow() => {
         'zeon_id': zeonId,
@@ -49,6 +59,9 @@ class Contact {
         'pinned_at': pinnedAt,
         'expire_timer_ms': expireTimerMs,
         'expire_timer_at': expireTimerAt,
+        'blocked_at': blockedAt,
+        'muted_until': mutedUntil,
+        'archived_at': archivedAt,
       };
 
   factory Contact.fromRow(Map<String, Object?> r) => Contact(
@@ -63,7 +76,28 @@ class Contact {
         pinnedAt: r['pinned_at'] as int?,
         expireTimerMs: r['expire_timer_ms'] as int? ?? 0,
         expireTimerAt: r['expire_timer_at'] as int? ?? 0,
+        blockedAt: r['blocked_at'] as int?,
+        mutedUntil: r['muted_until'] as int?,
+        archivedAt: r['archived_at'] as int?,
       );
+}
+
+/// Mute choices. Mute is local-only: it silences this device's presentation
+/// of a conversation; nothing about it ever reaches the wire.
+class MuteDuration {
+  /// Sentinel "until I unmute" — DateTime's maximum representable ms.
+  static const forever = 8640000000000000;
+  static const eightHours = 8 * 3600 * 1000;
+  static const oneWeek = 7 * 24 * 3600 * 1000;
+
+  static const options = [eightHours, oneWeek, forever];
+
+  static String label(int ms) => switch (ms) {
+        eightHours => '8 hours',
+        oneWeek => '1 week',
+        forever => 'Until I unmute',
+        _ => '${(ms / 3600000).round()} hours',
+      };
 }
 
 class MessageStatus {
@@ -86,6 +120,9 @@ class MessageKind {
   static const text = 'text';
   static const image = 'image';
   static const audio = 'audio';
+  static const video = 'video';
+  static const file = 'file'; // document / arbitrary attachment
+  static const sticker = 'sticker'; // small transparent image, no frame chrome
   static const call = 'call'; // local call epitaph ("Missed voice call")
   static const notice = 'notice'; // local system line ("… set disappearing messages …")
 }
@@ -113,13 +150,20 @@ class Message {
   final bool outgoing;
   String text;
   final String kind; // MessageKind
-  String? mediaPath; // local file for image/audio — never leaves the phone
-  final int? durationMs; // audio only
+  String? mediaPath; // local file for image/audio/video/file — never leaves the phone
+  final int? durationMs; // audio / video only
+  final String? fileName; // kind=file: the document's original name
   final int sentAt; // ms since epoch
   String status;
   int? editedAt; // ms since epoch, set when the sender edited the text
   bool deleted; // tombstone: sender deleted it for everyone
   final int? expiresAt; // ms epoch when this copy self-deletes (null = never)
+  // Reply/quote snapshot (PROTOCOL.md "reply_to"): rendered from these fields,
+  // never from the referenced message — the original may be gone (expired,
+  // deleted, or never held). replyToSender is the quoted author's Zeon ID.
+  final String? replyToId;
+  final String? replyToSender;
+  final String? replyToPreview;
 
   Message({
     required this.id,
@@ -130,11 +174,15 @@ class Message {
     this.kind = MessageKind.text,
     this.mediaPath,
     this.durationMs,
+    this.fileName,
     required this.sentAt,
     required this.status,
     this.editedAt,
     this.deleted = false,
     this.expiresAt,
+    this.replyToId,
+    this.replyToSender,
+    this.replyToPreview,
   });
 
   Map<String, Object?> toRow() => {
@@ -146,11 +194,15 @@ class Message {
         'kind': kind,
         'media_path': mediaPath,
         'duration_ms': durationMs,
+        'file_name': fileName,
         'sent_at': sentAt,
         'status': status,
         'edited_at': editedAt,
         'deleted': deleted ? 1 : 0,
         'expires_at': expiresAt,
+        'reply_to_id': replyToId,
+        'reply_to_sender': replyToSender,
+        'reply_to_preview': replyToPreview,
       };
 
   factory Message.fromRow(Map<String, Object?> r) => Message(
@@ -162,11 +214,15 @@ class Message {
         kind: (r['kind'] as String?) ?? MessageKind.text,
         mediaPath: r['media_path'] as String?,
         durationMs: r['duration_ms'] as int?,
+        fileName: r['file_name'] as String?,
         sentAt: r['sent_at'] as int,
         status: r['status'] as String,
         editedAt: r['edited_at'] as int?,
         deleted: (r['deleted'] as int? ?? 0) == 1,
         expiresAt: r['expires_at'] as int?,
+        replyToId: r['reply_to_id'] as String?,
+        replyToSender: r['reply_to_sender'] as String?,
+        replyToPreview: r['reply_to_preview'] as String?,
       );
 
   String get preview => deleted
@@ -174,6 +230,9 @@ class Message {
       : switch (kind) {
           MessageKind.image => '📷 Photo',
           MessageKind.audio => '🎤 Voice note',
+          MessageKind.video => '🎬 Video',
+          MessageKind.file => '📎 ${fileName ?? 'Document'}',
+          MessageKind.sticker => '💟 Sticker',
           _ => text,
         };
 }
@@ -218,6 +277,8 @@ class Group {
   int? pinnedAt; // ms epoch when the user pinned this conversation
   int expireTimerMs; // disappearing-messages TTL, 0 = off
   int expireTimerAt; // ms epoch of the last timer change (last-writer-wins)
+  int? mutedUntil; // ms epoch until which the conversation is muted
+  int? archivedAt; // ms epoch when the user archived this conversation
 
   Group({
     required this.id,
@@ -228,9 +289,14 @@ class Group {
     this.pinnedAt,
     this.expireTimerMs = 0,
     this.expireTimerAt = 0,
+    this.mutedUntil,
+    this.archivedAt,
   });
 
   bool get isPinned => pinnedAt != null;
+  bool get isMuted =>
+      (mutedUntil ?? 0) > DateTime.now().millisecondsSinceEpoch;
+  bool get isArchived => archivedAt != null;
 
   Map<String, Object?> toRow() => {
         'id': id,
@@ -241,6 +307,8 @@ class Group {
         'pinned_at': pinnedAt,
         'expire_timer_ms': expireTimerMs,
         'expire_timer_at': expireTimerAt,
+        'muted_until': mutedUntil,
+        'archived_at': archivedAt,
       };
 
   factory Group.fromRow(Map<String, Object?> r) => Group(
@@ -252,6 +320,8 @@ class Group {
         pinnedAt: r['pinned_at'] as int?,
         expireTimerMs: r['expire_timer_ms'] as int? ?? 0,
         expireTimerAt: r['expire_timer_at'] as int? ?? 0,
+        mutedUntil: r['muted_until'] as int?,
+        archivedAt: r['archived_at'] as int?,
       );
 }
 

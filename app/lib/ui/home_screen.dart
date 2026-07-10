@@ -18,6 +18,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   int _tab = 0; // 0 = direct chats, 1 = groups
+  bool _showArchived = false; // the Archived section is collapsed by default
 
   @override
   Widget build(BuildContext context) {
@@ -36,16 +37,27 @@ class _HomeScreenState extends State<HomeScreen> {
       return activityB.compareTo(activityA);
     }
 
-    final contacts = [...chat.acceptedContacts]..sort((a, b) => compare(
+    final allContacts = [...chat.acceptedContacts]..sort((a, b) => compare(
         a.pinnedAt,
         b.pinnedAt,
         activity(a.zeonId, a.createdAt),
         activity(b.zeonId, b.createdAt)));
-    final groups = [...chat.groups]..sort((a, b) => compare(a.pinnedAt,
+    final allGroups = [...chat.groups]..sort((a, b) => compare(a.pinnedAt,
         b.pinnedAt, activity(a.id, a.createdAt), activity(b.id, b.createdAt)));
 
-    final chatsEmpty = requests.isEmpty && sent.isEmpty && contacts.isEmpty;
-    final tabEmpty = _tab == 0 ? chatsEmpty : groups.isEmpty;
+    // Archived conversations live in their own collapsed section.
+    final contacts = allContacts.where((c) => !c.isArchived).toList();
+    final archivedContacts = allContacts.where((c) => c.isArchived).toList();
+    final groups = allGroups.where((g) => !g.isArchived).toList();
+    final archivedGroups = allGroups.where((g) => g.isArchived).toList();
+
+    final chatsEmpty = requests.isEmpty &&
+        sent.isEmpty &&
+        contacts.isEmpty &&
+        archivedContacts.isEmpty;
+    final tabEmpty = _tab == 0
+        ? chatsEmpty
+        : groups.isEmpty && archivedGroups.isEmpty;
 
     return Scaffold(
       appBar: AppBar(
@@ -118,10 +130,24 @@ class _HomeScreenState extends State<HomeScreen> {
                                 ...contacts.map(
                                     (c) => _ConversationTile(contact: c)),
                               ],
+                              if (archivedContacts.isNotEmpty) ...[
+                                _archivedHeader(archivedContacts.length),
+                                if (_showArchived)
+                                  ...archivedContacts.map(
+                                      (c) => _ConversationTile(contact: c)),
+                              ],
                             ]
                           : [
-                              const _SectionLabel('Groups'),
-                              ...groups.map((g) => _GroupTile(group: g)),
+                              if (groups.isNotEmpty) ...[
+                                const _SectionLabel('Groups'),
+                                ...groups.map((g) => _GroupTile(group: g)),
+                              ],
+                              if (archivedGroups.isNotEmpty) ...[
+                                _archivedHeader(archivedGroups.length),
+                                if (_showArchived)
+                                  ...archivedGroups
+                                      .map((g) => _GroupTile(group: g)),
+                              ],
                             ],
                     ),
             ),
@@ -146,6 +172,25 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
+  /// Collapsed "Archived · n" row; tap toggles the section open.
+  Widget _archivedHeader(int count) => InkWell(
+        onTap: () => setState(() => _showArchived = !_showArchived),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
+          child: Row(
+            children: [
+              const Icon(Icons.archive_outlined, size: 13, color: Zn.muted),
+              const SizedBox(width: 8),
+              Text('Archived · $count',
+                  style: Zn.mono(size: 10, letterSpacing: 2)),
+              const Spacer(),
+              Icon(_showArchived ? Icons.expand_less : Icons.expand_more,
+                  size: 16, color: Zn.muted),
+            ],
+          ),
+        ),
+      );
 
   void _showNewMenu(BuildContext context) {
     showModalBottomSheet<void>(
@@ -190,11 +235,23 @@ String _when(int ms) {
   return DateFormat('dd MMM').format(t);
 }
 
-Widget? _tileTrailing(Message? last, bool pinned) {
-  if (last == null && !pinned) return null;
+Widget? _tileTrailing(Message? last, bool pinned,
+    {bool muted = false, bool blocked = false}) {
+  if (last == null && !pinned && !muted && !blocked) return null;
   return Row(
     mainAxisSize: MainAxisSize.min,
     children: [
+      if (blocked)
+        const Padding(
+          padding: EdgeInsets.only(right: 6),
+          child: Icon(Icons.block, size: 12, color: Zn.danger),
+        ),
+      if (muted)
+        const Padding(
+          padding: EdgeInsets.only(right: 6),
+          child: Icon(Icons.notifications_off_outlined,
+              size: 12, color: Zn.muted),
+        ),
       if (pinned)
         Padding(
           padding: EdgeInsets.only(right: last == null ? 0 : 6),
@@ -205,10 +262,19 @@ Widget? _tileTrailing(Message? last, bool pinned) {
   );
 }
 
-/// Long-press menu for a conversation tile. One action today (pin/unpin);
-/// mute/archive would slot in here.
-void _showConversationSheet(BuildContext context,
-    {required bool pinned, required Future<void> Function() onTogglePin}) {
+/// Long-press menu for a conversation tile: pin, mute, archive — and for
+/// direct chats, block. All of these are local-only settings.
+void _showConversationSheet(
+  BuildContext context, {
+  required bool pinned,
+  required bool muted,
+  required bool archived,
+  required Future<void> Function() onTogglePin,
+  required Future<void> Function(int? untilMs) onMute,
+  required Future<void> Function() onToggleArchive,
+  bool blocked = false,
+  Future<void> Function()? onToggleBlock, // null for groups
+}) {
   showModalBottomSheet<void>(
     context: context,
     backgroundColor: Zn.surface,
@@ -229,6 +295,79 @@ void _showConversationSheet(BuildContext context,
               onTogglePin();
             },
           ),
+          ListTile(
+            leading: Icon(
+                muted
+                    ? Icons.notifications_active_outlined
+                    : Icons.notifications_off_outlined,
+                color: Zn.muted),
+            title: Text(muted ? 'Unmute' : 'Mute'),
+            onTap: () {
+              Navigator.pop(sheetContext);
+              if (muted) {
+                onMute(null);
+              } else {
+                _showMuteSheet(context, onMute);
+              }
+            },
+          ),
+          ListTile(
+            leading: Icon(
+                archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+                color: Zn.muted),
+            title: Text(archived ? 'Unarchive' : 'Archive'),
+            onTap: () {
+              Navigator.pop(sheetContext);
+              onToggleArchive();
+            },
+          ),
+          if (onToggleBlock != null)
+            ListTile(
+              leading: Icon(Icons.block,
+                  color: blocked ? Zn.muted : Zn.danger),
+              title: Text(blocked ? 'Unblock' : 'Block',
+                  style: TextStyle(color: blocked ? Zn.text : Zn.danger)),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                onToggleBlock();
+              },
+            ),
+        ],
+      ),
+    ),
+  );
+}
+
+void _showMuteSheet(
+    BuildContext context, Future<void> Function(int? untilMs) onMute) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: Zn.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+    ),
+    builder: (sheetContext) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child:
+                  Text('MUTE FOR', style: Zn.mono(size: 10, letterSpacing: 2)),
+            ),
+          ),
+          for (final ms in MuteDuration.options)
+            ListTile(
+              title: Text(MuteDuration.label(ms)),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                onMute(ms == MuteDuration.forever
+                    ? MuteDuration.forever
+                    : DateTime.now().millisecondsSinceEpoch + ms);
+              },
+            ),
         ],
       ),
     ),
@@ -257,14 +396,18 @@ class _GroupTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Zn.muted, fontSize: 13),
             ),
-      trailing: _tileTrailing(last, group.isPinned),
+      trailing: _tileTrailing(last, group.isPinned, muted: group.isMuted),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatScreen.group(group: group)),
       ),
       onLongPress: () => _showConversationSheet(context,
           pinned: group.isPinned,
-          onTogglePin: () => chat.togglePinGroup(group)),
+          muted: group.isMuted,
+          archived: group.isArchived,
+          onTogglePin: () => chat.togglePinGroup(group),
+          onMute: (until) => chat.setMute(group.id, until),
+          onToggleArchive: () => chat.toggleArchive(group.id)),
     );
   }
 }
@@ -392,14 +535,21 @@ class _ConversationTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Zn.muted, fontSize: 13),
             ),
-      trailing: _tileTrailing(last, contact.isPinned),
+      trailing: _tileTrailing(last, contact.isPinned,
+          muted: contact.isMuted, blocked: contact.isBlocked),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatScreen(contact: contact)),
       ),
       onLongPress: () => _showConversationSheet(context,
           pinned: contact.isPinned,
-          onTogglePin: () => chat.togglePinContact(contact)),
+          muted: contact.isMuted,
+          archived: contact.isArchived,
+          blocked: contact.isBlocked,
+          onTogglePin: () => chat.togglePinContact(contact),
+          onMute: (until) => chat.setMute(contact.zeonId, until),
+          onToggleArchive: () => chat.toggleArchive(contact.zeonId),
+          onToggleBlock: () => chat.toggleBlock(contact)),
     );
   }
 }
