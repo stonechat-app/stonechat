@@ -34,7 +34,7 @@ class ChatDb {
     final db = await openDatabase(
       path,
       password: password,
-      version: 9,
+      version: 10,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
           await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
@@ -86,6 +86,22 @@ class ChatDb {
             }
           }
         }
+        if (oldVersion < 10) {
+          await db.execute('ALTER TABLE messages ADD COLUMN expires_at INTEGER');
+          // Same double-create guard as v9: pre-v4 upgrades get `groups`
+          // from the current _createGroups, which already has the columns.
+          for (final table in ['contacts', 'groups']) {
+            final cols = await db.rawQuery('PRAGMA table_info($table)');
+            if (!cols.any((c) => c['name'] == 'expire_timer_ms')) {
+              await db.execute('ALTER TABLE $table '
+                  'ADD COLUMN expire_timer_ms INTEGER NOT NULL DEFAULT 0');
+              await db.execute('ALTER TABLE $table '
+                  'ADD COLUMN expire_timer_at INTEGER NOT NULL DEFAULT 0');
+            }
+          }
+          await db.execute(
+              'CREATE INDEX idx_messages_expires ON messages(expires_at)');
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -98,7 +114,9 @@ class ChatDb {
             server_address TEXT,
             tls_fp         TEXT,
             created_at     INTEGER NOT NULL,
-            pinned_at      INTEGER
+            pinned_at      INTEGER,
+            expire_timer_ms INTEGER NOT NULL DEFAULT 0,
+            expire_timer_at INTEGER NOT NULL DEFAULT 0
           )
         ''');
         await db.execute('''
@@ -114,11 +132,14 @@ class ChatDb {
             sent_at     INTEGER NOT NULL,
             status      TEXT NOT NULL,
             edited_at   INTEGER,
-            deleted     INTEGER NOT NULL DEFAULT 0
+            deleted     INTEGER NOT NULL DEFAULT 0,
+            expires_at  INTEGER
           )
         ''');
         await db.execute(
             'CREATE INDEX idx_messages_contact ON messages(contact_id, sent_at)');
+        await db.execute(
+            'CREATE INDEX idx_messages_expires ON messages(expires_at)');
         await db.execute(_createGroups);
         await db.execute(_createGroupMembers);
         await db.execute(_createGroupOutbox);
@@ -184,7 +205,9 @@ class ChatDb {
       admin_id   TEXT NOT NULL,
       version    INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
-      pinned_at  INTEGER
+      pinned_at  INTEGER,
+      expire_timer_ms INTEGER NOT NULL DEFAULT 0,
+      expire_timer_at INTEGER NOT NULL DEFAULT 0
     )
   ''';
 
@@ -428,6 +451,21 @@ class ChatDb {
         whereArgs: [MessageStatus.pending],
         orderBy: 'sent_at');
     return rows.map(Message.fromRow).toList();
+  }
+
+  /// Disappearing messages past their expiry — full rows, so the caller can
+  /// remove media files before deleting.
+  Future<List<Message>> expiredMessages(int now) async {
+    final rows = await _db.query('messages',
+        where: 'expires_at IS NOT NULL AND expires_at <= ?', whereArgs: [now]);
+    return rows.map(Message.fromRow).toList();
+  }
+
+  /// The soonest future expiry, or null when nothing is set to disappear.
+  Future<int?> nextExpiryAt() async {
+    final rows = await _db.rawQuery(
+        'SELECT MIN(expires_at) AS t FROM messages WHERE expires_at IS NOT NULL');
+    return rows.first['t'] as int?;
   }
 
   // -- groups -------------------------------------------------------------------

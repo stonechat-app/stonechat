@@ -17,6 +17,8 @@ class Contact {
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
   final int createdAt;
   int? pinnedAt; // ms epoch when the user pinned this conversation
+  int expireTimerMs; // disappearing-messages TTL, 0 = off
+  int expireTimerAt; // ms epoch of the last timer change (last-writer-wins)
 
   Contact({
     required this.zeonId,
@@ -28,6 +30,8 @@ class Contact {
     this.tlsFp,
     required this.createdAt,
     this.pinnedAt,
+    this.expireTimerMs = 0,
+    this.expireTimerAt = 0,
   });
 
   bool get isAccepted => status == ContactStatus.accepted;
@@ -43,6 +47,8 @@ class Contact {
         'tls_fp': tlsFp,
         'created_at': createdAt,
         'pinned_at': pinnedAt,
+        'expire_timer_ms': expireTimerMs,
+        'expire_timer_at': expireTimerAt,
       };
 
   factory Contact.fromRow(Map<String, Object?> r) => Contact(
@@ -55,6 +61,8 @@ class Contact {
         tlsFp: r['tls_fp'] as String?,
         createdAt: r['created_at'] as int,
         pinnedAt: r['pinned_at'] as int?,
+        expireTimerMs: r['expire_timer_ms'] as int? ?? 0,
+        expireTimerAt: r['expire_timer_at'] as int? ?? 0,
       );
 }
 
@@ -79,6 +87,23 @@ class MessageKind {
   static const image = 'image';
   static const audio = 'audio';
   static const call = 'call'; // local call epitaph ("Missed voice call")
+  static const notice = 'notice'; // local system line ("… set disappearing messages …")
+}
+
+/// Disappearing-messages timer choices (PROTOCOL.md "Disappearing messages").
+class ExpireTimer {
+  static const options = [0, 3600000, 86400000, 604800000]; // off, 1h, 24h, 7d
+
+  static String label(int ms) => switch (ms) {
+        0 => 'Off',
+        3600000 => '1 hour',
+        86400000 => '24 hours',
+        604800000 => '7 days',
+        // A peer on a newer client may pick a duration we don't offer.
+        _ => ms >= 86400000
+            ? '${(ms / 86400000).round()} days'
+            : '${(ms / 3600000).round()} hours',
+      };
 }
 
 class Message {
@@ -94,6 +119,7 @@ class Message {
   String status;
   int? editedAt; // ms since epoch, set when the sender edited the text
   bool deleted; // tombstone: sender deleted it for everyone
+  final int? expiresAt; // ms epoch when this copy self-deletes (null = never)
 
   Message({
     required this.id,
@@ -108,6 +134,7 @@ class Message {
     required this.status,
     this.editedAt,
     this.deleted = false,
+    this.expiresAt,
   });
 
   Map<String, Object?> toRow() => {
@@ -123,6 +150,7 @@ class Message {
         'status': status,
         'edited_at': editedAt,
         'deleted': deleted ? 1 : 0,
+        'expires_at': expiresAt,
       };
 
   factory Message.fromRow(Map<String, Object?> r) => Message(
@@ -138,6 +166,7 @@ class Message {
         status: r['status'] as String,
         editedAt: r['edited_at'] as int?,
         deleted: (r['deleted'] as int? ?? 0) == 1,
+        expiresAt: r['expires_at'] as int?,
       );
 
   String get preview => deleted
@@ -166,6 +195,8 @@ class EnvelopeType {
   static const groupMsgDelete = 'group_msg_delete';
   static const reaction = 'reaction'; // emoji on a message ('' clears)
   static const groupReaction = 'group_reaction';
+  static const timerUpdate = 'timer_update'; // disappearing-messages setting (DM)
+  static const groupTimerUpdate = 'group_timer_update'; // same, any member
   static const callOffer = 'call_offer'; // SDP; wire form rings
   static const callAnswer = 'call_answer';
   static const callIce = 'call_ice'; // transient, like typing
@@ -185,6 +216,8 @@ class Group {
   int version;
   final int createdAt;
   int? pinnedAt; // ms epoch when the user pinned this conversation
+  int expireTimerMs; // disappearing-messages TTL, 0 = off
+  int expireTimerAt; // ms epoch of the last timer change (last-writer-wins)
 
   Group({
     required this.id,
@@ -193,6 +226,8 @@ class Group {
     required this.version,
     required this.createdAt,
     this.pinnedAt,
+    this.expireTimerMs = 0,
+    this.expireTimerAt = 0,
   });
 
   bool get isPinned => pinnedAt != null;
@@ -204,6 +239,8 @@ class Group {
         'version': version,
         'created_at': createdAt,
         'pinned_at': pinnedAt,
+        'expire_timer_ms': expireTimerMs,
+        'expire_timer_at': expireTimerAt,
       };
 
   factory Group.fromRow(Map<String, Object?> r) => Group(
@@ -213,6 +250,8 @@ class Group {
         version: r['version'] as int,
         createdAt: r['created_at'] as int,
         pinnedAt: r['pinned_at'] as int?,
+        expireTimerMs: r['expire_timer_ms'] as int? ?? 0,
+        expireTimerAt: r['expire_timer_at'] as int? ?? 0,
       );
 }
 

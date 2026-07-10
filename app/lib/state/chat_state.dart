@@ -148,6 +148,9 @@ class ChatState extends ChangeNotifier {
       lastMessage[g.id] = await app.db.lastMessageFor(g.id);
     }
     notifyListeners();
+    // Anything that expired while the app was closed vanishes before it can
+    // be rendered (the sweep also fixes the previews it just loaded).
+    unawaited(sweepExpired());
   }
 
   Group? groupById(String id) {
@@ -168,6 +171,7 @@ class ChatState extends ChangeNotifier {
 
   Future<void> openConversation(String contactId) async {
     _openConversationId = contactId;
+    await sweepExpired(); // never render an already-expired message
     _messages[contactId] = await app.db.messagesFor(contactId);
     reactionsByMessage.addAll(await app.db.reactionsFor(contactId));
     await _markConversationRead(contactId);
@@ -640,6 +644,9 @@ class ChatState extends ChangeNotifier {
               'display_name': m.displayName,
             }
         ],
+        // Joiners bootstrap the disappearing-messages timer from this;
+        // established members ignore it (PROTOCOL.md "Disappearing messages").
+        if (group.expireTimerMs > 0) 'expire_ms': group.expireTimerMs,
       };
 
   /// Create a group from accepted contacts. We are the admin.
@@ -695,25 +702,36 @@ class ChatState extends ChangeNotifier {
     final members = (groupMembers[group.id] ?? [])
         .where((m) => m.zeonId != app.zeonId)
         .toList();
+    final sentAt = DateTime.now().millisecondsSinceEpoch;
     final message = Message(
       id: _uuid.v4(),
       contactId: group.id,
       outgoing: true,
       text: text,
-      sentAt: DateTime.now().millisecondsSinceEpoch,
+      sentAt: sentAt,
       status: MessageStatus.pending,
+      expiresAt:
+          group.expireTimerMs > 0 ? sentAt + group.expireTimerMs : null,
     );
     await app.db.insertMessage(message);
     await app.db.addOutbox(message.id, group.id, [for (final m in members) m.zeonId]);
     (_messages[group.id] ??= []).add(message);
     lastMessage[group.id] = message;
+    if (message.expiresAt != null) _scheduleExpirySweep();
     notifyListeners();
 
     await _fanOut(group, message, members);
   }
 
   Future<void> _fanOut(Group group, Message message, List<GroupMember> members) async {
-    final payload = {'group_id': group.id, 'text': message.text};
+    // Expiry rides the message itself, not the current setting: a retry after
+    // a timer change must still carry the TTL this message was sent under.
+    final payload = {
+      'group_id': group.id,
+      'text': message.text,
+      if (message.expiresAt != null)
+        'expire_after_ms': message.expiresAt! - message.sentAt,
+    };
     for (final member in members) {
       try {
         // Envelope id == message id for every copy: mailboxes are per-member
@@ -764,17 +782,21 @@ class ChatState extends ChangeNotifier {
 
   Future<void> sendMessage(Contact contact, String text) async {
     _typingSentAt.remove(contact.zeonId); // the message itself says "stopped"
+    final sentAt = DateTime.now().millisecondsSinceEpoch;
     final message = Message(
       id: _uuid.v4(),
       contactId: contact.zeonId,
       outgoing: true,
       text: text,
-      sentAt: DateTime.now().millisecondsSinceEpoch,
+      sentAt: sentAt,
       status: MessageStatus.pending,
+      expiresAt:
+          contact.expireTimerMs > 0 ? sentAt + contact.expireTimerMs : null,
     );
     await app.db.insertMessage(message);
     (_messages[contact.zeonId] ??= []).add(message);
     lastMessage[contact.zeonId] = message;
+    if (message.expiresAt != null) _scheduleExpirySweep();
     notifyListeners();
 
     await _trySend(contact, message);
@@ -813,6 +835,7 @@ class ChatState extends ChangeNotifier {
     final localPath = p.join(dir.path, '$id${p.extension(sourcePath)}');
     await File(sourcePath).copy(localPath);
 
+    final sentAt = DateTime.now().millisecondsSinceEpoch;
     final message = Message(
       id: id,
       contactId: contact.zeonId,
@@ -821,12 +844,15 @@ class ChatState extends ChangeNotifier {
       kind: kind,
       mediaPath: localPath,
       durationMs: durationMs,
-      sentAt: DateTime.now().millisecondsSinceEpoch,
+      sentAt: sentAt,
       status: MessageStatus.pending,
+      expiresAt:
+          contact.expireTimerMs > 0 ? sentAt + contact.expireTimerMs : null,
     );
     await app.db.insertMessage(message);
     (_messages[contact.zeonId] ??= []).add(message);
     lastMessage[contact.zeonId] = message;
+    if (message.expiresAt != null) _scheduleExpirySweep();
     notifyListeners();
 
     await _trySend(contact, message, mime: mime);
@@ -864,6 +890,8 @@ class ChatState extends ChangeNotifier {
       'kind': message.kind,
       'size': bytes.length,
       if (message.durationMs != null) 'duration_ms': message.durationMs,
+      if (message.expiresAt != null)
+        'expire_after_ms': message.expiresAt! - message.sentAt,
     };
     return _sealFor(EnvelopeType.media, contact.zeonId, contact.pubkeyB64,
         payload,
@@ -890,8 +918,15 @@ class ChatState extends ChangeNotifier {
       };
 
   Future<Envelope> _sealMessage(Contact contact, Message message) =>
-      _sealFor(EnvelopeType.msg, contact.zeonId, contact.pubkeyB64,
-          {'text': message.text},
+      _sealFor(
+          EnvelopeType.msg,
+          contact.zeonId,
+          contact.pubkeyB64,
+          {
+            'text': message.text,
+            if (message.expiresAt != null)
+              'expire_after_ms': message.expiresAt! - message.sentAt,
+          },
           // envelope id == message id → dedupe on the other side
           envelopeId: message.id,
           serverAddress: contact.serverAddress,
@@ -899,6 +934,9 @@ class ChatState extends ChangeNotifier {
 
   /// Re-attempt everything in the pending outbox (app resume, reconnect, …).
   Future<void> retryPending() async {
+    // A pending message that expired while we were offline must be purged
+    // (and its outbox rows cleared) before the loop below could resend it.
+    await sweepExpired();
     // Contact requests that never made it out (their mailbox was off when we
     // added them). Receivers dedupe by sender, so re-sending is safe.
     for (final contact
@@ -1287,6 +1325,124 @@ class ChatState extends ChangeNotifier {
     } catch (_) {}
   }
 
+  // -- disappearing messages (PROTOCOL.md "Disappearing messages") -------------------
+
+  Timer? _expirySweep;
+
+  /// The conversation's current timer (0 = off).
+  int expireTimerFor(String conversationId) =>
+      groupById(conversationId)?.expireTimerMs ??
+      contactById(conversationId)?.expireTimerMs ??
+      0;
+
+  /// Set the per-conversation timer, drop a local notice, announce to the
+  /// peer(s). Best-effort like edits: no durable retry, an unreachable
+  /// member keeps the old timer until someone changes it again.
+  Future<void> setExpireTimer(String conversationId, int expireMs) async {
+    final group = groupById(conversationId);
+    final contact = group == null ? contactById(conversationId) : null;
+    if (group == null && contact == null) return;
+    if ((group?.expireTimerMs ?? contact!.expireTimerMs) == expireMs) return;
+
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (group != null) {
+      group.expireTimerMs = expireMs;
+      group.expireTimerAt = now;
+      await app.db.upsertGroup(group);
+    } else {
+      contact!.expireTimerMs = expireMs;
+      contact.expireTimerAt = now;
+      await app.db.upsertContact(contact);
+    }
+    await _insertNotice(conversationId, _timerNoticeText('You', expireMs));
+
+    if (group != null) {
+      final payload = {'group_id': group.id, 'expire_ms': expireMs};
+      for (final m in (groupMembers[group.id] ?? [])
+          .where((m) => m.zeonId != app.zeonId)) {
+        try {
+          await _deliverToMember(
+              m,
+              await _sealFor(EnvelopeType.groupTimerUpdate, m.zeonId,
+                  m.pubkeyB64, payload,
+                  serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+        } catch (_) {}
+      }
+    } else {
+      try {
+        await _deliver(
+            contact!,
+            await _seal(EnvelopeType.timerUpdate, contact,
+                {'expire_ms': expireMs}));
+      } catch (_) {}
+    }
+  }
+
+  static String _timerNoticeText(String who, int expireMs) => expireMs > 0
+      ? '$who set disappearing messages to ${ExpireTimer.label(expireMs)}'
+      : '$who turned off disappearing messages';
+
+  /// A system line in the conversation. Like call epitaphs, it's local-only
+  /// bookkeeping — every device writes its own — so no receipts, and it
+  /// never expires. Passing the envelope id as [id] makes redelivered
+  /// announcements idempotent (insertMessage ignores conflicts).
+  Future<void> _insertNotice(String conversationId, String text,
+      {String? id}) async {
+    final message = Message(
+      id: id ?? _uuid.v4(),
+      contactId: conversationId,
+      outgoing: false,
+      text: text,
+      kind: MessageKind.notice,
+      sentAt: DateTime.now().millisecondsSinceEpoch,
+      status: MessageStatus.read,
+    );
+    await app.db.insertMessage(message);
+    final cache = _messages[conversationId];
+    if (cache != null && !cache.any((m) => m.id == message.id)) {
+      cache.add(message);
+    }
+    lastMessage[conversationId] = message;
+    notifyListeners();
+  }
+
+  /// Purge every disappearing message past its expiry — same full cleanup as
+  /// delete-for-me, no tombstone residue — then re-aim at the next one.
+  /// Safe to call from anywhere, any time.
+  Future<void> sweepExpired() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final expired = await app.db.expiredMessages(now);
+    for (final m in expired) {
+      await _removeMediaFile(m);
+      await app.db.deleteMessage(m.id); // row + receipts + reactions
+      await app.db.clearOutboxMessage(m.id); // stop owing undelivered copies
+      reactionsByMessage.remove(m.id);
+      _messages[m.contactId]?.removeWhere((x) => x.id == m.id);
+      if (lastMessage[m.contactId]?.id == m.id) {
+        lastMessage[m.contactId] = await app.db.lastMessageFor(m.contactId);
+      }
+    }
+    if (expired.isNotEmpty) notifyListeners();
+    _scheduleExpirySweep();
+  }
+
+  /// One-shot timer aimed at the soonest expiry. Cancel-and-replace (not the
+  /// typing sweep's ??=): a just-arrived 1-hour message must not wait behind
+  /// an already-scheduled 7-day target. Capped at an hour so long timers
+  /// re-check periodically while the app is foregrounded.
+  void _scheduleExpirySweep() {
+    unawaited(() async {
+      final next = await app.db.nextExpiryAt();
+      _expirySweep?.cancel();
+      _expirySweep = null;
+      if (next == null) return;
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final delay = (next - now).clamp(1000, 3600 * 1000).toInt();
+      _expirySweep =
+          Timer(Duration(milliseconds: delay), () => unawaited(sweepExpired()));
+    }());
+  }
+
   /// The peer edited one of their messages. The session already authenticated
   /// them; what's left is checking the target is really theirs.
   Future<void> _applyRemoteEdit(
@@ -1547,6 +1703,7 @@ class ChatState extends ChangeNotifier {
             text: (payload['text'] as String?) ?? '',
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
+            expiresAt: _expiresAtFrom(envelope, payload),
           ),
         );
 
@@ -1581,6 +1738,7 @@ class ChatState extends ChangeNotifier {
             durationMs: payload['duration_ms'] as int?,
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
+            expiresAt: _expiresAtFrom(envelope, payload),
           ),
         );
 
@@ -1601,6 +1759,7 @@ class ChatState extends ChangeNotifier {
             text: (payload['text'] as String?) ?? '',
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
+            expiresAt: _expiresAtFrom(envelope, payload),
           ),
         );
 
@@ -1639,6 +1798,35 @@ class ChatState extends ChangeNotifier {
 
       case EnvelopeType.groupReaction:
         await _applyRemoteReaction(envelope, payload, group: true);
+
+      case EnvelopeType.timerUpdate:
+        if (contact == null || !contact.isAccepted) return;
+        final ms = payload['expire_ms'];
+        if (ms is! int || ms < 0) return;
+        // Last-writer-wins: a replayed or out-of-order update never regresses
+        // the setting (the session already authenticates the sender).
+        if (_sentAtMs(envelope) <= contact.expireTimerAt) return;
+        contact.expireTimerMs = ms;
+        contact.expireTimerAt = _sentAtMs(envelope);
+        await app.db.upsertContact(contact);
+        await _insertNotice(
+            contact.zeonId, _timerNoticeText(contact.displayName, ms),
+            id: envelope.id);
+
+      case EnvelopeType.groupTimerUpdate:
+        final group = groupById(payload['group_id'] as String? ?? '');
+        if (group == null) return;
+        final member = memberOf(group.id, envelope.from);
+        if (member == null) return; // only current members set the timer
+        final ms = payload['expire_ms'];
+        if (ms is! int || ms < 0) return;
+        if (_sentAtMs(envelope) <= group.expireTimerAt) return;
+        group.expireTimerMs = ms;
+        group.expireTimerAt = _sentAtMs(envelope);
+        await app.db.upsertGroup(group);
+        await _insertNotice(
+            group.id, _timerNoticeText(member.displayName, ms),
+            id: envelope.id);
 
       case EnvelopeType.callOffer ||
             EnvelopeType.callAnswer ||
@@ -1697,6 +1885,12 @@ class ChatState extends ChangeNotifier {
       return;
     }
 
+    // First sight of the group: adopt its current disappearing-messages
+    // timer from the payload. Established members ignore the field — an
+    // admin's membership fan-out must not clobber a newer member-set timer.
+    final expireMs = payload['expire_ms'];
+    final bootstrapTimer =
+        existing == null && expireMs is int && expireMs > 0;
     final group = Group(
       id: groupId,
       name: name,
@@ -1704,6 +1898,9 @@ class ChatState extends ChangeNotifier {
       version: version,
       createdAt: existing?.createdAt ?? DateTime.now().millisecondsSinceEpoch,
       pinnedAt: existing?.pinnedAt, // upsert REPLACEs the row — keep the pin
+      expireTimerMs: existing?.expireTimerMs ?? (bootstrapTimer ? expireMs : 0),
+      expireTimerAt:
+          existing?.expireTimerAt ?? (bootstrapTimer ? _sentAtMs(envelope) : 0),
     );
     await app.db.upsertGroup(group);
     await app.db.replaceMembers(groupId, members);
@@ -1731,6 +1928,7 @@ class ChatState extends ChangeNotifier {
       cache.sort((a, b) => a.sentAt.compareTo(b.sentAt));
     }
     lastMessage[conversationId] = message;
+    if (message.expiresAt != null) _scheduleExpirySweep();
 
     // Tell the sender it arrived — "read" straight away if it's on screen
     // (and the privacy setting allows), else "delivered". Delivery receipts
@@ -1744,6 +1942,13 @@ class ChatState extends ChangeNotifier {
   static int _sentAtMs(Envelope envelope) =>
       DateTime.tryParse(envelope.sentAt)?.toLocal().millisecondsSinceEpoch ??
       DateTime.now().millisecondsSinceEpoch;
+
+  /// Expiry from the message's own payload — authoritative over the local
+  /// setting, so ordering races and offline queues can't skew it.
+  static int? _expiresAtFrom(Envelope envelope, Map<String, dynamic> payload) {
+    final after = payload['expire_after_ms'];
+    return (after is int && after > 0) ? _sentAtMs(envelope) + after : null;
+  }
 
   Future<void> _storeIncoming(Contact contact, Message message) =>
       _storeIncomingConversation(contact.zeonId, message);
@@ -1760,6 +1965,7 @@ class ChatState extends ChangeNotifier {
   void dispose() {
     _receiptFlushTimer?.cancel();
     _typingSweep?.cancel();
+    _expirySweep?.cancel();
     super.dispose();
   }
 }

@@ -92,7 +92,9 @@ class _ChatScreenState extends State<ChatScreen> {
   void _showMessageSheet(Message m) {
     final chat = context.read<ChatState>();
     if (m.deleted) return;
-    final isCallRow = m.kind == MessageKind.call; // local epitaph: delete-only
+    // Local rows (call epitaphs, system notices): delete-for-me only.
+    final isLocalRow =
+        m.kind == MessageKind.call || m.kind == MessageKind.notice;
     final myEmoji = chat.myReactionTo(m);
     showModalBottomSheet<void>(
       context: context,
@@ -104,7 +106,7 @@ class _ChatScreenState extends State<ChatScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (!isCallRow)
+            if (!isLocalRow)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
               child: Row(
@@ -132,7 +134,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
-            if (!isCallRow) const Divider(height: 1),
+            if (!isLocalRow) const Divider(height: 1),
             if (m.kind == MessageKind.text)
               ListTile(
                 leading: const Icon(Icons.copy_outlined, color: Zn.muted),
@@ -142,7 +144,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   Navigator.pop(sheetContext);
                 },
               ),
-            if (!isCallRow)
+            if (!isLocalRow)
               ListTile(
                 leading: const Icon(Icons.shortcut_outlined, color: Zn.muted),
                 title: const Text('Forward'),
@@ -160,7 +162,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   _startEdit(m);
                 },
               ),
-            if (chat.canDeleteForEveryone(m) && !isCallRow)
+            if (chat.canDeleteForEveryone(m) && !isLocalRow)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Zn.danger),
                 title: const Text('Delete for everyone',
@@ -278,6 +280,59 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  void _showTimerSheet() {
+    final chat = context.read<ChatState>();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text('DISAPPEARING MESSAGES',
+                    style: Zn.mono(size: 10, letterSpacing: 2)),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                    'New messages will vanish for everyone after the selected time',
+                    style: Zn.mono(size: 9, color: Zn.muted)),
+              ),
+            ),
+            RadioGroup<int>(
+              groupValue: chat.expireTimerFor(conversationId),
+              onChanged: (value) {
+                Navigator.pop(sheetContext);
+                if (value != null) chat.setExpireTimer(conversationId, value);
+              },
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final ms in ExpireTimer.options)
+                    RadioListTile<int>(
+                      value: ms,
+                      activeColor: Zn.ion,
+                      title: Text(ExpireTimer.label(ms)),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   String _typingLabel(ChatState chat) {
     final typers = chat.typersIn(conversationId);
     if (typers.isEmpty) return '';
@@ -344,12 +399,22 @@ class _ChatScreenState extends State<ChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(title, style: const TextStyle(fontSize: 16)),
-                Text(
-                    isGroup
-                        ? '$memberCount members'
-                        : (widget.contact!.handle ??
-                            widget.contact!.zeonId.substring(0, 12)),
-                    style: Zn.mono(size: 9, letterSpacing: 1)),
+                Row(
+                  children: [
+                    if (chat.expireTimerFor(conversationId) > 0)
+                      const Padding(
+                        padding: EdgeInsets.only(right: 3),
+                        child: Icon(Icons.timer_outlined,
+                            size: 11, color: Zn.muted),
+                      ),
+                    Text(
+                        isGroup
+                            ? '$memberCount members'
+                            : (widget.contact!.handle ??
+                                widget.contact!.zeonId.substring(0, 12)),
+                        style: Zn.mono(size: 9, letterSpacing: 1)),
+                  ],
+                ),
               ],
             ),
           ],
@@ -372,24 +437,32 @@ class _ChatScreenState extends State<ChatScreen> {
                   .startCall(widget.contact!, video: true),
             ),
           ],
-          if (isGroup)
-            PopupMenuButton<String>(
-              color: Zn.raised,
-              icon: const Icon(Icons.more_vert, color: Zn.muted),
-              onSelected: (value) async {
-                if (value == 'leave') {
-                  await chat.leaveGroup(widget.group!);
-                  if (context.mounted) Navigator.pop(context);
-                }
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
+          PopupMenuButton<String>(
+            color: Zn.raised,
+            icon: const Icon(Icons.more_vert, color: Zn.muted),
+            onSelected: (value) async {
+              if (value == 'timer') {
+                _showTimerSheet();
+                return;
+              }
+              if (value == 'leave') {
+                await chat.leaveGroup(widget.group!);
+                if (context.mounted) Navigator.pop(context);
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'timer',
+                child: Text('Disappearing messages'),
+              ),
+              if (isGroup)
+                const PopupMenuItem(
                   value: 'leave',
                   child: Text('Leave group',
                       style: TextStyle(color: Zn.danger)),
                 ),
-              ],
-            ),
+            ],
+          ),
         ],
       ),
       body: Column(
@@ -413,6 +486,28 @@ class _ChatScreenState extends State<ChatScreen> {
                 final railColor = m.outgoing
                     ? Zn.ion
                     : Zn.idColor(isGroup ? (m.senderId ?? '') : conversationId);
+                if (m.kind == MessageKind.notice) {
+                  return GestureDetector(
+                    onLongPress: () => _showMessageSheet(m),
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 10),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.timer_outlined,
+                              size: 11, color: Zn.muted),
+                          const SizedBox(width: 5),
+                          Flexible(
+                            child: Text(m.text,
+                                textAlign: TextAlign.center,
+                                style: Zn.mono(size: 10, color: Zn.muted)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
@@ -424,7 +519,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         message: m,
                         peerName: senderName,
                         peerColor: railColor,
+                        // A notice breaks the run: re-show the sender after it.
                         showSender: previous == null ||
+                            previous.kind == MessageKind.notice ||
                             previous.outgoing != m.outgoing ||
                             previous.senderId != m.senderId,
                         reactions:
