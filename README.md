@@ -25,7 +25,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 |---|---|
 | `app/` | Flutter app (iOS/Android). Keys, history, encryption — all client-side. |
 | `server/` | Routing server ("relay"). Single-file FastAPI + SQLite mailbox that runs on the user's VM. Stores ciphertext only, deletes on ack. |
-| `control-plane/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Zeon IDs → pubkeys + current relay address. Never sees message content. |
+| `hub/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Zeon IDs → pubkeys + current relay address. Never sees message content. |
 | `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
 | `agent/` | Host agent ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
 | `landing/` | Marketing site (Astro). Static landing + pricing pages; `cd landing && npm install && npm run dev` (Node 22+). |
@@ -35,8 +35,8 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 Requirements: Python 3.11+, Docker, Flutter.
 
 ```bash
-# 1. control plane
-cd control-plane
+# 1. hub
+cd hub
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn app.main:app --port 8000
 
@@ -46,12 +46,12 @@ flutter run
 ```
 
 In the app: **Forge identity** → open the relay screen → pick **LOCAL** →
-**Ignite**. The control plane builds the relay Docker image from `server/` and
+**Ignite**. The hub builds the relay Docker image from `server/` and
 runs it as a container. Run a second simulator, forge a second identity,
 exchange Zeon IDs, and chat.
 
-Testing from a real phone: start the control plane with
-`ZEON_LOCAL_HOST=<your-mac-LAN-IP>` and point the app's "control plane" field
+Testing from a real phone: start the hub with
+`ZEON_LOCAL_HOST=<your-mac-LAN-IP>` and point the app's "hub" field
 (onboarding → advanced) at `http://<your-mac-LAN-IP>:8000`.
 
 ## Self-hosting your mailbox (free tier)
@@ -72,7 +72,7 @@ if the mailbox at that address reports *your* Zeon ID as its owner.
 
 ## Cloud providers
 
-The provider layer (`control-plane/app/providers/`) is deliberately thin:
+The provider layer (`hub/app/providers/`) is deliberately thin:
 every provider boots the **same** startup script that embeds `server/main.py`,
 so an adapter is only "create VM, pass script, return IP".
 
@@ -81,7 +81,7 @@ so an adapter is only "create VM, pass script, return IP".
 | `gcp` | `pip install google-cloud-compute`, set `ZEON_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier). |
 | `aws` | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`. |
 | `local` | Docker only. For development. |
-| `fleet` | Container-per-user across a pool of shared Docker hosts (`ZEON_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `ZEON_FLEET_RUNTIME=runsc`. Mailboxes never share the control-plane machine. The Private-plan workhorse — see BUSINESS.md. |
+| `fleet` | Container-per-user across a pool of shared Docker hosts (`ZEON_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `ZEON_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Private-plan workhorse — see BUSINESS.md. |
 
 Adding one: subclass `CloudProvider` (two methods: `provision`, `destroy`) and
 register it in `providers/__init__.py`.
@@ -92,7 +92,7 @@ register it in `providers/__init__.py`.
 # end-to-end: register → provision (docker) → handshake → message → ack → destroy
 # (ZEON_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only;
 #  ZEON_ADMIN_TOKEN lets the test mint the comp entitlement the fleet gate needs)
-cd control-plane && .venv/bin/pip install pynacl websockets
+cd hub && .venv/bin/pip install pynacl websockets
 ZEON_FLEET_HOSTS="local=|127.0.0.1" ZEON_ADMIN_TOKEN=test-admin .venv/bin/uvicorn app.main:app --port 8477 &
 .venv/bin/python ../scripts/e2e.py
 
@@ -102,7 +102,7 @@ cd app && flutter test && flutter analyze
 
 ## Honest limitations (v1)
 
-- **The control plane is a centralized directory.** It stores routing metadata
+- **The hub is a centralized directory.** It stores routing metadata
   (ID → pubkey → relay IP), never content. Self-hosted relays reduce its
   knowledge further (it never sees their tokens); running your own control
   plane is possible but puts you on a separate directory island.

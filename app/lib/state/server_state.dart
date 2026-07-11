@@ -34,7 +34,7 @@ class ServerState extends ChangeNotifier {
     try {
       record = await app.api.getServer();
     } on Exception {
-      return; // control plane unreachable — keep last known state
+      return; // hub unreachable — keep last known state
     }
 
     if (isProvisioning) {
@@ -46,7 +46,7 @@ class ServerState extends ChangeNotifier {
     }
 
     // External relays: the token — and the trust-on-first-use fingerprint —
-    // never touched the control plane; they come from local secure storage.
+    // never touched the hub; they come from local secure storage.
     final token = record.serverToken ?? app.externalMailboxToken;
     final tlsFp = isExternal ? app.externalMailboxTlsFp : record.tlsFp;
     if (isRunning && record.address != null && token != null && tlsFp != null) {

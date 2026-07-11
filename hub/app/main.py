@@ -1,8 +1,8 @@
-"""Zeon control plane — provisioner + directory.
+"""Zeon hub — provisioner + directory.
 
 Run: uvicorn app.main:app --port 8000
 Config (env):
-    ZEON_CP_DB                  sqlite path (default control_plane.db)
+    ZEON_HUB_DB                  sqlite path (default hub.db)
     ZEON_GCP_PROJECT            required for provider=gcp
     ZEON_LOCAL_HOST             advertised host for provider=local (default 127.0.0.1)
     ZEON_STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (billing.py)
@@ -34,10 +34,10 @@ from .providers import (
     get_provider,
 )
 
-log = logging.getLogger("zeon.control-plane")
+log = logging.getLogger("zeon.hub")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-app = FastAPI(title="zeon-control-plane")
+app = FastAPI(title="zeon-hub")
 app.include_router(billing_router)
 
 # Browser access is only the landing page's activation lookup (GET); the

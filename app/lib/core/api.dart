@@ -1,4 +1,4 @@
-/// Network layer: control-plane client, mailbox delivery, mailbox socket.
+/// Network layer: hub client, mailbox delivery, mailbox socket.
 ///
 /// Every mailbox connection uses **pinned TLS** (PROTOCOL.md "Transport"):
 /// relay certificates are self-signed and validated by fingerprint alone —
@@ -63,7 +63,7 @@ class ApiException implements Exception {
   ApiException(this.message, [this.status, this.detail]);
 
   /// Machine-readable error code (e.g. 'subscription_required'), when the
-  /// control plane sent a structured detail.
+  /// hub sent a structured detail.
   String? get code =>
       detail is Map ? (detail as Map)['code'] as String? : null;
 
@@ -93,7 +93,7 @@ class ServerRecord {
   final String? provider;
   final String? address;
   final String? serverToken;
-  final String? tlsFp; // observed by the control plane at provision time
+  final String? tlsFp; // observed by the hub at provision time
   final String? error;
 
   ServerRecord(
@@ -106,11 +106,11 @@ class ServerRecord {
 }
 
 /// Talks to the provisioner + directory. Holds the account bearer token.
-class ControlPlaneApi {
+class HubApi {
   String baseUrl;
   String? accountToken;
 
-  ControlPlaneApi({required this.baseUrl, this.accountToken});
+  HubApi({required this.baseUrl, this.accountToken});
 
   Map<String, String> get _auth => {
         if (accountToken != null) 'Authorization': 'Bearer $accountToken',
@@ -204,7 +204,7 @@ class ControlPlaneApi {
   }
 
   /// Free tier: list a self-provisioned relay in the directory. The relay's
-  /// token never goes to the control plane — only the address does.
+  /// token never goes to the hub — only the address does.
   Future<void> registerExternalServer(String address) async {
     final r = await http.post(Uri.parse('$baseUrl/v1/server/external'),
         headers: _auth, body: jsonEncode({'address': address}));

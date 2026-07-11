@@ -5,7 +5,7 @@ Runs on a VM the host-owner owns. Lets them host their OWN mailbox plus
 people they choose (PROTOCOL.md "Invite-hosted mailboxes", TODO.md design
 sketch).
 
-It is the ONLY thing with Docker access to the host — the control plane and
+It is the ONLY thing with Docker access to the host — the hub and
 Zeon-the-company never touch this machine. Each guest gets their own
 `zeon-server` container: own port, own token, own volume, own TLS cert,
 cgroup/pids caps. From the directory's point of view a guest's mailbox is just

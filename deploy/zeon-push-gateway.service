@@ -4,7 +4,7 @@
 #
 # It binds 0.0.0.0:8100 but you should NOT open 8100 in the cloud firewall:
 # only the mailbox containers (same host, via the Docker bridge) talk to it.
-# Point the control plane at it with ZEON_PUSH_GATEWAY (see deploy/README.md).
+# Point the hub at it with ZEON_PUSH_GATEWAY (see deploy/README.md).
 
 [Unit]
 Description=Zeon push gateway

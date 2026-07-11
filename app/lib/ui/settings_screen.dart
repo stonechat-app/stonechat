@@ -1,5 +1,5 @@
 /// Preferences: receipt/typing privacy and the app lock. Everything here is
-/// device-local — none of it is visible to the control plane or any mailbox.
+/// device-local — none of it is visible to the hub or any mailbox.
 library;
 
 import 'package:flutter/material.dart';
@@ -136,7 +136,7 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
-/// Current plan (fetched from the control plane) + the redeem entry point.
+/// Current plan (fetched from the hub) + the redeem entry point.
 class _SubscriptionSection extends StatefulWidget {
   const _SubscriptionSection();
 

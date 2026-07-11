@@ -1,8 +1,8 @@
 """Zeon push gateway — the only place APNs/FCM credentials live.
 
-Deliberately a separate service from the control plane:
+Deliberately a separate service from the hub:
 - it holds the app-wide push credentials (most dangerous secret in the system),
-- it sees device tokens + timing but NO identities (the control plane knows
+- it sees device tokens + timing but NO identities (the hub knows
   identities but no tokens — keep that join impossible by design),
 - it is stateless: no database, safe to run N replicas.
 

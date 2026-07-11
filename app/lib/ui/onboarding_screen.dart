@@ -16,7 +16,7 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final _name = TextEditingController();
   late final _url =
-      TextEditingController(text: AppState.defaultControlPlaneUrl);
+      TextEditingController(text: AppState.defaultHubUrl);
   bool _showAdvanced = false;
   bool _working = false;
 
@@ -29,7 +29,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     setState(() => _working = true);
     final app = context.read<AppState>();
     try {
-      await app.createIdentity(name: name, controlPlaneUrl: _url.text.trim());
+      await app.createIdentity(name: name, hubUrl: _url.text.trim());
       if (!mounted) return;
       await showDialog<void>(
         context: context,
@@ -119,7 +119,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   controller: _url,
                   style: Zn.mono(size: 13, color: Zn.text),
                   decoration: InputDecoration(
-                      hintText: AppState.hostedControlPlaneUrl),
+                      hintText: AppState.hostedHubUrl),
                 ),
                 const SizedBox(height: 12),
               ],

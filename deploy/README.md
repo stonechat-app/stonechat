@@ -1,15 +1,15 @@
 # Deploying Zeon for a first live test
 
-This gets **two VMs** running the backend: one for the control plane +
+This gets **two VMs** running the backend: one for the hub +
 directory, and one **fleet host** where every mailbox lives as a Docker
 container (the `fleet` provider). Enough for you and a friend to chat over
 real iPhones.
 
-> **Topology rule: mailboxes never run on the control-plane machine.** The
-> control plane holds the directory and provisioning credentials; mailboxes
+> **Topology rule: mailboxes never run on the hub machine.** The
+> hub holds the directory and provisioning credentials; mailboxes
 > hold users' (encrypted) mail and are exposed to the open internet on a wide
 > port range. Keeping them on separate machines means a compromised mailbox
-> host can't touch the directory, and the control plane's attack surface
+> host can't touch the directory, and the hub's attack surface
 > stays one port.
 
 Everything here assumes fresh **Debian or Ubuntu** VMs. Per
@@ -20,30 +20,30 @@ from inside the box, which the health checks rely on).
 ## 1. Get two VMs
 
 - Smallest droplet / cloud instance is plenty for each (1 vCPU, 1 GB).
-- Note both **public IPv4s** — call them `CP_IP` (control plane) and
+- Note both **public IPv4s** — call them `HUB_IP` (hub) and
   `FLEET_IP` (fleet host). Phones connect to both.
 - SSH in as root (or a sudo user).
 
 ## 2. Prepare the fleet host
 
 Copy `deploy/fleet-host.sh` to the fleet VM (it needs nothing else from the
-repo) and run it with the **control-plane box's SSH public key** (generate one
+repo) and run it with the **hub box's SSH public key** (generate one
 there first: `ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519`):
 
 ```bash
 # on the FLEET VM
-sudo ZEON_CP_PUBKEY="ssh-ed25519 AAAA... root@zeon-cp" ./fleet-host.sh
+sudo ZEON_HUB_PUBKEY="ssh-ed25519 AAAA... root@zeon-hub" ./fleet-host.sh
 ```
 
 It installs Docker, creates a `zeon-fleet` user (docker group, key-only SSH)
-that the control plane drives the daemon through, and opens the mailbox port
+that the hub drives the daemon through, and opens the mailbox port
 range in `ufw`. The relay image is built automatically on first ignite — the
-control plane ships the build context over SSH.
+hub ships the build context over SSH.
 
-## 3. Put the repo on the control-plane box
+## 3. Put the repo on the hub box
 
 ```bash
-# on the CP VM
+# on the hub VM
 git clone <your-repo-url> zeonchat && cd zeonchat
 # (private repo → use a deploy key or a PAT)
 ```
@@ -58,13 +58,13 @@ docker -H ssh://zeon-fleet@<FLEET_ADDR> version
 ## 4. Run the setup script
 
 ```bash
-sudo ZEON_PUBLIC_IP=<CP_IP> \
+sudo ZEON_PUBLIC_IP=<HUB_IP> \
      ZEON_FLEET_HOSTS="fleet1=ssh://zeon-fleet@<FLEET_ADDR>|<FLEET_IP>" \
      deploy/setup.sh
 ```
 
-It installs Docker + Python, builds the control-plane venv, writes a
-**systemd** service (`zeon-control-plane`), opens the host firewall with
+It installs Docker + Python, builds the hub venv, writes a
+**systemd** service (`zeon-hub`), opens the host firewall with
 `ufw`, and health-checks itself. Re-run it any time after a `git pull` — it
 rebuilds and restarts idempotently.
 
@@ -72,16 +72,16 @@ Knobs (env vars):
 
 | Var | Default | Meaning |
 |---|---|---|
-| `ZEON_PUBLIC_IP` | — (required) | Address phones use for the control plane |
+| `ZEON_PUBLIC_IP` | — (required) | Address phones use for the hub |
 | `ZEON_FLEET_HOSTS` | — | Fleet host pool: `name=ssh://user@addr\|advertise_ip,…` (unset → fleet provider disabled) |
-| `ZEON_CP_PORT` | `8000` | Control-plane listen port |
+| `ZEON_HUB_PORT` | `8000` | Hub listen port |
 
 ## 5. Open the CLOUD firewall too
 
 `ufw` guards the OS, but cloud providers have a **separate** network firewall
 you must also open. Add inbound TCP rules for:
 
-- **`8000`** (or your `ZEON_CP_PORT`) — to the **control-plane** VM only
+- **`8000`** (or your `ZEON_HUB_PORT`) — to the **hub** VM only
 - **`32768–60999`** — to the **fleet host(s)** only (Docker's published-port
   range for mailbox containers)
 
@@ -101,11 +101,11 @@ take a day or two. Then, on your Mac:
 ```bash
 cd app
 flutter build ipa \
-  --dart-define=ZEON_CP=http://<CP_IP>:8000 \
+  --dart-define=ZEON_HUB=http://<HUB_IP>:8000 \
   --dart-define=ZEON_PROVIDER=fleet
 ```
 
-Baking `ZEON_CP` in means neither of you has to type the server address.
+Baking `ZEON_HUB` in means neither of you has to type the server address.
 Upload the archive (Xcode → Organizer, or `xcrun altool`) to **TestFlight**,
 then add your friend as an **internal tester** in App Store Connect — internal
 testing needs no Apple review, so this is same-day.
@@ -119,7 +119,7 @@ from `flutter run` on a simulator or a USB-tethered iPhone with the same
 Both of you, in the app:
 
 1. **Forge identity** (generates your Ed25519 key on-device).
-2. **Ignite**. The control plane spins up your mailbox container on the
+2. **Ignite**. The hub spins up your mailbox container on the
    fleet host and the app pins its TLS certificate.
 3. Exchange **handles** (the `zn-word-word-word` on your ID screen) — type or QR.
 4. Send a message, a photo, a voice note.
@@ -132,19 +132,19 @@ happens over the live WebSocket while the app is open or on resume.
 ## Operating it
 
 ```bash
-# on the CP box:
-systemctl status zeon-control-plane          # is it up?
-journalctl -u zeon-control-plane -f          # live logs
+# on the hub box:
+systemctl status zeon-hub          # is it up?
+journalctl -u zeon-hub -f          # live logs
 docker -H ssh://zeon-fleet@<FLEET_ADDR> ps   # running mailboxes (on the fleet host)
-systemctl restart zeon-control-plane         # after config changes
+systemctl restart zeon-hub         # after config changes
 
 # update to the latest code:
 cd ~/zeonchat && git pull && \
-  sudo ZEON_PUBLIC_IP=<CP_IP> ZEON_FLEET_HOSTS="fleet1=ssh://zeon-fleet@<FLEET_ADDR>|<FLEET_IP>" deploy/setup.sh
+  sudo ZEON_PUBLIC_IP=<HUB_IP> ZEON_FLEET_HOSTS="fleet1=ssh://zeon-fleet@<FLEET_ADDR>|<FLEET_IP>" deploy/setup.sh
 ```
 
-State that survives restarts: the control-plane DB at
-`/var/lib/zeon/control_plane.db` and each mailbox's SQLite + TLS key inside its
+State that survives restarts: the hub DB at
+`/var/lib/zeon/hub.db` and each mailbox's SQLite + TLS key inside its
 container volume. Destroying a mailbox from the app (or `docker rm -f`) is
 final — its undelivered ciphertext is gone, by design.
 
@@ -170,7 +170,7 @@ the app just runs push-disabled — no crash.
 > gateway pushes APNs-direct. Firebase here is only the token-acquisition /
 > notification-lifecycle plumbing.
 
-**3. Run the gateway** on the control-plane VM:
+**3. Run the gateway** on the hub VM:
 
 ```bash
 cd ~/zeonchat/gateway
@@ -183,15 +183,15 @@ curl -s localhost:8100/health     # -> {"apns": true, ...}
 ```
 
 Open port 8100 **only host-to-host** (internal VPC / private-network rule from
-the fleet host to the CP box) — never to the public internet. The mailbox
-containers on the fleet host reach it at the CP box's internal address.
+the fleet host to the hub box) — never to the public internet. The mailbox
+containers on the fleet host reach it at the hub box's internal address.
 
-**4. Point the control plane at it** and recreate mailboxes so they inherit
+**4. Point the hub at it** and recreate mailboxes so they inherit
 the setting:
 
 ```bash
 cd ~/zeonchat
-sudo ZEON_PUBLIC_IP=<CP_IP> \
+sudo ZEON_PUBLIC_IP=<HUB_IP> \
      ZEON_FLEET_HOSTS="fleet1=ssh://zeon-fleet@<FLEET_ADDR>|<FLEET_IP>" \
      ZEON_PUSH_GATEWAY=http://<CP_INTERNAL_IP>:8100 deploy/setup.sh
 ```
@@ -206,8 +206,8 @@ The same scripts deploy to GCE VMs. Differences from the DO/Hetzner
 walkthrough:
 
 1. **Project setup** (once): enable the Compute Engine API.
-2. **Control-plane VM**: an `e2-micro` in `us-central1`/`us-west1`/`us-east1`
-   is free-tier. Give it a network tag, e.g. `zeon-cp`, and promote its
+2. **Hub VM**: an `e2-micro` in `us-central1`/`us-west1`/`us-east1`
+   is free-tier. Give it a network tag, e.g. `zeon-hub`, and promote its
    external IP to static so the address baked into app builds survives
    restarts.
 3. **Fleet host VM**: another `e2-micro` (or bigger as users grow), network
@@ -215,7 +215,7 @@ walkthrough:
    **internal** VPC address in `ZEON_FLEET_HOSTS`'s SSH endpoint and the
    static **external** IP as the advertise address.
 4. **Cloud firewall**: VPC firewall rules replace the DO/Hetzner cloud
-   firewall UI — allow `tcp:8000` to the `zeon-cp` tag and
+   firewall UI — allow `tcp:8000` to the `zeon-hub` tag and
    `tcp:32768-60999` to the `zeon-fleet` tag. (Same-VPC SSH between the two
    boxes is covered by `default-allow-internal`.)
 5. **Deploy** as in steps 2–4 above.
@@ -224,9 +224,9 @@ walkthrough:
 
 GCP is also the one cloud where the per-user-VM tier already has a finished
 adapter — each user gets their own `e2-micro` instead of a container. Extra
-setup: create a service account for the control plane, grant it
+setup: create a service account for the hub, grant it
 `roles/compute.instanceAdmin.v1` + `roles/compute.securityAdmin` on the
-project, attach it to the CP VM (`--scopes=cloud-platform` — ADC, no key
+project, attach it to the hub VM (`--scopes=cloud-platform` — ADC, no key
 files), and deploy with `ZEON_GCP_PROJECT=<PROJECT_ID>` set (this installs
 `google-cloud-compute`). Mailbox VMs get their own auto-created firewall rule
 (`zeon-allow-server`, tcp:8080). Release builds of the app default to this
@@ -241,7 +241,7 @@ works.
 ## Host friends on your box ("host your circle")
 
 Want your VM to also host a few friends' mailboxes? Run the **host agent**
-(`agent/README.md`) alongside the control plane — it mints invites and spins up
+(`agent/README.md`) alongside the hub — it mints invites and spins up
 a container per invited friend on the same box, each end-to-end encrypted and
 unreadable to you. Open port 8200 (agent) plus the mailbox range, and share
 invites from the app ("Host friends on my server"). Friends redeem with
@@ -251,18 +251,18 @@ invites from the app ("Host friends on my server"). Friends redeem with
 
 - **The reconciler, billing, abuse handling** — the "before charging money"
   list in BUSINESS.md. Not needed for a test.
-- **A domain + HTTPS on the control plane** — the app talks to it over plain
+- **A domain + HTTPS on the hub** — the app talks to it over plain
   HTTP here. (Mailbox traffic is already pinned TLS regardless.) For anything
-  public, put the control plane behind a domain with Caddy/Let's Encrypt and
-  build with `--dart-define=ZEON_CP=https://…`.
+  public, put the hub behind a domain with Caddy/Let's Encrypt and
+  build with `--dart-define=ZEON_HUB=https://…`.
 
 ## Beyond a friends test
 
-You're already on the production topology (control plane + fleet hosts).
+You're already on the production topology (hub + fleet hosts).
 When you outgrow one fleet host, the moves — all already scaffolded in the
 codebase — are: add hosts to `ZEON_FLEET_HOSTS` (placement is least-loaded),
 harden containers with `ZEON_FLEET_RUNTIME=runsc` (gVisor), offer per-user
 VMs as the premium tier (`gcp` provider today; `DigitalOceanProvider`/
 `HetznerProvider` adapters to come), pin the mailbox port range, add the
-reconciler and push gateway, and front the control plane with TLS. See
+reconciler and push gateway, and front the hub with TLS. See
 BUSINESS.md's "Before charging money" checklist.

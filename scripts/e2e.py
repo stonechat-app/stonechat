@@ -42,8 +42,8 @@ from nacl.signing import SigningKey, VerifyKey
 from nacl.utils import random as nacl_random
 
 import os
-CP = os.environ.get("ZEON_CP", "http://127.0.0.1:8477")
-# must match the ZEON_ADMIN_TOKEN the control plane was started with (README)
+HUB = os.environ.get("ZEON_HUB", "http://127.0.0.1:8477")
+# must match the ZEON_ADMIN_TOKEN the hub was started with (README)
 ADMIN_TOKEN = os.environ.get("ZEON_ADMIN_TOKEN", "test-admin")
 
 # Mailbox client: no CA validation (self-signed by design); see module docstring.
@@ -52,7 +52,7 @@ WS_SSL = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 WS_SSL.check_hostname = False
 WS_SSL.verify_mode = ssl.CERT_NONE
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "control-plane"))
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "hub"))
 from app.identity import zeon_id_from_pubkey  # noqa: E402
 
 TLS_SIG_CONTEXT = b"zeon-v1-tls"
@@ -70,7 +70,7 @@ def live_cert_fp(address: str) -> str:
 def assert_pinned(phone: "Phone") -> None:
     """The full client-side transport check: directory fp is vouched for by
     the owner's identity key AND matches the certificate actually served."""
-    entry = httpx.get(f"{CP}/v1/directory/{phone.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{phone.zeon_id}").json()
     srv = entry["server"]
     VerifyKey(base64.b64decode(entry["pubkey"])).verify(
         TLS_SIG_CONTEXT + base64.b64decode(srv["tls_fp"]),
@@ -193,10 +193,10 @@ class Phone:
         self.opks = {}  # id -> priv bytes
         self._next_prekey_id = 1
 
-    # -- control plane -----------------------------------------------------------
+    # -- hub -----------------------------------------------------------
 
     def register(self):
-        r = httpx.post(f"{CP}/v1/register", json={"pubkey": self.pubkey_b64})
+        r = httpx.post(f"{HUB}/v1/register", json={"pubkey": self.pubkey_b64})
         r.raise_for_status()
         data = r.json()
         self.zeon_id, self.token = data["zeon_id"], data["account_token"]
@@ -212,7 +212,7 @@ class Phone:
 
     def provision(self):
         r = httpx.post(
-            f"{CP}/v1/server",
+            f"{HUB}/v1/server",
             headers=self.auth,
             json={
                 "provider": "local",
@@ -224,7 +224,7 @@ class Phone:
     def wait_running(self, timeout=300):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            r = httpx.get(f"{CP}/v1/server", headers=self.auth)
+            r = httpx.get(f"{HUB}/v1/server", headers=self.auth)
             r.raise_for_status()
             s = r.json()
             if s["status"] == "running":
@@ -263,12 +263,12 @@ class Phone:
     def publish_tls_sig(self):
         """The owner's half of pinned TLS: confirm the fingerprint the control
         plane observed matches the live certificate, sign it, publish."""
-        record = httpx.get(f"{CP}/v1/server", headers=self.auth).json()
+        record = httpx.get(f"{HUB}/v1/server", headers=self.auth).json()
         fp = record["tls_fp"]
         assert fp == live_cert_fp(self.server["address"]), \
-            "control-plane fp must match the certificate the relay serves"
+            "hub fp must match the certificate the relay serves"
         sig = self.identity.sign(TLS_SIG_CONTEXT + unb64(fp)).signature
-        httpx.post(f"{CP}/v1/server/tls", headers=self.auth,
+        httpx.post(f"{HUB}/v1/server/tls", headers=self.auth,
                    json={"tls_fp": fp, "tls_sig": b64(sig)}).raise_for_status()
 
     # -- sessions --------------------------------------------------------------------
@@ -427,7 +427,7 @@ class Phone:
         return MX.get(f"{self.server['address']}/health").json()["queued"]
 
     def destroy(self):
-        r = httpx.delete(f"{CP}/v1/server", headers=self.auth, timeout=30)
+        r = httpx.delete(f"{HUB}/v1/server", headers=self.auth, timeout=30)
         r.raise_for_status()
 
 
@@ -439,19 +439,19 @@ def main():
     bob.register()
 
     print("2) directory lookup + commitment check")
-    entry = httpx.get(f"{CP}/v1/directory/{bob.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
     assert entry["pubkey"] == bob.pubkey_b64
     assert zeon_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.zeon_id
     assert entry["server"] is None
     lower = bob.zeon_id.lower().replace("-", "")
-    assert httpx.get(f"{CP}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
+    assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
 
     print("2b) handle lookup resolves to the same record")
-    by_handle = httpx.get(f"{CP}/v1/directory/{bob.handle.upper()}").json()
+    by_handle = httpx.get(f"{HUB}/v1/directory/{bob.handle.upper()}").json()
     assert by_handle["zeon_id"] == bob.zeon_id
     assert by_handle["pubkey"] == bob.pubkey_b64
     assert by_handle["handle"] == bob.handle
-    assert httpx.get(f"{CP}/v1/directory/zn-no-such-handle").status_code == 404
+    assert httpx.get(f"{HUB}/v1/directory/zn-no-such-handle").status_code == 404
 
     print("3) provision relays (local docker)")
     alice.provision()
@@ -462,7 +462,7 @@ def main():
     print("3a) pinned TLS: owners vouch for their relays' certificates")
     # before publication the directory has the fingerprint but no signature —
     # pinning clients treat that as "no server"
-    entry = httpx.get(f"{CP}/v1/directory/{bob.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
     assert entry["server"]["tls_sig"] is None
     alice.publish_tls_sig()
     bob.publish_tls_sig()
@@ -471,14 +471,14 @@ def main():
 
     # a signature that doesn't verify against the identity key is rejected
     wrong = alice.identity.sign(TLS_SIG_CONTEXT + b"\x00" * 32).signature
-    fp = httpx.get(f"{CP}/v1/server", headers=alice.auth).json()["tls_fp"]
-    r = httpx.post(f"{CP}/v1/server/tls", headers=alice.auth,
+    fp = httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["tls_fp"]
+    r = httpx.post(f"{HUB}/v1/server/tls", headers=alice.auth,
                    json={"tls_fp": fp, "tls_sig": b64(wrong)})
     assert r.status_code == 400, f"forged sig: expected 400, got {r.status_code}"
     # and so is a signature over a fingerprint that isn't this mailbox's
     other_fp = b64(b"\x11" * 32)
     sig = alice.identity.sign(TLS_SIG_CONTEXT + unb64(other_fp)).signature
-    r = httpx.post(f"{CP}/v1/server/tls", headers=alice.auth,
+    r = httpx.post(f"{HUB}/v1/server/tls", headers=alice.auth,
                    json={"tls_fp": other_fp, "tls_sig": b64(sig)})
     assert r.status_code == 400, f"wrong fp: expected 400, got {r.status_code}"
 
@@ -497,35 +497,35 @@ def main():
                  "machine": {"machine_type": "container", "region": "fleet"}}
 
     # paid providers 402 without an entitlement (PROTOCOL.md "Billing")
-    r = httpx.post(f"{CP}/v1/server", headers=carol.auth, json=fleet_req)
+    r = httpx.post(f"{HUB}/v1/server", headers=carol.auth, json=fleet_req)
     assert r.status_code == 402, f"unpaid fleet: expected 402, got {r.status_code}"
     assert r.json()["detail"]["code"] == "subscription_required"
     assert r.json()["detail"]["plan_required"] == "private"
 
     # comp grant → redeem → entitlement live (same path a paid code takes)
-    r = httpx.post(f"{CP}/v1/billing/comp",
+    r = httpx.post(f"{HUB}/v1/billing/comp",
                    headers={"X-Admin-Token": ADMIN_TOKEN},
                    json={"plan": "private", "note": "e2e"})
     assert r.status_code == 201, (
-        f"comp grant failed ({r.status_code}) — start the control plane with "
+        f"comp grant failed ({r.status_code}) — start the hub with "
         f"ZEON_ADMIN_TOKEN={ADMIN_TOKEN}")
     code = r.json()["code"]
-    httpx.post(f"{CP}/v1/billing/redeem", headers=carol.auth,
+    httpx.post(f"{HUB}/v1/billing/redeem", headers=carol.auth,
                json={"code": code}).raise_for_status()
-    ent = httpx.get(f"{CP}/v1/billing/entitlement", headers=carol.auth).json()
+    ent = httpx.get(f"{HUB}/v1/billing/entitlement", headers=carol.auth).json()
     assert ent["plan"] == "private" and ent["status"] == "active"
     # a code is single-use
-    r = httpx.post(f"{CP}/v1/billing/redeem", headers=carol.auth,
+    r = httpx.post(f"{HUB}/v1/billing/redeem", headers=carol.auth,
                    json={"code": code})
     assert r.status_code == 409, f"re-redeem: expected 409, got {r.status_code}"
 
-    r = httpx.post(f"{CP}/v1/server", headers=carol.auth, json=fleet_req)
+    r = httpx.post(f"{HUB}/v1/server", headers=carol.auth, json=fleet_req)
     r.raise_for_status()
     carol.wait_running()
     health = MX.get(f"{carol.server['address']}/health").json()
     assert health["owner"] == carol.zeon_id
     carol.destroy()
-    assert httpx.get(f"{CP}/v1/server", headers=carol.auth).json()["status"] == "none"
+    assert httpx.get(f"{HUB}/v1/server", headers=carol.auth).json()["status"] == "none"
 
     print("3c) external relay: bring-your-own server, token stays client-side")
     dave = Phone("dave")
@@ -553,17 +553,17 @@ def main():
         # impersonation rejected: eve cannot claim dave's relay
         eve = Phone("eve")
         eve.register()
-        r = httpx.post(f"{CP}/v1/server/external", headers=eve.auth,
+        r = httpx.post(f"{HUB}/v1/server/external", headers=eve.auth,
                        json={"address": dave_address})
         assert r.status_code == 400, f"expected 400, got {r.status_code}"
 
         # dave registers his own relay; only the address reaches the directory
-        r = httpx.post(f"{CP}/v1/server/external", headers=dave.auth,
+        r = httpx.post(f"{HUB}/v1/server/external", headers=dave.auth,
                        json={"address": dave_address})
         r.raise_for_status()
-        record = httpx.get(f"{CP}/v1/server", headers=dave.auth).json()
+        record = httpx.get(f"{HUB}/v1/server", headers=dave.auth).json()
         assert record["provider"] == "external" and record["server_token"] is None
-        entry = httpx.get(f"{CP}/v1/directory/{dave.zeon_id}").json()
+        entry = httpx.get(f"{HUB}/v1/directory/{dave.zeon_id}").json()
         assert entry["server"]["address"] == dave_address
         dave.server = {"address": dave_address, "server_token": dave_token,
                        "status": "running"}
@@ -578,8 +578,8 @@ def main():
         assert dave.open_envelope(got, alice) == {"text": "hi dave"}
 
         # disconnect = directory delisting only (no provider destroy)
-        httpx.delete(f"{CP}/v1/server", headers=dave.auth).raise_for_status()
-        entry = httpx.get(f"{CP}/v1/directory/{dave.zeon_id}").json()
+        httpx.delete(f"{HUB}/v1/server", headers=dave.auth).raise_for_status()
+        entry = httpx.get(f"{HUB}/v1/directory/{dave.zeon_id}").json()
         assert entry["server"] is None
         assert MX.get(f"{dave_address}/health").status_code == 200, \
             "dave's own server must keep running after disconnect"
@@ -640,11 +640,11 @@ def main():
         assert hosted["tls_fp"] == live_cert_fp(hosted["address"]), \
             "redeem fingerprint must match the guest mailbox's live cert"
 
-        # frank connects it exactly like a self-hosted relay: the control plane
+        # frank connects it exactly like a self-hosted relay: the hub
         # proves ownership via /health, the token never leaves frank's device
         frank.server = {"address": hosted["address"],
                         "server_token": hosted["server_token"], "status": "running"}
-        httpx.post(f"{CP}/v1/server/external", headers=frank.auth,
+        httpx.post(f"{HUB}/v1/server/external", headers=frank.auth,
                    json={"address": hosted["address"]}).raise_for_status()
         frank.publish_tls_sig()
         assert_pinned(frank)
@@ -665,7 +665,7 @@ def main():
         # host-owner evicts frank -> his container is destroyed
         MX.delete(f"{agent_url}/v1/guest/{frank.zeon_id}",
                   headers=admin_hdr).raise_for_status()
-        httpx.delete(f"{CP}/v1/server", headers=frank.auth)  # tidy the directory
+        httpx.delete(f"{HUB}/v1/server", headers=frank.auth)  # tidy the directory
     finally:
         agent_proc.terminate()
         try:
@@ -680,7 +680,7 @@ def main():
 
     print("4) one-server-per-user enforced")
     r = httpx.post(
-        f"{CP}/v1/server", headers=alice.auth,
+        f"{HUB}/v1/server", headers=alice.auth,
         json={"provider": "local", "machine": {"machine_type": "x", "region": "y"}},
     )
     assert r.status_code == 409, f"expected 409, got {r.status_code}"
@@ -856,8 +856,8 @@ def main():
     print("9) destroy relays")
     alice.destroy()
     bob.destroy()
-    assert httpx.get(f"{CP}/v1/server", headers=alice.auth).json()["status"] == "none"
-    entry = httpx.get(f"{CP}/v1/directory/{bob.zeon_id}").json()
+    assert httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["status"] == "none"
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
     assert entry["server"] is None
 
     print("\nALL E2E CHECKS PASSED")

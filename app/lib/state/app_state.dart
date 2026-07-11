@@ -19,14 +19,14 @@ class AppState extends ChangeNotifier {
   static const _storage = FlutterSecureStorage();
 
   late final ChatDb db;
-  late final ControlPlaneApi api;
+  late final HubApi api;
   CryptoService? _crypto;
   String? zeonId;
   String? handle; // zn-word-word-word
   String? displayName;
   // Token for a self-provisioned ("external") mailbox. Lives only here —
-  // the control plane never sees it. The TLS fingerprint is the one WE
-  // observed at connect time (trust-on-first-use), not the control plane's.
+  // the hub never sees it. The TLS fingerprint is the one WE
+  // observed at connect time (trust-on-first-use), not the hub's.
   String? externalMailboxToken;
   String? externalMailboxTlsFp;
 
@@ -60,20 +60,20 @@ class AppState extends ChangeNotifier {
         _ => fallback,
       };
 
-  /// Two modes: by default the app uses the hosted Zeon control plane;
+  /// Two modes: by default the app uses the hosted Zeon hub;
   /// advanced users can point it anywhere (onboarding → advanced, or
-  /// --dart-define=ZEON_CP=… for development).
-  static const hostedControlPlaneUrl = 'https://control.zeonchat.com';
-  static const _envUrl = String.fromEnvironment('ZEON_CP');
+  /// --dart-define=ZEON_HUB=… for development).
+  static const hostedHubUrl = 'https://hub.zeonchat.com';
+  static const _envUrl = String.fromEnvironment('ZEON_HUB');
 
-  static String get defaultControlPlaneUrl {
+  static String get defaultHubUrl {
     if (_envUrl.isNotEmpty) return _envUrl;
     if (kDebugMode) {
       return Platform.isAndroid
           ? 'http://10.0.2.2:8000' // Android emulator → host machine
           : 'http://127.0.0.1:8000';
     }
-    return hostedControlPlaneUrl;
+    return hostedHubUrl;
   }
 
   /// Load services and any stored identity. Called once before runApp.
@@ -91,14 +91,14 @@ class AppState extends ChangeNotifier {
 
     final secret = await _storage.read(key: 'zn_secret');
     final public = await _storage.read(key: 'zn_public');
-    final storedUrl = await _storage.read(key: 'zn_cp_url');
+    final storedUrl = await _storage.read(key: 'zn_hub_url');
     // Identities are Ed25519. Anything stored without the marker is a
     // dev-era X25519 key from before the protocol settled — unusable,
     // treat as no identity.
     final algo = await _storage.read(key: 'zn_algo');
 
-    api = ControlPlaneApi(
-      baseUrl: storedUrl ?? defaultControlPlaneUrl,
+    api = HubApi(
+      baseUrl: storedUrl ?? defaultHubUrl,
       accountToken: await _storage.read(key: 'zn_token'),
     );
 
@@ -123,7 +123,7 @@ class AppState extends ChangeNotifier {
 
   /// iOS keeps Keychain items after an app is deleted, so a reinstalled app
   /// silently resurrects the previous identity — including, after a directory
-  /// reset, its now-dead account token (the control plane answers every
+  /// reset, its now-dead account token (the hub answers every
   /// authenticated call with 401 "invalid token"). The app *sandbox* is wiped
   /// on uninstall, so a marker file there distinguishes a fresh install from
   /// a normal launch. No marker ⇒ the keystore is orphaned: clear it so
@@ -206,13 +206,13 @@ class AppState extends ChangeNotifier {
   // Held only between init() and createIdentity() during onboarding.
   dynamic _sodium;
 
-  /// Onboarding: generate a keypair, register with the control plane, persist.
+  /// Onboarding: generate a keypair, register with the hub, persist.
   Future<void> createIdentity({
     required String name,
-    required String controlPlaneUrl,
+    required String hubUrl,
   }) async {
     final crypto = CryptoService.generate(_sodium);
-    api.baseUrl = controlPlaneUrl;
+    api.baseUrl = hubUrl;
 
     final result = await api.register(crypto.publicKeyB64);
     api.accountToken = result.accountToken;
@@ -225,7 +225,7 @@ class AppState extends ChangeNotifier {
     await _storage.write(key: 'zn_handle', value: result.handle);
     await _storage.write(key: 'zn_token', value: result.accountToken);
     await _storage.write(key: 'zn_name', value: name);
-    await _storage.write(key: 'zn_cp_url', value: controlPlaneUrl);
+    await _storage.write(key: 'zn_hub_url', value: hubUrl);
 
     _crypto = crypto;
     zeonId = result.zeonId;

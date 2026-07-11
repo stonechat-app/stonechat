@@ -1,7 +1,7 @@
 // Cross-implementation vectors: outputs of Python's base64.b32encode
 // (padding stripped) for bytes(range(7, 7+n)). The Dart base32 codec must
 // match exactly or Zeon IDs minted by the app won't validate on the
-// control plane (and vice versa). The 22-byte case is the ID payload size.
+// hub (and vice versa). The 22-byte case is the ID payload size.
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';

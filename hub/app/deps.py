@@ -11,7 +11,7 @@ from fastapi import Depends, Header, HTTPException
 
 from .db import Store
 
-store = Store(os.environ.get("ZEON_CP_DB", "control_plane.db"))
+store = Store(os.environ.get("ZEON_HUB_DB", "hub.db"))
 
 
 def current_user(authorization: Annotated[str | None, Header()] = None) -> dict:

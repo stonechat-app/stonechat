@@ -18,9 +18,9 @@ import websockets
 from nacl.public import Box, PrivateKey, PublicKey
 
 import os
-CP = os.environ.get("ZEON_CP", "http://127.0.0.1:8477")
+HUB = os.environ.get("ZEON_HUB", "http://127.0.0.1:8477")
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "control-plane"))
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "hub"))
 from app.identity import zeon_id_from_pubkey  # noqa: E402
 
 
@@ -34,7 +34,7 @@ class Phone:
         self.server = None
 
     def register(self):
-        r = httpx.post(f"{CP}/v1/register", json={"pubkey": self.pubkey_b64})
+        r = httpx.post(f"{HUB}/v1/register", json={"pubkey": self.pubkey_b64})
         r.raise_for_status()
         data = r.json()
         self.zeon_id, self.token = data["zeon_id"], data["account_token"]
@@ -48,7 +48,7 @@ class Phone:
 
     def provision(self):
         r = httpx.post(
-            f"{CP}/v1/server",
+            f"{HUB}/v1/server",
             headers=self.auth,
             json={
                 "provider": "local",
@@ -60,7 +60,7 @@ class Phone:
     def wait_running(self, timeout=300):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            r = httpx.get(f"{CP}/v1/server", headers=self.auth)
+            r = httpx.get(f"{HUB}/v1/server", headers=self.auth)
             r.raise_for_status()
             s = r.json()
             if s["status"] == "running":
@@ -111,7 +111,7 @@ class Phone:
         return httpx.get(f"{self.server['address']}/health").json()["queued"]
 
     def destroy(self):
-        r = httpx.delete(f"{CP}/v1/server", headers=self.auth, timeout=30)
+        r = httpx.delete(f"{HUB}/v1/server", headers=self.auth, timeout=30)
         r.raise_for_status()
 
 
@@ -123,12 +123,12 @@ def main():
     bob.register()
 
     print("2) directory lookup + commitment check")
-    entry = httpx.get(f"{CP}/v1/directory/{bob.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
     assert entry["pubkey"] == bob.pubkey_b64
     assert zeon_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.zeon_id
     assert entry["server"] is None
     lower = bob.zeon_id.lower().replace("-", "")
-    assert httpx.get(f"{CP}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
+    assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
 
     print("3) provision relays (local docker)")
     alice.provision()
@@ -138,7 +138,7 @@ def main():
 
     print("4) one-server-per-user enforced")
     r = httpx.post(
-        f"{CP}/v1/server", headers=alice.auth,
+        f"{HUB}/v1/server", headers=alice.auth,
         json={"provider": "local", "machine": {"machine_type": "x", "region": "y"}},
     )
     assert r.status_code == 409, f"expected 409, got {r.status_code}"
@@ -178,8 +178,8 @@ def main():
     print("9) destroy relays")
     alice.destroy()
     bob.destroy()
-    assert httpx.get(f"{CP}/v1/server", headers=alice.auth).json()["status"] == "none"
-    entry = httpx.get(f"{CP}/v1/directory/{bob.zeon_id}").json()
+    assert httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["status"] == "none"
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
     assert entry["server"] is None
 
     print("\nALL E2E CHECKS PASSED")

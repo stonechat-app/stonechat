@@ -1,9 +1,9 @@
 """Storage. Deliberately minimal — this is the whole privacy budget of the
-control plane: a pubkey, an ID derived from it, a hashed auth token, the
+hub: a pubkey, an ID derived from it, a hashed auth token, the
 current server record, and (since billing) a subscription row. No names, no
 emails, no contact graph, no messages.
 
-Billing expands the budget deliberately: after a code is redeemed the CP
+Billing expands the budget deliberately: after a code is redeemed the hub
 links zeon_id ↔ stripe_customer_id (Stripe knows who paid; we know which
 Zeon ID they paid for). The activation code itself is stored in plaintext
 only until it's claimed — the success page must be able to re-display it —

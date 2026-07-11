@@ -6,7 +6,7 @@ mailboxes on the same box. A shared host, but only with people you choose.
 Each guest gets their own `zeon-server` container — own port, own token, own
 TLS cert, cgroup/pids caps. From the directory's point of view a guest's mailbox
 is just an ordinary self-hosted ("external") relay that happens to live on your
-box. The control plane and Zeon-the-company never touch this machine; the agent
+box. The hub and Zeon-the-company never touch this machine; the agent
 is the only thing here with Docker access.
 
 ## Trust model (tell your guests)

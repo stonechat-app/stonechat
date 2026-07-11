@@ -1,7 +1,7 @@
 """Local Docker provider — for development, no cloud account needed.
 
 "Provisions" a routing server as a Docker container on the machine running the
-control plane. Builds the image from server/ on first use. The advertised
+hub. Builds the image from server/ on first use. The advertised
 address uses ZEON_LOCAL_HOST (default 127.0.0.1); set it to your machine's LAN
 IP when testing from a real phone.
 

@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from .db import hash_token
 from .deps import User, store
 
-log = logging.getLogger("zeon.control-plane.billing")
+log = logging.getLogger("zeon.hub.billing")
 
 router = APIRouter()
 

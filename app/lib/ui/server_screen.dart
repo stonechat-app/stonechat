@@ -15,7 +15,7 @@ const _providerDefaults = {
   'local': (machineType: 'container', region: 'localhost'),
 };
 
-// 'local' puts the mailbox on the machine running the control plane —
+// 'local' puts the mailbox on the machine running the hub —
 // forbidden in production topology, so it's offered in dev builds only.
 const _providerChoices =
     kDebugMode ? ['gcp', 'aws', 'fleet', 'local'] : ['gcp', 'aws', 'fleet'];

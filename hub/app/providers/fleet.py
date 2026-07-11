@@ -12,8 +12,8 @@ Host pool config (env, REQUIRED)::
 Comma-separated ``name=docker_endpoint|advertise_host``. An empty endpoint
 means the local Docker daemon — that is for LAPTOP DEV ONLY (e.g. the e2e
 harness uses ``local=|127.0.0.1``): mailboxes never run on the deployed
-control-plane machine, so there is deliberately no unset-fallback. SSH
-endpoints need key auth set up for the control-plane user (see
+hub machine, so there is deliberately no unset-fallback. SSH
+endpoints need key auth set up for the hub user (see
 deploy/fleet-host.sh).
 
 Optional hardening: ZEON_FLEET_RUNTIME=runsc runs every container under
@@ -46,11 +46,11 @@ def _parse_hosts() -> list[FleetHost]:
     raw = os.environ.get("ZEON_FLEET_HOSTS", "").strip()
     if not raw:
         # No silent local fallback: mailboxes must never land on the
-        # control-plane machine. Dev/e2e opts into localhost EXPLICITLY.
+        # hub machine. Dev/e2e opts into localhost EXPLICITLY.
         raise ProviderError(
             "ZEON_FLEET_HOSTS is not set; the fleet provider never uses the "
             "local daemon implicitly (mailboxes don't run on the "
-            'control-plane box). For laptop dev use "local=|127.0.0.1".'
+            'hub box). For laptop dev use "local=|127.0.0.1".'
         )
     hosts = []
     for part in raw.split(","):
