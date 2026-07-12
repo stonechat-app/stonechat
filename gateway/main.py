@@ -19,15 +19,23 @@ Config (env) — with none set the gateway runs in dev mode and just logs:
     ZEON_APNS_SANDBOX    "1" for the APNs sandbox host
     ZEON_FCM_CREDENTIALS path to a Firebase service-account JSON (Android)
     ZEON_GATEWAY_DEBUG   "1" → expose GET /v1/debug/pings (dev/e2e only)
+    ZEON_PUSH_MINT_SECRET  shared with the hub; when set, /v1/ping requires a
+                           hub-minted X-Zeon-Push-Key (PROTOCOL.md "Push
+                           gateway"). Unset → open, as before.
+    ZEON_PUSH_BLOCKLIST  path to a file of revoked key ids (one per line,
+                         # comments ok); reloaded on mtime change.
 """
 
+import hashlib
+import hmac
 import logging
 import os
 import time
 from collections import deque
+from typing import Annotated
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 log = logging.getLogger("zeon.gateway")
@@ -48,6 +56,52 @@ class PingIn(BaseModel):
     platform: str = Field(pattern="^(ios|android)$")
 
 
+# -- push-key auth ----------------------------------------------------------------
+# The hub mints each relay an opaque credential `pk_<id>:<hmac>` where the hmac
+# is HMAC-SHA256(ZEON_PUSH_MINT_SECRET, key_id). Verification is pure local
+# computation — no identity lookup, no hub round-trip — so this stays a
+# tokens+timing-only service. Revocation = key id in the blocklist file.
+
+MINT_SECRET = os.environ.get("ZEON_PUSH_MINT_SECRET", "")
+BLOCKLIST_PATH = os.environ.get("ZEON_PUSH_BLOCKLIST", "")
+
+_blocklist_cache: tuple[float, frozenset[str]] = (0.0, frozenset())
+
+
+def _blocklist() -> frozenset[str]:
+    global _blocklist_cache
+    if not BLOCKLIST_PATH:
+        return frozenset()
+    try:
+        mtime = os.stat(BLOCKLIST_PATH).st_mtime
+    except OSError:
+        return frozenset()
+    if mtime != _blocklist_cache[0]:
+        with open(BLOCKLIST_PATH) as f:
+            ids = frozenset(
+                line.strip() for line in f
+                if line.strip() and not line.startswith("#")
+            )
+        _blocklist_cache = (mtime, ids)
+    return _blocklist_cache[1]
+
+
+def _check_push_key(push_key: str | None) -> str:
+    """Returns the key id (for abuse tracing), or raises 403.
+    No-op ('') when ZEON_PUSH_MINT_SECRET is unset."""
+    if not MINT_SECRET:
+        return ""
+    if not push_key or ":" not in push_key or len(push_key) > 256:
+        raise HTTPException(403, "push key required")
+    key_id, tag = push_key.split(":", 1)
+    want = hmac.new(MINT_SECRET.encode(), key_id.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(want, tag):
+        raise HTTPException(403, "bad push key")
+    if key_id in _blocklist():
+        raise HTTPException(403, "push key revoked")
+    return key_id
+
+
 @app.get("/health")
 async def health():
     return {
@@ -58,7 +112,11 @@ async def health():
 
 
 @app.post("/v1/ping")
-async def ping(body: PingIn):
+async def ping(
+    body: PingIn,
+    x_zeon_push_key: Annotated[str | None, Header()] = None,
+):
+    key_id = _check_push_key(x_zeon_push_key)
     now = time.monotonic()
     if now - _last_ping.get(body.device_token, 0.0) < MIN_INTERVAL_S:
         return {"sent": False, "reason": "debounced"}
@@ -76,12 +134,12 @@ async def ping(body: PingIn):
         if not _apns_configured():
             log.info("dev mode: would push (ios) to …%s", body.device_token[-8:])
             return {"sent": False, "reason": "apns not configured"}
-        await _send_apns(body.device_token)
+        await _send_apns(body.device_token, key_id)
     else:
         if not _fcm_configured():
             log.info("dev mode: would push (android) to …%s", body.device_token[-8:])
             return {"sent": False, "reason": "fcm not configured"}
-        await _send_fcm(body.device_token)
+        await _send_fcm(body.device_token, key_id)
     return {"sent": True}
 
 
@@ -124,7 +182,7 @@ def _apns_auth_token() -> str:
     return token
 
 
-async def _send_apns(device_token: str) -> None:
+async def _send_apns(device_token: str, key_id: str = "") -> None:
     host = (
         "https://api.sandbox.push.apple.com"
         if os.environ.get("ZEON_APNS_SANDBOX") == "1"
@@ -152,7 +210,9 @@ async def _send_apns(device_token: str) -> None:
             },
         )
     if r.status_code != 200:
-        log.warning("apns %s: %s", r.status_code, r.text[:200])
+        # key_id identifies the minted credential, never the user — but it is
+        # what you blocklist when one relay floods us with bad tokens.
+        log.warning("apns %s (key %s): %s", r.status_code, key_id or "-", r.text[:200])
 
 
 # -- FCM ------------------------------------------------------------------------
@@ -186,7 +246,7 @@ def _fcm_auth() -> tuple[str, str]:
     return creds.token, project_id
 
 
-async def _send_fcm(device_token: str) -> None:
+async def _send_fcm(device_token: str, key_id: str = "") -> None:
     access_token, project_id = _fcm_auth()
     message = {
         "message": {
@@ -202,7 +262,7 @@ async def _send_fcm(device_token: str) -> None:
             headers={"authorization": f"Bearer {access_token}"},
         )
     if r.status_code != 200:
-        log.warning("fcm %s: %s", r.status_code, r.text[:200])
+        log.warning("fcm %s (key %s): %s", r.status_code, key_id or "-", r.text[:200])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,8 @@ import base64
 import os
 from pathlib import Path
 
+from ..pushkey import mint_push_key
+
 _DEFAULT_SOURCE = Path(__file__).resolve().parents[3] / "server" / "main.py"
 
 _TEMPLATE = """#!/usr/bin/env bash
@@ -79,6 +81,7 @@ Environment=ZEON_PORT={port}
 Environment=ZEON_DB=/var/lib/zeon/mailbox.db
 Environment=ZEON_BLOBS=/var/lib/zeon/blobs
 Environment=ZEON_PUSH_GATEWAY={push_gateway}
+Environment=ZEON_PUSH_KEY={push_key}
 Environment=ZEON_TURN_SECRET=$TURN_SECRET
 Environment=ZEON_TURN_PORT={turn_port}
 ExecStart=/opt/zeon/venv/bin/python /opt/zeon/main.py
@@ -113,6 +116,7 @@ def build_startup_script(owner_id: str, owner_token: str) -> str:
         owner_token=owner_token,
         port=SERVER_PORT,
         push_gateway=os.environ.get("ZEON_PUSH_GATEWAY", ""),
+        push_key=mint_push_key(),
         turn_port=TURN_PORT,
         turn_min_port=TURN_RELAY_PORTS[0],
         turn_max_port=TURN_RELAY_PORTS[1],

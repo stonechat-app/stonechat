@@ -54,6 +54,9 @@ DB_PATH = os.environ.get("ZEON_DB", "mailbox.db")
 BLOB_DIR = Path(os.environ.get("ZEON_BLOBS", "blobs"))
 TLS_DIR = Path(os.environ.get("ZEON_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
 PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "").rstrip("/")
+# Hub-minted gateway credential (PROTOCOL.md "Push gateway"). Empty → sent
+# bare; the gateway only enforces it when its mint secret is configured.
+PUSH_KEY = os.environ.get("ZEON_PUSH_KEY", "")
 PUSH_DEBOUNCE_S = 5.0
 
 MAX_ENVELOPE_BYTES = 64 * 1024
@@ -446,13 +449,19 @@ async def _ping_gateway(ring: bool = False) -> None:
         import httpx
 
         async with httpx.AsyncClient(timeout=5) as client:
-            await client.post(
+            r = await client.post(
                 f"{PUSH_GATEWAY}/v1/ping",
                 json={"device_token": device_token, "platform": platform,
                       "ring": ring},
+                headers={"X-Zeon-Push-Key": PUSH_KEY} if PUSH_KEY else {},
             )
+            if r.status_code != 200:
+                log.warning("gateway ping rejected: %s %s",
+                            r.status_code, r.text[:200])
     except Exception as e:  # push is best-effort; envelopes are safe regardless
-        log.debug("gateway ping failed: %s", e)
+        # warning, not debug: a misconfigured/unreachable gateway looks
+        # exactly like "push doesn't work" and must be visible in logs.
+        log.warning("gateway ping failed: %s", e)
 
 
 @app.post("/push-config")

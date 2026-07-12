@@ -25,6 +25,12 @@ ZEON_FLEET_HOSTS="${ZEON_FLEET_HOSTS:-}"
 # On Linux that's the Docker bridge host address (172.17.0.1), not 127.0.0.1.
 # Leave empty to run without push (see deploy/README.md "Enable push").
 ZEON_PUSH_GATEWAY="${ZEON_PUSH_GATEWAY:-}"
+# Optional: shared secret for hub-minted push keys (PROTOCOL.md "Push
+# gateway"). Set the SAME value on the gateway service. Empty → pings unsigned.
+ZEON_PUSH_MINT_SECRET="${ZEON_PUSH_MINT_SECRET:-}"
+# Where relay pings come FROM (fleet hosts / mailbox VMs) — used to open the
+# gateway port to internal traffic only. GCP's internal range by default.
+ZEON_PUSH_SOURCE_CIDR="${ZEON_PUSH_SOURCE_CIDR:-10.128.0.0/9}"
 # Optional: GCP project id. Set to enable the "gcp" provider (per-user mailbox
 # VMs on Compute Engine). Needs credentials via ADC — on GCE, attach a service
 # account with compute.instanceAdmin.v1 + compute.securityAdmin to this VM.
@@ -91,6 +97,7 @@ WorkingDirectory=$REPO_ROOT/hub
 Environment=ZEON_HUB_DB=$DB_PATH
 Environment=ZEON_LOCAL_HOST=$ZEON_PUBLIC_IP
 Environment=ZEON_PUSH_GATEWAY=$ZEON_PUSH_GATEWAY
+Environment=ZEON_PUSH_MINT_SECRET=$ZEON_PUSH_MINT_SECRET
 Environment=ZEON_GCP_PROJECT=$ZEON_GCP_PROJECT
 Environment="ZEON_FLEET_HOSTS=$ZEON_FLEET_HOSTS"
 ExecStart=$VENV/bin/uvicorn app.main:app --host 0.0.0.0 --port $ZEON_HUB_PORT
@@ -112,6 +119,13 @@ systemctl restart zeon-hub
 echo "==> configuring firewall (ufw)"
 ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp
 ufw allow "${ZEON_HUB_PORT}/tcp" comment "zeon hub"
+# The push gateway (:8100 on this box) must be reachable from the fleet
+# hosts' relays — but never from the public internet. Without this rule
+# relay pings time out SILENTLY and push just doesn't work.
+if [ -n "$ZEON_PUSH_GATEWAY" ]; then
+  ufw allow from "$ZEON_PUSH_SOURCE_CIDR" to any port 8100 proto tcp \
+    comment "zeon push gateway (internal only)"
+fi
 ufw --force enable
 
 # -- done ---------------------------------------------------------------------

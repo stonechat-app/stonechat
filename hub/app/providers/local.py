@@ -14,6 +14,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
 from .bootstrap import SERVER_PORT
 
@@ -49,6 +50,7 @@ class LocalDockerProvider(CloudProvider):
                 "-e", f"ZEON_OWNER_ID={req.owner_id}",
                 "-e", f"ZEON_OWNER_TOKEN={req.owner_token}",
                 "-e", f"ZEON_PUSH_GATEWAY={os.environ.get('ZEON_PUSH_GATEWAY', '')}",
+                "-e", f"ZEON_PUSH_KEY={mint_push_key()}",
                 "--label", f"zeon.machine_type={req.spec.machine_type}",
                 IMAGE,
             ]

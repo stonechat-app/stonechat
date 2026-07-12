@@ -25,6 +25,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 
+from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
 from .bootstrap import SERVER_PORT
 from .local import IMAGE, SERVER_DIR
@@ -128,6 +129,7 @@ class FleetProvider(CloudProvider):
             "-e", f"ZEON_OWNER_ID={req.owner_id}",
             "-e", f"ZEON_OWNER_TOKEN={req.owner_token}",
             "-e", f"ZEON_PUSH_GATEWAY={os.environ.get('ZEON_PUSH_GATEWAY', '')}",
+            "-e", f"ZEON_PUSH_KEY={mint_push_key()}",
             "--label", FLEET_LABEL,
             "--memory", MEMORY_LIMIT,
             "--cpus", CPU_LIMIT,

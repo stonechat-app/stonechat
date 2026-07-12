@@ -185,20 +185,30 @@ curl -s localhost:8100/health     # -> {"apns": true, ...}
 Open port 8100 **only host-to-host** (internal VPC / private-network rule from
 the fleet host to the hub box) — never to the public internet. The mailbox
 containers on the fleet host reach it at the hub box's internal address.
+`setup.sh` adds the matching **ufw** rule when `ZEON_PUSH_GATEWAY` is set
+(source range: `ZEON_PUSH_SOURCE_CIDR`, default GCP-internal `10.128.0.0/9`).
+Both firewalls (cloud + ufw) must pass or relay pings time out *silently* —
+the relay logs a warning, nothing else breaks, push just never arrives.
 
 **4. Point the hub at it** and recreate mailboxes so they inherit
-the setting:
+the setting. `ZEON_PUSH_MINT_SECRET` (same value in the gateway unit) turns on
+per-relay push keys — recommended; see PROTOCOL.md "Push gateway":
 
 ```bash
 cd ~/zeonchat
 sudo ZEON_PUBLIC_IP=<HUB_IP> \
      ZEON_FLEET_HOSTS="fleet1=ssh://zeon-fleet@<FLEET_ADDR>|<FLEET_IP>" \
-     ZEON_PUSH_GATEWAY=http://<CP_INTERNAL_IP>:8100 deploy/setup.sh
+     ZEON_PUSH_GATEWAY=http://<CP_INTERNAL_IP>:8100 \
+     ZEON_PUSH_MINT_SECRET=<openssl rand -hex 32, same as gateway> deploy/setup.sh
 ```
 
 Existing mailboxes keep their old (empty) gateway setting until recreated —
 have each user **Turn off → Ignite** once, or destroy/re-provision. New Ignites
 get it automatically. Verify with a message to a user whose app is fully closed.
+The same recreate rule applies when you later enable `ZEON_PUSH_MINT_SECRET`:
+old mailboxes have no push key, so the gateway will 403 them until re-Ignited.
+To cut off one abusive relay: its `pk_…` id from the gateway logs → the
+`ZEON_PUSH_BLOCKLIST` file (no restart needed).
 
 ## Running on Google Cloud
 

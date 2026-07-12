@@ -21,6 +21,12 @@ Environment=ZEON_APNS_TOPIC=com.zeonchat.mobileapp
 # Environment=ZEON_APNS_SANDBOX=1        # uncomment for Xcode debug builds ONLY (TestFlight/App Store use production APNs)
 # --- Android (FCM), a Firebase service-account JSON ---
 # Environment=ZEON_FCM_CREDENTIALS=/etc/zeon/fcm.json
+# --- Push-key auth (PROTOCOL.md "Push gateway") ---
+# Same value as the hub's ZEON_PUSH_MINT_SECRET (openssl rand -hex 32).
+# When set, /v1/ping requires a hub-minted X-Zeon-Push-Key; existing
+# mailboxes must be recreated so they get one. Unset → open endpoint.
+# Environment=ZEON_PUSH_MINT_SECRET=ZZZZZZZZ
+# Environment=ZEON_PUSH_BLOCKLIST=/etc/zeon/push-blocklist   # revoked key ids, one per line
 ExecStart=/root/zeonchat/gateway/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8100
 Restart=always
 RestartSec=2
