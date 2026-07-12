@@ -72,8 +72,11 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           ),
           for (final m in members)
             ListTile(
-              leading:
-                  ZeonAvatar(zeonId: m.zeonId, name: m.displayName, size: 38),
+              leading: ZeonAvatar(
+                  zeonId: m.zeonId,
+                  name: m.displayName,
+                  size: 38,
+                  image: chat.contactById(m.zeonId)?.avatar),
               title: Text(m.zeonId == chat.app.zeonId
                   ? '${m.displayName} (you)'
                   : m.displayName),
@@ -206,7 +209,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                           secondary: ZeonAvatar(
                               zeonId: c.zeonId,
                               name: c.displayName,
-                              size: 34),
+                              size: 34,
+                              image: c.avatar),
                           title: Text(c.displayName),
                           onChanged: (checked) {
                             if (checked == true &&

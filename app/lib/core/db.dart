@@ -5,6 +5,7 @@
 library;
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
@@ -34,7 +35,7 @@ class ChatDb {
     final db = await openDatabase(
       path,
       password: password,
-      version: 12,
+      version: 13,
       onUpgrade: (db, oldVersion, _) async {
         if (oldVersion < 2) {
           await db.execute('ALTER TABLE contacts ADD COLUMN handle TEXT');
@@ -124,6 +125,12 @@ class ChatDb {
             }
           }
         }
+        if (oldVersion < 13) {
+          await db.execute('ALTER TABLE contacts ADD COLUMN avatar BLOB');
+          await db.execute('ALTER TABLE contacts '
+              'ADD COLUMN profile_at INTEGER NOT NULL DEFAULT 0');
+          await db.execute(_createKv);
+        }
       },
       onCreate: (db, _) async {
         await db.execute('''
@@ -141,7 +148,9 @@ class ChatDb {
             expire_timer_at INTEGER NOT NULL DEFAULT 0,
             blocked_at     INTEGER,
             muted_until    INTEGER,
-            archived_at    INTEGER
+            archived_at    INTEGER,
+            avatar         BLOB,
+            profile_at     INTEGER NOT NULL DEFAULT 0
           )
         ''');
         await db.execute('''
@@ -176,6 +185,7 @@ class ChatDb {
         await db.execute(_createPrekeys);
         await db.execute(_createReceipts);
         await db.execute(_createReactions);
+        await db.execute(_createKv);
       },
     );
     return ChatDb._(db);
@@ -301,6 +311,16 @@ class ChatDb {
     )
   ''';
 
+  // Tiny key-value store for singletons that belong inside the encrypted DB
+  // rather than the platform keystore — the owner's own avatar is too big
+  // for a comfortable keychain item and must be ciphertext at rest.
+  static const _createKv = '''
+    CREATE TABLE kv (
+      k TEXT PRIMARY KEY,
+      v BLOB
+    )
+  ''';
+
   // Our prekey private halves. Public halves are parked on our mailbox
   // (every publish uploads the full stock; the mailbox replaces its store).
   // `published` is vestigial, kept to avoid a schema migration.
@@ -329,10 +349,29 @@ class ChatDb {
         'prekeys',
         'receipts',
         'reactions',
+        'kv',
       ]) {
         await tx.delete(table);
       }
     });
+  }
+
+  // -- kv -----------------------------------------------------------------------
+
+  Future<Uint8List?> kvGet(String key) async {
+    final rows =
+        await _db.query('kv', where: 'k = ?', whereArgs: [key], limit: 1);
+    final v = rows.isEmpty ? null : rows.first['v'];
+    return v == null ? null : Uint8List.fromList(v as List<int>);
+  }
+
+  Future<void> kvPut(String key, Uint8List? value) async {
+    if (value == null) {
+      await _db.delete('kv', where: 'k = ?', whereArgs: [key]);
+    } else {
+      await _db.insert('kv', {'k': key, 'v': value},
+          conflictAlgorithm: ConflictAlgorithm.replace);
+    }
   }
 
   // -- contacts ---------------------------------------------------------------

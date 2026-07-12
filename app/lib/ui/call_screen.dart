@@ -104,7 +104,10 @@ class _CallScreenState extends State<CallScreen> {
                 const Spacer(flex: 2),
                 if (!showVideo) ...[
                   ZeonAvatar(
-                      zeonId: peer.zeonId, name: peer.displayName, size: 96),
+                      zeonId: peer.zeonId,
+                      name: peer.displayName,
+                      size: 96,
+                      image: peer.avatar),
                   const SizedBox(height: 24),
                   Text(peer.displayName,
                       style: const TextStyle(

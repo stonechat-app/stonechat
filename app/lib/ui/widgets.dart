@@ -1,6 +1,8 @@
 /// Shared Zeon UI pieces: the relay status strip and ID-derived avatars.
 library;
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -50,26 +52,43 @@ class RelayStrip extends StatelessWidget {
   }
 }
 
-/// Square avatar with a color derived from the contact's ID — no photos,
-/// nothing to upload, nothing to leak.
+/// Square avatar: the contact's profile photo when we hold one (E2EE-shared,
+/// PROTOCOL.md "Profiles"), else initials on a color derived from their ID.
 class ZeonAvatar extends StatelessWidget {
   final String zeonId;
   final String name;
   final double size;
+  final Uint8List? image; // profile photo bytes, straight from the DB
 
   const ZeonAvatar({
     super.key,
     required this.zeonId,
     required this.name,
     this.size = 42,
+    this.image,
   });
 
   @override
   Widget build(BuildContext context) {
     final color = Zn.idColor(zeonId);
-    final initials = name.isEmpty
-        ? '?'
-        : name.trim().split(RegExp(r'\s+')).take(2).map((w) => w[0]).join().toUpperCase();
+    final photo = image;
+    if (photo != null) {
+      return Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(Zn.radius),
+          border: Border.all(color: color.withValues(alpha: 0.55)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Image.memory(
+          photo,
+          fit: BoxFit.cover,
+          gaplessPlayback: true, // no flicker when a profile refresh repaints
+          errorBuilder: (_, _, _) => _initials(color),
+        ),
+      );
+    }
     return Container(
       width: size,
       height: size,
@@ -79,7 +98,17 @@ class ZeonAvatar extends StatelessWidget {
         border: Border.all(color: color.withValues(alpha: 0.55)),
       ),
       alignment: Alignment.center,
-      child: Text(initials, style: Zn.mono(size: size * 0.33, color: color, weight: FontWeight.w700)),
+      child: _initials(color),
+    );
+  }
+
+  Widget _initials(Color color) {
+    final initials = name.isEmpty
+        ? '?'
+        : name.trim().split(RegExp(r'\s+')).take(2).map((w) => w[0]).join().toUpperCase();
+    return Center(
+      child: Text(initials,
+          style: Zn.mono(size: size * 0.33, color: color, weight: FontWeight.w700)),
     );
   }
 }

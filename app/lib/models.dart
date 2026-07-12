@@ -1,6 +1,8 @@
 /// Core data types. Mirrors PROTOCOL.md.
 library;
 
+import 'dart:typed_data';
+
 class ContactStatus {
   static const pendingOut = 'pending_out'; // we sent a request, waiting
   static const pendingIn = 'pending_in'; // they sent us a request
@@ -22,6 +24,8 @@ class Contact {
   int? blockedAt; // ms epoch when the user blocked this contact (local-only)
   int? mutedUntil; // ms epoch until which the conversation is muted
   int? archivedAt; // ms epoch when the user archived this conversation
+  Uint8List? avatar; // their profile photo (PROTOCOL.md "Profiles")
+  int profileAt; // sent_at ms of the last applied profile (last-writer-wins)
 
   Contact({
     required this.zeonId,
@@ -38,6 +42,8 @@ class Contact {
     this.blockedAt,
     this.mutedUntil,
     this.archivedAt,
+    this.avatar,
+    this.profileAt = 0,
   });
 
   bool get isAccepted => status == ContactStatus.accepted;
@@ -62,6 +68,8 @@ class Contact {
         'blocked_at': blockedAt,
         'muted_until': mutedUntil,
         'archived_at': archivedAt,
+        'avatar': avatar,
+        'profile_at': profileAt,
       };
 
   factory Contact.fromRow(Map<String, Object?> r) => Contact(
@@ -79,6 +87,10 @@ class Contact {
         blockedAt: r['blocked_at'] as int?,
         mutedUntil: r['muted_until'] as int?,
         archivedAt: r['archived_at'] as int?,
+        avatar: r['avatar'] == null
+            ? null
+            : Uint8List.fromList(r['avatar'] as List<int>),
+        profileAt: r['profile_at'] as int? ?? 0,
       );
 }
 
@@ -242,6 +254,7 @@ class EnvelopeType {
   static const media = 'media';
   static const contactRequest = 'contact_request';
   static const contactAccept = 'contact_accept';
+  static const profileUpdate = 'profile_update'; // display name + avatar
   static const groupCreate = 'group_create';
   static const groupUpdate = 'group_update';
   static const groupMsg = 'group_msg';

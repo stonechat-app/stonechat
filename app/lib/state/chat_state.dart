@@ -71,6 +71,12 @@ class ChatState extends ChangeNotifier {
   /// video/document fails with a message instead of a 413.
   static const maxBlobBytes = 64 * 1024 * 1024;
 
+  /// Profile photos ride inside a normal envelope (PROTOCOL.md "Profiles"),
+  /// so the mailbox's 64 KB wire cap bounds them: after the payload-base64,
+  /// ciphertext-base64 and seal-base64 layers, ~24 KB of raw image is the
+  /// safe ceiling. Senders scale below it; receivers allow 2× for headroom.
+  static const maxAvatarBytes = 24 * 1024;
+
   // Push wake-ups: this device's token, registered with our mailbox once both
   // exist (order of arrival between the two is not guaranteed).
   String? _pushToken;
@@ -590,6 +596,59 @@ class ChatState extends ChangeNotifier {
     }
   }
 
+  // -- profiles (PROTOCOL.md "Profiles") -------------------------------------------
+
+  /// Our display name + current photo — what contact_request, contact_accept
+  /// and profile_update carry. The avatar key is always present (null =
+  /// cleared) so receivers converge on removals too.
+  Map<String, Object?> _profilePayload() => {
+        'display_name': app.displayName,
+        'avatar': app.avatar == null
+            ? null
+            : {'data': base64Encode(app.avatar!), 'mime': 'image/jpeg'},
+      };
+
+  /// Set or clear our profile photo, then fan the new profile to every
+  /// accepted contact. Best-effort like edits: an unreachable contact keeps
+  /// the old photo until our next change reaches them.
+  Future<void> updateMyAvatar(Uint8List? bytes) async {
+    await app.setAvatar(bytes);
+    final payload = _profilePayload();
+    for (final contact in acceptedContacts.where((c) => !c.isBlocked)) {
+      try {
+        await _deliver(
+            contact, await _seal(EnvelopeType.profileUpdate, contact, payload),
+            noPush: true); // nobody's phone wakes for a photo swap
+      } catch (_) {
+        // unreachable — they keep the old photo, no durable retry by design
+      }
+    }
+  }
+
+  /// Apply a payload's optional avatar field to a contact: key absent =
+  /// unchanged, null = cleared, else {"data", "mime"}. Cooperative display
+  /// data — oversized or undecodable images are dropped, never trusted
+  /// beyond shape. Returns whether the contact was touched.
+  static bool _applyAvatar(Contact contact, Map<String, dynamic> payload) {
+    if (!payload.containsKey('avatar')) return false;
+    final raw = payload['avatar'];
+    if (raw == null) {
+      contact.avatar = null;
+      return true;
+    }
+    if (raw is! Map) return false;
+    final data = raw['data'];
+    if (data is! String) return false;
+    try {
+      final bytes = base64Decode(data);
+      if (bytes.length > 2 * maxAvatarBytes) return false;
+      contact.avatar = bytes;
+      return true;
+    } catch (_) {
+      return false; // malformed base64
+    }
+  }
+
   // -- contact lifecycle ---------------------------------------------------------
 
   /// Add by Zeon code (zn-word-word-word) or full ZC- ID: resolve, verify,
@@ -631,8 +690,7 @@ class ChatState extends ChangeNotifier {
 
     await _deliver(
       contact,
-      await _seal(EnvelopeType.contactRequest, contact,
-          {'display_name': app.displayName}),
+      await _seal(EnvelopeType.contactRequest, contact, _profilePayload()),
     );
     return contact;
   }
@@ -642,8 +700,7 @@ class ChatState extends ChangeNotifier {
   Future<void> resendRequest(Contact contact) async {
     await _deliver(
       contact,
-      await _seal(EnvelopeType.contactRequest, contact,
-          {'display_name': app.displayName}),
+      await _seal(EnvelopeType.contactRequest, contact, _profilePayload()),
     );
   }
 
@@ -653,8 +710,7 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
     await _deliver(
       contact,
-      await _seal(EnvelopeType.contactAccept, contact,
-          {'display_name': app.displayName}),
+      await _seal(EnvelopeType.contactAccept, contact, _profilePayload()),
     );
   }
 
@@ -1124,8 +1180,7 @@ class ChatState extends ChangeNotifier {
       try {
         await _deliver(
           contact,
-          await _seal(EnvelopeType.contactRequest, contact,
-              {'display_name': app.displayName}),
+          await _seal(EnvelopeType.contactRequest, contact, _profilePayload()),
         );
       } catch (_) {
         // still unreachable — next retry will try again
@@ -1840,6 +1895,7 @@ class ChatState extends ChangeNotifier {
               EnvelopeType.msgEdit ||
               EnvelopeType.msgDelete ||
               EnvelopeType.reaction ||
+              EnvelopeType.profileUpdate ||
               EnvelopeType.timerUpdate ||
               EnvelopeType.callOffer ||
               EnvelopeType.callAnswer ||
@@ -1862,11 +1918,14 @@ class ChatState extends ChangeNotifier {
             contact.status = ContactStatus.accepted;
             contact.displayName =
                 (payload['display_name'] as String?) ?? contact.displayName;
+            if (_applyAvatar(contact, payload)) {
+              contact.profileAt = _sentAtMs(envelope);
+            }
             await app.db.upsertContact(contact);
             await _deliver(
               contact,
-              await _seal(EnvelopeType.contactAccept, contact,
-                  {'display_name': app.displayName}),
+              await _seal(
+                  EnvelopeType.contactAccept, contact, _profilePayload()),
             );
             break;
           }
@@ -1892,6 +1951,9 @@ class ChatState extends ChangeNotifier {
           tlsFp: senderEntry?.serverTlsFp,
           createdAt: DateTime.now().millisecondsSinceEpoch,
         );
+        if (_applyAvatar(contact, payload)) {
+          contact.profileAt = _sentAtMs(envelope);
+        }
         await app.db.upsertContact(contact);
         contacts.add(contact);
 
@@ -1902,6 +1964,25 @@ class ChatState extends ChangeNotifier {
         contact.status = ContactStatus.accepted;
         contact.displayName =
             (payload['display_name'] as String?) ?? contact.displayName;
+        if (_applyAvatar(contact, payload)) {
+          contact.profileAt = _sentAtMs(envelope);
+        }
+        await app.db.upsertContact(contact);
+
+      case EnvelopeType.profileUpdate:
+        if (contact == null || !contact.isAccepted) {
+          _dropLog(envelope, 'profile update from non-accepted contact');
+          return;
+        }
+        // Last-writer-wins, like timer_update: a replayed or out-of-order
+        // profile never regresses the one we hold.
+        if (_sentAtMs(envelope) <= contact.profileAt) return;
+        final name = payload['display_name'];
+        if (name is String && name.trim().isNotEmpty) {
+          contact.displayName = name.trim();
+        }
+        _applyAvatar(contact, payload);
+        contact.profileAt = _sentAtMs(envelope);
         await app.db.upsertContact(contact);
 
       case EnvelopeType.msg:

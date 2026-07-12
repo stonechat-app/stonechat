@@ -443,7 +443,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     for (final c in contacts)
                       ListTile(
                         leading: ZeonAvatar(
-                            zeonId: c.zeonId, name: c.displayName, size: 34),
+                            zeonId: c.zeonId,
+                            name: c.displayName,
+                            size: 34,
+                            image: c.avatar),
                         title: Text(c.displayName),
                         onTap: () {
                           Navigator.pop(sheetContext);
@@ -896,7 +899,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ZeonAvatar(
                 zeonId: conversationId,
                 name: isGroup ? '◈ ${widget.group!.name}' : title,
-                size: 32),
+                size: 32,
+                image: widget.contact?.avatar),
             const SizedBox(width: 10),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,

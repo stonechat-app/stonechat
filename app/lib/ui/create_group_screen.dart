@@ -97,7 +97,10 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                                 : _selected.remove(c.zeonId);
                           }),
                           secondary: ZeonAvatar(
-                              zeonId: c.zeonId, name: c.displayName, size: 36),
+                              zeonId: c.zeonId,
+                              name: c.displayName,
+                              size: 36,
+                              image: c.avatar),
                           title: Text(c.displayName,
                               style:
                                   const TextStyle(fontWeight: FontWeight.w600)),

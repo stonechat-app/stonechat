@@ -24,6 +24,11 @@ class AppState extends ChangeNotifier {
   String? zeonId;
   String? handle; // zn-word-word-word
   String? displayName;
+  // Own profile photo (raw image bytes, sender-scaled — see ChatState
+  // maxAvatarBytes). Lives in the encrypted DB, not the keystore: too big
+  // for a keychain item, and it must be ciphertext at rest like everything
+  // else. Shared only with accepted contacts (PROTOCOL.md "Profiles").
+  Uint8List? avatar;
   // Token for a self-provisioned ("external") mailbox. Lives only here —
   // the hub never sees it. The TLS fingerprint is the one WE
   // observed at connect time (trust-on-first-use), not the hub's.
@@ -113,6 +118,7 @@ class AppState extends ChangeNotifier {
       displayName = await _storage.read(key: 'zn_name');
       externalMailboxToken = await _storage.read(key: 'zn_ext_token');
       externalMailboxTlsFp = await _storage.read(key: 'zn_ext_tls_fp');
+      avatar = await db.kvGet('own_avatar');
       if (handle == null && zeonId != null) {
         await _fetchOwnHandle(); // account predates handles — self-heal
       }
@@ -159,6 +165,7 @@ class AppState extends ChangeNotifier {
     zeonId = null;
     handle = null;
     displayName = null;
+    avatar = null; // db.wipe() dropped the kv row
     externalMailboxToken = null;
     externalMailboxTlsFp = null;
     api.accountToken = null;
@@ -177,6 +184,14 @@ class AppState extends ChangeNotifier {
         List<int>.generate(32, (_) => rng.nextInt(256)));
     await _storage.write(key: 'zn_db_key', value: key);
     return key;
+  }
+
+  /// Persist the own profile photo (null clears it). Fan-out to contacts is
+  /// ChatState's job (updateMyAvatar) — this only stores and repaints.
+  Future<void> setAvatar(Uint8List? bytes) async {
+    avatar = bytes;
+    await db.kvPut('own_avatar', bytes);
+    notifyListeners();
   }
 
   Future<void> setExternalMailbox(String? token, String? tlsFp) async {

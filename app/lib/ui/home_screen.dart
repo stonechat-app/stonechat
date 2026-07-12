@@ -431,7 +431,10 @@ class _RequestTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final chat = context.read<ChatState>();
     return ListTile(
-      leading: ZeonAvatar(zeonId: contact.zeonId, name: contact.displayName),
+      leading: ZeonAvatar(
+          zeonId: contact.zeonId,
+          name: contact.displayName,
+          image: contact.avatar),
       title: Text(contact.displayName,
           style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text(
@@ -475,7 +478,10 @@ class _SentRequestTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final chat = context.read<ChatState>();
     return ListTile(
-      leading: ZeonAvatar(zeonId: contact.zeonId, name: contact.displayName),
+      leading: ZeonAvatar(
+          zeonId: contact.zeonId,
+          name: contact.displayName,
+          image: contact.avatar),
       title: Text(contact.displayName,
           style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text(
@@ -524,7 +530,10 @@ class _ConversationTile extends StatelessWidget {
     final last = chat.lastMessage[contact.zeonId];
 
     return ListTile(
-      leading: ZeonAvatar(zeonId: contact.zeonId, name: contact.displayName),
+      leading: ZeonAvatar(
+          zeonId: contact.zeonId,
+          name: contact.displayName,
+          image: contact.avatar),
       title: Text(contact.displayName,
           style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: last == null
