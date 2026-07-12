@@ -17,7 +17,7 @@ Privacy-first messaging where **every user runs their own server**.
   device; your **Zeon ID** (`ZC-XXXX-…`) is a hash commitment to the public key.
   Share it by QR or text — it reveals nothing about you.
 
-See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
+See [PROTOCOL.md](docs/PROTOCOL.md) for the full wire protocol and threat notes.
 
 ## Components
 
@@ -119,7 +119,7 @@ cd app && flutter test && flutter analyze
   still reveals *that* you contacted that person. Inherent to per-user servers;
   hiding it (padding, onion routing) is a separate, larger project.
 - **The ratchet is young.** The protocol implements X3DH + double ratchet to
-  spec (see PROTOCOL.md "Session crypto"), but it has not had an external
+  spec (see docs/PROTOCOL.md "Session crypto"), but it has not had an external
   cryptographic review yet — get one before charging money for privacy.
 - **Groups are minimal**: client-side fan-out, creator-as-admin, ~25 members,
-  text-only (media in groups is planned — see PROTOCOL.md).
+  text-only (media in groups is planned — see docs/PROTOCOL.md).
