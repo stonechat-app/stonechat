@@ -127,7 +127,7 @@ class _ServerScreenState extends State<ServerScreen> {
                 min: 10,
                 max: 50,
                 divisions: 8,
-                activeColor: Zn.ion,
+                activeColor: Zn.orange,
                 onChanged: (v) => setState(() => _diskGb = v),
               ),
             ],
@@ -265,9 +265,25 @@ class _ServerScreenState extends State<ServerScreen> {
                   side: const BorderSide(color: Zn.danger),
                 ),
                 onPressed: server.busy ? null : () => _destroy(server),
-                child: Text(server.isExternal
-                    ? 'Disconnect mailbox'
-                    : 'Turn off mailbox'),
+                child: server.busy
+                    ? Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Zn.danger),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(server.isExternal
+                              ? 'Disconnecting…'
+                              : 'Turning off…'),
+                        ],
+                      )
+                    : Text(server.isExternal
+                        ? 'Disconnect mailbox'
+                        : 'Turn off mailbox'),
               ),
             ),
             const SizedBox(height: 8),
@@ -379,6 +395,10 @@ class _ServerScreenState extends State<ServerScreen> {
     if (confirmed != true) return;
     try {
       await server.destroy();
+      if (mounted) {
+        showZnSnack(context,
+            external ? 'Mailbox disconnected' : 'Mailbox turned off');
+      }
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
     }
@@ -393,8 +413,13 @@ class _StatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final r = server.record;
     final (color, headline) = switch (r.status) {
+      // busy while running can only be the teardown call — surface it.
+      'running' when server.busy => (
+          Zn.amber,
+          server.isExternal ? 'Disconnecting…' : 'Turning off…'
+        ),
       'running' => (Zn.ok, 'Running'),
-      'provisioning' => (Zn.cyan, 'Setting up…'),
+      'provisioning' => (Zn.amber, 'Setting up…'),
       'error' => (Zn.danger, 'Something went wrong'),
       _ => (Zn.muted, 'Off'),
     };
@@ -470,16 +495,16 @@ class _ProviderChip extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: selected ? Zn.ion.withValues(alpha: 0.12) : Zn.surface,
+          color: selected ? Zn.orange.withValues(alpha: 0.12) : Zn.surface,
           borderRadius: BorderRadius.circular(Zn.radius),
-          border: Border.all(color: selected ? Zn.ion : Zn.line),
+          border: Border.all(color: selected ? Zn.orange : Zn.line),
         ),
         child: Text(
           name,
           textAlign: TextAlign.center,
           style: TextStyle(
               fontSize: 12,
-              color: selected ? Zn.ion : Zn.muted,
+              color: selected ? Zn.orange : Zn.muted,
               fontWeight: FontWeight.w600),
         ),
       ),
@@ -498,13 +523,13 @@ class _InviteResult extends StatelessWidget {
       decoration: BoxDecoration(
         color: Zn.surface,
         borderRadius: BorderRadius.circular(Zn.radius),
-        border: Border.all(color: Zn.ion),
+        border: Border.all(color: Zn.orange),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text('Share this with your friend',
-              style: Zn.mono(size: 10, letterSpacing: 2, color: Zn.ion)),
+              style: Zn.mono(size: 10, letterSpacing: 2, color: Zn.orange)),
           const SizedBox(height: 8),
           SelectableText(invite, style: Zn.mono(size: 11, color: Zn.text)),
           const SizedBox(height: 8),

@@ -20,8 +20,8 @@ class RelayStrip extends StatelessWidget {
 
     final (dot, label, color) = switch ((server.record.status, server.socketConnected)) {
       ('running', true) => ('●', "You're reachable", Zn.ok),
-      ('running', false) => ('◐', 'Connecting to your mailbox…', Zn.cyan),
-      ('provisioning', _) => ('◌', 'Setting up your mailbox…', Zn.cyan),
+      ('running', false) => ('◐', 'Connecting to your mailbox…', Zn.amber),
+      ('provisioning', _) => ('◌', 'Setting up your mailbox…', Zn.amber),
       ('error', _) => ('✕', "Mailbox setup didn't work — tap to see why", Zn.danger),
       _ => ('○', 'No mailbox yet — tap to set up', Zn.muted),
     };
@@ -158,7 +158,7 @@ class ZnTabBar extends StatelessWidget {
                           Align(
                             alignment: Alignment.topCenter,
                             child: Container(
-                                width: 56, height: 2, color: Zn.ion),
+                                width: 56, height: 2, color: Zn.orange),
                           ),
                         Center(
                           child: Row(
@@ -170,7 +170,7 @@ class ZnTabBar extends StatelessWidget {
                                     size: 10,
                                     letterSpacing: 2,
                                     weight: FontWeight.w700,
-                                    color: i == index ? Zn.ion : Zn.muted),
+                                    color: i == index ? Zn.orange : Zn.muted),
                               ),
                               if (tabs[i].dot) ...[
                                 const SizedBox(width: 6),
@@ -178,7 +178,7 @@ class ZnTabBar extends StatelessWidget {
                                   width: 6,
                                   height: 6,
                                   decoration: const BoxDecoration(
-                                      color: Zn.ion, shape: BoxShape.circle),
+                                      color: Zn.orange, shape: BoxShape.circle),
                                 ),
                               ],
                             ],

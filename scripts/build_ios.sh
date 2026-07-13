@@ -40,13 +40,10 @@ rm "${PUBSPEC_FILE}.bak"
 echo "Build number incremented to $NEW_BUILD_NUMBER"
 echo ""
 
-# Bake the backend coordinates into the build. Without ZEON_HUB a release
-# build points at the hosted hub (hub.zeonchat.com), which
-# doesn't exist yet — refuse rather than ship a dead app.
-if [ -z "$ZEON_HUB" ]; then
-    echo "Error: set ZEON_HUB (e.g. ZEON_HUB=http://35.225.244.167:8000)"
-    exit 1
-fi
+# Bake the backend coordinates into the build. The hosted hub is live at
+# https://hub.zeonchat.com (Caddy/Let's Encrypt in front of the hub VM);
+# override ZEON_HUB only to build against a different deployment.
+ZEON_HUB="${ZEON_HUB:-https://hub.zeonchat.com}"
 ZEON_PROVIDER="${ZEON_PROVIDER:-fleet}"
 
 # Build the iOS app

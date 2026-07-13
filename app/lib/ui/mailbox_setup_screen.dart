@@ -100,7 +100,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
             children: [
               const Spacer(),
               Text(ready ? '✓' : '⌂',
-                  style: Zn.mono(size: 40, color: ready ? Zn.ok : Zn.ion)),
+                  style: Zn.mono(size: 40, color: ready ? Zn.ok : Zn.orange)),
               const SizedBox(height: 16),
               Text(ready ? "You're all set" : 'One last thing: your mailbox',
                   style: const TextStyle(

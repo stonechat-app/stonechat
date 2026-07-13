@@ -63,7 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: Text('ZEON',
             style: Zn.mono(
-                size: 20, color: Zn.ion, weight: FontWeight.w700, letterSpacing: 6)),
+                size: 20, color: Zn.orange, weight: FontWeight.w700, letterSpacing: 6)),
         actions: [
           IconButton(
             icon: const Icon(Icons.qr_code_2, color: Zn.muted),
@@ -90,7 +90,7 @@ class _HomeScreenState extends State<HomeScreen> {
             // (the relay re-drains its queue to a fresh connection) and
             // retry anything still pending in our outbox.
             child: RefreshIndicator(
-              color: Zn.ion,
+              color: Zn.orange,
               onRefresh: () async {
                 final server = context.read<ServerState>();
                 await server.reconnectMailbox();
@@ -164,8 +164,8 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton(
-        backgroundColor: Zn.ion,
-        foregroundColor: const Color(0xFF15200A),
+        backgroundColor: Zn.orange,
+        foregroundColor: Zn.onAccent,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Zn.radius)),
         onPressed: () => _showNewMenu(context),
         child: const Icon(Icons.add),
@@ -204,7 +204,7 @@ class _HomeScreenState extends State<HomeScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.person_add_alt, color: Zn.ion),
+              leading: const Icon(Icons.person_add_alt, color: Zn.orange),
               title: const Text('Add a friend'),
               onTap: () {
                 Navigator.pop(sheetContext);
@@ -212,7 +212,7 @@ class _HomeScreenState extends State<HomeScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.group_add_outlined, color: Zn.cyan),
+              leading: const Icon(Icons.group_add_outlined, color: Zn.amber),
               title: const Text('New group'),
               onTap: () {
                 Navigator.pop(sheetContext);
@@ -498,7 +498,7 @@ class _SentRequestTile extends StatelessWidget {
             onPressed: () => chat.declineContact(contact),
           ),
           IconButton(
-            icon: const Icon(Icons.arrow_upward, color: Zn.ion, size: 20),
+            icon: const Icon(Icons.arrow_upward, color: Zn.orange, size: 20),
             tooltip: 'Send again',
             onPressed: () async {
               try {

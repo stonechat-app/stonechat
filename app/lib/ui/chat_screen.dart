@@ -246,7 +246,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           color: myEmoji == emoji ? Zn.raised : null,
                           borderRadius: BorderRadius.circular(Zn.radius),
                           border: myEmoji == emoji
-                              ? Border.all(color: Zn.ion)
+                              ? Border.all(color: Zn.orange)
                               : null,
                         ),
                         child: Text(emoji,
@@ -303,7 +303,7 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             if (chat.canEdit(m) && !blocked)
               ListTile(
-                leading: const Icon(Icons.edit_outlined, color: Zn.ion),
+                leading: const Icon(Icons.edit_outlined, color: Zn.orange),
                 title: const Text('Edit'),
                 onTap: () {
                   Navigator.pop(sheetContext);
@@ -365,8 +365,8 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
             categoryViewConfig: CategoryViewConfig(
               backgroundColor: Zn.surface,
-              indicatorColor: Zn.ion,
-              iconColorSelected: Zn.ion,
+              indicatorColor: Zn.orange,
+              iconColorSelected: Zn.orange,
               dividerColor: Zn.line,
             ),
             bottomActionBarConfig: BottomActionBarConfig(enabled: false),
@@ -514,7 +514,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   for (final ms in ExpireTimer.options)
                     RadioListTile<int>(
                       value: ms,
-                      activeColor: Zn.ion,
+                      activeColor: Zn.orange,
                       title: Text(ExpireTimer.label(ms)),
                     ),
                 ],
@@ -688,8 +688,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           child: TabBar(
                             isScrollable: true,
                             tabAlignment: TabAlignment.start,
-                            indicatorColor: Zn.ion,
-                            labelColor: Zn.ion,
+                            indicatorColor: Zn.orange,
+                            labelColor: Zn.orange,
                             unselectedLabelColor: Zn.muted,
                             labelStyle: Zn.mono(size: 10, letterSpacing: 1),
                             dividerColor: Zn.line,
@@ -1025,7 +1025,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             'former member')
                         : title;
                 final railColor = m.outgoing
-                    ? Zn.ion
+                    ? Zn.orange
                     : Zn.idColor(isGroup ? (m.senderId ?? '') : conversationId);
                 if (m.kind == MessageKind.notice) {
                   return GestureDetector(
@@ -1063,7 +1063,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 300),
                         color: _flashId == m.id
-                            ? Zn.ion.withValues(alpha: 0.08)
+                            ? Zn.orange.withValues(alpha: 0.08)
                             : Colors.transparent,
                         child: _LedgerEntry(
                           message: m,
@@ -1098,7 +1098,7 @@ class _ChatScreenState extends State<ChatScreen> {
               alignment: Alignment.centerLeft,
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
               child: Text(_typingLabel(chat),
-                  style: Zn.mono(size: 10, color: Zn.cyan, letterSpacing: 1)),
+                  style: Zn.mono(size: 10, color: Zn.amber, letterSpacing: 1)),
             ),
           if (_editing != null)
             Container(
@@ -1106,11 +1106,11 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.fromLTRB(16, 6, 4, 0),
               child: Row(
                 children: [
-                  const Icon(Icons.edit_outlined, size: 14, color: Zn.ion),
+                  const Icon(Icons.edit_outlined, size: 14, color: Zn.orange),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text('Editing message',
-                        style: Zn.mono(size: 10, color: Zn.ion, letterSpacing: 1)),
+                        style: Zn.mono(size: 10, color: Zn.orange, letterSpacing: 1)),
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, size: 16, color: Zn.muted),
@@ -1128,7 +1128,7 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.fromLTRB(16, 6, 4, 0),
               child: Row(
                 children: [
-                  const Icon(Icons.reply_outlined, size: 14, color: Zn.ion),
+                  const Icon(Icons.reply_outlined, size: 14, color: Zn.orange),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Column(
@@ -1143,7 +1143,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                     chat)
                                 .toUpperCase(),
                             style: Zn.mono(
-                                size: 9, color: Zn.ion, letterSpacing: 1)),
+                                size: 9, color: Zn.orange, letterSpacing: 1)),
                         Text(_replyingTo!.preview,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -1183,7 +1183,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     onPressed: () => chat.toggleBlock(widget.contact!),
                     child: Text('UNBLOCK',
                         style: Zn.mono(
-                            size: 10, color: Zn.ion, letterSpacing: 1)),
+                            size: 10, color: Zn.orange, letterSpacing: 1)),
                   ),
                 ],
               ),
@@ -1248,7 +1248,7 @@ class _LedgerEntry extends StatelessWidget {
       spans.add(TextSpan(
           text: text.substring(i, i + q.length),
           style: TextStyle(
-              backgroundColor: Zn.ion.withValues(alpha: 0.35),
+              backgroundColor: Zn.orange.withValues(alpha: 0.35),
               color: Zn.text)));
       start = i + q.length;
     }
@@ -1266,7 +1266,7 @@ class _LedgerEntry extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = message.outgoing ? Zn.ion : peerColor;
+    final color = message.outgoing ? Zn.orange : peerColor;
     final sender = message.outgoing ? 'YOU' : peerName.toUpperCase();
 
     return Padding(
@@ -1394,7 +1394,7 @@ class _LedgerEntry extends StatelessWidget {
                                       BorderRadius.circular(Zn.radius),
                                   border: Border.all(
                                       color: myEmoji == entry.key
-                                          ? Zn.ion
+                                          ? Zn.orange
                                           : Zn.line),
                                 ),
                                 child: Text(
@@ -1435,7 +1435,7 @@ class _LedgerEntry extends StatelessWidget {
                         style: Zn.mono(
                             size: 9,
                             color: message.status == MessageStatus.read
-                                ? Zn.cyan
+                                ? Zn.amber
                                 : Zn.muted),
                       ),
                     ],
@@ -1653,13 +1653,13 @@ class _VideoPlayerPageState extends State<_VideoPlayerPage> {
                       allowScrubbing: true,
                       padding: const EdgeInsets.all(12),
                       colors: const VideoProgressColors(
-                          playedColor: Zn.ion, backgroundColor: Zn.line),
+                          playedColor: Zn.orange, backgroundColor: Zn.line),
                     ),
                   ),
                 ],
               ),
             )
-          : const Center(child: CircularProgressIndicator(color: Zn.ion)),
+          : const Center(child: CircularProgressIndicator(color: Zn.orange)),
     );
   }
 }
@@ -1988,11 +1988,11 @@ class _ComposerState extends State<_Composer> {
               width: 36,
               height: 36,
               decoration: BoxDecoration(
-                color: _recording ? Zn.line : Zn.ion,
+                color: _recording ? Zn.line : Zn.orange,
                 borderRadius: BorderRadius.circular(Zn.radius),
               ),
               child: const Icon(Icons.arrow_upward,
-                  size: 20, color: Color(0xFF15200A)),
+                  size: 20, color: Zn.onAccent),
             ),
           ),
         ],

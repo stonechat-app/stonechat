@@ -89,7 +89,7 @@ class _LockGateState extends State<LockGate> with WidgetsBindingObserver {
                     Text('ZEON',
                         style: Zn.mono(
                             size: 24,
-                            color: Zn.ion,
+                            color: Zn.orange,
                             weight: FontWeight.w700,
                             letterSpacing: 8)),
                     const SizedBox(height: 12),

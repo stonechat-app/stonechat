@@ -82,7 +82,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   : m.displayName),
               subtitle: m.zeonId == group.adminId
                   ? Text('ADMIN',
-                      style: Zn.mono(size: 8, color: Zn.ion, letterSpacing: 2))
+                      style: Zn.mono(size: 8, color: Zn.orange, letterSpacing: 2))
                   : null,
               trailing: isAdmin && m.zeonId != chat.app.zeonId
                   ? IconButton(
@@ -95,7 +95,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
             ),
           if (isAdmin)
             ListTile(
-              leading: const Icon(Icons.person_add_alt, color: Zn.ion),
+              leading: const Icon(Icons.person_add_alt, color: Zn.orange),
               title: const Text('Add members'),
               onTap: () => _showAddSheet(chat, members),
             ),
@@ -204,7 +204,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                       for (final c in candidates)
                         CheckboxListTile(
                           value: selected.contains(c),
-                          activeColor: Zn.ion,
+                          activeColor: Zn.orange,
                           controlAffinity: ListTileControlAffinity.trailing,
                           secondary: ZeonAvatar(
                               zeonId: c.zeonId,
@@ -235,8 +235,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                     width: double.infinity,
                     child: FilledButton(
                       style: FilledButton.styleFrom(
-                        backgroundColor: Zn.ion,
-                        foregroundColor: const Color(0xFF15200A),
+                        backgroundColor: Zn.orange,
+                        foregroundColor: Zn.onAccent,
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(Zn.radius)),
                       ),

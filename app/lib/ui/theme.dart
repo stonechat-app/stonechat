@@ -1,23 +1,24 @@
 /// Zeon visual identity.
 ///
-/// Not another bubble app: dark "console" surfaces, sharp 4px corners, an
-/// ion-chartreuse accent, and a monospace voice for anything machine-made
-/// (IDs, timestamps, relay status). Messages render as a left-aligned ledger
-/// with colored rails instead of chat bubbles.
+/// Not another bubble app: warm near-black "console" surfaces, sharp 4px
+/// corners, a burnt-orange accent, and a monospace voice for anything
+/// machine-made (IDs, timestamps, relay status). Messages render as a
+/// left-aligned ledger with colored rails instead of chat bubbles.
 library;
 
 import 'package:flutter/material.dart';
 
 abstract final class Zn {
-  // palette
-  static const bg = Color(0xFF0B0F14);
-  static const surface = Color(0xFF121820);
-  static const raised = Color(0xFF1A222C);
-  static const line = Color(0xFF232D38);
-  static const ion = Color(0xFFC6F14E); // you
-  static const cyan = Color(0xFF5AD7E6); // them
-  static const text = Color(0xFFE8EEF4);
-  static const muted = Color(0xFF8493A3);
+  // palette — mirrors landing/src/styles/global.css
+  static const bg = Color(0xFF100E0B);
+  static const surface = Color(0xFF17140F);
+  static const raised = Color(0xFF1E1912);
+  static const line = Color(0xFF2B261D);
+  static const orange = Color(0xFFFF4D00); // you
+  static const amber = Color(0xFFE6A85A); // them
+  static const onAccent = Color(0xFF140800);
+  static const text = Color(0xFFF4EEE1);
+  static const muted = Color(0xFFB5AC99);
   static const danger = Color(0xFFF2555A);
   static const ok = Color(0xFF6BE675);
 
@@ -44,8 +45,8 @@ abstract final class Zn {
   /// Deterministic accent for a contact, derived from their ID.
   static Color idColor(String zeonId) {
     const palette = [
-      cyan,
-      Color(0xFFE6A85A),
+      amber,
+      Color(0xFF5AD7E6),
       Color(0xFFB48AF2),
       Color(0xFF6BE675),
       Color(0xFFF28AB4),
@@ -65,9 +66,9 @@ ThemeData zeonTheme() {
     useMaterial3: true,
     scaffoldBackgroundColor: Zn.bg,
     colorScheme: const ColorScheme.dark(
-      primary: Zn.ion,
-      onPrimary: Color(0xFF15200A),
-      secondary: Zn.cyan,
+      primary: Zn.orange,
+      onPrimary: Zn.onAccent,
+      secondary: Zn.amber,
       surface: Zn.surface,
       onSurface: Zn.text,
       error: Zn.danger,
@@ -103,14 +104,14 @@ ThemeData zeonTheme() {
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(Zn.radius),
-        borderSide: const BorderSide(color: Zn.ion),
+        borderSide: const BorderSide(color: Zn.orange),
       ),
       hintStyle: const TextStyle(color: Zn.muted),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: Zn.ion,
-        foregroundColor: const Color(0xFF15200A),
+        backgroundColor: Zn.orange,
+        foregroundColor: Zn.onAccent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(Zn.radius),
         ),

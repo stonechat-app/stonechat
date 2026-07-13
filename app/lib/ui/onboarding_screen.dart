@@ -62,7 +62,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               Text('ZEON',
                   style: Zn.mono(
                       size: 42,
-                      color: Zn.ion,
+                      color: Zn.orange,
                       weight: FontWeight.w700,
                       letterSpacing: 10)),
               const SizedBox(height: 8),
@@ -153,7 +153,7 @@ class _CodeRevealDialog extends StatelessWidget {
         children: [
           SelectableText(handle,
               style:
-                  Zn.mono(size: 20, color: Zn.ion, weight: FontWeight.w700)),
+                  Zn.mono(size: 20, color: Zn.orange, weight: FontWeight.w700)),
           const SizedBox(height: 12),
           const Text(
             'Three words — that\'s how friends add you. Share it freely: '

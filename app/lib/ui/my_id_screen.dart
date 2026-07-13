@@ -51,7 +51,7 @@ class MyIdScreen extends StatelessWidget {
               SelectableText(
                 handle,
                 textAlign: TextAlign.center,
-                style: Zn.mono(size: 19, color: Zn.ion, weight: FontWeight.w700),
+                style: Zn.mono(size: 19, color: Zn.orange, weight: FontWeight.w700),
               ),
               const SizedBox(height: 20),
               OutlinedButton.icon(
@@ -118,7 +118,7 @@ class _AvatarEditor extends StatelessWidget {
                 border: Border.all(color: Zn.line),
               ),
               child: const Icon(Icons.photo_camera_outlined,
-                  size: 15, color: Zn.ion),
+                  size: 15, color: Zn.orange),
             ),
           ),
         ],
@@ -137,7 +137,7 @@ class _AvatarEditor extends StatelessWidget {
           children: [
             ListTile(
               leading: const Icon(Icons.photo_library_outlined,
-                  color: Zn.ion, size: 20),
+                  color: Zn.orange, size: 20),
               title: Text(app.avatar == null ? 'Choose photo' : 'Change photo'),
               subtitle: const Text('Only your contacts ever see it',
                   style: TextStyle(color: Zn.muted, fontSize: 12)),

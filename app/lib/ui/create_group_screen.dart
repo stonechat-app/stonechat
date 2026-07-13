@@ -89,8 +89,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                       for (final c in contacts)
                         CheckboxListTile(
                           value: _selected.contains(c.zeonId),
-                          activeColor: Zn.ion,
-                          checkColor: const Color(0xFF15200A),
+                          activeColor: Zn.orange,
+                          checkColor: Zn.onAccent,
                           onChanged: (v) => setState(() {
                             v == true
                                 ? _selected.add(c.zeonId)

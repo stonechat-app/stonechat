@@ -26,7 +26,7 @@ class SettingsScreen extends StatelessWidget {
           SwitchListTile(
             value: app.sendReadReceipts,
             onChanged: (v) => app.setPreference('read_receipts', v),
-            activeThumbColor: Zn.ion,
+            activeThumbColor: Zn.orange,
             title: const Text('Read receipts'),
             subtitle: const Text(
                 'Tell contacts when you have read their messages. '
@@ -36,7 +36,7 @@ class SettingsScreen extends StatelessWidget {
           SwitchListTile(
             value: app.sendTypingIndicators,
             onChanged: (v) => app.setPreference('typing_indicators', v),
-            activeThumbColor: Zn.ion,
+            activeThumbColor: Zn.orange,
             title: const Text('Typing indicators'),
             subtitle: const Text('Show contacts when you are typing.',
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
@@ -45,7 +45,7 @@ class SettingsScreen extends StatelessWidget {
           SwitchListTile(
             value: app.appLockEnabled,
             onChanged: (v) => _toggleAppLock(context, app, v),
-            activeThumbColor: Zn.ion,
+            activeThumbColor: Zn.orange,
             title: const Text('App lock'),
             subtitle: const Text(
                 'Require Face ID, fingerprint or the device passcode to open Zeon.',
@@ -202,7 +202,7 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
         ),
         ListTile(
           leading: const Icon(Icons.confirmation_number_outlined,
-              color: Zn.ion, size: 20),
+              color: Zn.orange, size: 20),
           title: const Text('Redeem activation code'),
           subtitle: const Text('From a purchase on zeonchat.com',
               style: TextStyle(color: Zn.muted, fontSize: 12)),

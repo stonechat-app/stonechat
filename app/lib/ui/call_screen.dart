@@ -131,7 +131,7 @@ class _CallScreenState extends State<CallScreen> {
                     style: Zn.mono(
                         size: 12,
                         color: call.phase == CallPhase.active
-                            ? Zn.ion
+                            ? Zn.orange
                             : Zn.muted,
                         letterSpacing: 2),
                   ),
@@ -173,14 +173,14 @@ class _CallScreenState extends State<CallScreen> {
       children: [
         _RoundButton(
           icon: call.muted ? Icons.mic_off : Icons.mic,
-          color: call.muted ? Zn.ion : Zn.raised,
+          color: call.muted ? Zn.orange : Zn.raised,
           label: 'Mute',
           onTap: call.toggleMute,
         ),
         if (call.withVideo) ...[
           _RoundButton(
             icon: call.cameraOff ? Icons.videocam_off : Icons.videocam,
-            color: call.cameraOff ? Zn.ion : Zn.raised,
+            color: call.cameraOff ? Zn.orange : Zn.raised,
             label: 'Camera',
             onTap: call.toggleCamera,
           ),
@@ -193,7 +193,7 @@ class _CallScreenState extends State<CallScreen> {
         ] else
           _RoundButton(
             icon: call.speakerOn ? Icons.volume_up : Icons.volume_down,
-            color: call.speakerOn ? Zn.ion : Zn.raised,
+            color: call.speakerOn ? Zn.orange : Zn.raised,
             label: 'Speaker',
             onTap: call.toggleSpeaker,
           ),
@@ -237,7 +237,7 @@ class _RoundButton extends StatelessWidget {
               borderRadius: BorderRadius.circular(Zn.radius * 2),
             ),
             child: Icon(icon,
-                size: 26, color: bright ? const Color(0xFF15200A) : Zn.text),
+                size: 26, color: bright ? Zn.onAccent : Zn.text),
           ),
         ),
         const SizedBox(height: 6),
