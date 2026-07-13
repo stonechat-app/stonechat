@@ -7,6 +7,7 @@ Config (env):
     ZEON_LOCAL_HOST             advertised host for provider=local (default 127.0.0.1)
     ZEON_STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (billing.py)
     ZEON_ADMIN_TOKEN            enables comp grants (billing.py)
+    ZEON_TEST_CODE              reusable tester activation code (billing.py)
     ZEON_CORS_EXTRA             comma-separated extra CORS origins (dev)
 """
 

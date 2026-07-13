@@ -43,8 +43,9 @@ from nacl.utils import random as nacl_random
 
 import os
 HUB = os.environ.get("ZEON_HUB", "http://127.0.0.1:8477")
-# must match the ZEON_ADMIN_TOKEN the hub was started with (README)
+# must match the ZEON_ADMIN_TOKEN / ZEON_TEST_CODE the hub was started with (README)
 ADMIN_TOKEN = os.environ.get("ZEON_ADMIN_TOKEN", "test-admin")
+TEST_CODE = os.environ.get("ZEON_TEST_CODE", "ZEON-TEST-TEST")
 
 # Mailbox client: no CA validation (self-signed by design); see module docstring.
 MX = httpx.Client(verify=False, timeout=10)
@@ -518,6 +519,20 @@ def main():
     r = httpx.post(f"{HUB}/v1/billing/redeem", headers=carol.auth,
                    json={"code": code})
     assert r.status_code == 409, f"re-redeem: expected 409, got {r.status_code}"
+
+    # ...except ZEON_TEST_CODE, which works for any number of fresh identities
+    # (the TestFlight reset-and-reactivate loop, PROTOCOL.md "Billing")
+    for name in ("tess1", "tess2"):
+        tess = Phone(name)
+        tess.register()
+        r = httpx.post(f"{HUB}/v1/billing/redeem", headers=tess.auth,
+                       json={"code": TEST_CODE})
+        assert r.status_code == 200, (
+            f"test code redeem failed ({r.status_code}) — start the hub with "
+            f"ZEON_TEST_CODE={TEST_CODE}")
+        ent = httpx.get(f"{HUB}/v1/billing/entitlement",
+                        headers=tess.auth).json()
+        assert ent["plan"] == "private" and ent["source"] == "test"
 
     r = httpx.post(f"{HUB}/v1/server", headers=carol.auth, json=fleet_req)
     r.raise_for_status()

@@ -93,7 +93,7 @@ register it in `providers/__init__.py`.
 # (ZEON_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only;
 #  ZEON_ADMIN_TOKEN lets the test mint the comp entitlement the fleet gate needs)
 cd hub && .venv/bin/pip install pynacl websockets
-ZEON_FLEET_HOSTS="local=|127.0.0.1" ZEON_ADMIN_TOKEN=test-admin .venv/bin/uvicorn app.main:app --port 8477 &
+ZEON_FLEET_HOSTS="local=|127.0.0.1" ZEON_ADMIN_TOKEN=test-admin ZEON_TEST_CODE=ZEON-TEST-TEST .venv/bin/uvicorn app.main:app --port 8477 &
 .venv/bin/python ../scripts/e2e.py
 
 # app unit tests + static analysis

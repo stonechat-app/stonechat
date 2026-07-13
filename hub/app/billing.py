@@ -15,6 +15,12 @@ Config (env):
                                 webhook endpoint answers 503
     ZEON_ADMIN_TOKEN            enables POST /v1/billing/comp (comp grants
                                 for testers); unset → endpoint disabled
+    ZEON_TEST_CODE              reusable tester code: redeeming it mints a
+                                fresh comp subscription every time instead of
+                                consuming a stored one (TestFlight testers can
+                                reset identity and reactivate with the same
+                                code); unset → disabled
+    ZEON_TEST_CODE_PLAN         plan the test code grants (default private)
 """
 
 import logging
@@ -208,6 +214,28 @@ class RedeemIn(BaseModel):
     code: str = Field(max_length=40)
 
 
+def _is_test_code(normalized: str) -> bool:
+    configured = normalize_code(os.environ.get("ZEON_TEST_CODE", ""))
+    return bool(configured) and secrets.compare_digest(configured, normalized)
+
+
+def _grant_test_subscription(zeon_id: str) -> dict | None:
+    """The test code is never consumed: each redemption mints and claims a
+    fresh comp subscription, so it survives identity resets on test devices."""
+    plan = os.environ.get("ZEON_TEST_CODE_PLAN", "private")
+    if plan not in PLANS:
+        plan = "private"
+    for _ in range(5):
+        code = mint_code()
+        try:
+            store.create_subscription(plan, "test", _code_hash(code), code,
+                                      note="test code grant")
+        except sqlite3.IntegrityError:
+            continue
+        return store.claim_subscription(_code_hash(code), zeon_id)
+    return None
+
+
 @router.post("/v1/billing/redeem")
 async def redeem(body: RedeemIn, user: User):
     if store.entitlement_for(user["zeon_id"]):
@@ -216,11 +244,14 @@ async def redeem(body: RedeemIn, user: User):
             "message": "this account already has an active plan",
         })
     normalized = normalize_code(body.code)
-    sub = (
-        store.claim_subscription(hash_token(normalized), user["zeon_id"])
-        if len(normalized) == _CODE_LEN
-        else None
-    )
+    if _is_test_code(normalized):
+        sub = _grant_test_subscription(user["zeon_id"])
+    else:
+        sub = (
+            store.claim_subscription(hash_token(normalized), user["zeon_id"])
+            if len(normalized) == _CODE_LEN
+            else None
+        )
     if not sub:
         # invalid, spent and lapsed all look identical — no oracle
         raise HTTPException(404, "invalid or already used code")
