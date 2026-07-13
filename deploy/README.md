@@ -148,6 +148,31 @@ State that survives restarts: the hub DB at
 container volume. Destroying a mailbox from the app (or `docker rm -f`) is
 final — its undelivered ciphertext is gone, by design.
 
+### The reusable tester code (`ZEON_TEST_CODE`)
+
+TestFlight testers activate with a shared code that survives identity resets
+(PROTOCOL.md "Billing"). It lives in a **systemd drop-in** — deliberately not
+in `setup.sh`, which rewrites the main unit on every deploy — so it persists
+across code updates:
+
+```bash
+# on the hub box — set (or rotate) the code:
+sudo mkdir -p /etc/systemd/system/zeon-hub.service.d
+printf '[Service]\nEnvironment=ZEON_TEST_CODE=ZEON-XXXX-XXXX\n' \
+  | sudo tee /etc/systemd/system/zeon-hub.service.d/test-code.conf
+sudo systemctl daemon-reload && sudo systemctl restart zeon-hub
+
+# REVOKE it (anyone who knows the code gets a free plan — kill it
+# before opening TestFlight beyond people you trust):
+sudo rm /etc/systemd/system/zeon-hub.service.d/test-code.conf
+sudo systemctl daemon-reload && sudo systemctl restart zeon-hub
+```
+
+Revoking stops new activations only: subscriptions it already minted stay
+active (`source = 'test'` in the `subscriptions` table — audit or purge them
+there). Never publish the code value; it is not in the repo, only in the
+drop-in on the box.
+
 ## Enable push (optional)
 
 Without this, messages arrive only while the app is foregrounded or on resume —
