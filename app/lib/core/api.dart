@@ -393,6 +393,55 @@ Future<String> createHostInvite(
   }
 }
 
+/// One minted invite as the agent reports it: the shareable string plus
+/// enough to show status (waiting / accepted / expired) in the app.
+class HostInviteStatus {
+  final String invite; // full "zeon-host:..." string, re-shareable
+  final int uses;
+  final int usesLeft;
+  final DateTime expiresAt;
+  final DateTime createdAt;
+  final List<String> redeemedBy; // guest Zeon IDs, in redemption order
+
+  HostInviteStatus({
+    required this.invite,
+    required this.uses,
+    required this.usesLeft,
+    required this.expiresAt,
+    required this.createdAt,
+    required this.redeemedBy,
+  });
+
+  bool get expired => expiresAt.isBefore(DateTime.now());
+}
+
+/// Host-owner lists every invite they've minted, with redemption status.
+Future<List<HostInviteStatus>> listHostInvites(
+    String agentUrl, String agentFp, String adminToken) async {
+  final client = pinnedClient(agentFp);
+  try {
+    final r = await client.get(Uri.parse('$agentUrl/v1/invites'), headers: {
+      'Authorization': 'Bearer $adminToken',
+    }).timeout(const Duration(seconds: 10));
+    if (r.statusCode >= 400) throw ApiException(_detail(r), r.statusCode);
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return [
+      for (final e in (j['invites'] as List).cast<Map<String, dynamic>>())
+        HostInviteStatus(
+          invite: e['invite'] as String,
+          uses: e['uses'] as int,
+          usesLeft: e['uses_left'] as int,
+          expiresAt: DateTime.fromMillisecondsSinceEpoch(
+              ((e['expires_at'] as num) * 1000).round()),
+          createdAt: DateTime.parse(e['created_at'] as String).toLocal(),
+          redeemedBy: (e['redeemed_by'] as List).cast<String>(),
+        ),
+    ];
+  } finally {
+    client.close();
+  }
+}
+
 /// Ephemeral TURN credentials from *your own* mailbox's relay (owner token).
 /// Returns null when the mailbox runs no TURN — callers fall back to
 /// STUN-only.

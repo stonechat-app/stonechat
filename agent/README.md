@@ -59,6 +59,7 @@ Guests never call the admin endpoints; the app does the redeem for them.
 |---|---|---|---|
 | GET | `/health` | none | `{guests, capacity, tls_fp}` |
 | POST | `/v1/invite` | admin | `{uses, ttl_hours}` → `{invite}` — the string you share |
+| GET | `/v1/invites` | admin | every minted invite with status: `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by}]}` |
 | POST | `/v1/redeem` | none | `{invite: <token>, owner_id}` → `{address, server_token, tls_fp}` |
 | POST | `/v1/guest` | admin | `{owner_id}` — provision directly, no invite (e.g. your own mailbox) |
 | GET | `/v1/guests` | admin | list current guests |

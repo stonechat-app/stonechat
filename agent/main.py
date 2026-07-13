@@ -118,16 +118,28 @@ class Store:
                 port         INTEGER NOT NULL,
                 created_at   TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS redemptions (
+                invite_token TEXT NOT NULL,
+                owner_id     TEXT NOT NULL,
+                redeemed_at  TEXT NOT NULL
+            );
             """
         )
+        # pre-existing DBs: invites gained an original-uses column so the
+        # owner's app can show "2 of 3 uses left"
+        try:
+            self._db.execute("ALTER TABLE invites ADD COLUMN uses INTEGER")
+        except sqlite3.OperationalError:
+            pass
         self._db.commit()
 
     def add_invite(self, token: str, uses: int, ttl: float) -> None:
         with self._lock:
             self._db.execute(
-                "INSERT INTO invites (token, uses_left, expires_at, created_at)"
-                " VALUES (?, ?, ?, ?)",
-                (token, uses, time.time() + ttl, datetime.now(timezone.utc).isoformat()),
+                "INSERT INTO invites (token, uses, uses_left, expires_at, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (token, uses, uses, time.time() + ttl,
+                 datetime.now(timezone.utc).isoformat()),
             )
             self._db.commit()
 
@@ -144,6 +156,27 @@ class Store:
             )
             self._db.commit()
             return True
+
+    def add_redemption(self, token: str, owner_id: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO redemptions (invite_token, owner_id, redeemed_at)"
+                " VALUES (?, ?, ?)",
+                (token, owner_id, datetime.now(timezone.utc).isoformat()),
+            )
+            self._db.commit()
+
+    def invites(self) -> list[dict]:
+        """All invites (newest first), each with who redeemed it."""
+        with self._lock:
+            rows = [dict(r) for r in self._db.execute(
+                "SELECT token, uses, uses_left, expires_at, created_at"
+                " FROM invites ORDER BY created_at DESC")]
+            for row in rows:
+                row["redeemed_by"] = [r["owner_id"] for r in self._db.execute(
+                    "SELECT owner_id FROM redemptions WHERE invite_token = ?"
+                    " ORDER BY redeemed_at", (row["token"],))]
+        return rows
 
     def guest(self, owner_id: str) -> dict | None:
         with self._lock:
@@ -273,6 +306,18 @@ async def health():
     }
 
 
+def _encode_invite(token: str) -> str:
+    """The shareable string: this agent's address + pinned fingerprint + token."""
+    blob = {
+        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('ZEON_AGENT_PORT', '8200')}",
+        "f": tls.fingerprint_b64,
+        "t": token,
+    }
+    return "zeon-host:" + base64.urlsafe_b64encode(
+        json.dumps(blob, separators=(",", ":")).encode()
+    ).decode().rstrip("=")
+
+
 @app.post("/v1/invite", dependencies=[Depends(require_admin)])
 async def create_invite(body: InviteIn):
     """Host-owner mints an invite. The returned `invite` string is what a friend
@@ -280,15 +325,28 @@ async def create_invite(body: InviteIn):
     single-/multi-use token."""
     token = secrets.token_urlsafe(24)
     store.add_invite(token, body.uses, body.ttl_hours * 3600)
-    blob = {
-        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('ZEON_AGENT_PORT', '8200')}",
-        "f": tls.fingerprint_b64,
-        "t": token,
-    }
-    invite = "zeon-host:" + base64.urlsafe_b64encode(
-        json.dumps(blob, separators=(",", ":")).encode()
-    ).decode().rstrip("=")
-    return {"invite": invite, "uses": body.uses, "ttl_hours": body.ttl_hours}
+    return {"invite": _encode_invite(token), "uses": body.uses,
+            "ttl_hours": body.ttl_hours}
+
+
+@app.get("/v1/invites", dependencies=[Depends(require_admin)])
+async def list_invites():
+    """Every invite this host has minted, with redemption status, so the
+    owner's app can show sent invites and whether they were accepted."""
+    out = []
+    for row in store.invites():
+        # rows minted before the `uses` column existed: reconstruct the total
+        uses = row["uses"] if row["uses"] is not None else (
+            row["uses_left"] + len(row["redeemed_by"]))
+        out.append({
+            "invite": _encode_invite(row["token"]),
+            "uses": uses,
+            "uses_left": row["uses_left"],
+            "expires_at": row["expires_at"],
+            "created_at": row["created_at"],
+            "redeemed_by": row["redeemed_by"],
+        })
+    return {"invites": out}
 
 
 @app.post("/v1/redeem")
@@ -307,12 +365,15 @@ async def redeem(body: RedeemIn):
             409, "this Zeon ID already has a mailbox on this host; ask the host "
                  "owner to evict it first if you want a fresh one")
 
-    if not store.consume_invite(body.invite.strip()):
+    token = body.invite.strip()
+    if not store.consume_invite(token):
         raise HTTPException(403, "invite is invalid, expired, or fully used")
     if store.guest_count() >= CAPACITY:
         raise HTTPException(507, "this host is full")
 
-    return _provision_guest(body.owner_id)
+    result = _provision_guest(body.owner_id)
+    store.add_redemption(token, body.owner_id)
+    return result
 
 
 @app.post("/v1/guest", dependencies=[Depends(require_admin)])

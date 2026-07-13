@@ -1,13 +1,16 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../core/api.dart';
+import '../state/app_state.dart';
 import '../state/server_state.dart';
+import 'redeem_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-/// Per-provider sensible defaults; everything stays editable under Advanced.
+/// Machine settings are an implementation detail now: each provider gets its
+/// fixed sensible default, nothing is user-editable.
 const _providerDefaults = {
   'gcp': (machineType: 'e2-micro', region: 'us-central1-a'),
   'aws': (machineType: 't3.micro', region: 'us-east-1'),
@@ -15,18 +18,16 @@ const _providerDefaults = {
   'local': (machineType: 'container', region: 'localhost'),
 };
 
-// 'local' puts the mailbox on the machine running the hub —
-// forbidden in production topology, so it's offered in dev builds only.
-const _providerChoices =
-    kDebugMode ? ['gcp', 'aws', 'fleet', 'local'] : ['gcp', 'aws', 'fleet'];
-
 const _providerLabels = {
-  'gcp': 'Google Cloud',
-  'aws': 'Amazon',
-  'fleet': 'Zeon cloud',
+  'gcp': 'Zeon Cloud · dedicated',
+  'aws': 'Zeon Cloud · dedicated',
+  'fleet': 'Zeon Cloud',
   'local': 'This computer',
-  'external': 'Your own server',
+  'external': 'Self-hosted',
 };
+
+/// The three ways to get a mailbox.
+enum _Choice { cloud, friend, selfHost }
 
 class ServerScreen extends StatefulWidget {
   const ServerScreen({super.key});
@@ -36,34 +37,36 @@ class ServerScreen extends StatefulWidget {
 }
 
 class _ServerScreenState extends State<ServerScreen> {
-  // --dart-define=ZEON_PROVIDER overrides the default selection (must be one
-  // of _providerDefaults' keys), same as on the onboarding setup screen.
-  static const _envProvider = String.fromEnvironment('ZEON_PROVIDER');
-  String _provider = _envProvider != ''
-      ? _envProvider
-      : (kDebugMode ? 'local' : 'gcp');
-  late final _machineType =
-      TextEditingController(text: _providerDefaults[_provider]!.machineType);
-  late final _region =
-      TextEditingController(text: _providerDefaults[_provider]!.region);
-  double _diskGb = 10;
-  bool _showAdvanced = false;
-  bool _showExternal = false;
-  bool _showJoin = false;
-  bool _showHost = false;
+  _Choice _choice = _Choice.cloud;
+  final _inviteInput = TextEditingController();
   final _extAddress = TextEditingController();
   final _extToken = TextEditingController();
-  final _inviteInput = TextEditingController();
-  final _agentAddress = TextEditingController();
-  final _agentAdminToken = TextEditingController();
-  String? _mintedInvite;
+  String? _plan; // live entitlement plan, for the invites entry
 
-  void _applyProviderDefaults(String provider) {
-    setState(() {
-      _provider = provider;
-      _machineType.text = _providerDefaults[provider]!.machineType;
-      _region.text = _providerDefaults[provider]!.region;
-    });
+  @override
+  void initState() {
+    super.initState();
+    _loadPlan();
+  }
+
+  Future<void> _loadPlan() async {
+    try {
+      final e = await context.read<AppState>().api.getEntitlement();
+      if (mounted) setState(() => _plan = e?.plan);
+    } on Exception {
+      // best-effort; the invites entry also keys off the provider
+    }
+  }
+
+  /// Sovereign plans and self-hosters can host friends' mailboxes.
+  bool _canHostFriends(ServerState server) {
+    if (!server.isRunning) return false;
+    final p = server.record.provider;
+    return server.isExternal ||
+        p == 'gcp' ||
+        p == 'aws' ||
+        _plan == 'sovereign' ||
+        (kDebugMode && p == 'local');
   }
 
   @override
@@ -87,163 +90,90 @@ class _ServerScreenState extends State<ServerScreen> {
               'moment your phone picks it up.',
               style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
             ),
-            const SizedBox(height: 16),
-            const Text('Where should it run?',
-                style: TextStyle(
-                    color: Zn.text, fontSize: 13, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 10),
-            Row(
+            const SizedBox(height: 20),
+            _OptionCard(
+              title: 'Zeon Cloud',
+              subtitle: 'We run it for you. Nothing to set up — '
+                  'ready in about two minutes.',
+              selected: _choice == _Choice.cloud,
+              onTap: () => setState(() => _choice = _Choice.cloud),
               children: [
-                for (final p in _providerChoices) ...[
-                  Expanded(
-                    child: _ProviderChip(
-                      name: _providerLabels[p]!,
-                      selected: _provider == p,
-                      onTap: () => _applyProviderDefaults(p),
-                    ),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: FilledButton(
+                    onPressed: server.busy ? null : () => _createCloud(server),
+                    child: server.busy
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Text('Turn on my mailbox'),
                   ),
-                  if (p != _providerChoices.last) const SizedBox(width: 8),
-                ],
+                ),
               ],
             ),
-            const SizedBox(height: 16),
-            GestureDetector(
-              onTap: () => setState(() => _showAdvanced = !_showAdvanced),
-              child: Text(
-                _showAdvanced ? '▾ Advanced' : '▸ Advanced',
-                style: Zn.mono(size: 10, letterSpacing: 2),
-              ),
-            ),
-            if (_showAdvanced) ...[
-              const SizedBox(height: 12),
-              _LabeledField(label: 'Machine type', controller: _machineType),
-              const SizedBox(height: 12),
-              _LabeledField(label: 'Region / zone', controller: _region),
-              const SizedBox(height: 12),
-              Text('Disk · ${_diskGb.round()} GB',
-                  style: Zn.mono(size: 10, letterSpacing: 2)),
-              Slider(
-                value: _diskGb,
-                min: 10,
-                max: 50,
-                divisions: 8,
-                activeColor: Zn.orange,
-                onChanged: (v) => setState(() => _diskGb = v),
-              ),
-            ],
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: FilledButton(
-                onPressed: server.busy ? null : () => _create(server),
-                child: server.busy
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Text('Turn on my mailbox'),
-              ),
-            ),
-            const SizedBox(height: 24),
-            const Divider(),
-            const SizedBox(height: 8),
-            GestureDetector(
-              onTap: () => setState(() => _showExternal = !_showExternal),
-              child: Text(
-                _showExternal
-                    ? '▾ I already run a mailbox'
-                    : '▸ I already run a mailbox',
-                style: Zn.mono(size: 10, letterSpacing: 2),
-              ),
-            ),
-            if (_showExternal) ...[
-              const SizedBox(height: 8),
-              const Text(
-                'Run the Zeon mailbox on any server you like, then connect it '
-                'here. Its access token stays on this phone — we only list '
-                'the address so friends can find you. Free, forever.',
-                style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
-              ),
-              const SizedBox(height: 12),
-              _LabeledField(label: 'Address', controller: _extAddress),
-              const SizedBox(height: 12),
-              _LabeledField(label: 'Mailbox token', controller: _extToken),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: OutlinedButton(
-                  onPressed: server.busy ? null : () => _connectExternal(server),
-                  child: const Text('Connect my mailbox'),
+            const SizedBox(height: 10),
+            _OptionCard(
+              title: "A friend's machine",
+              subtitle: 'Someone you trust hosts your mailbox on their '
+                  'server. You just need their invite.',
+              selected: _choice == _Choice.friend,
+              onTap: () => setState(() => _choice = _Choice.friend),
+              children: [
+                const Text(
+                  'Your messages stay end-to-end encrypted — but your host '
+                  'can see that your mailbox is there and its traffic '
+                  'timing. Only accept from someone you trust with that.',
+                  style:
+                      TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
                 ),
-              ),
-            ],
-            const SizedBox(height: 16),
-            GestureDetector(
-              onTap: () => setState(() => _showJoin = !_showJoin),
-              child: Text(
-                _showJoin ? '▾ Join a friend\'s host' : '▸ Join a friend\'s host',
-                style: Zn.mono(size: 10, letterSpacing: 2),
-              ),
-            ),
-            if (_showJoin) ...[
-              const SizedBox(height: 8),
-              const Text(
-                'A friend can host your mailbox on their own server. Paste the '
-                'invite they sent you. Your messages stay end-to-end encrypted — '
-                'but your host can see that you have a mailbox there and its '
-                'traffic timing. Only accept from someone you trust with that.',
-                style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
-              ),
-              const SizedBox(height: 12),
-              _LabeledField(label: 'Invite', controller: _inviteInput),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: OutlinedButton(
-                  onPressed: server.busy ? null : () => _joinHost(server),
-                  child: const Text('Join with invite'),
-                ),
-              ),
-            ],
-            const SizedBox(height: 16),
-            GestureDetector(
-              onTap: () => setState(() => _showHost = !_showHost),
-              child: Text(
-                _showHost
-                    ? '▾ Host friends on my server'
-                    : '▸ Host friends on my server',
-                style: Zn.mono(size: 10, letterSpacing: 2),
-              ),
-            ),
-            if (_showHost) ...[
-              const SizedBox(height: 8),
-              const Text(
-                'Running the Zeon host agent on your server? Create an invite for '
-                'a friend — their mailbox lives on your box alongside yours. You '
-                'can see that they host with you, never their messages.',
-                style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
-              ),
-              const SizedBox(height: 12),
-              _LabeledField(label: 'Agent address', controller: _agentAddress),
-              const SizedBox(height: 12),
-              _LabeledField(label: 'Admin token', controller: _agentAdminToken),
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                height: 44,
-                child: OutlinedButton(
-                  onPressed: server.busy ? null : () => _mintInvite(server),
-                  child: const Text('Create an invite'),
-                ),
-              ),
-              if (_mintedInvite != null) ...[
                 const SizedBox(height: 12),
-                _InviteResult(invite: _mintedInvite!),
+                _LabeledField(
+                    label: 'Paste the invite here',
+                    controller: _inviteInput),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: FilledButton(
+                    onPressed: server.busy ? null : () => _joinHost(server),
+                    child: const Text('Join with invite'),
+                  ),
+                ),
               ],
-            ],
+            ),
+            const SizedBox(height: 10),
+            _OptionCard(
+              title: 'Self-host',
+              subtitle: 'Run the mailbox on your own server. '
+                  'Free, forever.',
+              selected: _choice == _Choice.selfHost,
+              onTap: () => setState(() => _choice = _Choice.selfHost),
+              children: [
+                const Text(
+                  'Run the Zeon mailbox anywhere you like, then connect it '
+                  'here. Its access token stays on this phone — we only list '
+                  'the address so friends can find you.',
+                  style:
+                      TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
+                ),
+                const SizedBox(height: 12),
+                _LabeledField(label: 'Address', controller: _extAddress),
+                const SizedBox(height: 12),
+                _LabeledField(label: 'Mailbox token', controller: _extToken),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: FilledButton(
+                    onPressed:
+                        server.busy ? null : () => _connectExternal(server),
+                    child: const Text('Connect my mailbox'),
+                  ),
+                ),
+              ],
+            ),
           ],
           if (server.isProvisioning)
             const Padding(
@@ -254,6 +184,11 @@ class _ServerScreenState extends State<ServerScreen> {
                 style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
               ),
             ),
+          if (_canHostFriends(server)) ...[
+            _InvitesEntry(
+                onTap: () => Navigator.pushNamed(context, '/invites')),
+            const SizedBox(height: 12),
+          ],
           if (server.isRunning || server.record.status == 'error') ...[
             const SizedBox(height: 8),
             SizedBox(
@@ -304,14 +239,47 @@ class _ServerScreenState extends State<ServerScreen> {
     );
   }
 
-  Future<void> _create(ServerState server) async {
+  // In debug builds default to a local Docker mailbox so development never
+  // needs a cloud account; release builds pick the provider the account's
+  // plan entitles it to (PROTOCOL.md "Billing"): private → fleet,
+  // sovereign → gcp. --dart-define=ZEON_PROVIDER overrides everything.
+  static const _envProvider = String.fromEnvironment('ZEON_PROVIDER');
+
+  /// null → no plan on this account yet (caller offers the redeem sheet).
+  Future<String?> _resolveProvider() async {
+    if (_envProvider != '') return _envProvider;
+    if (kDebugMode) return 'local';
+    final entitlement = await context.read<AppState>().api.getEntitlement();
+    if (entitlement == null) return null;
+    return entitlement.plan == 'sovereign' ? 'gcp' : 'fleet';
+  }
+
+  Future<void> _createCloud(ServerState server) async {
     try {
+      var provider = await _resolveProvider();
+      if (provider == null) {
+        if (!mounted) return;
+        final activated = await showRedeemSheet(context);
+        provider = activated && mounted ? await _resolveProvider() : null;
+        if (provider == null) return;
+      }
+      final d = _providerDefaults[provider] ?? _providerDefaults['gcp']!;
       await server.create(
-        provider: _provider,
-        machineType: _machineType.text.trim(),
-        region: _region.text.trim(),
-        diskGb: _diskGb.round(),
+        provider: provider,
+        machineType: d.machineType,
+        region: d.region,
       );
+      _loadPlan();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      if (e.code == 'subscription_required') {
+        // Belt and braces: the server re-checks the entitlement (it may have
+        // lapsed since we looked). Offer the code path and retry.
+        final activated = await showRedeemSheet(context);
+        if (activated && mounted) await _createCloud(server);
+      } else {
+        showZnSnack(context, '$e', error: true);
+      }
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
     }
@@ -343,21 +311,6 @@ class _ServerScreenState extends State<ServerScreen> {
       if (mounted) {
         showZnSnack(context, 'Joined — your mailbox is live on your friend\'s host');
       }
-    } catch (e) {
-      if (mounted) showZnSnack(context, '$e', error: true);
-    }
-  }
-
-  Future<void> _mintInvite(ServerState server) async {
-    final addr = _agentAddress.text.trim();
-    final token = _agentAdminToken.text.trim();
-    if (addr.isEmpty || token.isEmpty) {
-      showZnSnack(context, 'Enter your agent address and admin token', error: true);
-      return;
-    }
-    try {
-      final invite = await server.mintInvite(addr, token);
-      if (mounted) setState(() => _mintedInvite = invite);
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
     }
@@ -478,13 +431,99 @@ class _StatusCard extends StatelessWidget {
       );
 }
 
-class _ProviderChip extends StatelessWidget {
-  final String name;
+/// One of the three big choices: a tappable card with a radio dot; the
+/// selected one expands to show its form and action button.
+class _OptionCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
   final bool selected;
   final VoidCallback onTap;
+  final List<Widget> children;
 
-  const _ProviderChip(
-      {required this.name, required this.selected, required this.onTap});
+  const _OptionCard({
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.onTap,
+    required this.children,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(Zn.radius),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: selected ? Zn.orange.withValues(alpha: 0.06) : Zn.surface,
+          borderRadius: BorderRadius.circular(Zn.radius),
+          border: Border.all(color: selected ? Zn.orange : Zn.line),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Container(
+                    width: 16,
+                    height: 16,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                          color: selected ? Zn.orange : Zn.line, width: 1.5),
+                    ),
+                    child: selected
+                        ? Center(
+                            child: Container(
+                              width: 8,
+                              height: 8,
+                              decoration: const BoxDecoration(
+                                  color: Zn.orange, shape: BoxShape.circle),
+                            ),
+                          )
+                        : null,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title,
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: selected ? Zn.text : Zn.muted)),
+                      const SizedBox(height: 3),
+                      Text(subtitle,
+                          style: const TextStyle(
+                              color: Zn.muted, fontSize: 12.5, height: 1.4)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            if (selected && children.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              ...children,
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Entry point to the invites screen — hosts (self-host or Sovereign) can
+/// invite friends onto their machine and track who accepted.
+class _InvitesEntry extends StatelessWidget {
+  final VoidCallback onTap;
+  const _InvitesEntry({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -492,59 +531,36 @@ class _ProviderChip extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(Zn.radius),
       child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-        alignment: Alignment.center,
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: selected ? Zn.orange.withValues(alpha: 0.12) : Zn.surface,
+          color: Zn.surface,
           borderRadius: BorderRadius.circular(Zn.radius),
-          border: Border.all(color: selected ? Zn.orange : Zn.line),
+          border: Border.all(color: Zn.line),
         ),
-        child: Text(
-          name,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-              fontSize: 12,
-              color: selected ? Zn.orange : Zn.muted,
-              fontWeight: FontWeight.w600),
-        ),
-      ),
-    );
-  }
-}
-
-class _InviteResult extends StatelessWidget {
-  final String invite;
-  const _InviteResult({required this.invite});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Zn.surface,
-        borderRadius: BorderRadius.circular(Zn.radius),
-        border: Border.all(color: Zn.orange),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Share this with your friend',
-              style: Zn.mono(size: 10, letterSpacing: 2, color: Zn.orange)),
-          const SizedBox(height: 8),
-          SelectableText(invite, style: Zn.mono(size: 11, color: Zn.text)),
-          const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: invite));
-                if (context.mounted) showZnSnack(context, 'Invite copied');
-              },
-              icon: const Icon(Icons.copy, size: 16),
-              label: const Text('Copy'),
+        child: Row(
+          children: [
+            const Icon(Icons.group_add_outlined, color: Zn.orange, size: 20),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Invites',
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Zn.text)),
+                  SizedBox(height: 2),
+                  Text('Host friends on your machine — send invites and '
+                      'see who accepted',
+                      style: TextStyle(
+                          color: Zn.muted, fontSize: 12, height: 1.35)),
+                ],
+              ),
             ),
-          ),
-        ],
+            const Icon(Icons.chevron_right, color: Zn.muted, size: 20),
+          ],
+        ),
       ),
     );
   }

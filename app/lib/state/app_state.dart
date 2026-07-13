@@ -34,6 +34,12 @@ class AppState extends ChangeNotifier {
   // observed at connect time (trust-on-first-use), not the hub's.
   String? externalMailboxToken;
   String? externalMailboxTlsFp;
+  // The user's own host agent ("host your circle"), if they run one. The
+  // admin token is as sensitive as the mailbox token: keystore only, never
+  // the hub. The fingerprint is trust-on-first-use, observed at connect.
+  String? hostAgentAddress;
+  String? hostAgentAdminToken;
+  String? hostAgentTlsFp;
 
   bool get hasIdentity => _crypto != null && zeonId != null;
   CryptoService get crypto => _crypto!;
@@ -118,6 +124,9 @@ class AppState extends ChangeNotifier {
       displayName = await _storage.read(key: 'zn_name');
       externalMailboxToken = await _storage.read(key: 'zn_ext_token');
       externalMailboxTlsFp = await _storage.read(key: 'zn_ext_tls_fp');
+      hostAgentAddress = await _storage.read(key: 'zn_agent_addr');
+      hostAgentAdminToken = await _storage.read(key: 'zn_agent_token');
+      hostAgentTlsFp = await _storage.read(key: 'zn_agent_tls_fp');
       avatar = await db.kvGet('own_avatar');
       if (handle == null && zeonId != null) {
         await _fetchOwnHandle(); // account predates handles — self-heal
@@ -191,6 +200,23 @@ class AppState extends ChangeNotifier {
   Future<void> setAvatar(Uint8List? bytes) async {
     avatar = bytes;
     await db.kvPut('own_avatar', bytes);
+    notifyListeners();
+  }
+
+  Future<void> setHostAgent(
+      String? address, String? adminToken, String? tlsFp) async {
+    hostAgentAddress = address;
+    hostAgentAdminToken = adminToken;
+    hostAgentTlsFp = tlsFp;
+    if (address == null) {
+      await _storage.delete(key: 'zn_agent_addr');
+      await _storage.delete(key: 'zn_agent_token');
+      await _storage.delete(key: 'zn_agent_tls_fp');
+    } else {
+      await _storage.write(key: 'zn_agent_addr', value: address);
+      await _storage.write(key: 'zn_agent_token', value: adminToken);
+      await _storage.write(key: 'zn_agent_tls_fp', value: tlsFp);
+    }
     notifyListeners();
   }
 

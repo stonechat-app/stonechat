@@ -120,19 +120,6 @@ class ServerState extends ChangeNotifier {
     await connectExternal(mailbox.address, mailbox.serverToken);
   }
 
-  /// Host-owner side: mint an invite through their own agent. [agentAddress] is
-  /// where they run the agent; [adminToken] is its ZEON_AGENT_ADMIN_TOKEN.
-  Future<String> mintInvite(String agentAddress, String adminToken,
-      {int uses = 1, int ttlHours = 72}) async {
-    final url = agentAddress.trim().replaceAll(RegExp(r'/+$'), '');
-    final fp = await observeCertFingerprint(url);
-    if (fp == null) {
-      throw ApiException("Couldn't reach a Zeon host agent at that address");
-    }
-    return createHostInvite(url, fp, adminToken.trim(),
-        uses: uses, ttlHours: ttlHours);
-  }
-
   Future<void> create({
     required String provider,
     required String machineType,

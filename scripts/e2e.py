@@ -677,6 +677,15 @@ def main():
                        json={"invite": invite["t"], "owner_id": grace.zeon_id}
                        ).status_code == 403, "single-use invite must not redeem twice"
 
+        # the host-owner sees sent-invite status: who accepted, uses left
+        assert MX.get(f"{agent_url}/v1/invites").status_code == 401
+        r = MX.get(f"{agent_url}/v1/invites", headers=admin_hdr)
+        r.raise_for_status()
+        mine = [i for i in r.json()["invites"] if i["invite"] == blob]
+        assert mine and mine[0]["uses"] == 1 and mine[0]["uses_left"] == 0 \
+            and mine[0]["redeemed_by"] == [frank.zeon_id], \
+            "invite status must record frank's redemption"
+
         # host-owner evicts frank -> his container is destroyed
         MX.delete(f"{agent_url}/v1/guest/{frank.zeon_id}",
                   headers=admin_hdr).raise_for_status()

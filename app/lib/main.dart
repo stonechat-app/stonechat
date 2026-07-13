@@ -10,6 +10,7 @@ import 'ui/add_contact_screen.dart';
 import 'ui/call_screen.dart';
 import 'ui/create_group_screen.dart';
 import 'ui/home_screen.dart';
+import 'ui/invites_screen.dart';
 import 'ui/lock_screen.dart';
 import 'ui/mailbox_setup_screen.dart';
 import 'ui/my_id_screen.dart';
@@ -147,6 +148,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
         '/create-group': (_) => const CreateGroupScreen(),
         '/my-id': (_) => const MyIdScreen(),
         '/server': (_) => const ServerScreen(),
+        '/invites': (_) => const InvitesScreen(),
         '/settings': (_) => const SettingsScreen(),
       },
     );
