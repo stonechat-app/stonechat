@@ -11,6 +11,8 @@ import time
 
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
 from .bootstrap import (
+    GUEST_PORT_RANGE,
+    HOST_AGENT_PORT,
     SERVER_PORT,
     TURN_PORT,
     TURN_RELAY_PORTS,
@@ -46,7 +48,9 @@ class AWSProvider(CloudProvider):
             MinCount=1,
             MaxCount=1,
             SecurityGroupIds=[sg_id],
-            UserData=build_startup_script(req.owner_id, req.owner_token),
+            UserData=build_startup_script(
+                req.owner_id, req.owner_token, req.host_agent_token
+            ),
             BlockDeviceMappings=[
                 {
                     "DeviceName": "/dev/xvda",
@@ -117,6 +121,18 @@ class AWSProvider(CloudProvider):
                 "IpProtocol": "udp",
                 "FromPort": TURN_RELAY_PORTS[0],
                 "ToPort": TURN_RELAY_PORTS[1],
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            },
+            {
+                "IpProtocol": "tcp",
+                "FromPort": HOST_AGENT_PORT,
+                "ToPort": HOST_AGENT_PORT,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            },
+            {
+                "IpProtocol": "tcp",
+                "FromPort": GUEST_PORT_RANGE[0],
+                "ToPort": GUEST_PORT_RANGE[1],
                 "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
             },
         ]:

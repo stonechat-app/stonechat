@@ -34,6 +34,7 @@ from .providers import (
     available_providers,
     get_provider,
 )
+from .providers.bootstrap import HOST_AGENT_PORT
 
 log = logging.getLogger("zeon.hub")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -59,8 +60,15 @@ HEALTH_TIMEOUT_S = 240  # cloud VMs need to apt-get + pip install on first boot
 # Paid providers and the plan each requires. Sovereign outranks private, so a
 # Sovereign subscriber may also run on the shared fleet. `local` and
 # `external` (self-hosted free tier) stay ungated.
-GATED_PROVIDERS = {"fleet": "private", "gcp": "sovereign", "aws": "sovereign"}
+GATED_PROVIDERS = {
+    "fleet": "private",
+    "gcp": "sovereign",
+    "aws": "sovereign",
+    "digitalocean": "sovereign",
+}
 PLAN_RANK = {"private": 1, "sovereign": 2}
+# Dedicated-VM providers get the host agent baked into the VM.
+DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean"}
 
 
 # -- schemas --------------------------------------------------------------------
@@ -169,13 +177,21 @@ async def create_server(body: ServerIn, user: User, background: BackgroundTasks)
                            f" {required} plan",
             })
     server_token = secrets.token_urlsafe(32)
+    # Dedicated VMs ship with the host agent pre-installed (PROTOCOL.md "Host
+    # agent") — mint its admin token here so the app can pick it up from
+    # GET /v1/server and mint invites with zero manual setup.
+    host_agent_token = (
+        secrets.token_urlsafe(32) if body.provider in DEDICATED_PROVIDERS else None
+    )
     if not store.create_server(
-        user["zeon_id"], body.provider, body.machine.model_dump(), server_token
+        user["zeon_id"], body.provider, body.machine.model_dump(), server_token,
+        host_agent_token,
     ):
         raise HTTPException(409, "you already have a server (one per user)")
 
     background.add_task(
-        _provision, user["zeon_id"], body.provider, body.machine, server_token
+        _provision, user["zeon_id"], body.provider, body.machine, server_token,
+        host_agent_token,
     )
     return {"status": "provisioning"}
 
@@ -234,6 +250,13 @@ async def publish_tls_sig(body: TlsSigIn, user: User):
     return {"status": "ok"}
 
 
+def _host_agent_address(server_address: str) -> str:
+    """The host agent lives on the same VM as the mailbox, on its own port:
+    https://<ip>:8080 → https://<ip>:8200."""
+    host = server_address.rsplit(":", 1)[0]
+    return f"{host}:{HOST_AGENT_PORT}"
+
+
 @app.get("/v1/server")
 async def get_server(user: User):
     server = store.server_for(user["zeon_id"])
@@ -247,6 +270,17 @@ async def get_server(user: User):
         "server_token": server["server_token"],
         "tls_fp": server["tls_fp"],
         "error": server["error"],
+        # Dedicated VMs come with the host agent pre-installed; hand the app
+        # its address + admin token so the Invites screen connects itself.
+        "host_agent": (
+            {
+                "address": _host_agent_address(server["address"]),
+                "admin_token": server["host_agent_token"],
+            }
+            if server["host_agent_token"] and server["status"] == "running"
+            and server["address"]
+            else None
+        ),
     }
 
 
@@ -267,7 +301,8 @@ async def delete_server(user: User):
 
 # -- provisioning (background) ---------------------------------------------------
 
-def _provision(zeon_id: str, provider_name: str, machine: MachineIn, server_token: str):
+def _provision(zeon_id: str, provider_name: str, machine: MachineIn, server_token: str,
+               host_agent_token: str | None = None):
     """Runs in a worker thread (sync BackgroundTask). Updates the row when done."""
     try:
         provider = get_provider(provider_name)
@@ -276,6 +311,7 @@ def _provision(zeon_id: str, provider_name: str, machine: MachineIn, server_toke
                 owner_id=zeon_id,
                 owner_token=server_token,
                 spec=MachineSpec(**machine.model_dump()),
+                host_agent_token=host_agent_token,
             )
         )
         tls_fp = _wait_healthy(result.address)

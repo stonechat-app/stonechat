@@ -1,7 +1,7 @@
 /// Host-owner's invites: mint invites for friends and see who accepted.
 ///
 /// Talks straight to the user's own host agent (PROTOCOL.md "Host agent") —
-/// the hub is never involved. The agent address + admin token are asked for
+/// the hub is never involved. The host agent address + admin token are asked for
 /// once and kept in the keystore.
 library;
 
@@ -12,6 +12,7 @@ import 'package:provider/provider.dart';
 import '../core/api.dart';
 import '../state/app_state.dart';
 import '../state/chat_state.dart';
+import '../state/server_state.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -26,6 +27,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
   final _address = TextEditingController(text: 'https://');
   final _adminToken = TextEditingController();
   bool _busy = false;
+  bool _autoSetup = false; // creds came from the hub (pre-installed agent)
   List<HostInviteStatus>? _invites;
 
   @override
@@ -35,16 +37,28 @@ class _InvitesScreenState extends State<InvitesScreen> {
     if (app.hostAgentAddress != null) {
       _address.text = app.hostAgentAddress!;
       _refresh();
+    } else {
+      // Sovereign VMs come with the host agent pre-installed — the hub gave
+      // us its address + admin token, so connect without asking anything.
+      final record = context.read<ServerState>().record;
+      if (record.hostAgentAddress != null &&
+          record.hostAgentAdminToken != null) {
+        _address.text = record.hostAgentAddress!;
+        _adminToken.text = record.hostAgentAdminToken!;
+        _autoSetup = true;
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _connect(auto: true));
+      }
     }
   }
 
   bool get _connected => context.read<AppState>().hostAgentAddress != null;
 
-  Future<void> _connect() async {
+  Future<void> _connect({bool auto = false}) async {
     final url = _address.text.trim().replaceAll(RegExp(r'/+$'), '');
     final token = _adminToken.text.trim();
     if (url.isEmpty || url == 'https:' || token.isEmpty) {
-      showZnSnack(context, 'Enter your agent address and admin token',
+      showZnSnack(context, 'Enter your host agent address and admin token',
           error: true);
       return;
     }
@@ -53,7 +67,10 @@ class _InvitesScreenState extends State<InvitesScreen> {
     try {
       final fp = await observeCertFingerprint(url);
       if (fp == null) {
-        throw ApiException("Couldn't reach a Zeon host agent at that address");
+        throw ApiException(auto
+            ? "Your mailbox VM isn't answering on the host agent port yet — "
+                "it can take a few minutes after setup. Pull down to retry."
+            : "Couldn't reach a Zeon host agent at that address");
       }
       // listing doubles as the admin-token check
       final invites = await listHostInvites(url, fp, token);
@@ -108,7 +125,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    context.watch<AppState>(); // rebuild when agent creds change
+    context.watch<AppState>(); // rebuild when host agent creds change
     return Scaffold(
       appBar: AppBar(
         title: const Text('Invites',
@@ -121,6 +138,42 @@ class _InvitesScreenState extends State<InvitesScreen> {
   // -- first run: point the app at your own host agent ----------------------
 
   Widget _setupView() {
+    // Sovereign VM: the host agent is already on the box and the hub gave us
+    // its credentials — no form, just a connect (with retry while the VM is
+    // still finishing its first boot).
+    if (_autoSetup) {
+      return ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const Text(
+            'Host friends on your machine',
+            style: TextStyle(
+                color: Zn.text, fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Your mailbox VM comes with the Zeon host agent built in. Each '
+            'friend who accepts an invite gets their own mailbox on your box '
+            '— you can see that they host with you, never their messages.',
+            style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: FilledButton(
+              onPressed: _busy ? null : () => _connect(auto: true),
+              child: _busy
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('Connect to your machine'),
+            ),
+          ),
+        ],
+      );
+    }
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -138,7 +191,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
           style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
         ),
         const SizedBox(height: 20),
-        _field('Agent address', _address),
+        _field('Host agent address', _address),
         const SizedBox(height: 12),
         _field('Admin token', _adminToken),
         const SizedBox(height: 16),

@@ -276,9 +276,9 @@ works.
 ## Host friends on your box ("host your circle")
 
 Want your VM to also host a few friends' mailboxes? Run the **host agent**
-(`agent/README.md`) alongside the hub — it mints invites and spins up
+(`host_agent/README.md`) alongside the hub — it mints invites and spins up
 a container per invited friend on the same box, each end-to-end encrypted and
-unreadable to you. Open port 8200 (agent) plus the mailbox range, and share
+unreadable to you. Open port 8200 (host agent) plus the mailbox range, and share
 invites from the app ("Host friends on my server"). Friends redeem with
 "Join a friend's host."
 

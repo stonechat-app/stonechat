@@ -12,6 +12,8 @@ import os
 
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
 from .bootstrap import (
+    GUEST_PORT_RANGE,
+    HOST_AGENT_PORT,
     SERVER_PORT,
     TURN_PORT,
     TURN_RELAY_PORTS,
@@ -73,7 +75,9 @@ class GCPProvider(CloudProvider):
                 items=[
                     compute_v1.Items(
                         key="startup-script",
-                        value=build_startup_script(req.owner_id, req.owner_token),
+                        value=build_startup_script(
+                            req.owner_id, req.owner_token, req.host_agent_token
+                        ),
                     )
                 ]
             ),
@@ -128,6 +132,19 @@ class GCPProvider(CloudProvider):
                     ports=[
                         str(TURN_PORT),
                         f"{TURN_RELAY_PORTS[0]}-{TURN_RELAY_PORTS[1]}",
+                    ],
+                )
+            ],
+        )
+        # Host agent + the ports Docker publishes its guest mailboxes on.
+        self._ensure_firewall_rule(
+            f"{FIREWALL_NAME}-host-agent",
+            [
+                compute_v1.Allowed(
+                    I_p_protocol="tcp",
+                    ports=[
+                        str(HOST_AGENT_PORT),
+                        f"{GUEST_PORT_RANGE[0]}-{GUEST_PORT_RANGE[1]}",
                     ],
                 )
             ],

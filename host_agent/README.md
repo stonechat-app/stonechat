@@ -3,6 +3,11 @@
 Run this on a VM **you own** to host your own mailbox *plus* invited friends'
 mailboxes on the same box. A shared host, but only with people you choose.
 
+> Sovereign-tier VMs provisioned by the hub come with this agent
+> **pre-installed** (see `hub/app/providers/bootstrap.py`) — the app picks up
+> its address and admin token from `GET /v1/server` automatically. The manual
+> steps below are for self-hosters.
+
 Each guest gets their own `zeon-server` container — own port, own token, own
 TLS cert, cgroup/pids caps. From the directory's point of view a guest's mailbox
 is just an ordinary self-hosted ("external") relay that happens to live on your
@@ -33,8 +38,8 @@ present.
 cd agent
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-ZEON_AGENT_ADMIN_TOKEN=$(openssl rand -hex 24) \
-ZEON_AGENT_ADVERTISE_HOST=<your-public-ip> \
+ZEON_HOST_AGENT_ADMIN_TOKEN=$(openssl rand -hex 24) \
+ZEON_HOST_AGENT_ADVERTISE_HOST=<your-public-ip> \
   .venv/bin/python main.py            # serves pinned TLS on :8200
 ```
 
@@ -44,12 +49,12 @@ reach the agent and their mailboxes.
 
 | Env | Default | Meaning |
 |---|---|---|
-| `ZEON_AGENT_ADMIN_TOKEN` | — (required) | Secret you hold; authorizes minting/eviction |
-| `ZEON_AGENT_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
-| `ZEON_AGENT_CAPACITY` | `25` | Max guest mailboxes on this host |
-| `ZEON_AGENT_RUNTIME` | — | Set to `runsc` for gVisor hardening |
+| `ZEON_HOST_AGENT_ADMIN_TOKEN` | — (required) | Secret you hold; authorizes minting/eviction |
+| `ZEON_HOST_AGENT_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
+| `ZEON_HOST_AGENT_CAPACITY` | `25` | Max guest mailboxes on this host |
+| `ZEON_HOST_AGENT_RUNTIME` | — | Set to `runsc` for gVisor hardening |
 | `ZEON_PUSH_GATEWAY` | — | Passed through to guest mailboxes |
-| `ZEON_AGENT_PORT` | `8200` | Listen port |
+| `ZEON_HOST_AGENT_PORT` | `8200` | Listen port |
 
 ## API
 

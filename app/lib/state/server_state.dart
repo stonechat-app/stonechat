@@ -87,11 +87,17 @@ class ServerState extends ChangeNotifier {
 
   bool get isExternal => record.provider == 'external';
 
+  /// External mailbox that came from a friend's invite (joinHost) rather
+  /// than the user's own server. Locally-stored distinction — the hub sees
+  /// both as `external`.
+  bool get isFriendHosted => isExternal && app.externalMailboxFriendHosted;
+
   /// Free tier: user runs their own relay; we verify it's really theirs,
   /// list its address in the directory, and keep the token on-device only.
   /// The TLS fingerprint is trust-on-first-use: this is the user's own box —
   /// they provisioned it seconds ago — so the cert we observe now IS the pin.
-  Future<void> connectExternal(String rawAddress, String token) async {
+  Future<void> connectExternal(String rawAddress, String token,
+      {bool friendHosted = false}) async {
     final address = rawAddress.trim().replaceAll(RegExp(r'/+$'), '');
     busy = true;
     notifyListeners();
@@ -104,7 +110,8 @@ class ServerState extends ChangeNotifier {
         throw ApiException('That mailbox belongs to a different Zeon ID');
       }
       await app.api.registerExternalServer(address);
-      await app.setExternalMailbox(token.trim(), probe.tlsFp);
+      await app.setExternalMailbox(token.trim(), probe.tlsFp,
+          friendHosted: friendHosted);
       await refresh();
     } finally {
       busy = false;
@@ -127,7 +134,8 @@ class ServerState extends ChangeNotifier {
       notifyListeners();
     }
     // connectExternal manages its own busy flag + does the owner check / pin.
-    await connectExternal(mailbox.address, mailbox.serverToken);
+    await connectExternal(mailbox.address, mailbox.serverToken,
+        friendHosted: true);
   }
 
   Future<void> create({

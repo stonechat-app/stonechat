@@ -95,6 +95,11 @@ class ServerRecord {
   final String? serverToken;
   final String? tlsFp; // observed by the hub at provision time
   final String? error;
+  // Dedicated (Sovereign) VMs ship with the host agent pre-installed; the hub
+  // hands back where it lives and the admin token it was minted with, so the
+  // Invites screen connects without any manual setup.
+  final String? hostAgentAddress;
+  final String? hostAgentAdminToken;
 
   ServerRecord(
       {required this.status,
@@ -102,7 +107,9 @@ class ServerRecord {
       this.address,
       this.serverToken,
       this.tlsFp,
-      this.error});
+      this.error,
+      this.hostAgentAddress,
+      this.hostAgentAdminToken});
 }
 
 /// Talks to the provisioner + directory. Holds the account bearer token.
@@ -178,14 +185,19 @@ class HubApi {
 
   Future<ServerRecord> getServer() async {
     final r = await http.get(Uri.parse('$baseUrl/v1/server'), headers: _auth);
-    return _check(r, (j) => ServerRecord(
-          status: j['status'] as String,
-          provider: j['provider'] as String?,
-          address: j['address'] as String?,
-          serverToken: j['server_token'] as String?,
-          tlsFp: j['tls_fp'] as String?,
-          error: j['error'] as String?,
-        ));
+    return _check(r, (j) {
+      final hostAgent = j['host_agent'] as Map<String, dynamic>?;
+      return ServerRecord(
+        status: j['status'] as String,
+        provider: j['provider'] as String?,
+        address: j['address'] as String?,
+        serverToken: j['server_token'] as String?,
+        tlsFp: j['tls_fp'] as String?,
+        error: j['error'] as String?,
+        hostAgentAddress: hostAgent?['address'] as String?,
+        hostAgentAdminToken: hostAgent?['admin_token'] as String?,
+      );
+    });
   }
 
   /// Owner vouches for their mailbox's TLS key: publish the identity-key
@@ -298,11 +310,11 @@ Future<({bool spk, int opks})?> mailboxPrekeyStatus(
 
 // -- invite-hosted mailboxes ("host your circle") -----------------------------
 
-/// A parsed host invite: where the agent is, its pinned fingerprint, and the
+/// A parsed host invite: where the host agent is, its pinned fingerprint, and the
 /// one-time token. Encoded as "zeon-host:" + urlsafe-base64(JSON{u,f,t}).
 class HostInvite {
-  final String url; // agent base URL (https)
-  final String fp; // agent TLS fingerprint to pin
+  final String url; // host agent base URL (https)
+  final String fp; // host agent TLS fingerprint to pin
   final String token; // invite token
 
   HostInvite(this.url, this.fp, this.token);
@@ -329,7 +341,7 @@ String _detail(http.Response r) {
 }
 
 /// Redeem a host invite → a mailbox for [ownerId] on that host. Pinned to the
-/// agent fingerprint carried in the invite (no CA, no MITM).
+/// host agent fingerprint carried in the invite (no CA, no MITM).
 Future<({String address, String serverToken, String tlsFp})> redeemHostInvite(
     HostInvite invite, String ownerId) async {
   final client = pinnedClient(invite.fp);
@@ -352,7 +364,7 @@ Future<({String address, String serverToken, String tlsFp})> redeemHostInvite(
 }
 
 /// Observe a host agent's TLS fingerprint (trust-on-first-use). Used by the
-/// host-owner contacting their OWN agent to mint invites.
+/// host-owner contacting their OWN host agent to mint invites.
 Future<String?> observeCertFingerprint(String url) async {
   String? seen;
   final client = HttpClient()
@@ -372,7 +384,7 @@ Future<String?> observeCertFingerprint(String url) async {
   }
 }
 
-/// Host-owner mints an invite through their agent's admin API (pinned).
+/// Host-owner mints an invite through their host agent's admin API (pinned).
 Future<String> createHostInvite(
     String agentUrl, String agentFp, String adminToken,
     {int uses = 1, int ttlHours = 72}) async {
@@ -393,7 +405,7 @@ Future<String> createHostInvite(
   }
 }
 
-/// One minted invite as the agent reports it: the shareable string plus
+/// One minted invite as the host agent reports it: the shareable string plus
 /// enough to show status (waiting / accepted / expired) in the app.
 class HostInviteStatus {
   final String invite; // full "zeon-host:..." string, re-shareable

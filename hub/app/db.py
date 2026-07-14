@@ -50,6 +50,7 @@ class Store:
                 resource_id  TEXT,
                 address      TEXT,
                 server_token TEXT,
+                host_agent_token TEXT,             -- dedicated VMs: agent admin secret
                 tls_fp       TEXT,                 -- relay cert fingerprint (observed)
                 tls_sig      TEXT,                 -- owner's signature over it
                 meta         TEXT NOT NULL DEFAULT '{}',
@@ -90,7 +91,7 @@ class Store:
         """Dev-friendly: bring pre-handle databases up to date."""
         with self._lock:
             server_cols = {r[1] for r in self._db.execute("PRAGMA table_info(servers)")}
-            for col in ("tls_fp", "tls_sig"):
+            for col in ("tls_fp", "tls_sig", "host_agent_token"):
                 if col not in server_cols:
                     self._db.execute(f"ALTER TABLE servers ADD COLUMN {col} TEXT")
             cols = {r[1] for r in self._db.execute("PRAGMA table_info(users)")}
@@ -157,14 +158,17 @@ class Store:
 
     # -- servers -------------------------------------------------------------
 
-    def create_server(self, zeon_id: str, provider: str, machine: dict, server_token: str) -> bool:
+    def create_server(self, zeon_id: str, provider: str, machine: dict, server_token: str,
+                      host_agent_token: str | None = None) -> bool:
         """Atomically claim the one-server-per-user slot. False if occupied."""
         with self._lock:
             try:
                 self._db.execute(
-                    "INSERT INTO servers (zeon_id, provider, status, machine, server_token, created_at)"
-                    " VALUES (?, ?, 'provisioning', ?, ?, ?)",
-                    (zeon_id, provider, json.dumps(machine), server_token, _now()),
+                    "INSERT INTO servers (zeon_id, provider, status, machine, server_token,"
+                    " host_agent_token, created_at)"
+                    " VALUES (?, ?, 'provisioning', ?, ?, ?, ?)",
+                    (zeon_id, provider, json.dumps(machine), server_token,
+                     host_agent_token, _now()),
                 )
                 self._db.commit()
                 return True

@@ -33,6 +33,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
   static const _defaults = {
     'gcp': (machineType: 'e2-micro', region: 'us-central1-a'),
     'aws': (machineType: 't3.micro', region: 'us-east-1'),
+    'digitalocean': (machineType: 's-1vcpu-1gb', region: 'fra1'),
     'fleet': (machineType: 'container', region: 'shared'),
     'local': (machineType: 'container', region: 'localhost'),
   };

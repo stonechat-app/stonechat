@@ -14,6 +14,7 @@ import 'widgets.dart';
 const _providerDefaults = {
   'gcp': (machineType: 'e2-micro', region: 'us-central1-a'),
   'aws': (machineType: 't3.micro', region: 'us-east-1'),
+  'digitalocean': (machineType: 's-1vcpu-1gb', region: 'fra1'),
   'fleet': (machineType: 'container', region: 'shared'),
   'local': (machineType: 'container', region: 'localhost'),
 };
@@ -69,9 +70,28 @@ class _ServerScreenState extends State<ServerScreen> {
         (kDebugMode && p == 'local');
   }
 
+  /// Which card a live mailbox record lights up. Friend-hosted and self-hosted
+  /// mailboxes are both `external` records on the hub; the locally-stored
+  /// friend-hosted flag (AppState) tells them apart.
+  _Choice _activeChoice(ServerState server) => server.isFriendHosted
+      ? _Choice.friend
+      : server.isExternal
+          ? _Choice.selfHost
+          : _Choice.cloud;
+
+  void _lockedNotice() {
+    showZnSnack(
+        context, 'Turn off your current mailbox before starting a new one.');
+  }
+
   @override
   Widget build(BuildContext context) {
     final server = context.watch<ServerState>();
+    // A mailbox exists (running, setting up, or errored): the choice cards
+    // stay visible so the other options are discoverable, but they're locked —
+    // the live one is marked, the rest are dimmed and tapping them explains.
+    final locked = server.record.status != 'none';
+    final active = locked ? _activeChoice(server) : null;
 
     return Scaffold(
       appBar: AppBar(
@@ -83,7 +103,7 @@ class _ServerScreenState extends State<ServerScreen> {
         children: [
           _StatusCard(server: server),
           const SizedBox(height: 20),
-          if (server.record.status == 'none') ...[
+          if (!locked) ...[
             const Text(
               'Your mailbox receives messages when your phone is offline. '
               'It holds only encrypted envelopes — each one is deleted the '
@@ -91,90 +111,103 @@ class _ServerScreenState extends State<ServerScreen> {
               style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
             ),
             const SizedBox(height: 20),
-            _OptionCard(
-              title: 'Zeon Cloud',
-              subtitle: 'We run it for you. Nothing to set up — '
-                  'ready in about two minutes.',
-              selected: _choice == _Choice.cloud,
-              onTap: () => setState(() => _choice = _Choice.cloud),
-              children: [
-                SizedBox(
-                  width: double.infinity,
-                  height: 48,
-                  child: FilledButton(
-                    onPressed: server.busy ? null : () => _createCloud(server),
-                    child: server.busy
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Text('Turn on my mailbox'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            _OptionCard(
-              title: "A friend's machine",
-              subtitle: 'Someone you trust hosts your mailbox on their '
-                  'server. You just need their invite.',
-              selected: _choice == _Choice.friend,
-              onTap: () => setState(() => _choice = _Choice.friend),
-              children: [
-                const Text(
-                  'Your messages stay end-to-end encrypted — but your host '
-                  'can see that your mailbox is there and its traffic '
-                  'timing. Only accept from someone you trust with that.',
-                  style:
-                      TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
-                ),
-                const SizedBox(height: 12),
-                _LabeledField(
-                    label: 'Paste the invite here',
-                    controller: _inviteInput),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  height: 44,
-                  child: FilledButton(
-                    onPressed: server.busy ? null : () => _joinHost(server),
-                    child: const Text('Join with invite'),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            _OptionCard(
-              title: 'Self-host',
-              subtitle: 'Run the mailbox on your own server. '
-                  'Free, forever.',
-              selected: _choice == _Choice.selfHost,
-              onTap: () => setState(() => _choice = _Choice.selfHost),
-              children: [
-                const Text(
-                  'Run the Zeon mailbox anywhere you like, then connect it '
-                  'here. Its access token stays on this phone — we only list '
-                  'the address so friends can find you.',
-                  style:
-                      TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
-                ),
-                const SizedBox(height: 12),
-                _LabeledField(label: 'Address', controller: _extAddress),
-                const SizedBox(height: 12),
-                _LabeledField(label: 'Mailbox token', controller: _extToken),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  height: 44,
-                  child: FilledButton(
-                    onPressed:
-                        server.busy ? null : () => _connectExternal(server),
-                    child: const Text('Connect my mailbox'),
-                  ),
-                ),
-              ],
-            ),
           ],
+          _OptionCard(
+            title: 'Zeon Cloud',
+            subtitle: 'We run it for you. Nothing to set up — '
+                'ready in about two minutes.',
+            selected: !locked && _choice == _Choice.cloud,
+            active: active == _Choice.cloud,
+            dimmed: locked && active != _Choice.cloud,
+            onTap: locked
+                ? (active == _Choice.cloud ? null : _lockedNotice)
+                : () => setState(() => _choice = _Choice.cloud),
+            children: [
+              SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: FilledButton(
+                  onPressed: server.busy ? null : () => _createCloud(server),
+                  child: server.busy
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Turn on my mailbox'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _OptionCard(
+            title: "A friend's machine",
+            subtitle: 'Someone you trust hosts your mailbox on their '
+                'server. You just need their invite.',
+            selected: !locked && _choice == _Choice.friend,
+            active: active == _Choice.friend,
+            dimmed: locked && active != _Choice.friend,
+            onTap: locked
+                ? (active == _Choice.friend ? null : _lockedNotice)
+                : () => setState(() => _choice = _Choice.friend),
+            children: [
+              const Text(
+                'Your messages stay end-to-end encrypted — but your host '
+                'can see that your mailbox is there and its traffic '
+                'timing. Only accept from someone you trust with that.',
+                style:
+                    TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
+              ),
+              const SizedBox(height: 12),
+              _LabeledField(
+                  label: 'Paste the invite here',
+                  controller: _inviteInput),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: FilledButton(
+                  onPressed: server.busy ? null : () => _joinHost(server),
+                  child: const Text('Join with invite'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          _OptionCard(
+            title: 'Self-host',
+            subtitle: 'Run the mailbox on your own server. '
+                'Free, forever.',
+            selected: !locked && _choice == _Choice.selfHost,
+            active: active == _Choice.selfHost,
+            dimmed: locked && active != _Choice.selfHost,
+            onTap: locked
+                ? (active == _Choice.selfHost ? null : _lockedNotice)
+                : () => setState(() => _choice = _Choice.selfHost),
+            children: [
+              const Text(
+                'Run the Zeon mailbox anywhere you like, then connect it '
+                'here. Its access token stays on this phone — we only list '
+                'the address so friends can find you.',
+                style:
+                    TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
+              ),
+              const SizedBox(height: 12),
+              _LabeledField(label: 'Address', controller: _extAddress),
+              const SizedBox(height: 12),
+              _LabeledField(label: 'Mailbox token', controller: _extToken),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: FilledButton(
+                  onPressed:
+                      server.busy ? null : () => _connectExternal(server),
+                  child: const Text('Connect my mailbox'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
           if (server.isProvisioning)
             const Padding(
               padding: EdgeInsets.only(top: 8),
@@ -404,7 +437,11 @@ class _StatusCard extends StatelessWidget {
           if (r.status != 'none') ...[
             const SizedBox(height: 12),
             if (r.provider != null)
-              _kv('Runs on', _providerLabels[r.provider] ?? r.provider!),
+              _kv(
+                  'Runs on',
+                  server.isFriendHosted
+                      ? "A friend's machine"
+                      : _providerLabels[r.provider] ?? r.provider!),
             if (r.address != null) _kv('Address', r.address!),
             if (r.status == 'running')
               _kv('Phone link',
@@ -433,24 +470,53 @@ class _StatusCard extends StatelessWidget {
 }
 
 /// One of the three big choices: a tappable card with a radio dot; the
-/// selected one expands to show its form and action button.
+/// selected one expands to show its form and action button. Once a mailbox
+/// exists the cards lock: [active] marks where it lives (check instead of
+/// radio), [dimmed] grays out the alternatives — kept visible so users know
+/// they exist; their onTap explains how to switch.
 class _OptionCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool selected;
-  final VoidCallback onTap;
+  final bool active;
+  final bool dimmed;
+  final VoidCallback? onTap;
   final List<Widget> children;
 
   const _OptionCard({
     required this.title,
     required this.subtitle,
     required this.selected,
+    this.active = false,
+    this.dimmed = false,
     required this.onTap,
     required this.children,
   });
 
   @override
   Widget build(BuildContext context) {
+    final Widget marker = active
+        ? const Icon(Icons.check_circle, color: Zn.ok, size: 18)
+        : Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                  color: selected ? Zn.orange : Zn.line, width: 1.5),
+            ),
+            child: selected
+                ? Center(
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                          color: Zn.orange, shape: BoxShape.circle),
+                    ),
+                  )
+                : null,
+          );
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(Zn.radius),
@@ -458,62 +524,58 @@ class _OptionCard extends StatelessWidget {
         duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: selected ? Zn.orange.withValues(alpha: 0.06) : Zn.surface,
+          color: active
+              ? Zn.ok.withValues(alpha: 0.05)
+              : selected
+                  ? Zn.orange.withValues(alpha: 0.06)
+                  : Zn.surface,
           borderRadius: BorderRadius.circular(Zn.radius),
-          border: Border.all(color: selected ? Zn.orange : Zn.line),
+          border: Border.all(
+              color: active
+                  ? Zn.ok
+                  : selected
+                      ? Zn.orange
+                      : Zn.line),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Container(
-                    width: 16,
-                    height: 16,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                          color: selected ? Zn.orange : Zn.line, width: 1.5),
+        child: Opacity(
+          opacity: dimmed ? 0.45 : 1,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: marker,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title,
+                            style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: selected || active
+                                    ? Zn.text
+                                    : Zn.muted)),
+                        const SizedBox(height: 3),
+                        Text(subtitle,
+                            style: const TextStyle(
+                                color: Zn.muted, fontSize: 12.5, height: 1.4)),
+                      ],
                     ),
-                    child: selected
-                        ? Center(
-                            child: Container(
-                              width: 8,
-                              height: 8,
-                              decoration: const BoxDecoration(
-                                  color: Zn.orange, shape: BoxShape.circle),
-                            ),
-                          )
-                        : null,
                   ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(title,
-                          style: TextStyle(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: selected ? Zn.text : Zn.muted)),
-                      const SizedBox(height: 3),
-                      Text(subtitle,
-                          style: const TextStyle(
-                              color: Zn.muted, fontSize: 12.5, height: 1.4)),
-                    ],
-                  ),
-                ),
+                ],
+              ),
+              if (selected && children.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                ...children,
               ],
-            ),
-            if (selected && children.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              ...children,
             ],
-          ],
+          ),
         ),
       ),
     );

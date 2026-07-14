@@ -20,16 +20,16 @@ The agent serves pinned TLS just like a mailbox: the invite carries the agent's
 certificate fingerprint, so the guest's redeem call can't be MITM'd.
 
 Config (env):
-    ZEON_AGENT_ADMIN_TOKEN   admin secret the host-owner holds (required)
-    ZEON_AGENT_ADVERTISE_HOST public host/IP guests connect to (required)
-    ZEON_AGENT_DB            sqlite path (default agent.db)
-    ZEON_AGENT_TLS_DIR       cert/key dir (default: the DB's directory)
-    ZEON_AGENT_CAPACITY      max guest mailboxes (default 25)
-    ZEON_AGENT_IMAGE         mailbox image (default zeon-server:dev)
-    ZEON_AGENT_SERVER_DIR    build context if the image is missing (default ../server)
-    ZEON_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
+    ZEON_HOST_AGENT_ADMIN_TOKEN   admin secret the host-owner holds (required)
+    ZEON_HOST_AGENT_ADVERTISE_HOST public host/IP guests connect to (required)
+    ZEON_HOST_AGENT_DB            sqlite path (default host_agent.db)
+    ZEON_HOST_AGENT_TLS_DIR       cert/key dir (default: the DB's directory)
+    ZEON_HOST_AGENT_CAPACITY      max guest mailboxes (default 25)
+    ZEON_HOST_AGENT_IMAGE         mailbox image (default zeon-server:dev)
+    ZEON_HOST_AGENT_SERVER_DIR    build context if the image is missing (default ../server)
+    ZEON_HOST_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
     ZEON_PUSH_GATEWAY        passed through to guest mailboxes (optional)
-    ZEON_AGENT_PORT          listen port (default 8200)
+    ZEON_HOST_AGENT_PORT          listen port (default 8200)
 """
 
 import base64
@@ -49,15 +49,15 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-ADMIN_TOKEN = os.environ["ZEON_AGENT_ADMIN_TOKEN"]
-ADVERTISE_HOST = os.environ["ZEON_AGENT_ADVERTISE_HOST"]
-DB_PATH = os.environ.get("ZEON_AGENT_DB", "agent.db")
-TLS_DIR = Path(os.environ.get("ZEON_AGENT_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
-CAPACITY = int(os.environ.get("ZEON_AGENT_CAPACITY", "25"))
-IMAGE = os.environ.get("ZEON_AGENT_IMAGE", "zeon-server:dev")
-SERVER_DIR = Path(os.environ.get("ZEON_AGENT_SERVER_DIR",
+ADMIN_TOKEN = os.environ["ZEON_HOST_AGENT_ADMIN_TOKEN"]
+ADVERTISE_HOST = os.environ["ZEON_HOST_AGENT_ADVERTISE_HOST"]
+DB_PATH = os.environ.get("ZEON_HOST_AGENT_DB", "host_agent.db")
+TLS_DIR = Path(os.environ.get("ZEON_HOST_AGENT_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
+CAPACITY = int(os.environ.get("ZEON_HOST_AGENT_CAPACITY", "25"))
+IMAGE = os.environ.get("ZEON_HOST_AGENT_IMAGE", "zeon-server:dev")
+SERVER_DIR = Path(os.environ.get("ZEON_HOST_AGENT_SERVER_DIR",
                                  str(Path(__file__).resolve().parents[1] / "server")))
-RUNTIME = os.environ.get("ZEON_AGENT_RUNTIME", "")
+RUNTIME = os.environ.get("ZEON_HOST_AGENT_RUNTIME", "")
 PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "")
 SERVER_PORT = 8080
 
@@ -75,8 +75,8 @@ ZEON_ID_RE = __import__("re").compile(r"^ZC-[A-Z2-7-]{36,}$")
 class Tls:
     def __init__(self, directory: Path):
         directory.mkdir(parents=True, exist_ok=True)
-        self.key_file = directory / "agent_tls_key.pem"
-        self.cert_file = directory / "agent_tls_cert.pem"
+        self.key_file = directory / "host_agent_tls_key.pem"
+        self.cert_file = directory / "host_agent_tls_cert.pem"
         if not (self.key_file.is_file() and self.cert_file.is_file()):
             subprocess.run(
                 ["openssl", "req", "-x509", "-newkey", "ec",
@@ -309,7 +309,7 @@ async def health():
 def _encode_invite(token: str) -> str:
     """The shareable string: this agent's address + pinned fingerprint + token."""
     blob = {
-        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('ZEON_AGENT_PORT', '8200')}",
+        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('ZEON_HOST_AGENT_PORT', '8200')}",
         "f": tls.fingerprint_b64,
         "t": token,
     }
@@ -422,6 +422,6 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        app, host="0.0.0.0", port=int(os.environ.get("ZEON_AGENT_PORT", "8200")),
+        app, host="0.0.0.0", port=int(os.environ.get("ZEON_HOST_AGENT_PORT", "8200")),
         ssl_certfile=str(tls.cert_file), ssl_keyfile=str(tls.key_file),
     )

@@ -602,7 +602,7 @@ def main():
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
 
     print("3d) invite-hosted mailbox: host a friend on your own box")
-    agent_dir = pathlib.Path(__file__).resolve().parents[1] / "agent"
+    agent_dir = pathlib.Path(__file__).resolve().parents[1] / "host_agent"
     agent_admin = "e2e-agent-admin"
     agent_port = "8290"
     agent_data = tempfile.mkdtemp()
@@ -610,11 +610,11 @@ def main():
     agent_proc = subprocess.Popen(
         [sys.executable, str(agent_dir / "main.py")],
         env={**os.environ,
-             "ZEON_AGENT_ADMIN_TOKEN": agent_admin,
-             "ZEON_AGENT_ADVERTISE_HOST": "127.0.0.1",
-             "ZEON_AGENT_PORT": agent_port,
-             "ZEON_AGENT_DB": os.path.join(agent_data, "agent.db"),
-             "ZEON_AGENT_TLS_DIR": agent_data},
+             "ZEON_HOST_AGENT_ADMIN_TOKEN": agent_admin,
+             "ZEON_HOST_AGENT_ADVERTISE_HOST": "127.0.0.1",
+             "ZEON_HOST_AGENT_PORT": agent_port,
+             "ZEON_HOST_AGENT_DB": os.path.join(agent_data, "agent.db"),
+             "ZEON_HOST_AGENT_TLS_DIR": agent_data},
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     admin_hdr = {"Authorization": f"Bearer {agent_admin}"}
@@ -637,7 +637,7 @@ def main():
         assert blob.startswith("zeon-host:")
         invite = json.loads(base64.urlsafe_b64decode(blob.split(":", 1)[1] + "=="))
         assert invite["f"] == live_cert_fp(agent_url), \
-            "invite must pin the agent's real certificate"
+            "invite must pin the host agent's real certificate"
 
         # a bad token is rejected
         assert MX.post(f"{agent_url}/v1/redeem",

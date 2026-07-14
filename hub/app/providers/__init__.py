@@ -22,10 +22,11 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     # name -> (module, class)
     "gcp": ("app.providers.gcp", "GCPProvider"),
     "aws": ("app.providers.aws", "AWSProvider"),
+    "digitalocean": ("app.providers.digitalocean", "DOProvider"),
     "local": ("app.providers.local", "LocalDockerProvider"),
     "fleet": ("app.providers.fleet", "FleetProvider"),
-    # To add e.g. DigitalOcean: create digitalocean.py implementing
-    # CloudProvider and add: "digitalocean": ("app.providers.digitalocean", "DOProvider"),
+    # To add another cloud: create <name>.py implementing CloudProvider and
+    # register it here; gate it in main.py if the plan requires it.
 }
 
 
