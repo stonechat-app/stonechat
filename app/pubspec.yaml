@@ -15,6 +15,7 @@ dependencies:
   sodium: ^4.0.2
   firebase_core: ^4.11.0
   firebase_messaging: ^16.4.1
+  flutter_local_notifications: ^22.0.1
   flutter_secure_storage: ^10.3.1
   sqflite_sqlcipher: ^3.4.0
   local_auth: ^3.0.1

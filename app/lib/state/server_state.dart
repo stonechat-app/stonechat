@@ -15,6 +15,8 @@ class ServerState extends ChangeNotifier {
   final Future<void> Function() onConnected; // e.g. retry pending outbox
   final void Function(String? address, String? token, String? tlsFp)?
       onMailbox; // own mailbox coordinates, for blob downloads + prekeys
+  final void Function(bool ok)?
+      onProvisioningDone; // provisioning finished: running (true) or error
 
   ServerRecord record = ServerRecord(status: 'none');
   bool socketConnected = false;
@@ -25,16 +27,24 @@ class ServerState extends ChangeNotifier {
   String? _vouchedTlsFp; // fingerprint we already signed + published
 
   ServerState(this.app,
-      {required this.onEnvelope, required this.onConnected, this.onMailbox});
+      {required this.onEnvelope,
+      required this.onConnected,
+      this.onMailbox,
+      this.onProvisioningDone});
 
   bool get isRunning => record.status == 'running';
   bool get isProvisioning => record.status == 'provisioning';
 
   Future<void> refresh() async {
+    final wasProvisioning = isProvisioning;
     try {
       record = await app.api.getServer();
     } on Exception {
       return; // hub unreachable — keep last known state
+    }
+
+    if (wasProvisioning && (isRunning || record.status == 'error')) {
+      onProvisioningDone?.call(isRunning);
     }
 
     if (isProvisioning) {

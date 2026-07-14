@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'core/notices.dart';
 import 'core/push.dart';
 import 'state/app_state.dart';
 import 'state/call_state.dart';
@@ -27,6 +28,8 @@ Future<void> main() async {
 
   final chat = ChatState(app);
   final call = CallState(app, chat);
+  final notices = LocalNotices();
+  await notices.init();
   final server = ServerState(
     app,
     onEnvelope: chat.handleIncoming,
@@ -41,6 +44,20 @@ Future<void> main() async {
       await chat.retryPending();
     },
     onMailbox: chat.setMailbox,
+    onProvisioningDone: (ok) {
+      // Foregrounded users watch the status flip on screen; the notice is
+      // for the "you can leave the app" promise on the setup screen.
+      if (WidgetsBinding.instance.lifecycleState ==
+          AppLifecycleState.resumed) {
+        return;
+      }
+      notices.show(
+        ok ? 'Your mailbox is ready' : 'Mailbox setup failed',
+        ok
+            ? 'Zeon is set up — you can send and receive messages.'
+            : 'Open Zeon to see what happened and retry.',
+      );
+    },
   );
 
   if (app.hasIdentity) {

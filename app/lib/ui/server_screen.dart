@@ -180,7 +180,8 @@ class _ServerScreenState extends State<ServerScreen> {
               padding: EdgeInsets.only(top: 8),
               child: Text(
                 'Setting up your mailbox — this takes about 2 minutes the '
-                'first time. You can leave this screen.',
+                "first time. You can leave this screen; we'll notify you "
+                "when it's ready.",
                 style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
               ),
             ),
