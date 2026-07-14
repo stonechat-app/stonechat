@@ -228,6 +228,32 @@ class Store:
             )
             self._db.commit()
 
+    def reapable_servers(self, providers: tuple[str, ...], lapsed_before: str) -> list[dict]:
+        """Servers on paid providers whose owner has no live subscription and
+        whose most recent one lapsed before the cutoff. Owners with no
+        subscription rows at all are left alone — ambiguous state (pre-billing
+        data, manual grants) is not a kill signal."""
+        if not providers:
+            return []
+        marks = ",".join("?" * len(providers))
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT s.* FROM servers s"
+                f" WHERE s.provider IN ({marks})"
+                "  AND NOT EXISTS (SELECT 1 FROM subscriptions"
+                "    WHERE zeon_id = s.zeon_id AND status IN ('active', 'grace'))"
+                "  AND (SELECT MAX(lapsed_at) FROM subscriptions"
+                "    WHERE zeon_id = s.zeon_id AND status = 'lapsed') <= ?",
+                (*providers, lapsed_before),
+            ).fetchall()
+        servers = []
+        for row in rows:
+            server = dict(row)
+            server["machine"] = json.loads(server["machine"])
+            server["meta"] = json.loads(server["meta"])
+            servers.append(server)
+        return servers
+
     def delete_server(self, zeon_id: str) -> None:
         with self._lock:
             self._db.execute("DELETE FROM servers WHERE zeon_id = ?", (zeon_id,))

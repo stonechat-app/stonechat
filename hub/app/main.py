@@ -9,12 +9,18 @@ Config (env):
     ZEON_ADMIN_TOKEN            enables comp grants (billing.py)
     ZEON_TEST_CODE              reusable tester activation code (billing.py)
     ZEON_CORS_EXTRA             comma-separated extra CORS origins (dev)
+    ZEON_REAP_RETENTION_DAYS    destroy servers this many days after their
+                                subscription lapses (default 14; -1 disables)
+    ZEON_REAP_INTERVAL_S        seconds between reap passes (default 3600)
 """
 
+import asyncio
 import base64
 import logging
 import re
 import secrets
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -39,7 +45,21 @@ from .providers.bootstrap import HOST_AGENT_PORT
 log = logging.getLogger("zeon.hub")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-app = FastAPI(title="zeon-hub")
+REAP_RETENTION_DAYS = int(os.environ.get("ZEON_REAP_RETENTION_DAYS", "14"))
+REAP_INTERVAL_S = int(os.environ.get("ZEON_REAP_INTERVAL_S", "3600"))
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    reaper = None
+    if REAP_RETENTION_DAYS >= 0:
+        reaper = asyncio.create_task(_reap_loop())
+    yield
+    if reaper:
+        reaper.cancel()
+
+
+app = FastAPI(title="zeon-hub", lifespan=_lifespan)
 app.include_router(billing_router)
 
 # Browser access is only the landing page's activation lookup (GET); the
@@ -320,6 +340,45 @@ def _provision(zeon_id: str, provider_name: str, machine: MachineIn, server_toke
     except Exception as e:
         log.exception("provisioning failed for %s", zeon_id[:12])
         store.mark_error(zeon_id, str(e))
+
+
+# -- reaping (background) ---------------------------------------------------------
+#
+# Mailbox lifecycle is billing-driven, never activity-driven: the hub must not
+# learn (or be able to leak) when a mailbox is used. A paid-up mailbox runs
+# forever, idle or not. When the owner's last subscription has been lapsed
+# longer than the retention window, the sweep destroys the machine. The Stripe
+# webhook only marks `lapsed`; this pass is the sole executor, so a missed
+# webhook retry or a mid-destroy crash just gets picked up next hour.
+
+async def _reap_loop():
+    while True:
+        await asyncio.sleep(REAP_INTERVAL_S)
+        try:
+            await asyncio.to_thread(_reap_once)
+        except Exception:
+            log.exception("reap pass failed")
+
+
+def _reap_once() -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=REAP_RETENTION_DAYS)
+    for server in store.reapable_servers(tuple(GATED_PROVIDERS), cutoff.isoformat()):
+        zeon_id = server["zeon_id"]
+        try:
+            if server["resource_id"]:
+                provider = get_provider(server["provider"])
+                provider.destroy(server["resource_id"], server["meta"])
+            store.delete_server(zeon_id)
+            # The one place user data dies without the user asking — keep an
+            # audit trail for the support inbox.
+            log.info(
+                "reaped %s server %s of %s: subscription lapsed > %d days",
+                server["provider"], server["resource_id"], zeon_id[:12],
+                REAP_RETENTION_DAYS,
+            )
+        except Exception:
+            log.exception("failed to reap server of %s — retrying next pass",
+                          zeon_id[:12])
 
 
 def _wait_healthy(address: str) -> str | None:
