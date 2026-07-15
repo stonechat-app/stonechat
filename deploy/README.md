@@ -264,9 +264,10 @@ setup: create a service account for the hub, grant it
 project, attach it to the hub VM (`--scopes=cloud-platform` — ADC, no key
 files), and deploy with `ZEON_GCP_PROJECT=<PROJECT_ID>` set (this installs
 `google-cloud-compute`). Mailbox VMs get their own auto-created firewall rule
-(`zeon-allow-server`, tcp:8080). Release builds of the app default to this
-provider (`gcp` / `e2-micro` / `us-central1-a`); pass
-`--dart-define=ZEON_PROVIDER=fleet` to use the fleet instead. Cost note: a
+(`zeon-allow-server`, tcp:8080). Release builds pick the provider from the
+account's plan (private → `fleet`, sovereign → `gcp`, defaults `e2-micro` /
+`us-central1-a`); baking `--dart-define=ZEON_PROVIDER=...` into a build
+overrides the plan mapping for every install — test builds only. Cost note: a
 per-user `e2-micro` + IPv4 runs ~$7–10/mo, vs ~$0.30/user on a shared fleet
 host.
 

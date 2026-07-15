@@ -44,13 +44,18 @@ echo ""
 # https://hub.zeonchat.com (Caddy/Let's Encrypt in front of the hub VM);
 # override ZEON_HUB only to build against a different deployment.
 ZEON_HUB="${ZEON_HUB:-https://hub.zeonchat.com}"
-ZEON_PROVIDER="${ZEON_PROVIDER:-fleet}"
+
+# No provider is baked by default: the app picks it from the account's plan
+# (private → fleet, sovereign → gcp). A baked ZEON_PROVIDER overrides the
+# plan mapping in every install of the build — set it only for test builds.
+DEFINES=(--dart-define=ZEON_HUB="$ZEON_HUB")
+if [ -n "${ZEON_PROVIDER:-}" ]; then
+    DEFINES+=(--dart-define=ZEON_PROVIDER="$ZEON_PROVIDER")
+fi
 
 # Build the iOS app
-echo "Building iOS app (ZEON_HUB=$ZEON_HUB, ZEON_PROVIDER=$ZEON_PROVIDER)..."
-flutter build ipa \
-    --dart-define=ZEON_HUB="$ZEON_HUB" \
-    --dart-define=ZEON_PROVIDER="$ZEON_PROVIDER"
+echo "Building iOS app (ZEON_HUB=$ZEON_HUB, ZEON_PROVIDER=${ZEON_PROVIDER:-<plan-driven>})..."
+flutter build ipa "${DEFINES[@]}"
 
 # Find the generated IPA (name may vary)
 IPA_FILE=$(find build/ios/ipa -name "*.ipa" 2>/dev/null | head -1)
