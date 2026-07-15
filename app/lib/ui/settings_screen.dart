@@ -7,6 +7,9 @@ import 'package:local_auth/local_auth.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../state/call_state.dart';
+import '../state/chat_state.dart';
+import '../state/server_state.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -79,6 +82,10 @@ class SettingsScreen extends StatelessWidget {
   }
 
   Future<void> _resetIdentity(BuildContext context, AppState app) async {
+    // Grab the sibling states up front — the dialog await may outlive us.
+    final call = context.read<CallState>();
+    final server = context.read<ServerState>();
+    final chat = context.read<ChatState>();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -101,7 +108,10 @@ class SettingsScreen extends StatelessWidget {
       ),
     );
     if (confirmed != true) return;
-    await app.resetIdentity();
+    await call.reset(); // release camera/mic before the identity dies
+    await app.resetIdentity(); // needs the account token (deleteServer)
+    server.reset();
+    chat.reset();
     // The identity is gone; drop every screen and land back on onboarding.
     if (context.mounted) {
       Navigator.of(context).pushNamedAndRemoveUntil('/onboarding', (_) => false);

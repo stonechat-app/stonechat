@@ -175,6 +175,21 @@ class ServerState extends ChangeNotifier {
     }
   }
 
+  /// Identity reset: the record, socket, TLS vouch and any provisioning poll
+  /// all belonged to the identity that just died. Without this, a re-onboard
+  /// in the same app session inherits a ghost "running" mailbox and skips
+  /// mailbox setup entirely.
+  void reset() {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _dropSocket();
+    record = ServerRecord(status: 'none');
+    _vouchedTlsFp = null;
+    busy = false;
+    onMailbox?.call(null, null, null);
+    notifyListeners();
+  }
+
   /// Manual refresh (pull-to-refresh): tear the socket down and reconnect.
   /// The relay drains its queue to a fresh owner connection, so this is
   /// "check for mail now" — plus a server-record refresh for good measure.

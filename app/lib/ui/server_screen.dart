@@ -39,6 +39,10 @@ class ServerScreen extends StatefulWidget {
 
 class _ServerScreenState extends State<ServerScreen> {
   _Choice _choice = _Choice.cloud;
+  // Which card's action is in flight. Drives that button's spinner and
+  // freezes the other cards — switching options mid-provision would fire a
+  // second mailbox request on top of the running one.
+  _Choice? _pending;
   final _inviteInput = TextEditingController();
   final _extAddress = TextEditingController();
   final _extToken = TextEditingController();
@@ -121,14 +125,16 @@ class _ServerScreenState extends State<ServerScreen> {
             dimmed: locked && active != _Choice.cloud,
             onTap: locked
                 ? (active == _Choice.cloud ? null : _lockedNotice)
-                : () => setState(() => _choice = _Choice.cloud),
+                : (_pending != null
+                    ? null
+                    : () => setState(() => _choice = _Choice.cloud)),
             children: [
               SizedBox(
                 width: double.infinity,
                 height: 48,
                 child: FilledButton(
                   onPressed: server.busy ? null : () => _createCloud(server),
-                  child: server.busy
+                  child: _pending == _Choice.cloud
                       ? const SizedBox(
                           width: 18,
                           height: 18,
@@ -148,7 +154,9 @@ class _ServerScreenState extends State<ServerScreen> {
             dimmed: locked && active != _Choice.friend,
             onTap: locked
                 ? (active == _Choice.friend ? null : _lockedNotice)
-                : () => setState(() => _choice = _Choice.friend),
+                : (_pending != null
+                    ? null
+                    : () => setState(() => _choice = _Choice.friend)),
             children: [
               const Text(
                 'Your messages stay end-to-end encrypted — but your host '
@@ -167,7 +175,20 @@ class _ServerScreenState extends State<ServerScreen> {
                 height: 44,
                 child: FilledButton(
                   onPressed: server.busy ? null : () => _joinHost(server),
-                  child: const Text('Join with invite'),
+                  child: _pending == _Choice.friend
+                      ? const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2)),
+                            SizedBox(width: 10),
+                            Text('Setting up on your friend\'s server…'),
+                          ],
+                        )
+                      : const Text('Join with invite'),
                 ),
               ),
             ],
@@ -182,7 +203,9 @@ class _ServerScreenState extends State<ServerScreen> {
             dimmed: locked && active != _Choice.selfHost,
             onTap: locked
                 ? (active == _Choice.selfHost ? null : _lockedNotice)
-                : () => setState(() => _choice = _Choice.selfHost),
+                : (_pending != null
+                    ? null
+                    : () => setState(() => _choice = _Choice.selfHost)),
             children: [
               const Text(
                 'Run the Zeon mailbox anywhere you like, then connect it '
@@ -202,7 +225,12 @@ class _ServerScreenState extends State<ServerScreen> {
                 child: FilledButton(
                   onPressed:
                       server.busy ? null : () => _connectExternal(server),
-                  child: const Text('Connect my mailbox'),
+                  child: _pending == _Choice.selfHost
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Text('Connect my mailbox'),
                 ),
               ),
             ],
@@ -289,6 +317,7 @@ class _ServerScreenState extends State<ServerScreen> {
   }
 
   Future<void> _createCloud(ServerState server) async {
+    setState(() => _pending = _Choice.cloud);
     try {
       var provider = await _resolveProvider();
       if (provider == null) {
@@ -316,6 +345,8 @@ class _ServerScreenState extends State<ServerScreen> {
       }
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => _pending = null);
     }
   }
 
@@ -326,11 +357,14 @@ class _ServerScreenState extends State<ServerScreen> {
       showZnSnack(context, 'Enter your mailbox address and token', error: true);
       return;
     }
+    setState(() => _pending = _Choice.selfHost);
     try {
       await server.connectExternal(address, token);
       if (mounted) showZnSnack(context, 'Connected — friends can reach you now');
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => _pending = null);
     }
   }
 
@@ -340,6 +374,7 @@ class _ServerScreenState extends State<ServerScreen> {
       showZnSnack(context, 'Paste the invite first', error: true);
       return;
     }
+    setState(() => _pending = _Choice.friend);
     try {
       await server.joinHost(invite);
       if (mounted) {
@@ -347,6 +382,8 @@ class _ServerScreenState extends State<ServerScreen> {
       }
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
+    } finally {
+      if (mounted) setState(() => _pending = null);
     }
   }
 

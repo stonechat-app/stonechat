@@ -200,6 +200,33 @@ class ChatState extends ChangeNotifier {
     unawaited(sweepExpired());
   }
 
+  /// Identity reset: drop every in-memory trace of the dead identity. The DB
+  /// is wiped separately (AppState.resetIdentity); mailbox coordinates are
+  /// cleared by ServerState.reset via setMailbox. The device push token
+  /// (_pushToken/_pushPlatform) survives — it belongs to the phone, not the
+  /// identity — and re-registers when the next identity gets a mailbox.
+  void reset() {
+    contacts = [];
+    groups = [];
+    groupMembers.clear();
+    _messages.clear();
+    lastMessage.clear();
+    _sessions.clear();
+    _openConversationId = null;
+    reactionsByMessage.clear();
+    _receiptQueue.clear();
+    _receiptFlushTimer?.cancel();
+    _receiptFlushTimer = null;
+    _typing.clear();
+    _typingSentAt.clear();
+    _typingSweep?.cancel();
+    _typingSweep = null;
+    _expirySweep?.cancel();
+    _expirySweep = null;
+    _registeredPushToken = null;
+    notifyListeners();
+  }
+
   Group? groupById(String id) {
     for (final g in groups) {
       if (g.id == id) return g;

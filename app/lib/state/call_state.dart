@@ -470,6 +470,14 @@ class CallState extends ChangeNotifier {
     _setPhase(CallPhase.idle);
   }
 
+  /// Identity reset: kill any call in progress without signaling — the
+  /// identity that could seal a hangup envelope is being erased anyway.
+  Future<void> reset() async {
+    if (!inCall) return;
+    await _teardownRtc();
+    _resetToIdle();
+  }
+
   void _setPhase(CallPhase next) {
     phase = next;
     notifyListeners();
