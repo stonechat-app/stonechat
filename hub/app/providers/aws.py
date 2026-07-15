@@ -1,5 +1,12 @@
 """AWS EC2 provider.
 
+⚠️ KNOWN-BROKEN for sovereign provisioning (see TODO.md "AWS provider is
+dead code"): EC2 caps user-data at 16 KB and the sovereign startup script
+(host agent included) is ~30 KB even with gzipped payloads, so run_instances
+rejects it. EC2's 1:1 NAT also breaks the host agent's from-inside guest
+health checks (no hairpin to the instance's own public IP). Needs a
+fetch-stub user-data + the localhost health-check fix before it can work.
+
 Auth: standard boto3 credential chain (env vars, ~/.aws/credentials, IAM role).
 
 MachineSpec mapping: machine_type = EC2 instance type ("t3.micro"),
