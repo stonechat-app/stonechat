@@ -28,27 +28,85 @@ root, so the token isn't a secret *from you* (it protects against third
 parties). Consistent with the model — the guest already trusts you enough to
 live on your box, and E2EE still protects content.
 
-## Run it
+## Host your own Zeon, step by step
 
-Requirements: Docker, `openssl`, Python 3.11+. The `zeon-server:dev` image must
-be buildable (the agent builds it from `../server` on first use) or already
-present.
+From nothing to chatting with friends whose mailboxes all live on a box you
+control. Budget ~30 minutes, most of it waiting on a VM.
+
+You need: a VM from any provider (the smallest tier is plenty — 1 vCPU, 1 GB,
+~$5/mo) or an always-on Linux box at home, and the Zeon app from the App
+Store / Google Play on your phone and each friend's.
+
+### 1. Get the box online
+
+- Create the VM (Debian/Ubuntu is the easy path) with a **static public IP** —
+  providers call it reserved, floating, or elastic. The IP is baked into every
+  mailbox address on this host, so it must not change across restarts.
+- Open inbound TCP in the provider's firewall (and `ufw`, if you run it):
+  **8200** (the agent) and **42000–42024** (guest mailboxes:
+  `ZEON_HOST_AGENT_PORT_BASE` through base + capacity − 1 — fixed ports, not
+  Docker-ephemeral, so the rule survives reboots).
+- Hosting at home instead? Forward those same ports on your router to the box,
+  and use your connection's public IP (or a dynamic-DNS name if it rotates).
+
+### 2. Install the agent
+
+Requirements: Docker, `openssl`, Python 3.11+. SSH in and:
 
 ```bash
-cd agent
+sudo apt-get update && sudo apt-get install -y docker.io git python3-venv openssl
+sudo systemctl enable --now docker
+
+sudo git clone <repo-url> /opt/zeon
+cd /opt/zeon/host_agent
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-ZEON_HOST_AGENT_ADMIN_TOKEN=$(openssl rand -hex 24) \
+openssl rand -hex 24     # your ADMIN TOKEN — save it; you'll paste it into the app
+```
+
+### 3. Run it for keeps
+
+A systemd unit keeps the agent alive across crashes and reboots:
+
+```ini
+# /etc/systemd/system/zeon-host-agent.service
+[Unit]
+Description=Zeon host agent
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Environment=ZEON_HOST_AGENT_ADMIN_TOKEN=<your admin token>
+Environment=ZEON_HOST_AGENT_ADVERTISE_HOST=<your static public IP>
+Environment=ZEON_HOST_AGENT_DB=/var/lib/zeon/host_agent.db
+Environment=ZEON_HOST_AGENT_TLS_DIR=/var/lib/zeon
+Environment=ZEON_HOST_AGENT_SERVER_DIR=/opt/zeon/server
+ExecStart=/opt/zeon/host_agent/.venv/bin/python /opt/zeon/host_agent/main.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo mkdir -p /var/lib/zeon
+sudo systemctl daemon-reload && sudo systemctl enable --now zeon-host-agent
+curl -sk https://<your-ip>:8200/health    # → {"status":"ok","guests":0,...}
+```
+
+The first mailbox provision builds the `zeon-server` image from
+`/opt/zeon/server`, so it takes an extra minute; later ones are seconds.
+
+(Just kicking the tires? You can skip systemd and run it in the foreground:)
+
+```bash
+ZEON_HOST_AGENT_ADMIN_TOKEN=<your admin token> \
 ZEON_HOST_AGENT_ADVERTISE_HOST=<your-public-ip> \
   .venv/bin/python main.py            # serves pinned TLS on :8200
 ```
 
-Keep the admin token — you need it to mint invites. Open two things in your
-firewall so friends can reach the agent and their mailboxes: port **8200**
-(the agent) and the guest mailbox range **42000–42024** (`ZEON_HOST_AGENT_PORT_BASE`
-through base + capacity − 1; guest ports are fixed, not Docker-ephemeral, so
-the rule survives reboots). Hosting from a home connection works too — forward
-those same ports on your router to this box.
+All the knobs:
 
 | Env | Default | Meaning |
 |---|---|---|
@@ -56,9 +114,48 @@ those same ports on your router to this box.
 | `ZEON_HOST_AGENT_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
 | `ZEON_HOST_AGENT_CAPACITY` | `25` | Max guest mailboxes on this host |
 | `ZEON_HOST_AGENT_PORT_BASE` | `42000` | First guest mailbox port; guests get `base…base+capacity−1` |
+| `ZEON_HOST_AGENT_IMAGE` | `zeon-server:dev` | Mailbox image (built from `../server` if missing) |
 | `ZEON_HOST_AGENT_RUNTIME` | — | Set to `runsc` for gVisor hardening |
 | `ZEON_PUSH_GATEWAY` | — | Passed through to guest mailboxes |
 | `ZEON_HOST_AGENT_PORT` | `8200` | Listen port |
+
+### 4. Connect your app
+
+Install Zeon, **forge your identity**, then: mailbox screen → **Host friends
+on my server** → enter `https://<your-ip>:8200` + your admin token. Turn on
+your own mailbox there, then **Create an invite**.
+
+### 5. Bring the friends
+
+Send each friend the `zeon-host:…` invite string over any channel they trust
+came from you — it carries no secrets, and their app pins the connection to
+your agent's certificate, so it can't be intercepted. Each friend: install
+the app → forge an identity → mailbox screen → **Join a friend's host** →
+paste the invite. Their mailbox spins up on your box; its token stays on
+their phone.
+
+### 6. Chat
+
+Exchange Zeon IDs or handles (QR or text) and message away. Everything is
+end-to-end encrypted on the phones — your box only ever holds ciphertext,
+deleted on delivery. If your box ever dies, nobody's history is lost: it
+lives on their phones, and they can re-home their mailboxes anywhere.
+
+### TL;DR
+
+1. VM (or home box) with a **static public IP**; open inbound TCP **8200**
+   and **42000–42024**.
+2. `sudo apt-get install -y docker.io git python3-venv openssl` and enable Docker.
+3. `sudo git clone <repo-url> /opt/zeon && cd /opt/zeon/host_agent && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+4. `openssl rand -hex 24` → your admin token.
+5. Run `main.py` with `ZEON_HOST_AGENT_ADMIN_TOKEN` and
+   `ZEON_HOST_AGENT_ADVERTISE_HOST` set (systemd unit above), then
+   `curl -sk https://<ip>:8200/health`.
+6. In your app: forge identity → **Host friends on my server** → agent
+   address + admin token → mailbox on, **Create an invite**.
+7. Friends: install app → forge identity → **Join a friend's host** → paste
+   the invite.
+8. Swap Zeon IDs, chat.
 
 ## API
 
@@ -77,14 +174,6 @@ Guests never call the admin endpoints; the app does the redeem for them.
 The `invite` string is `zeon-host:` + base64url(`{u: agent-url, f: tls-fp, t:
 token}`). The guest's app pins the agent connection to `f`, so the redeem can't
 be MITM'd — same trust chain as everything else in Zeon.
-
-## In the app
-
-- **Guest**: mailbox screen → "Join a friend's host" → paste the invite. Their
-  mailbox is created here and registered like a self-hosted relay (token stays
-  on their phone).
-- **Host-owner**: mailbox screen → "Host friends on my server" → enter this
-  agent's address + admin token → "Create an invite" → share the string.
 
 ## Resilience
 
