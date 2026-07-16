@@ -58,6 +58,13 @@ PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "").rstrip("/")
 # bare; the gateway only enforces it when its mint secret is configured.
 PUSH_KEY = os.environ.get("ZEON_PUSH_KEY", "")
 PUSH_DEBOUNCE_S = 5.0
+# A socket write succeeding is not delivery: a freshly-backgrounded phone
+# keeps its TCP connection open while the suspended app never reads the
+# frame. Live delivery only counts once the device acks — envelopes still
+# queued after this grace window get a gateway ping like any offline
+# delivery. Call offers use the shorter window; ringing can't wait.
+PUSH_ACK_GRACE_S = 10.0
+PUSH_ACK_GRACE_RING_S = 2.0
 
 MAX_ENVELOPE_BYTES = 64 * 1024
 MAX_QUEUE_DEPTH = 10_000
@@ -218,6 +225,12 @@ class Mailbox:
                 "SELECT body FROM envelopes ORDER BY received_at"
             ).fetchall()
         return [json.loads(r[0]) for r in rows]
+
+    def has(self, envelope_id: str) -> bool:
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM envelopes WHERE id = ?", (envelope_id,)
+            ).fetchone() is not None
 
     def delete(self, envelope_id: str) -> None:
         """Delete an acked envelope — and its blob, if it referenced one."""
@@ -417,12 +430,27 @@ async def inbox(request: Request):
         raise HTTPException(503, "mailbox full")
     # Best-effort immediate push; the row is only removed when the device acks.
     delivered_live = await link.push(envelope)
-    if not delivered_live and envelope.get("push") is not False:
+    if envelope.get("push") is not False:
         # push: false (receipts) → deliver on the next connect, don't wake the
         # phone. ring: true (call offers) → always ping, skipping the debounce.
         ring = envelope.get("ring") is True
-        asyncio.get_running_loop().create_task(_ping_gateway(ring=ring))
+        if delivered_live:
+            asyncio.get_running_loop().create_task(
+                _ping_gateway_if_unacked(envelope["id"], ring=ring))
+        else:
+            asyncio.get_running_loop().create_task(_ping_gateway(ring=ring))
     return {"status": "queued"}
+
+
+async def _ping_gateway_if_unacked(envelope_id: str, ring: bool = False) -> None:
+    """The live socket accepted the frame, but that's only TCP: a suspended
+    app never reads it and never acks, and the connection can look healthy
+    for tens of seconds before the WebSocket ping timeout notices. If the
+    envelope hasn't been acked (deleted) after a grace window, treat the
+    owner as offline and wake the device."""
+    await asyncio.sleep(PUSH_ACK_GRACE_RING_S if ring else PUSH_ACK_GRACE_S)
+    if mailbox.has(envelope_id):
+        await _ping_gateway(ring=ring)
 
 
 _last_gateway_ping = 0.0

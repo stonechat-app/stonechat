@@ -72,7 +72,11 @@ Future<void> main() async {
     onToken: chat.setPushToken,
     onWake: () {
       if (app.hasIdentity) {
-        server.refresh();
+        // onForeground connects straight to the mailbox — refresh() alone
+        // would leave us socketless whenever the hub is unreachable.
+        server
+          ..onForeground()
+          ..refresh();
         chat.retryPending();
       }
     },
@@ -132,16 +136,31 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
     } else if (!call.inCall && _callRouteUp) {
       _callRouteUp = false;
       _navKey.currentState?.pop();
+      // A call kept the mailbox socket open past `paused` (signaling rides
+      // it); if the call ends while we're still backgrounded, close it now
+      // so queued envelopes go through the push gateway.
+      if (WidgetsBinding.instance.lifecycleState !=
+          AppLifecycleState.resumed) {
+        context.read<ServerState>().onBackground();
+      }
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    final app = context.read<AppState>();
+    if (!app.hasIdentity) return;
     if (state == AppLifecycleState.resumed) {
-      final app = context.read<AppState>();
-      if (app.hasIdentity) {
-        context.read<ServerState>().refresh();
-        context.read<ChatState>().retryPending();
+      context.read<ServerState>()
+        ..onForeground()
+        ..refresh();
+      context.read<ChatState>().retryPending();
+    } else if (state == AppLifecycleState.paused) {
+      // Mid-call the app keeps running in the background and signaling
+      // (ICE, hangup) rides this socket — those envelopes are transient,
+      // never queued, so a closed socket would drop them.
+      if (!(_call?.inCall ?? false)) {
+        context.read<ServerState>().onBackground();
       }
     }
   }

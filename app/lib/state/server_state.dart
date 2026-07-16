@@ -190,6 +190,26 @@ class ServerState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// App went to background: close the socket now, while we still have a
+  /// moment of runtime, so the relay sees a clean disconnect. A suspended
+  /// app keeps its TCP connection open but never reads it — the relay's
+  /// live delivery "succeeds" and nothing wakes the phone.
+  void onBackground() {
+    _dropSocket();
+    notifyListeners();
+  }
+
+  /// Back in the foreground: reconnect from the coordinates we already
+  /// hold. refresh() alone isn't enough — it bails early when the hub is
+  /// unreachable, and the mailbox doesn't need the hub to be up.
+  void onForeground() {
+    final token = record.serverToken ?? app.externalMailboxToken;
+    final tlsFp = isExternal ? app.externalMailboxTlsFp : record.tlsFp;
+    if (isRunning && record.address != null && token != null && tlsFp != null) {
+      _ensureSocket(record.address!, token, tlsFp);
+    }
+  }
+
   /// Manual refresh (pull-to-refresh): tear the socket down and reconnect.
   /// The relay drains its queue to a fresh owner connection, so this is
   /// "check for mail now" — plus a server-record refresh for good measure.
