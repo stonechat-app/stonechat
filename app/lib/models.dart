@@ -82,15 +82,15 @@ class Contact {
         tlsFp: r['tls_fp'] as String?,
         createdAt: r['created_at'] as int,
         pinnedAt: r['pinned_at'] as int?,
-        expireTimerMs: r['expire_timer_ms'] as int? ?? 0,
-        expireTimerAt: r['expire_timer_at'] as int? ?? 0,
+        expireTimerMs: r['expire_timer_ms'] as int,
+        expireTimerAt: r['expire_timer_at'] as int,
         blockedAt: r['blocked_at'] as int?,
         mutedUntil: r['muted_until'] as int?,
         archivedAt: r['archived_at'] as int?,
         avatar: r['avatar'] == null
             ? null
             : Uint8List.fromList(r['avatar'] as List<int>),
-        profileAt: r['profile_at'] as int? ?? 0,
+        profileAt: r['profile_at'] as int,
       );
 }
 
@@ -223,14 +223,14 @@ class Message {
         senderId: r['sender_id'] as String?,
         outgoing: (r['outgoing'] as int) == 1,
         text: r['text'] as String,
-        kind: (r['kind'] as String?) ?? MessageKind.text,
+        kind: r['kind'] as String,
         mediaPath: r['media_path'] as String?,
         durationMs: r['duration_ms'] as int?,
         fileName: r['file_name'] as String?,
         sentAt: r['sent_at'] as int,
         status: r['status'] as String,
         editedAt: r['edited_at'] as int?,
-        deleted: (r['deleted'] as int? ?? 0) == 1,
+        deleted: (r['deleted'] as int) == 1,
         expiresAt: r['expires_at'] as int?,
         replyToId: r['reply_to_id'] as String?,
         replyToSender: r['reply_to_sender'] as String?,
@@ -331,8 +331,8 @@ class Group {
         version: r['version'] as int,
         createdAt: r['created_at'] as int,
         pinnedAt: r['pinned_at'] as int?,
-        expireTimerMs: r['expire_timer_ms'] as int? ?? 0,
-        expireTimerAt: r['expire_timer_at'] as int? ?? 0,
+        expireTimerMs: r['expire_timer_ms'] as int,
+        expireTimerAt: r['expire_timer_at'] as int,
         mutedUntil: r['muted_until'] as int?,
         archivedAt: r['archived_at'] as int?,
       );

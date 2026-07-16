@@ -26,7 +26,7 @@ void main() {
     expect(Message.fromRow(never.toRow()).expiresAt, isNull);
   });
 
-  test('Contact/Group rows round-trip the timer and tolerate old rows', () {
+  test('Contact/Group rows round-trip the timer', () {
     final c = Contact(
       zeonId: 'ZC-X',
       displayName: 'x',
@@ -39,14 +39,6 @@ void main() {
     final backC = Contact.fromRow(c.toRow());
     expect(backC.expireTimerMs, 86400000);
     expect(backC.expireTimerAt, 42);
-
-    // A row read before the v10 columns were backfilled defaults to off.
-    final oldRow = Map.of(c.toRow())
-      ..remove('expire_timer_ms')
-      ..remove('expire_timer_at');
-    final legacy = Contact.fromRow(oldRow);
-    expect(legacy.expireTimerMs, 0);
-    expect(legacy.expireTimerAt, 0);
 
     final g = Group(
       id: 'g1',
