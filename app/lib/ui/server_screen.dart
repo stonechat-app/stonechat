@@ -446,6 +446,12 @@ class _StatusCard extends StatelessWidget {
           Zn.amber,
           server.isExternal ? 'Disconnecting…' : 'Turning off…'
         ),
+      // The record says running, but nothing has answered at that address for
+      // a while — trust the socket, not the hub.
+      'running' when server.mailboxUnreachable => (
+          Zn.danger,
+          "Can't reach your mailbox"
+        ),
       'running' => (Zn.ok, 'Running'),
       'provisioning' => (Zn.amber, 'Setting up…'),
       'error' => (Zn.danger, 'Something went wrong'),
@@ -485,8 +491,13 @@ class _StatusCard extends StatelessWidget {
                       : _providerLabels[r.provider] ?? r.provider!),
             if (r.address != null) _kv('Address', r.address!),
             if (r.status == 'running')
-              _kv('Phone link',
-                  server.socketConnected ? 'Connected' : 'Reconnecting…'),
+              _kv(
+                  'Phone link',
+                  server.mailboxUnreachable
+                      ? 'Unreachable'
+                      : server.socketConnected
+                          ? 'Connected'
+                          : 'Reconnecting…'),
             if (r.error != null) _kv('Details', r.error!),
           ],
         ],

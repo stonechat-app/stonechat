@@ -24,7 +24,13 @@ class ServerState extends ChangeNotifier {
 
   MailboxSocket? _socket;
   Timer? _pollTimer;
+  Timer? _unreachableTimer;
+  DateTime? _downSince; // socket down continuously since — null when up
   String? _vouchedTlsFp; // fingerprint we already signed + published
+
+  /// How long the socket must stay down before we stop calling it a blip.
+  /// The socket's own backoff caps at 30s, so by now we've failed ~5 attempts.
+  static const _unreachableAfter = Duration(seconds: 30);
 
   ServerState(this.app,
       {required this.onEnvelope,
@@ -34,6 +40,17 @@ class ServerState extends ChangeNotifier {
 
   bool get isRunning => record.status == 'running';
   bool get isProvisioning => record.status == 'provisioning';
+
+  /// The mailbox is gone, whatever the hub thinks. The hub writes `external`
+  /// records as `running` once at registration and never re-checks them, so a
+  /// destroyed host box leaves `record.status` saying `running` forever — the
+  /// socket is the only liveness signal we actually have. Distinct from
+  /// `!socketConnected`, which is also true for an ordinary two-second blip.
+  bool get mailboxUnreachable {
+    final since = _downSince;
+    if (since == null || _socket == null) return false;
+    return DateTime.now().difference(since) >= _unreachableAfter;
+  }
 
   Future<void> refresh() async {
     final wasProvisioning = isProvisioning;
@@ -232,6 +249,7 @@ class ServerState extends ChangeNotifier {
       onStateChange: (connected) {
         final wasConnected = socketConnected;
         socketConnected = connected;
+        _noteSocketState(connected);
         notifyListeners();
         if (connected && !wasConnected) {
           onConnected();
@@ -240,15 +258,39 @@ class ServerState extends ChangeNotifier {
     )..connect();
   }
 
+  /// Track how long the socket has been down. The socket retries silently on
+  /// its own backoff, so without the timer nothing would notify listeners at
+  /// the moment "Reconnecting…" becomes "Unreachable".
+  void _noteSocketState(bool connected) {
+    if (connected) {
+      _downSince = null;
+      _unreachableTimer?.cancel();
+      _unreachableTimer = null;
+    } else {
+      _downSince ??= DateTime.now();
+      _unreachableTimer ??= Timer(_unreachableAfter, () {
+        _unreachableTimer = null;
+        notifyListeners();
+      });
+    }
+  }
+
+  /// Deliberate teardown (background, destroy, reset, re-pin): close first —
+  /// close() reports disconnected, which would otherwise start an unreachable
+  /// countdown for a socket we chose to drop — then clear the tracking.
   void _dropSocket() {
     _socket?.close();
     _socket = null;
     socketConnected = false;
+    _downSince = null;
+    _unreachableTimer?.cancel();
+    _unreachableTimer = null;
   }
 
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _unreachableTimer?.cancel();
     _dropSocket();
     super.dispose();
   }
