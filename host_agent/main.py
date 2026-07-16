@@ -111,6 +111,7 @@ class Store:
             """
             CREATE TABLE IF NOT EXISTS invites (
                 token       TEXT PRIMARY KEY,
+                uses        INTEGER NOT NULL,
                 uses_left   INTEGER NOT NULL,
                 expires_at  REAL NOT NULL,
                 created_at  TEXT NOT NULL
@@ -128,12 +129,6 @@ class Store:
             );
             """
         )
-        # pre-existing DBs: invites gained an original-uses column so the
-        # owner's app can show "2 of 3 uses left"
-        try:
-            self._db.execute("ALTER TABLE invites ADD COLUMN uses INTEGER")
-        except sqlite3.OperationalError:
-            pass
         self._db.commit()
 
     def add_invite(self, token: str, uses: int, ttl: float) -> None:
