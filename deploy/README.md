@@ -285,10 +285,13 @@ invites from the app ("Host friends on my server"). Friends redeem with
 
 - **The reconciler, billing, abuse handling** — the "before charging money"
   list in BUSINESS.md. Not needed for a test.
-- **A domain + HTTPS on the hub** — the app talks to it over plain
-  HTTP here. (Mailbox traffic is already pinned TLS regardless.) For anything
-  public, put the hub behind a domain with Caddy/Let's Encrypt and
-  build with `--dart-define=ZEON_HUB=https://…`.
+- **A domain + HTTPS on the hub** — the app talks to it over plain HTTP
+  unless you set one. (Mailbox traffic is already pinned TLS regardless.) For
+  anything public, point a name at the box and pass
+  `ZEON_HUB_DOMAIN=hub.example.com` to `deploy/setup.sh`: it installs Caddy,
+  which fetches and renews the certificate on its own. Then build the app with
+  `--dart-define=ZEON_HUB=https://hub.example.com`. Set the DNS record *first* —
+  Caddy proves ownership over port 80 at startup.
 
 ## Beyond a friends test
 
