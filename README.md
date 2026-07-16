@@ -100,6 +100,17 @@ host-owner — but the host-owner can see that a friend hosts there and their
 traffic metadata, like any relay operator. Details, API, and the full trust
 model: [host_agent/README.md](host_agent/README.md).
 
+### Running your own hub (a private network)
+
+The two options above keep you on the main directory, so you can still message
+everyone. If instead you want a network that depends on nobody — a company, a
+family, an experiment — you can run the hub itself:
+[docs/SELF_HOSTED_HUB.md](docs/SELF_HOSTED_HUB.md).
+
+Know the trade before you start: **there is no federation.** People on your hub
+can message each other and nobody else. Self-host your *mailbox* if what you
+want is your own infrastructure without giving up the network.
+
 ## Cloud providers
 
 The provider layer (`hub/app/providers/`) is deliberately thin:
