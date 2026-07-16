@@ -43,15 +43,19 @@ ZEON_HOST_AGENT_ADVERTISE_HOST=<your-public-ip> \
   .venv/bin/python main.py            # serves pinned TLS on :8200
 ```
 
-Keep the admin token — you need it to mint invites. Open port **8200** (and the
-mailbox container range, same as the relays) in your firewall so friends can
-reach the agent and their mailboxes.
+Keep the admin token — you need it to mint invites. Open two things in your
+firewall so friends can reach the agent and their mailboxes: port **8200**
+(the agent) and the guest mailbox range **42000–42024** (`ZEON_HOST_AGENT_PORT_BASE`
+through base + capacity − 1; guest ports are fixed, not Docker-ephemeral, so
+the rule survives reboots). Hosting from a home connection works too — forward
+those same ports on your router to this box.
 
 | Env | Default | Meaning |
 |---|---|---|
 | `ZEON_HOST_AGENT_ADMIN_TOKEN` | — (required) | Secret you hold; authorizes minting/eviction |
 | `ZEON_HOST_AGENT_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
 | `ZEON_HOST_AGENT_CAPACITY` | `25` | Max guest mailboxes on this host |
+| `ZEON_HOST_AGENT_PORT_BASE` | `42000` | First guest mailbox port; guests get `base…base+capacity−1` |
 | `ZEON_HOST_AGENT_RUNTIME` | — | Set to `runsc` for gVisor hardening |
 | `ZEON_PUSH_GATEWAY` | — | Passed through to guest mailboxes |
 | `ZEON_HOST_AGENT_PORT` | `8200` | Listen port |

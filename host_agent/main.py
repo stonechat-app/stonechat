@@ -25,6 +25,8 @@ Config (env):
     ZEON_HOST_AGENT_DB            sqlite path (default host_agent.db)
     ZEON_HOST_AGENT_TLS_DIR       cert/key dir (default: the DB's directory)
     ZEON_HOST_AGENT_CAPACITY      max guest mailboxes (default 25)
+    ZEON_HOST_AGENT_PORT_BASE     first guest mailbox port; guests are published
+                                  on base..base+capacity-1 (default 42000)
     ZEON_HOST_AGENT_IMAGE         mailbox image (default zeon-server:dev)
     ZEON_HOST_AGENT_SERVER_DIR    build context if the image is missing (default ../server)
     ZEON_HOST_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
@@ -54,6 +56,7 @@ ADVERTISE_HOST = os.environ["ZEON_HOST_AGENT_ADVERTISE_HOST"]
 DB_PATH = os.environ.get("ZEON_HOST_AGENT_DB", "host_agent.db")
 TLS_DIR = Path(os.environ.get("ZEON_HOST_AGENT_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
 CAPACITY = int(os.environ.get("ZEON_HOST_AGENT_CAPACITY", "25"))
+PORT_BASE = int(os.environ.get("ZEON_HOST_AGENT_PORT_BASE", "42000"))
 IMAGE = os.environ.get("ZEON_HOST_AGENT_IMAGE", "zeon-server:dev")
 SERVER_DIR = Path(os.environ.get("ZEON_HOST_AGENT_SERVER_DIR",
                                  str(Path(__file__).resolve().parents[1] / "server")))
@@ -208,6 +211,10 @@ class Store:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM guests").fetchone()[0]
 
+    def used_ports(self) -> set[int]:
+        with self._lock:
+            return {r["port"] for r in self._db.execute("SELECT port FROM guests")}
+
 
 # -- docker -------------------------------------------------------------------
 
@@ -226,14 +233,14 @@ def _ensure_image() -> None:
         _docker("build", "-t", IMAGE, str(SERVER_DIR))
 
 
-def _launch_container(owner_id: str, owner_token: str) -> tuple[str, int]:
+def _launch_container(owner_id: str, owner_token: str, port: int) -> str:
     _ensure_image()
     name = f"zeon-hosted-{owner_id[3:11].lower().replace('-', '')}"
     args = [
         "run", "-d",
         "--name", name,
         "--restart", "unless-stopped",
-        "-p", f"0:{SERVER_PORT}",
+        "-p", f"{port}:{SERVER_PORT}",
         "-e", f"ZEON_OWNER_ID={owner_id}",
         "-e", f"ZEON_OWNER_TOKEN={owner_token}",
         "-e", f"ZEON_PUSH_GATEWAY={PUSH_GATEWAY}",
@@ -246,12 +253,7 @@ def _launch_container(owner_id: str, owner_token: str) -> tuple[str, int]:
         args += ["--runtime", RUNTIME]
     args.append(IMAGE)
     _docker(*args)
-    info = json.loads(_docker("inspect", name))[0]
-    bindings = info["NetworkSettings"]["Ports"].get(f"{SERVER_PORT}/tcp")
-    if not bindings:
-        _docker("rm", "-f", name)
-        raise HTTPException(502, "container has no published port")
-    return name, int(bindings[0]["HostPort"])
+    return name
 
 
 def _wait_health(address: str) -> str:
@@ -274,6 +276,31 @@ def _wait_health(address: str) -> str:
 store = Store(DB_PATH)
 tls = Tls(TLS_DIR)
 app = FastAPI(title="zeon-host-agent")
+
+# Guests get fixed host ports from [PORT_BASE, PORT_BASE + CAPACITY) rather
+# than Docker-ephemeral ones: the range is known before any guest exists (so
+# firewall / home-router forwarding rules can be written once), and an
+# explicit binding is stable across daemon restarts — ephemeral ones are not,
+# which would strand the address registered in the directory after a host
+# reboot. Reservations cover the launch→health window, where the port is
+# committed but not yet in the guests table.
+_reserved_ports: set[int] = set()
+_ports_lock = threading.Lock()
+
+
+def _reserve_port() -> int:
+    with _ports_lock:
+        taken = store.used_ports() | _reserved_ports
+        for port in range(PORT_BASE, PORT_BASE + CAPACITY):
+            if port not in taken:
+                _reserved_ports.add(port)
+                return port
+    raise HTTPException(507, "no free guest port on this host")
+
+
+def _release_port(port: int) -> None:
+    with _ports_lock:
+        _reserved_ports.discard(port)
 
 
 def require_admin(authorization: str | None = Header(default=None)) -> None:
@@ -390,14 +417,18 @@ async def provision_direct(body: ProvisionIn):
 
 def _provision_guest(owner_id: str) -> dict:
     owner_token = secrets.token_urlsafe(32)
-    container_id, port = _launch_container(owner_id, owner_token)
-    address = f"https://{ADVERTISE_HOST}:{port}"
+    port = _reserve_port()
     try:
-        tls_fp = _wait_health(address)
-    except HTTPException:
-        _docker("rm", "-f", container_id)
-        raise
-    store.add_guest(owner_id, container_id, port)
+        container_id = _launch_container(owner_id, owner_token, port)
+        address = f"https://{ADVERTISE_HOST}:{port}"
+        try:
+            tls_fp = _wait_health(address)
+        except HTTPException:
+            _docker("rm", "-f", container_id)
+            raise
+        store.add_guest(owner_id, container_id, port)
+    finally:
+        _release_port(port)  # on success the guests row keeps it taken
     return {"address": address, "server_token": owner_token, "tls_fp": tls_fp}
 
 

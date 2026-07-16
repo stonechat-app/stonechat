@@ -166,8 +166,10 @@ SERVER_PORT = 8080
 TURN_PORT = 3478
 TURN_RELAY_PORTS = (49152, 65535)  # coturn's default ephemeral relay range
 HOST_AGENT_PORT = 8200
-# Docker publishes each guest mailbox on a random host port from the kernel's
-# ephemeral range — the same range the fleet hosts open (deploy/README.md).
+# The host agent publishes guest mailboxes on fixed ports from
+# ZEON_HOST_AGENT_PORT_BASE (default 42000..42000+capacity-1, inside this
+# range). The firewall rule stays the historical Docker-ephemeral range —
+# it covers the agent's range and matches what deployed VMs already have open.
 GUEST_PORT_RANGE = (32768, 60999)
 
 

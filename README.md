@@ -70,6 +70,36 @@ In the app: Mailbox → **I already run a mailbox** → enter
 `http://<your-host>:8080` + your token → Connect. Registration only succeeds
 if the mailbox at that address reports *your* Zeon ID as its owner.
 
+### Host your circle (one box, invited friends)
+
+Want to self-host for yourself **and a few friends** without each of them
+running a server? Run the **host agent** (`host_agent/`) on one box you own.
+It hosts your mailbox plus a container-per-friend — each with its own port,
+token, TLS cert, and resource caps — and it's the only thing on the box with
+Docker access; the hub never touches this machine.
+
+```bash
+cd host_agent
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+ZEON_HOST_AGENT_ADMIN_TOKEN=$(openssl rand -hex 24) \
+ZEON_HOST_AGENT_ADVERTISE_HOST=<your-public-ip> \
+  .venv/bin/python main.py            # pinned TLS on :8200
+```
+
+Open ports **8200** (the agent) and **42000–42024** (guest mailboxes) in your
+firewall or home router. In the app: Mailbox → **Host friends on my server** →
+enter the agent's address + admin token → **Create an invite** → share the
+`zeon-host:…` string. Friends install the app, forge an identity, and paste it
+under **Join a friend's host** — their mailbox appears in the directory as an
+ordinary self-hosted relay, and its token stays on their phone. Exchange Zeon
+IDs and chat.
+
+Message content stays end-to-end encrypted — unreadable even to the
+host-owner — but the host-owner can see that a friend hosts there and their
+traffic metadata, like any relay operator. Details, API, and the full trust
+model: [host_agent/README.md](host_agent/README.md).
+
 ## Cloud providers
 
 The provider layer (`hub/app/providers/`) is deliberately thin:
