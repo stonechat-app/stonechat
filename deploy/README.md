@@ -227,11 +227,8 @@ sudo ZEON_PUBLIC_IP=<HUB_IP> \
      ZEON_PUSH_MINT_SECRET=<openssl rand -hex 32, same as gateway> deploy/setup.sh
 ```
 
-Existing mailboxes keep their old (empty) gateway setting until recreated —
-have each user **Turn off → Ignite** once, or destroy/re-provision. New Ignites
-get it automatically. Verify with a message to a user whose app is fully closed.
-The same recreate rule applies when you later enable `ZEON_PUSH_MINT_SECRET`:
-old mailboxes have no push key, so the gateway will 403 them until re-Ignited.
+Mailboxes pick this up when they are provisioned, so set it before the first
+Ignite. Verify with a message to a user whose app is fully closed.
 To cut off one abusive relay: its `pk_…` id from the gateway logs → the
 `ZEON_PUSH_BLOCKLIST` file (no restart needed).
 

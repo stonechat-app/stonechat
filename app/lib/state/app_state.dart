@@ -109,17 +109,13 @@ class AppState extends ChangeNotifier {
     final secret = await _storage.read(key: 'zn_secret');
     final public = await _storage.read(key: 'zn_public');
     final storedUrl = await _storage.read(key: 'zn_hub_url');
-    // Identities are Ed25519. Anything stored without the marker is a
-    // dev-era X25519 key from before the protocol settled — unusable,
-    // treat as no identity.
-    final algo = await _storage.read(key: 'zn_algo');
 
     api = HubApi(
       baseUrl: storedUrl ?? defaultHubUrl,
       accountToken: await _storage.read(key: 'zn_token'),
     );
 
-    if (secret != null && public != null && algo == 'ed25519') {
+    if (secret != null && public != null) {
       _crypto = CryptoService.fromKeys(
         sodium,
         publicKey: base64Decode(public),
@@ -136,9 +132,6 @@ class AppState extends ChangeNotifier {
       hostAgentAdminToken = await _storage.read(key: 'zn_host_agent_token');
       hostAgentTlsFp = await _storage.read(key: 'zn_host_agent_tls_fp');
       avatar = await db.kvGet('own_avatar');
-      if (handle == null && zeonId != null) {
-        await _fetchOwnHandle(); // account predates handles — self-heal
-      }
     }
   }
 
@@ -255,18 +248,6 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  Future<void> _fetchOwnHandle() async {
-    try {
-      final entry = await api.directory(zeonId!);
-      if (entry.handle != null) {
-        handle = entry.handle;
-        await _storage.write(key: 'zn_handle', value: handle);
-      }
-    } catch (_) {
-      // offline — retry next launch
-    }
-  }
-
   // Set once by init(); createIdentity() needs it whenever onboarding is
   // (re-)entered — including via Reset identity, which does not re-run init.
   SodiumSumo? _sodium;
@@ -285,7 +266,6 @@ class AppState extends ChangeNotifier {
     await _storage.write(
         key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
-    await _storage.write(key: 'zn_algo', value: 'ed25519');
     await _storage.write(key: 'zn_id', value: result.zeonId);
     await _storage.write(key: 'zn_handle', value: result.handle);
     await _storage.write(key: 'zn_token', value: result.accountToken);
