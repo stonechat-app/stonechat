@@ -3,6 +3,10 @@ __pycache__/
 *.db
 .DS_Store
 
+# TLS keypairs. The host agent generates these into its working directory on
+# first run, so they land wherever it was started from.
+*.pem
+
 # App Store Connect credentials
 .env.appstore
 credentials/
