@@ -116,7 +116,7 @@ class _ServerScreenState extends State<ServerScreen> {
             ),
             const SizedBox(height: 20),
           ],
-          _OptionCard(
+          ZnOptionCard(
             title: 'Zeon Cloud',
             subtitle: 'We run it for you. Nothing to set up — '
                 'ready in about two minutes.',
@@ -145,7 +145,7 @@ class _ServerScreenState extends State<ServerScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          _OptionCard(
+          ZnOptionCard(
             title: "A friend's machine",
             subtitle: 'Someone you trust hosts your mailbox on their '
                 'server. You just need their invite.',
@@ -166,7 +166,7 @@ class _ServerScreenState extends State<ServerScreen> {
                     TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
               ),
               const SizedBox(height: 12),
-              _LabeledField(
+              ZnLabeledField(
                   label: 'Paste the invite here',
                   controller: _inviteInput),
               const SizedBox(height: 12),
@@ -185,7 +185,11 @@ class _ServerScreenState extends State<ServerScreen> {
                                 child:
                                     CircularProgressIndicator(strokeWidth: 2)),
                             SizedBox(width: 10),
-                            Text('Setting up on your friend\'s server…'),
+                            Flexible(
+                                child: Text(
+                                    'Setting up on your friend\'s server…',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis)),
                           ],
                         )
                       : const Text('Join with invite'),
@@ -194,7 +198,7 @@ class _ServerScreenState extends State<ServerScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          _OptionCard(
+          ZnOptionCard(
             title: 'Self-host',
             subtitle: 'Run the mailbox on your own server. '
                 'Free, forever.',
@@ -215,9 +219,9 @@ class _ServerScreenState extends State<ServerScreen> {
                     TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
               ),
               const SizedBox(height: 12),
-              _LabeledField(label: 'Address', controller: _extAddress),
+              ZnLabeledField(label: 'Address', controller: _extAddress),
               const SizedBox(height: 12),
-              _LabeledField(label: 'Mailbox token', controller: _extToken),
+              ZnLabeledField(label: 'Mailbox token', controller: _extToken),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
@@ -505,120 +509,6 @@ class _StatusCard extends StatelessWidget {
         ),
       );
 }
-
-/// One of the three big choices: a tappable card with a radio dot; the
-/// selected one expands to show its form and action button. Once a mailbox
-/// exists the cards lock: [active] marks where it lives (check instead of
-/// radio), [dimmed] grays out the alternatives — kept visible so users know
-/// they exist; their onTap explains how to switch.
-class _OptionCard extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final bool selected;
-  final bool active;
-  final bool dimmed;
-  final VoidCallback? onTap;
-  final List<Widget> children;
-
-  const _OptionCard({
-    required this.title,
-    required this.subtitle,
-    required this.selected,
-    this.active = false,
-    this.dimmed = false,
-    required this.onTap,
-    required this.children,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final Widget marker = active
-        ? const Icon(Icons.check_circle, color: Zn.ok, size: 18)
-        : Container(
-            width: 16,
-            height: 16,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                  color: selected ? Zn.orange : Zn.line, width: 1.5),
-            ),
-            child: selected
-                ? Center(
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                          color: Zn.orange, shape: BoxShape.circle),
-                    ),
-                  )
-                : null,
-          );
-
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(Zn.radius),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: active
-              ? Zn.ok.withValues(alpha: 0.05)
-              : selected
-                  ? Zn.orange.withValues(alpha: 0.06)
-                  : Zn.surface,
-          borderRadius: BorderRadius.circular(Zn.radius),
-          border: Border.all(
-              color: active
-                  ? Zn.ok
-                  : selected
-                      ? Zn.orange
-                      : Zn.line),
-        ),
-        child: Opacity(
-          opacity: dimmed ? 0.45 : 1,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: marker,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(title,
-                            style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                                color: selected || active
-                                    ? Zn.text
-                                    : Zn.muted)),
-                        const SizedBox(height: 3),
-                        Text(subtitle,
-                            style: const TextStyle(
-                                color: Zn.muted, fontSize: 12.5, height: 1.4)),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              if (selected && children.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                ...children,
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// Entry point to the invites screen — hosts (self-host or Sovereign) can
 /// invite friends onto their machine and track who accepted.
 class _InvitesEntry extends StatelessWidget {
@@ -666,24 +556,3 @@ class _InvitesEntry extends StatelessWidget {
   }
 }
 
-class _LabeledField extends StatelessWidget {
-  final String label;
-  final TextEditingController controller;
-
-  const _LabeledField({required this.label, required this.controller});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(color: Zn.muted, fontSize: 12)),
-        const SizedBox(height: 6),
-        TextField(
-          controller: controller,
-          style: Zn.mono(size: 13, color: Zn.text),
-        ),
-      ],
-    );
-  }
-}

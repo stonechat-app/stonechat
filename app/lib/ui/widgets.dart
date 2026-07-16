@@ -204,3 +204,137 @@ void showZnSnack(BuildContext context, String message, {bool error = false}) {
     ),
   );
 }
+
+/// A selectable "where does your mailbox live" card: radio-style marker,
+/// title + subtitle, and an expandable body shown while selected. Used by
+/// the mailbox screen and onboarding so the two stay visually identical.
+class ZnOptionCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final bool active;
+  final bool dimmed;
+  final VoidCallback? onTap;
+  final List<Widget> children;
+
+  const ZnOptionCard({
+    super.key,
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    this.active = false,
+    this.dimmed = false,
+    required this.onTap,
+    required this.children,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget marker = active
+        ? const Icon(Icons.check_circle, color: Zn.ok, size: 18)
+        : Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                  color: selected ? Zn.orange : Zn.line, width: 1.5),
+            ),
+            child: selected
+                ? Center(
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                          color: Zn.orange, shape: BoxShape.circle),
+                    ),
+                  )
+                : null,
+          );
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(Zn.radius),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: active
+              ? Zn.ok.withValues(alpha: 0.05)
+              : selected
+                  ? Zn.orange.withValues(alpha: 0.06)
+                  : Zn.surface,
+          borderRadius: BorderRadius.circular(Zn.radius),
+          border: Border.all(
+              color: active
+                  ? Zn.ok
+                  : selected
+                      ? Zn.orange
+                      : Zn.line),
+        ),
+        child: Opacity(
+          opacity: dimmed ? 0.45 : 1,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: marker,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title,
+                            style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: selected || active
+                                    ? Zn.text
+                                    : Zn.muted)),
+                        const SizedBox(height: 3),
+                        Text(subtitle,
+                            style: const TextStyle(
+                                color: Zn.muted, fontSize: 12.5, height: 1.4)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              if (selected && children.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                ...children,
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ZnLabeledField extends StatelessWidget {
+  final String label;
+  final TextEditingController controller;
+
+  const ZnLabeledField({super.key, required this.label, required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: Zn.muted, fontSize: 12)),
+        const SizedBox(height: 6),
+        TextField(
+          controller: controller,
+          style: Zn.mono(size: 13, color: Zn.text),
+        ),
+      ],
+    );
+  }
+}
