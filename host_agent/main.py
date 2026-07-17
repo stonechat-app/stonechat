@@ -63,6 +63,9 @@ SERVER_DIR = Path(os.environ.get("ZEON_HOST_AGENT_SERVER_DIR",
 RUNTIME = os.environ.get("ZEON_HOST_AGENT_RUNTIME", "")
 PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "")
 SERVER_PORT = 8080
+# Wire protocol version (PROTOCOL.md "Versioning"), reported in /health so a
+# prober can see what this host agent speaks.
+WIRE_VERSION = 1
 
 FLEET_LABEL = "zeon.hosted=1"
 MEMORY_LIMIT = "192m"
@@ -320,12 +323,12 @@ class ProvisionIn(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "guests": store.guest_count(),
-        "capacity": CAPACITY,
-        "tls_fp": tls.fingerprint_b64,
-    }
+    """Unauthenticated liveness + pinning info only. Guest count and capacity
+    are occupancy metadata a stranger shouldn't be able to poll — the
+    host-owner reads them through the admin-authed /v1/guests instead
+    (PROTOCOL.md "Host agent"). tls_fp stays: it's the certificate hash,
+    already observable from the TLS handshake."""
+    return {"status": "ok", "v": WIRE_VERSION, "tls_fp": tls.fingerprint_b64}
 
 
 def _encode_invite(token: str) -> str:

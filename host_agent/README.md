@@ -92,7 +92,7 @@ WantedBy=multi-user.target
 ```bash
 sudo mkdir -p /var/lib/zeon
 sudo systemctl daemon-reload && sudo systemctl enable --now zeon-host-agent
-curl -sk https://<your-ip>:8200/health    # → {"status":"ok","guests":0,...}
+curl -sk https://<your-ip>:8200/health    # → {"status":"ok","v":1,"tls_fp":"..."}
 ```
 
 The first mailbox provision builds the `zeon-server` image from
@@ -163,7 +163,7 @@ Guests never call the admin endpoints; the app does the redeem for them.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/health` | none | `{guests, capacity, tls_fp}` |
+| GET | `/health` | none | Liveness + pinning: `{status, v, tls_fp}`. Guest count/capacity are admin-only (see `/v1/guests`). |
 | POST | `/v1/invite` | admin | `{uses, ttl_hours}` → `{invite}` — the string you share |
 | GET | `/v1/invites` | admin | every minted invite with status: `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by}]}` |
 | POST | `/v1/redeem` | none | `{invite: <token>, owner_id}` → `{address, server_token, tls_fp}` |
