@@ -108,7 +108,8 @@ class Phone:
             return envelope
 
     def queue_depth(self):
-        return httpx.get(f"{self.server['address']}/health").json()["queued"]
+        return httpx.get(f"{self.server['address']}/status",
+                         params={"token": self.server["server_token"]}).json()["queued"]
 
     def destroy(self):
         r = httpx.delete(f"{HUB}/v1/server", headers=self.auth, timeout=30)

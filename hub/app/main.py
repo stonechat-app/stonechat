@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -48,6 +48,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 REAP_RETENTION_DAYS = int(os.environ.get("ZEON_REAP_RETENTION_DAYS", "14"))
 REAP_INTERVAL_S = int(os.environ.get("ZEON_REAP_INTERVAL_S", "3600"))
 
+# Wire protocol version served by hub.zeonchat.com (PROTOCOL.md "Versioning").
+# Clients send theirs in X-Zeon-Version; anything below the minimum is told to
+# upgrade rather than served a contract it can't speak. An absent header is a
+# legacy (pre-versioning) client and is allowed through.
+WIRE_VERSION = 1
+MIN_WIRE_VERSION = 1
+
+
+async def require_wire_version(x_zeon_version: int | None = Header(default=None)):
+    if x_zeon_version is not None and x_zeon_version < MIN_WIRE_VERSION:
+        raise HTTPException(
+            426,
+            {"code": "upgrade_required", "min_version": MIN_WIRE_VERSION,
+             "message": "This app version is no longer supported — please update."},
+        )
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
@@ -59,7 +75,8 @@ async def _lifespan(app: FastAPI):
         reaper.cancel()
 
 
-app = FastAPI(title="zeon-hub", lifespan=_lifespan)
+app = FastAPI(title="zeon-hub", lifespan=_lifespan,
+              dependencies=[Depends(require_wire_version)])
 app.include_router(billing_router)
 
 # Browser access is only the landing page's activation lookup (GET); the
@@ -219,8 +236,9 @@ async def create_server(body: ServerIn, user: User, background: BackgroundTasks)
 @app.post("/v1/server/external", status_code=201)
 async def register_external_server(body: ExternalServerIn, user: User):
     """The free tier: the user runs their own relay anywhere and we list it in
-    the directory. Ownership is proven, not claimed: the relay at that address
-    must report this user's Zeon ID as its owner. We never see their token."""
+    the directory. Ownership is proven, not claimed: the relay confirms this
+    user's Zeon ID via /owner (it never exposes its owner to anonymous callers,
+    so this probe leaks nothing). We never see their token."""
     address = body.address.strip().rstrip("/")
     if not re.match(r"^https://[a-zA-Z0-9.\-:\[\]]+$", address):
         raise HTTPException(400, "address must look like https://host[:port]")
@@ -229,21 +247,26 @@ async def register_external_server(body: ExternalServerIn, user: User):
         # verify=False: relay certs are self-signed by design; the client-side
         # pin (owner-signed fingerprint) is the real trust anchor, not this probe.
         async with httpx.AsyncClient(timeout=8, verify=False) as client:
-            resp = await client.get(f"{address}/health")
-        health = resp.json()
+            health = (await client.get(f"{address}/health")).json()
+            # Confirm ownership by asking the box to agree to the caller's own
+            # ID — it answers 200/404, never handing back an identity.
+            owner_ok = (await client.get(
+                f"{address}/owner",
+                params={"zeon_id": user["zeon_id"]})).status_code == 200
     except Exception:
         raise HTTPException(
             400,
             "couldn't reach a Zeon mailbox at that address — it must be "
             "reachable from the internet",
         )
-    if health.get("owner") != user["zeon_id"]:
+    if not owner_ok:
         raise HTTPException(400, "that mailbox belongs to a different Zeon ID")
 
-    if not store.create_external_server(user["zeon_id"], address, health.get("tls_fp")):
+    tls_fp = health.get("tls_fp")
+    if not store.create_external_server(user["zeon_id"], address, tls_fp):
         raise HTTPException(409, "you already have a server (one per user)")
     log.info("external relay registered for %s", user["zeon_id"][:12])
-    return {"status": "running", "address": address, "tls_fp": health.get("tls_fp")}
+    return {"status": "running", "address": address, "tls_fp": tls_fp}
 
 
 @app.post("/v1/server/tls")

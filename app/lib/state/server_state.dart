@@ -119,11 +119,11 @@ class ServerState extends ChangeNotifier {
     busy = true;
     notifyListeners();
     try {
-      final probe = await observeMailbox(address);
+      final probe = await observeMailbox(address, app.zeonId!);
       if (probe == null) {
         throw ApiException("Couldn't reach a Zeon mailbox at that address");
       }
-      if (probe.owner != app.zeonId) {
+      if (!probe.ownerMatches) {
         throw ApiException('That mailbox belongs to a different Zeon ID');
       }
       await app.api.registerExternalServer(address);

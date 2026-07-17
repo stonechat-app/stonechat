@@ -31,9 +31,13 @@ http.Client pinnedClient(String tlsFpB64) =>
     IOClient(_pinnedHttpClient(tlsFpB64));
 
 /// Trust-on-first-use probe for a relay the caller themself provisioned:
-/// observe the certificate, report owner + fingerprint. Used only to
-/// bootstrap self-hosted mailboxes — never for peers.
-Future<({String owner, String tlsFp})?> observeMailbox(String address) async {
+/// observe the certificate for pinning, and confirm the box serves the
+/// expected owner by asking it to agree to our own Zeon ID (the mailbox never
+/// hands an identity back — /owner answers yes/no). Used only to bootstrap
+/// self-hosted mailboxes — never for peers.
+/// Returns `(tlsFp, ownerMatches)`, or null when the box is unreachable.
+Future<({String tlsFp, bool ownerMatches})?> observeMailbox(
+    String address, String expectedZeonId) async {
   String? seenFp;
   final client = HttpClient()
     ..badCertificateCallback = (cert, _, _) {
@@ -41,13 +45,16 @@ Future<({String owner, String tlsFp})?> observeMailbox(String address) async {
       return true;
     };
   try {
-    final r = await IOClient(client)
+    final io = IOClient(client);
+    final health = await io
         .get(Uri.parse('$address/health'))
         .timeout(const Duration(seconds: 8));
-    if (r.statusCode != 200 || seenFp == null) return null;
-    final owner =
-        (jsonDecode(r.body) as Map<String, dynamic>)['owner'] as String?;
-    return owner == null ? null : (owner: owner, tlsFp: seenFp!);
+    if (health.statusCode != 200 || seenFp == null) return null;
+    final owner = await io
+        .get(Uri.parse('$address/owner')
+            .replace(queryParameters: {'zeon_id': expectedZeonId}))
+        .timeout(const Duration(seconds: 8));
+    return (tlsFp: seenFp!, ownerMatches: owner.statusCode == 200);
   } catch (_) {
     return null;
   } finally {
@@ -288,13 +295,14 @@ Future<void> uploadPrekeys(String serverAddress, String token, String tlsFp,
   }
 }
 
-/// Our own mailbox's prekey inventory, from /health (no auth needed).
+/// Our own mailbox's prekey inventory, from the owner-authenticated /status.
 Future<({bool spk, int opks})?> mailboxPrekeyStatus(
-    String address, String tlsFp) async {
+    String address, String tlsFp, String token) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$address/health'))
+        .get(Uri.parse('$address/status')
+            .replace(queryParameters: {'token': token}))
         .timeout(const Duration(seconds: 8));
     if (r.statusCode != 200) return null;
     final prekeys =

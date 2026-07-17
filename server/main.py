@@ -72,6 +72,10 @@ MAX_BLOB_BYTES = 64 * 1024 * 1024  # videos/documents; mirrored in the app
 MAX_TOTAL_BLOB_BYTES = 1024 * 1024 * 1024
 BLOB_TTL_SECONDS = 14 * 24 * 3600
 MAX_OPKS = 256
+# Wire protocol version (PROTOCOL.md "Versioning"). Bumped on any breaking
+# change to envelopes or API shapes; surfaced in /health and /status so peers
+# and the hub can see what this box speaks.
+WIRE_VERSION = 1
 REQUIRED_FIELDS = {"v", "id", "to", "sealed"}
 BLOB_ID_RE = re.compile(r"^[a-f0-9-]{36}$")
 
@@ -81,8 +85,8 @@ def validate_envelope(envelope: dict) -> None:
     and session header are all inside it. Raises HTTPException."""
     if not isinstance(envelope, dict) or not REQUIRED_FIELDS.issubset(envelope):
         raise HTTPException(400, "missing fields")
-    if envelope["v"] != 1:
-        raise HTTPException(400, "unsupported protocol version (v1 only)")
+    if envelope["v"] != WIRE_VERSION:
+        raise HTTPException(400, f"unsupported protocol version (need v{WIRE_VERSION})")
     if not isinstance(envelope["id"], str) or not envelope["id"]:
         raise HTTPException(400, "bad id")
     if not isinstance(envelope["sealed"], str) or not envelope["sealed"]:
@@ -366,13 +370,42 @@ app = FastAPI(title="zeon-routing-server", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
+    """Unauthenticated liveness only — safe for anyone to poll. Identity,
+    queue depth and prekey inventory used to live here; they moved behind the
+    owner token on /status so a stranger who knows this box's address can't
+    map it to its owner or watch its activity (PROTOCOL.md "Routing server
+    API"). tls_fp stays: it is the certificate hash, already public in the
+    directory and observable from the TLS handshake itself."""
+    return {"status": "ok", "v": WIRE_VERSION, "tls_fp": tls.fingerprint_b64}
+
+
+@app.get("/status")
+async def status(token: str = ""):
+    """Owner-only mailbox state: queue depth and prekey inventory. Behind the
+    owner token because both are activity metadata no stranger should read."""
+    if token != OWNER_TOKEN:
+        raise HTTPException(401, "owner only")
     return {
-        "owner": OWNER_ID,
         "status": "ok",
+        "v": WIRE_VERSION,
         "queued": mailbox.depth(),
         "prekeys": mailbox.prekey_status(),
-        "tls_fp": tls.fingerprint_b64,
     }
+
+
+@app.get("/owner")
+async def owner_check(zeon_id: str = ""):
+    """Confirm — never reveal — this mailbox's owner. A caller that already
+    knows the Zeon ID (the hub verifying an external relay, or the owner's own
+    app) checks that the box agrees; a stranger scanning addresses learns
+    nothing, since the id must be supplied and only an exact 160-bit match
+    returns 200. Replaces the old readable `owner` field on /health, which let
+    anyone map address→identity (PROTOCOL.md "Routing server API")."""
+    if not zeon_id:
+        raise HTTPException(400, "zeon_id query parameter required")
+    if zeon_id != OWNER_ID:
+        raise HTTPException(404, "not this mailbox's owner")
+    return {"owner_matches": True}
 
 
 @app.post("/prekeys")

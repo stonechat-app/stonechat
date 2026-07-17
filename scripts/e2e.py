@@ -425,7 +425,8 @@ class Phone:
             return envelope
 
     def queue_depth(self):
-        return MX.get(f"{self.server['address']}/health").json()["queued"]
+        return MX.get(f"{self.server['address']}/status",
+                      params={"token": self.server["server_token"]}).json()["queued"]
 
     def destroy(self):
         r = httpx.delete(f"{HUB}/v1/server", headers=self.auth, timeout=30)
@@ -486,7 +487,8 @@ def main():
     print("3a2) publish prekeys — mailboxes serve public halves only")
     alice.upload_prekeys()
     bob.upload_prekeys()
-    health = MX.get(f"{bob.server['address']}/health").json()
+    health = MX.get(f"{bob.server['address']}/status",
+                    params={"token": bob.server["server_token"]}).json()
     assert health["prekeys"]["spk"] is True
     opks_before = health["prekeys"]["opks"]
     assert opks_before == 8
@@ -537,8 +539,12 @@ def main():
     r = httpx.post(f"{HUB}/v1/server", headers=carol.auth, json=fleet_req)
     r.raise_for_status()
     carol.wait_running()
-    health = MX.get(f"{carol.server['address']}/health").json()
-    assert health["owner"] == carol.zeon_id
+    assert MX.get(f"{carol.server['address']}/owner",
+                  params={"zeon_id": carol.zeon_id}).status_code == 200, \
+        "mailbox must confirm its own owner"
+    assert MX.get(f"{carol.server['address']}/owner",
+                  params={"zeon_id": "ZC-NOT-THE-OWNER"}).status_code == 404, \
+        "mailbox must not confirm a stranger's ID (no address→identity leak)"
     carol.destroy()
     assert httpx.get(f"{HUB}/v1/server", headers=carol.auth).json()["status"] == "none"
 
@@ -656,7 +662,7 @@ def main():
             "redeem fingerprint must match the guest mailbox's live cert"
 
         # frank connects it exactly like a self-hosted relay: the hub
-        # proves ownership via /health, the token never leaves frank's device
+        # proves ownership via /owner, the token never leaves frank's device
         frank.server = {"address": hosted["address"],
                         "server_token": hosted["server_token"], "status": "running"}
         httpx.post(f"{HUB}/v1/server/external", headers=frank.auth,
