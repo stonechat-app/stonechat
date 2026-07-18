@@ -201,11 +201,10 @@ class Phone:
         r.raise_for_status()
         data = r.json()
         self.zeon_id, self.token = data["zeon_id"], data["account_token"]
-        self.handle = data["handle"]
         expected = zeon_id_from_pubkey(bytes(self.identity.verify_key))
         assert self.zeon_id == expected, "server-derived ID != client-derived ID"
-        assert self.handle.startswith("zn-"), f"bad handle: {self.handle}"
-        print(f"  {self.name}: {self.zeon_id} ({self.handle})")
+        assert "handle" not in data, "handles were removed; register must not return one"
+        print(f"  {self.name}: {self.zeon_id}")
 
     @property
     def auth(self):
@@ -447,13 +446,11 @@ def main():
     assert entry["server"] is None
     lower = bob.zeon_id.lower().replace("-", "")
     assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
+    assert "handle" not in entry, "directory must not return a handle"
 
-    print("2b) handle lookup resolves to the same record")
-    by_handle = httpx.get(f"{HUB}/v1/directory/{bob.handle.upper()}").json()
-    assert by_handle["zeon_id"] == bob.zeon_id
-    assert by_handle["pubkey"] == bob.pubkey_b64
-    assert by_handle["handle"] == bob.handle
-    assert httpx.get(f"{HUB}/v1/directory/zn-no-such-handle").status_code == 404
+    print("2b) lookup is ID-only — no enumerable handle namespace")
+    assert httpx.get(f"{HUB}/v1/directory/zn-palm-dog-cherry").status_code == 400, \
+        "handle-form lookups must be rejected, not resolved"
 
     print("3) provision relays (local docker)")
     alice.provision()

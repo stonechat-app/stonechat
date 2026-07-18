@@ -32,7 +32,6 @@ import os
 from .billing import router as billing_router
 from .deps import User, store
 from .identity import PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
-from .words import looks_like_handle, normalize_handle
 from .providers import (
     MachineSpec,
     ProviderError,
@@ -152,35 +151,29 @@ async def register(body: RegisterIn):
 
     zeon_id = zeon_id_from_pubkey(pubkey)
     token = secrets.token_urlsafe(32)
-    handle = store.create_user(zeon_id, body.pubkey, token)
-    if handle is None:
+    if not store.create_user(zeon_id, body.pubkey, token):
         raise HTTPException(409, "this key is already registered")
-    log.info("registered %s (%s)", zeon_id[:12], handle)
-    return {"zeon_id": zeon_id, "handle": handle, "account_token": token}
+    log.info("registered %s", zeon_id[:12])
+    return {"zeon_id": zeon_id, "account_token": token}
 
 
-@app.get("/v1/directory/{id_or_handle}")
-async def directory(id_or_handle: str):
-    """Resolve either form: a ZC- cryptographic ID or a zn-word-word-word
-    handle. Clients MUST still verify the returned pubkey hashes to the
-    returned zeon_id — handles are directory-trust, the ID is not."""
-    if looks_like_handle(id_or_handle):
-        user = store.user_by_handle(normalize_handle(id_or_handle))
-        if not user:
-            raise HTTPException(404, "unknown handle")
-    else:
-        try:
-            canonical = normalize_zeon_id(id_or_handle)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        user = store.user_by_id(canonical)
-        if not user:
-            raise HTTPException(404, "unknown Zeon ID")
+@app.get("/v1/directory/{zeon_id}")
+async def directory(zeon_id: str):
+    """Resolve a ZC- cryptographic ID to its record. Lookup is by full ID
+    only — there is no enumerable handle namespace (a Zeon ID is a 160-bit
+    commitment, not walkable). Clients MUST still verify the returned pubkey
+    hashes to the returned zeon_id; the directory is untrusted."""
+    try:
+        canonical = normalize_zeon_id(zeon_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    user = store.user_by_id(canonical)
+    if not user:
+        raise HTTPException(404, "unknown Zeon ID")
 
     server = store.server_for(user["zeon_id"])
     return {
         "zeon_id": user["zeon_id"],
-        "handle": user["handle"],
         "pubkey": user["pubkey"],
         "server": (
             {

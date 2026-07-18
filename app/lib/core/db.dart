@@ -40,7 +40,6 @@ class ChatDb {
           CREATE TABLE contacts (
             zeon_id        TEXT PRIMARY KEY,
             display_name   TEXT NOT NULL,
-            handle         TEXT,
             pubkey         TEXT NOT NULL,
             status         TEXT NOT NULL,
             server_address TEXT,

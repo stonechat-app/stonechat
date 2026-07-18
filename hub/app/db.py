@@ -17,8 +17,6 @@ import threading
 import uuid
 from datetime import datetime, timezone
 
-from .words import candidate_handles
-
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
@@ -39,7 +37,6 @@ class Store:
                 zeon_id    TEXT PRIMARY KEY,
                 pubkey     TEXT NOT NULL,          -- base64
                 token_hash TEXT NOT NULL UNIQUE,
-                handle     TEXT NOT NULL UNIQUE,   -- zn-word-word-word
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS servers (
@@ -86,31 +83,21 @@ class Store:
         )
         self._db.commit()
 
-    def _free_handle(self, zeon_id: str) -> str:
-        for handle in candidate_handles(zeon_id):
-            taken = self._db.execute(
-                "SELECT 1 FROM users WHERE handle = ?", (handle,)
-            ).fetchone()
-            if not taken:
-                return handle
-        raise RuntimeError("unreachable")  # generator is infinite
-
     # -- users ---------------------------------------------------------------
 
-    def create_user(self, zeon_id: str, pubkey_b64: str, token: str) -> str | None:
-        """Returns the assigned handle, or None if the key is already registered."""
+    def create_user(self, zeon_id: str, pubkey_b64: str, token: str) -> bool:
+        """True on success, False if the key is already registered."""
         with self._lock:
-            handle = self._free_handle(zeon_id)
             try:
                 self._db.execute(
-                    "INSERT INTO users (zeon_id, pubkey, token_hash, handle, created_at)"
-                    " VALUES (?, ?, ?, ?, ?)",
-                    (zeon_id, pubkey_b64, hash_token(token), handle, _now()),
+                    "INSERT INTO users (zeon_id, pubkey, token_hash, created_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    (zeon_id, pubkey_b64, hash_token(token), _now()),
                 )
                 self._db.commit()
-                return handle
+                return True
             except sqlite3.IntegrityError:
-                return None
+                return False
 
     def user_by_token(self, token: str) -> dict | None:
         with self._lock:
@@ -123,13 +110,6 @@ class Store:
         with self._lock:
             row = self._db.execute(
                 "SELECT * FROM users WHERE zeon_id = ?", (zeon_id,)
-            ).fetchone()
-        return dict(row) if row else None
-
-    def user_by_handle(self, handle: str) -> dict | None:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM users WHERE handle = ?", (handle,)
             ).fetchone()
         return dict(row) if row else None
 

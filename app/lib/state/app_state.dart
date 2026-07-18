@@ -23,7 +23,6 @@ class AppState extends ChangeNotifier {
   late final HubApi api;
   CryptoService? _crypto;
   String? zeonId;
-  String? handle; // zn-word-word-word
   String? displayName;
   // Own profile photo (raw image bytes, sender-scaled — see ChatState
   // maxAvatarBytes). Lives in the encrypted DB, not the keystore: too big
@@ -122,7 +121,6 @@ class AppState extends ChangeNotifier {
         secretKey: base64Decode(secret),
       );
       zeonId = await _storage.read(key: 'zn_id');
-      handle = await _storage.read(key: 'zn_handle');
       displayName = await _storage.read(key: 'zn_name');
       externalMailboxToken = await _storage.read(key: 'zn_ext_token');
       externalMailboxTlsFp = await _storage.read(key: 'zn_ext_tls_fp');
@@ -179,7 +177,6 @@ class AppState extends ChangeNotifier {
     await db.wipe();
     _crypto = null;
     zeonId = null;
-    handle = null;
     displayName = null;
     avatar = null; // db.wipe() dropped the kv row
     externalMailboxToken = null;
@@ -267,14 +264,12 @@ class AppState extends ChangeNotifier {
         key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
     await _storage.write(key: 'zn_id', value: result.zeonId);
-    await _storage.write(key: 'zn_handle', value: result.handle);
     await _storage.write(key: 'zn_token', value: result.accountToken);
     await _storage.write(key: 'zn_name', value: name);
     await _storage.write(key: 'zn_hub_url', value: hubUrl);
 
     _crypto = crypto;
     zeonId = result.zeonId;
-    handle = result.handle;
     displayName = name;
     notifyListeners();
   }

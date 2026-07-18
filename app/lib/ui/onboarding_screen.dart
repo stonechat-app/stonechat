@@ -34,8 +34,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
-        builder: (_) => _CodeRevealDialog(
-            handle: app.handle ?? '', zeonId: app.zeonId ?? ''),
+        builder: (_) => _CodeRevealDialog(zeonId: app.zeonId ?? ''),
       );
       if (mounted) {
         Navigator.pushReplacementNamed(context, '/mailbox-setup');
@@ -133,9 +132,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 }
 
 class _CodeRevealDialog extends StatelessWidget {
-  final String handle;
   final String zeonId;
-  const _CodeRevealDialog({required this.handle, required this.zeonId});
+  const _CodeRevealDialog({required this.zeonId});
 
   @override
   Widget build(BuildContext context) {
@@ -151,13 +149,14 @@ class _CodeRevealDialog extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SelectableText(handle,
+          SelectableText(zeonId,
               style:
-                  Zn.mono(size: 20, color: Zn.orange, weight: FontWeight.w700)),
+                  Zn.mono(size: 14, color: Zn.orange, weight: FontWeight.w700)),
           const SizedBox(height: 12),
           const Text(
-            'Three words — that\'s how friends add you. Share it freely: '
-            'it says nothing about who you are.',
+            'This is your code — friends add you by scanning your QR or '
+            'tapping your invite link. Share it freely: it says nothing '
+            'about who you are.',
             style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
           ),
         ],
@@ -165,7 +164,7 @@ class _CodeRevealDialog extends StatelessWidget {
       actions: [
         TextButton(
           onPressed: () {
-            Clipboard.setData(ClipboardData(text: handle));
+            Clipboard.setData(ClipboardData(text: zeonId));
             showZnSnack(context, 'Copied');
           },
           child: const Text('Copy'),

@@ -12,7 +12,6 @@ class ContactStatus {
 class Contact {
   final String zeonId;
   String displayName;
-  final String? handle; // zn-word-word-word, from the directory
   final String pubkeyB64;
   String status;
   String? serverAddress; // last known, refreshed from directory on demand
@@ -30,7 +29,6 @@ class Contact {
   Contact({
     required this.zeonId,
     required this.displayName,
-    this.handle,
     required this.pubkeyB64,
     required this.status,
     this.serverAddress,
@@ -56,7 +54,6 @@ class Contact {
   Map<String, Object?> toRow() => {
         'zeon_id': zeonId,
         'display_name': displayName,
-        'handle': handle,
         'pubkey': pubkeyB64,
         'status': status,
         'server_address': serverAddress,
@@ -75,7 +72,6 @@ class Contact {
   factory Contact.fromRow(Map<String, Object?> r) => Contact(
         zeonId: r['zeon_id'] as String,
         displayName: r['display_name'] as String,
-        handle: r['handle'] as String?,
         pubkeyB64: r['pubkey'] as String,
         status: r['status'] as String,
         serverAddress: r['server_address'] as String?,

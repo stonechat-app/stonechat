@@ -104,9 +104,8 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                           title: Text(c.displayName,
                               style:
                                   const TextStyle(fontWeight: FontWeight.w600)),
-                          subtitle: c.handle == null
-                              ? null
-                              : Text(c.handle!, style: Zn.mono(size: 10)),
+                          subtitle: Text(c.zeonId.substring(0, 12),
+                              style: Zn.mono(size: 10)),
                         ),
                     ],
                   ),

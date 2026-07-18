@@ -301,7 +301,6 @@ class ChatState extends ChangeNotifier {
       if (!vouched) {
         return DirectoryEntry(
           zeonId: entry.zeonId,
-          handle: entry.handle,
           pubkeyB64: entry.pubkeyB64,
           // no owner-signed transport key yet → unreachable, not unpinned
         );
@@ -685,14 +684,9 @@ class ChatState extends ChangeNotifier {
     if (input.isEmpty) {
       throw const FormatException('Enter a Zeon code');
     }
-    // Full IDs get local checksum validation; anything else is treated as a
-    // handle and resolved by the directory.
-    final String query;
-    if (input.toUpperCase().replaceAll(RegExp(r'[\s-]'), '').startsWith('ZC')) {
-      query = app.crypto.normalizeZeonId(input);
-    } else {
-      query = input.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
-    }
+    // Lookup is by full ZC- ID only (there are no handles). normalizeZeonId
+    // validates the checksum locally and throws FormatException on garbage.
+    final query = app.crypto.normalizeZeonId(input);
 
     final entry = await _resolve(query);
     if (entry.zeonId == app.zeonId) {
@@ -703,8 +697,7 @@ class ChatState extends ChangeNotifier {
     }
     final contact = Contact(
       zeonId: entry.zeonId,
-      displayName: entry.handle ?? entry.zeonId.substring(3, 12),
-      handle: entry.handle,
+      displayName: entry.zeonId.substring(3, 12),
       pubkeyB64: entry.pubkeyB64,
       status: ContactStatus.pendingOut,
       serverAddress: entry.serverAddress,
@@ -1969,9 +1962,7 @@ class ChatState extends ChangeNotifier {
         contact = Contact(
           zeonId: envelope.from,
           displayName: (payload['display_name'] as String?) ??
-              senderEntry?.handle ??
               envelope.from.substring(3, 12),
-          handle: senderEntry?.handle,
           pubkeyB64: pubkeyB64,
           status: ContactStatus.pendingIn,
           serverAddress: senderEntry?.serverAddress,

@@ -80,7 +80,6 @@ class ApiException implements Exception {
 
 class DirectoryEntry {
   final String zeonId;
-  final String? handle;
   final String pubkeyB64;
   final String? serverAddress; // null → peer's mailbox is off right now
   final String? serverTlsFp; // pinned cert fingerprint…
@@ -88,7 +87,6 @@ class DirectoryEntry {
 
   DirectoryEntry(
       {required this.zeonId,
-      this.handle,
       required this.pubkeyB64,
       this.serverAddress,
       this.serverTlsFp,
@@ -143,26 +141,25 @@ class HubApi {
     return Future.value(parse(body as Map<String, dynamic>));
   }
 
-  Future<({String zeonId, String handle, String accountToken})> register(
+  Future<({String zeonId, String accountToken})> register(
       String pubkeyB64) async {
     final r = await http.post(Uri.parse('$baseUrl/v1/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'pubkey': pubkeyB64}));
     return _check(r, (j) => (
           zeonId: j['zeon_id'] as String,
-          handle: j['handle'] as String,
           accountToken: j['account_token'] as String,
         ));
   }
 
-  /// Accepts either form: full ZC- ID or zn-word-word-word handle.
-  Future<DirectoryEntry> directory(String idOrHandle) async {
-    final r = await http.get(Uri.parse('$baseUrl/v1/directory/$idOrHandle'));
+  /// Resolves a full ZC- Zeon ID to its directory record. Lookup is by ID
+  /// only — there are no handles.
+  Future<DirectoryEntry> directory(String zeonId) async {
+    final r = await http.get(Uri.parse('$baseUrl/v1/directory/$zeonId'));
     return _check(r, (j) {
       final server = j['server'] as Map<String, dynamic>?;
       return DirectoryEntry(
         zeonId: j['zeon_id'] as String,
-        handle: j['handle'] as String?,
         pubkeyB64: j['pubkey'] as String,
         serverAddress: server?['address'] as String?,
         serverTlsFp: server?['tls_fp'] as String?,

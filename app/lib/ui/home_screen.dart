@@ -437,10 +437,7 @@ class _RequestTile extends StatelessWidget {
           image: contact.avatar),
       title: Text(contact.displayName,
           style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text(
-          contact.handle == null
-              ? 'wants to connect'
-              : '${contact.handle} · wants to connect',
+      subtitle: Text('${contact.zeonId.substring(0, 12)} · wants to connect',
           style: const TextStyle(color: Zn.muted, fontSize: 12)),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -485,9 +482,7 @@ class _SentRequestTile extends StatelessWidget {
       title: Text(contact.displayName,
           style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text(
-          contact.handle == null
-              ? 'request sent · waiting'
-              : '${contact.handle} · request sent · waiting',
+          '${contact.zeonId.substring(0, 12)} · request sent · waiting',
           style: const TextStyle(color: Zn.muted, fontSize: 12)),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,

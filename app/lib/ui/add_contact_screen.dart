@@ -65,8 +65,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
           onDetect: (capture) {
             if (_scanHandled) return;
             final value = capture.barcodes.firstOrNull?.rawValue;
-            if (value != null &&
-                (value.startsWith('ZC-') || value.startsWith('zn-'))) {
+            if (value != null && value.startsWith('ZC-')) {
               _scanHandled = true;
               _add(value);
             }
@@ -96,7 +95,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
                   color: Zn.text, fontSize: 13, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
           const Text(
-            'Ask them for their three words — or scan their QR code with the '
+            'Ask them for their Zeon code — or scan their QR with the '
             'camera button above.',
             style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
           ),
@@ -105,7 +104,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
             controller: _id,
             style: Zn.mono(size: 14, color: Zn.text),
             autocorrect: false,
-            decoration: const InputDecoration(hintText: 'zn-palm-dog-cherry'),
+            decoration: const InputDecoration(hintText: 'ZC-K3M9-QF2X-…'),
           ),
           const SizedBox(height: 20),
           SizedBox(

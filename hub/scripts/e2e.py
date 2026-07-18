@@ -130,6 +130,9 @@ def main():
     assert entry["server"] is None
     lower = bob.zeon_id.lower().replace("-", "")
     assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
+    assert "handle" not in entry, "directory must not return a handle"
+    assert httpx.get(f"{HUB}/v1/directory/zn-palm-dog-cherry").status_code == 400, \
+        "handle-form lookups must be rejected, not resolved"
 
     print("3) provision relays (local docker)")
     alice.provision()

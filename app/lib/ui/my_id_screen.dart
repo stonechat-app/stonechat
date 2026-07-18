@@ -16,7 +16,6 @@ class MyIdScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final zeonId = app.zeonId ?? '';
-    final handle = app.handle ?? '';
 
     return Scaffold(
       appBar: AppBar(
@@ -49,14 +48,14 @@ class MyIdScreen extends StatelessWidget {
               ),
               const SizedBox(height: 18),
               SelectableText(
-                handle,
+                zeonId,
                 textAlign: TextAlign.center,
-                style: Zn.mono(size: 19, color: Zn.orange, weight: FontWeight.w700),
+                style: Zn.mono(size: 13, color: Zn.orange, weight: FontWeight.w700),
               ),
               const SizedBox(height: 20),
               OutlinedButton.icon(
                 onPressed: () {
-                  Clipboard.setData(ClipboardData(text: handle));
+                  Clipboard.setData(ClipboardData(text: zeonId));
                   showZnSnack(context, 'Code copied');
                 },
                 icon: const Icon(Icons.copy, size: 16),
@@ -64,19 +63,13 @@ class MyIdScreen extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               const Text(
-                'Friends add you with these three words, or by scanning the '
-                'QR. Anyone with your code can send you a request — and '
+                'Friends add you by scanning this QR — or with your code '
+                'above. Anyone with your code can send you a request, and '
                 'nothing else. It contains no phone number, email, or name. '
                 'Your photo is end-to-end encrypted and shared only with '
                 'your contacts.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
-              ),
-              const SizedBox(height: 14),
-              SelectableText(
-                zeonId,
-                textAlign: TextAlign.center,
-                style: Zn.mono(size: 9, color: Zn.muted),
               ),
             ],
           ),

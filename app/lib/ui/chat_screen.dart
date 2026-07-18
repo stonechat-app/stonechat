@@ -917,8 +917,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     Text(
                         isGroup
                             ? '$memberCount members'
-                            : (widget.contact!.handle ??
-                                widget.contact!.zeonId.substring(0, 12)),
+                            : widget.contact!.zeonId.substring(0, 12),
                         style: Zn.mono(size: 9, letterSpacing: 1)),
                   ],
                 ),
