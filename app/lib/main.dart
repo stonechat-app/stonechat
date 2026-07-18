@@ -34,6 +34,9 @@ Future<void> main() async {
   final call = CallState(app, chat);
   final notices = LocalNotices();
   await notices.init();
+  // Surface backgrounded events (e.g. a contact accepting your request) as
+  // local notifications.
+  chat.onNotice = notices.show;
   final server = ServerState(
     app,
     onEnvelope: chat.handleIncoming,
@@ -93,6 +96,7 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: chat),
         ChangeNotifierProvider.value(value: call),
         ChangeNotifierProvider.value(value: server),
+        Provider<PushService>.value(value: push),
       ],
       child: const ZeonApp(),
     ),

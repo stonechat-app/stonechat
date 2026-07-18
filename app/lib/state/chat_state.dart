@@ -5,8 +5,9 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -20,6 +21,11 @@ const _uuid = Uuid();
 
 class ChatState extends ChangeNotifier {
   final AppState app;
+
+  /// Posts a local notification (set by main to LocalNotices.show). Used for
+  /// events worth surfacing while the app is backgrounded — e.g. a contact
+  /// accepting your request.
+  void Function(String title, String body)? onNotice;
 
   List<Contact> contacts = [];
   List<Group> groups = [];
@@ -1986,6 +1992,15 @@ class ChatState extends ChangeNotifier {
           contact.profileAt = _sentAtMs(envelope);
         }
         await app.db.upsertContact(contact);
+        // Tell the requester their invite was accepted. Only when backgrounded
+        // — a foregrounded user watches the contact flip live. Best-effort, and
+        // bound by the same platform limits as any local notice: iOS may be
+        // suspended before we drain (see core/notices.dart).
+        if (WidgetsBinding.instance.lifecycleState !=
+            AppLifecycleState.resumed) {
+          onNotice?.call('Request accepted',
+              '${contact.displayName} accepted your request');
+        }
 
       case EnvelopeType.profileUpdate:
         if (contact == null || !contact.isAccepted) {

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../core/links.dart';
 import '../state/chat_state.dart';
+import 'push_prompt.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -33,6 +34,10 @@ class _AddContactScreenState extends State<AddContactScreen> {
     setState(() => _working = true);
     try {
       await context.read<ChatState>().addContact(rawId);
+      if (!mounted) return;
+      // First request sent → the value of notifications is now concrete
+      // ("get told when they accept"). Ask here, never at cold start.
+      await maybeAskForPush(context);
       if (mounted) {
         Navigator.pop(context);
         showZnSnack(context, 'Request sent — waiting for them to accept');

@@ -24,6 +24,9 @@ class AppState extends ChangeNotifier {
   CryptoService? _crypto;
   String? zeonId;
   String? displayName;
+  // Whether the notification soft-ask has been shown (once, on the first
+  // contact request). Persisted so it never nags across launches.
+  bool pushPrompted = false;
   // Own profile photo (raw image bytes, sender-scaled — see ChatState
   // maxAvatarBytes). Lives in the encrypted DB, not the keystore: too big
   // for a keychain item, and it must be ciphertext at rest like everything
@@ -122,6 +125,7 @@ class AppState extends ChangeNotifier {
       );
       zeonId = await _storage.read(key: 'zn_id');
       displayName = await _storage.read(key: 'zn_name');
+      pushPrompted = (await _storage.read(key: 'zn_push_prompted')) == '1';
       externalMailboxToken = await _storage.read(key: 'zn_ext_token');
       externalMailboxTlsFp = await _storage.read(key: 'zn_ext_tls_fp');
       externalMailboxFriendHosted =
@@ -178,6 +182,7 @@ class AppState extends ChangeNotifier {
     _crypto = null;
     zeonId = null;
     displayName = null;
+    pushPrompted = false;
     avatar = null; // db.wipe() dropped the kv row
     externalMailboxToken = null;
     externalMailboxTlsFp = null;
@@ -187,6 +192,12 @@ class AppState extends ChangeNotifier {
     hostAgentTlsFp = null;
     api.accountToken = null;
     notifyListeners();
+  }
+
+  /// Remember that we've shown the notification soft-ask, so it fires only once.
+  Future<void> markPushPrompted() async {
+    pushPrompted = true;
+    await _storage.write(key: 'zn_push_prompted', value: '1');
   }
 
   /// SQLCipher key for the local history DB: 32 random bytes, minted once,

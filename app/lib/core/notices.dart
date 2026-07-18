@@ -20,8 +20,9 @@ class LocalNotices {
       _ready = await _plugin.initialize(
             settings: const InitializationSettings(
               android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-              // Permission is already requested at startup by PushService
-              // (firebase_messaging) — don't double-prompt.
+              // Never prompt from here: notification permission is requested
+              // once, deferred, by PushService (see core/push.dart). These
+              // notices simply ride whatever grant that produced.
               iOS: DarwinInitializationSettings(
                 requestAlertPermission: false,
                 requestBadgePermission: false,

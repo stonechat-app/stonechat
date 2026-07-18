@@ -22,6 +22,16 @@ class PushService {
   String? token;
   String? platform; // 'ios' | 'android'
 
+  bool _firebaseReady = false;
+  void Function(String token, String platform)? _onToken;
+
+  /// Sets up Firebase and the message listeners **without** prompting for
+  /// permission. A returning user who already granted gets their token wired
+  /// up silently; a new user is left untouched until [requestPermission] is
+  /// called at a smart moment (see ui/push_prompt.dart). Without a bundled
+  /// Firebase config this stays disabled and the app relies on live-socket /
+  /// on-resume delivery, exactly as before.
+  ///
   /// [onToken] fires whenever we obtain or refresh a device token (register it
   /// with the mailbox). [onWake] fires when a push is received or tapped —
   /// drain the mailbox.
@@ -29,6 +39,7 @@ class PushService {
     required void Function(String token, String platform) onToken,
     required void Function() onWake,
   }) async {
+    _onToken = onToken;
     try {
       await Firebase.initializeApp();
     } catch (e) {
@@ -36,14 +47,8 @@ class PushService {
       debugPrint('push disabled (no Firebase config): $e');
       return;
     }
-
+    _firebaseReady = true;
     final messaging = FirebaseMessaging.instance;
-    final settings = await messaging.requestPermission();
-    if (settings.authorizationStatus == AuthorizationStatus.denied) {
-      debugPrint('push disabled (permission denied)');
-      return;
-    }
-    available = true;
 
     // A content-free wake-up: foreground arrival or the user tapping the
     // notification both just mean "go check your mailbox".
@@ -59,8 +64,44 @@ class PushService {
       }
     });
 
-    await _emitToken(messaging, onToken);
+    // Returning user who already granted: acquire the token now, no prompt.
+    final settings = await messaging.getNotificationSettings();
+    if (_granted(settings.authorizationStatus)) {
+      available = true;
+      await _emitToken(messaging, onToken);
+    }
   }
+
+  /// True only while the OS permission has never been asked — i.e. we may still
+  /// show a soft ask and then prompt. False once granted or denied, or when
+  /// push isn't configured at all.
+  Future<bool> get isUndetermined async {
+    if (!_firebaseReady) return false;
+    final s = await FirebaseMessaging.instance.getNotificationSettings();
+    return s.authorizationStatus == AuthorizationStatus.notDetermined;
+  }
+
+  /// Fires the OS permission dialog and, on grant, registers the device token.
+  /// Call this ONLY after the user opts in through your own soft-ask UI — that
+  /// keeps iOS's single system prompt for someone who already said yes.
+  /// Returns whether notifications ended up authorized.
+  Future<bool> requestPermission() async {
+    if (!_firebaseReady) return false;
+    final messaging = FirebaseMessaging.instance;
+    final settings = await messaging.requestPermission();
+    if (!_granted(settings.authorizationStatus)) {
+      debugPrint('push not authorized: ${settings.authorizationStatus}');
+      return false;
+    }
+    available = true;
+    final cb = _onToken;
+    if (cb != null) await _emitToken(messaging, cb);
+    return true;
+  }
+
+  bool _granted(AuthorizationStatus s) =>
+      s == AuthorizationStatus.authorized ||
+      s == AuthorizationStatus.provisional;
 
   Future<void> _emitToken(
       FirebaseMessaging messaging, void Function(String, String) onToken) async {
