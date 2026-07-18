@@ -4,6 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../core/links.dart';
 import '../state/app_state.dart';
 import '../state/chat_state.dart';
 import 'theme.dart';
@@ -41,7 +42,7 @@ class MyIdScreen extends StatelessWidget {
                   borderRadius: BorderRadius.circular(Zn.radius),
                 ),
                 child: QrImageView(
-                  data: zeonId,
+                  data: zeonInviteLink(zeonId),
                   size: 220,
                   backgroundColor: Colors.white,
                 ),
@@ -53,21 +54,37 @@ class MyIdScreen extends StatelessWidget {
                 style: Zn.mono(size: 13, color: Zn.orange, weight: FontWeight.w700),
               ),
               const SizedBox(height: 20),
-              OutlinedButton.icon(
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: zeonId));
-                  showZnSnack(context, 'Code copied');
-                },
-                icon: const Icon(Icons.copy, size: 16),
-                label: const Text('Copy my code'),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                alignment: WrapAlignment.center,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: zeonId));
+                      showZnSnack(context, 'Code copied');
+                    },
+                    icon: const Icon(Icons.copy, size: 16),
+                    label: const Text('Copy my code'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      Clipboard.setData(
+                          ClipboardData(text: zeonInviteLink(zeonId)));
+                      showZnSnack(context, 'Invite link copied');
+                    },
+                    icon: const Icon(Icons.link, size: 16),
+                    label: const Text('Copy invite link'),
+                  ),
+                ],
               ),
               const SizedBox(height: 16),
               const Text(
-                'Friends add you by scanning this QR — or with your code '
-                'above. Anyone with your code can send you a request, and '
-                'nothing else. It contains no phone number, email, or name. '
-                'Your photo is end-to-end encrypted and shared only with '
-                'your contacts.',
+                'Friends add you by scanning this QR, tapping your invite '
+                'link, or entering your code above. Anyone with your code can '
+                'send you a request, and nothing else. It contains no phone '
+                'number, email, or name. Your photo is end-to-end encrypted '
+                'and shared only with your contacts.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
               ),

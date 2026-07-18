@@ -2,12 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 
+import '../core/links.dart';
 import '../state/chat_state.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
 class AddContactScreen extends StatefulWidget {
-  const AddContactScreen({super.key});
+  /// Prefilled when arriving from a tapped invite link.
+  final String? initialId;
+  const AddContactScreen({super.key, this.initialId});
 
   @override
   State<AddContactScreen> createState() => _AddContactScreenState();
@@ -18,6 +21,12 @@ class _AddContactScreenState extends State<AddContactScreen> {
   bool _working = false;
   bool _scanning = false;
   bool _scanHandled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialId != null) _id.text = widget.initialId!;
+  }
 
   Future<void> _add(String rawId) async {
     if (_working) return;
@@ -64,10 +73,11 @@ class _AddContactScreenState extends State<AddContactScreen> {
         MobileScanner(
           onDetect: (capture) {
             if (_scanHandled) return;
-            final value = capture.barcodes.firstOrNull?.rawValue;
-            if (value != null && value.startsWith('ZC-')) {
+            final raw = capture.barcodes.firstOrNull?.rawValue;
+            final id = raw == null ? null : zeonIdFromInput(raw);
+            if (id != null) {
               _scanHandled = true;
-              _add(value);
+              _add(id);
             }
           },
         ),

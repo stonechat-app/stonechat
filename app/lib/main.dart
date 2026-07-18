@@ -1,6 +1,10 @@
+import 'dart:async';
+
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'core/links.dart';
 import 'core/notices.dart';
 import 'core/push.dart';
 import 'state/app_state.dart';
@@ -104,6 +108,8 @@ class ZeonApp extends StatefulWidget {
 
 class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
   final _navKey = GlobalKey<NavigatorState>();
+  final _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSub;
   CallState? _call;
   bool _callRouteUp = false;
 
@@ -113,13 +119,34 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _call = context.read<CallState>();
     _call!.addListener(_syncCallRoute);
+    // Contact invite universal links (https://zeonchat.com/add#ZC-…).
+    _linkSub = _appLinks.uriLinkStream.listen(_handleInviteLink);
+    _appLinks.getInitialLink().then((uri) {
+      if (uri != null) {
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _handleInviteLink(uri));
+      }
+    });
   }
 
   @override
   void dispose() {
+    _linkSub?.cancel();
     _call?.removeListener(_syncCallRoute);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// A tapped invite link opens add-contact with the ID prefilled; the user
+  /// still confirms before a request is sent. Ignored until the user has their
+  /// own identity (there's nothing to add a contact to yet).
+  void _handleInviteLink(Uri uri) {
+    final id = zeonIdFromUri(uri);
+    if (id == null || !mounted) return;
+    if (!context.read<AppState>().hasIdentity) return;
+    _navKey.currentState?.push(MaterialPageRoute<void>(
+      builder: (_) => AddContactScreen(initialId: id),
+    ));
   }
 
   /// The call surface follows CallState: pushed over whatever the user is
