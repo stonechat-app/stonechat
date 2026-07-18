@@ -47,6 +47,11 @@
                       android:pathPrefix="/add"/>
             </intent-filter>
         </activity>
+        <!-- Universal links are handled via app_links (see main.dart); disable
+             Flutter's built-in deep linking so it doesn't intercept /add. -->
+        <meta-data
+            android:name="flutter_deeplinking_enabled"
+            android:value="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
