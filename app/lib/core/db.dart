@@ -34,7 +34,13 @@ class ChatDb {
     final db = await openDatabase(
       path,
       password: password,
-      version: 1,
+      version: 2,
+      onUpgrade: (db, from, _) async {
+        if (from < 2) {
+          // v2: a contact's home hub for cross-hub resolution (federation).
+          await db.execute('ALTER TABLE contacts ADD COLUMN hub TEXT');
+        }
+      },
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE contacts (
@@ -44,6 +50,7 @@ class ChatDb {
             status         TEXT NOT NULL,
             server_address TEXT,
             tls_fp         TEXT,
+            hub            TEXT,
             created_at     INTEGER NOT NULL,
             pinned_at      INTEGER,
             expire_timer_ms INTEGER NOT NULL DEFAULT 0,
@@ -567,8 +574,8 @@ class ChatDb {
   /// gets its avatar back that way.
   Future<List<Map<String, Object?>>> backupContacts() => _db.rawQuery(
       'SELECT zeon_id, display_name, pubkey, status, server_address, tls_fp, '
-      'created_at, pinned_at, expire_timer_ms, expire_timer_at, blocked_at, '
-      'muted_until, archived_at, 0 AS profile_at '
+      'hub, created_at, pinned_at, expire_timer_ms, expire_timer_at, '
+      'blocked_at, muted_until, archived_at, 0 AS profile_at '
       'FROM contacts ORDER BY created_at');
 
   Future<List<Map<String, Object?>>> backupGroups() =>
@@ -597,7 +604,7 @@ class ChatDb {
   static const _importCols = {
     'contacts': {
       'zeon_id', 'display_name', 'pubkey', 'status', 'server_address',
-      'tls_fp', 'created_at', 'pinned_at', 'expire_timer_ms',
+      'tls_fp', 'hub', 'created_at', 'pinned_at', 'expire_timer_ms',
       'expire_timer_at', 'blocked_at', 'muted_until', 'archived_at',
       'profile_at',
     },

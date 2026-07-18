@@ -79,10 +79,11 @@ class _AddContactScreenState extends State<AddContactScreen> {
           onDetect: (capture) {
             if (_scanHandled) return;
             final raw = capture.barcodes.firstOrNull?.rawValue;
-            final id = raw == null ? null : zeonIdFromInput(raw);
-            if (id != null) {
+            // Pass the raw scan through: addContact re-parses it, so a hub
+            // tag on a federated invite survives to resolution.
+            if (raw != null && zeonInviteFromInput(raw) != null) {
               _scanHandled = true;
-              _add(id);
+              _add(raw);
             }
           },
         ),

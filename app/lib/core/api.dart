@@ -153,9 +153,12 @@ class HubApi {
   }
 
   /// Resolves a full ZC- Zeon ID to its directory record. Lookup is by ID
-  /// only — there are no handles.
-  Future<DirectoryEntry> directory(String zeonId) async {
-    final r = await http.get(Uri.parse('$baseUrl/v1/directory/$zeonId'));
+  /// only — there are no handles. [hubUrl] asks a different hub's directory
+  /// (federation): the answer is verified by the caller exactly like one from
+  /// our own hub, so the foreign hub is trusted for availability only.
+  Future<DirectoryEntry> directory(String zeonId, {String? hubUrl}) async {
+    final r =
+        await http.get(Uri.parse('${hubUrl ?? baseUrl}/v1/directory/$zeonId'));
     return _check(r, (j) {
       final server = j['server'] as Map<String, dynamic>?;
       return DirectoryEntry(

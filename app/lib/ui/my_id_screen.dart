@@ -17,6 +17,10 @@ class MyIdScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final zeonId = app.zeonId ?? '';
+    // Federated builds tag the invite with our hub so a peer on another hub
+    // can resolve the ID; untagged invites keep meaning "the scanner's hub".
+    final inviteLink = zeonInviteLink(zeonId,
+        hub: zeonFederation ? app.api.baseUrl : null);
 
     return Scaffold(
       appBar: AppBar(
@@ -42,7 +46,7 @@ class MyIdScreen extends StatelessWidget {
                   borderRadius: BorderRadius.circular(Zn.radius),
                 ),
                 child: QrImageView(
-                  data: zeonInviteLink(zeonId),
+                  data: inviteLink,
                   size: 220,
                   backgroundColor: Colors.white,
                 ),
@@ -69,8 +73,7 @@ class MyIdScreen extends StatelessWidget {
                   ),
                   OutlinedButton.icon(
                     onPressed: () {
-                      Clipboard.setData(
-                          ClipboardData(text: zeonInviteLink(zeonId)));
+                      Clipboard.setData(ClipboardData(text: inviteLink));
                       showZnSnack(context, 'Invite link copied');
                     },
                     icon: const Icon(Icons.link, size: 16),

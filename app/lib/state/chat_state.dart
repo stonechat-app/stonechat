@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/api.dart';
+import '../core/links.dart';
 import '../core/session.dart';
 import '../models.dart';
 import 'app_state.dart';
@@ -303,8 +304,14 @@ class ChatState extends ChangeNotifier {
   /// pubkey must hash to the ID, and any listed mailbox must carry a TLS
   /// fingerprint signed by that pubkey. A server that fails the transport
   /// check is treated as absent — never connected to.
-  Future<DirectoryEntry> _resolve(String zeonId) async {
-    final entry = await app.api.directory(zeonId);
+  ///
+  /// Federation: a peer on another hub is resolved through *their* directory —
+  /// [hub] when the caller has it (fresh invite, request payload), else the
+  /// contact's stored home hub. The verification below is what makes asking a
+  /// foreign hub safe: it can lie only into a failed lookup.
+  Future<DirectoryEntry> _resolve(String zeonId, {String? hub}) async {
+    final entry = await app.api
+        .directory(zeonId, hubUrl: hub ?? contactById(zeonId)?.hub);
     if (!app.crypto.pubkeyMatchesId(entry.pubkeyB64, entry.zeonId)) {
       throw ApiException(
           'Directory returned a key that does not match this ID — refusing.');
@@ -644,13 +651,30 @@ class ChatState extends ChangeNotifier {
 
   /// Our display name + current photo — what contact_request, contact_accept
   /// and profile_update carry. The avatar key is always present (null =
-  /// cleared) so receivers converge on removals too.
+  /// cleared) so receivers converge on removals too. Federated builds also
+  /// name our home hub, so a peer on another hub can resolve us back.
   Map<String, Object?> _profilePayload() => {
         'display_name': app.displayName,
         'avatar': app.avatar == null
             ? null
             : {'data': base64Encode(app.avatar!), 'mime': 'image/jpeg'},
+        if (zeonFederation) 'hub': app.api.baseUrl,
       };
+
+  /// A peer's home hub from a contact_request/accept payload: only under the
+  /// federation flag, only http(s), and null when it's just our own hub. The
+  /// URL is routing data from an E2EE-authenticated sender — a wrong one can
+  /// only make lookups fail, never redirect trust (_resolve verifies).
+  String? _peerHubFrom(Map<String, dynamic> payload) {
+    if (!zeonFederation) return null;
+    var hub = payload['hub'];
+    if (hub is! String) return null;
+    while (hub.endsWith('/')) {
+      hub = hub.substring(0, hub.length - 1);
+    }
+    if (!hub.startsWith('https://') && !hub.startsWith('http://')) return null;
+    return hub == app.api.baseUrl ? null : hub;
+  }
 
   /// Set or clear our profile photo, then fan the new profile to every
   /// accepted contact. Best-effort like edits: an unreachable contact keeps
@@ -695,8 +719,8 @@ class ChatState extends ChangeNotifier {
 
   // -- contact lifecycle ---------------------------------------------------------
 
-  /// Add by Zeon code (zn-word-word-word) or full ZC- ID: resolve, verify,
-  /// store, send an encrypted contact request.
+  /// Add by full ZC- ID, hub-tagged `ZC-…@host` code, or invite URL: resolve,
+  /// verify, store, send an encrypted contact request.
   Future<Contact> addContact(String raw) async {
     final input = raw.trim();
     if (input.isEmpty) {
@@ -704,9 +728,16 @@ class ChatState extends ChangeNotifier {
     }
     // Lookup is by full ZC- ID only (there are no handles). normalizeZeonId
     // validates the checksum locally and throws FormatException on garbage.
-    final query = app.crypto.normalizeZeonId(input);
+    final invite = zeonInviteFromInput(input) ?? (zeonId: input, hub: null);
+    final query = app.crypto.normalizeZeonId(invite.zeonId);
+    final hub = invite.hub == app.api.baseUrl ? null : invite.hub;
+    if (hub != null && !zeonFederation) {
+      throw const FormatException(
+          'This invite lives on a different Zeon hub — this build only '
+          'reaches people on yours');
+    }
 
-    final entry = await _resolve(query);
+    final entry = await _resolve(query, hub: hub);
     if (entry.zeonId == app.zeonId) {
       throw ApiException("That's your own code");
     }
@@ -720,6 +751,7 @@ class ChatState extends ChangeNotifier {
       status: ContactStatus.pendingOut,
       serverAddress: entry.serverAddress,
       tlsFp: entry.serverTlsFp,
+      hub: hub,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
     await app.db.upsertContact(contact);
@@ -1954,6 +1986,7 @@ class ChatState extends ChangeNotifier {
           if (contact.status == ContactStatus.pendingOut ||
               contact.isAccepted) {
             contact.status = ContactStatus.accepted;
+            contact.hub = _peerHubFrom(payload) ?? contact.hub;
             contact.displayName =
                 (payload['display_name'] as String?) ?? contact.displayName;
             if (_applyAvatar(contact, payload)) {
@@ -1971,9 +2004,11 @@ class ChatState extends ChangeNotifier {
           return;
         }
         // Identity key: the (already commitment-verified) x3dh block if this
-        // was a session-opening message, else the directory. Handle is
-        // directory-only, best-effort.
-        final senderEntry = await _resolveOrNull(envelope.from);
+        // was a session-opening message, else the directory (the sender's own
+        // hub when the request names one), best-effort.
+        final senderHub = _peerHubFrom(payload);
+        final senderEntry =
+            await _resolveOrNull(envelope.from, hub: senderHub);
         final pubkeyB64 =
             (envelope.x3dh?['ik'] as String?) ?? senderEntry?.pubkeyB64;
         if (pubkeyB64 == null) return; // unresolvable sender — drop
@@ -1985,6 +2020,7 @@ class ChatState extends ChangeNotifier {
           status: ContactStatus.pendingIn,
           serverAddress: senderEntry?.serverAddress,
           tlsFp: senderEntry?.serverTlsFp,
+          hub: senderHub,
           createdAt: DateTime.now().millisecondsSinceEpoch,
         );
         if (_applyAvatar(contact, payload)) {
@@ -1998,6 +2034,7 @@ class ChatState extends ChangeNotifier {
           return;
         }
         contact.status = ContactStatus.accepted;
+        contact.hub = _peerHubFrom(payload) ?? contact.hub;
         contact.displayName =
             (payload['display_name'] as String?) ?? contact.displayName;
         if (_applyAvatar(contact, payload)) {
@@ -2352,9 +2389,9 @@ class ChatState extends ChangeNotifier {
   Future<void> _storeIncoming(Contact contact, Message message) =>
       _storeIncomingConversation(contact.zeonId, message);
 
-  Future<DirectoryEntry?> _resolveOrNull(String zeonId) async {
+  Future<DirectoryEntry?> _resolveOrNull(String zeonId, {String? hub}) async {
     try {
-      return await _resolve(zeonId);
+      return await _resolve(zeonId, hub: hub);
     } catch (_) {
       return null;
     }

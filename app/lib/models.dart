@@ -16,6 +16,7 @@ class Contact {
   String status;
   String? serverAddress; // last known, refreshed from directory on demand
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
+  String? hub; // home hub base URL; null = the hub this app uses (federation)
   final int createdAt;
   int? pinnedAt; // ms epoch when the user pinned this conversation
   int expireTimerMs; // disappearing-messages TTL, 0 = off
@@ -33,6 +34,7 @@ class Contact {
     required this.status,
     this.serverAddress,
     this.tlsFp,
+    this.hub,
     required this.createdAt,
     this.pinnedAt,
     this.expireTimerMs = 0,
@@ -58,6 +60,7 @@ class Contact {
         'status': status,
         'server_address': serverAddress,
         'tls_fp': tlsFp,
+        'hub': hub,
         'created_at': createdAt,
         'pinned_at': pinnedAt,
         'expire_timer_ms': expireTimerMs,
@@ -76,6 +79,7 @@ class Contact {
         status: r['status'] as String,
         serverAddress: r['server_address'] as String?,
         tlsFp: r['tls_fp'] as String?,
+        hub: r['hub'] as String?,
         createdAt: r['created_at'] as int,
         pinnedAt: r['pinned_at'] as int?,
         expireTimerMs: r['expire_timer_ms'] as int,
