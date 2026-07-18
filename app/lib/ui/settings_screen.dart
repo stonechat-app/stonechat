@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:provider/provider.dart';
 
+import '../core/push.dart';
 import '../state/app_state.dart';
 import '../state/call_state.dart';
 import '../state/chat_state.dart';
@@ -44,6 +45,7 @@ class SettingsScreen extends StatelessWidget {
             subtitle: const Text('Show contacts when you are typing.',
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
           ),
+          const _NotificationsSection(),
           const _SectionLabel('Security'),
           SwitchListTile(
             value: app.appLockEnabled,
@@ -224,6 +226,108 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
       ],
     );
   }
+}
+
+/// Notification permission, with a way back for anyone who dismissed the
+/// soft-ask. The OS is the source of truth: we can prompt once (when it was
+/// never asked), but can't revoke or re-prompt after that — those states point
+/// the user at the system Settings app. Hidden entirely when push isn't
+/// configured on this build.
+class _NotificationsSection extends StatefulWidget {
+  const _NotificationsSection();
+
+  @override
+  State<_NotificationsSection> createState() => _NotificationsSectionState();
+}
+
+class _NotificationsSectionState extends State<_NotificationsSection> {
+  late Future<NotificationPermission> _state;
+
+  @override
+  void initState() {
+    super.initState();
+    _state = context.read<PushService>().permissionState();
+  }
+
+  void _refresh() {
+    setState(() {
+      _state = context.read<PushService>().permissionState();
+    });
+  }
+
+  Future<void> _onChanged(bool wantOn, NotificationPermission current) async {
+    if (current == NotificationPermission.notDetermined && wantOn) {
+      // Never asked (e.g. tapped "Not now" earlier) — the one moment we can
+      // legitimately show the OS dialog. Capture providers before the awaits.
+      final app = context.read<AppState>();
+      final push = context.read<PushService>();
+      await app.markPushPrompted();
+      await push.requestPermission();
+      if (mounted) _refresh();
+      return;
+    }
+    // Granted→off or denied→on: the OS won't let us change it from inside the
+    // app; send the user to system Settings.
+    if (!mounted) return;
+    _guideToSettings(context, blocked: current == NotificationPermission.denied);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<NotificationPermission>(
+      future: _state,
+      builder: (context, snap) {
+        final state = snap.data;
+        if (state == NotificationPermission.unavailable) {
+          return const SizedBox.shrink();
+        }
+        final on = state == NotificationPermission.granted;
+        final subtitle = switch (state) {
+          NotificationPermission.granted =>
+            'On. Content-free wake-ups when messages arrive or a request is accepted.',
+          NotificationPermission.denied =>
+            "Blocked. Turn them on in your phone's Settings › Zeon.",
+          _ => 'Get notified when messages arrive or a request is accepted.',
+        };
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const _SectionLabel('Notifications'),
+            SwitchListTile(
+              value: on,
+              onChanged:
+                  state == null ? null : (v) => _onChanged(v, state),
+              activeThumbColor: Zn.orange,
+              title: const Text('Notifications'),
+              subtitle: Text(subtitle,
+                  style: const TextStyle(color: Zn.muted, fontSize: 12)),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+void _guideToSettings(BuildContext context, {required bool blocked}) {
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: Zn.surface,
+      title: const Text('Manage in Settings'),
+      content: Text(blocked
+          ? 'Notifications are turned off for Zeon at the system level. Open '
+              "your phone's Settings › Zeon › Notifications to turn them on."
+          : "To turn notifications off, open your phone's Settings › Zeon › "
+              'Notifications.'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('OK'),
+        ),
+      ],
+    ),
+  );
 }
 
 class _SectionLabel extends StatelessWidget {

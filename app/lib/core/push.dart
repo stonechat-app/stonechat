@@ -17,6 +17,9 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
+/// OS notification-permission state, surfaced to the settings toggle.
+enum NotificationPermission { unavailable, notDetermined, denied, granted }
+
 class PushService {
   bool available = false;
   String? token;
@@ -102,6 +105,19 @@ class PushService {
   bool _granted(AuthorizationStatus s) =>
       s == AuthorizationStatus.authorized ||
       s == AuthorizationStatus.provisional;
+
+  /// Current permission state, for the settings toggle.
+  Future<NotificationPermission> permissionState() async {
+    if (!_firebaseReady) return NotificationPermission.unavailable;
+    final s = await FirebaseMessaging.instance.getNotificationSettings();
+    return switch (s.authorizationStatus) {
+      AuthorizationStatus.authorized ||
+      AuthorizationStatus.provisional =>
+        NotificationPermission.granted,
+      AuthorizationStatus.denied => NotificationPermission.denied,
+      _ => NotificationPermission.notDetermined,
+    };
+  }
 
   Future<void> _emitToken(
       FirebaseMessaging messaging, void Function(String, String) onToken) async {
