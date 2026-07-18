@@ -12,6 +12,7 @@ import 'state/call_state.dart';
 import 'state/chat_state.dart';
 import 'state/server_state.dart';
 import 'ui/add_contact_screen.dart';
+import 'ui/backup_screen.dart';
 import 'ui/call_screen.dart';
 import 'ui/create_group_screen.dart';
 import 'ui/home_screen.dart';
@@ -217,6 +218,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
         '/server': (_) => const ServerScreen(),
         '/invites': (_) => const InvitesScreen(),
         '/settings': (_) => const SettingsScreen(),
+        '/backup': (_) => const BackupScreen(),
       },
     );
   }

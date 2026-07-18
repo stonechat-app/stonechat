@@ -135,6 +135,8 @@ PODS:
   - SDWebImage (5.21.7):
     - SDWebImage/Core (= 5.21.7)
   - SDWebImage/Core (5.21.7)
+  - share_plus (0.0.1):
+    - Flutter
   - shared_preferences_foundation (0.0.1):
     - Flutter
     - FlutterMacOS
@@ -170,6 +172,7 @@ DEPENDENCIES:
   - mobile_scanner (from `.symlinks/plugins/mobile_scanner/darwin`)
   - open_filex (from `.symlinks/plugins/open_filex/ios`)
   - record_ios (from `.symlinks/plugins/record_ios/ios`)
+  - share_plus (from `.symlinks/plugins/share_plus/ios`)
   - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
   - sqflite_sqlcipher (from `.symlinks/plugins/sqflite_sqlcipher/ios`)
   - video_player_avfoundation (from `.symlinks/plugins/video_player_avfoundation/darwin`)
@@ -226,6 +229,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/open_filex/ios"
   record_ios:
     :path: ".symlinks/plugins/record_ios/ios"
+  share_plus:
+    :path: ".symlinks/plugins/share_plus/ios"
   shared_preferences_foundation:
     :path: ".symlinks/plugins/shared_preferences_foundation/darwin"
   sqflite_sqlcipher:
@@ -263,6 +268,7 @@ SPEC CHECKSUMS:
   PromisesObjC: 752c3227f599e3467650e47ea36f433eeb10c273
   record_ios: 980fd386a97a35987d0fce3dfda4b26a38c90f4c
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
+  share_plus: 50da8cb520a8f0f65671c6c6a99b3617ed10a58a
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
   sqflite_sqlcipher: 8e5bdaae6b2c254f8a277a564f07bc4e2a8642a3
   SQLCipher: eb79c64049cb002b4e9fcb30edb7979bf4706dfc

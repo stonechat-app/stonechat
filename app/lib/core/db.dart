@@ -550,4 +550,137 @@ class ChatDb {
       )
     ''');
   }
+
+  // -- backup -------------------------------------------------------------------
+  // Text-only export/restore. The SQL lives here beside the schema it mirrors;
+  // the file format and crypto live in core/backup.dart. Never exported:
+  // sessions, prekeys, kv, receipts, group_outbox, avatars, media.
+
+  /// Message rows that belong in a backup, with [t] as the table alias:
+  /// no tombstones, text-like kinds only, nothing already expired.
+  static String _backupMessageWhere(String t) =>
+      "$t.deleted = 0 AND $t.kind IN ('text','notice','call') "
+      'AND ($t.expires_at IS NULL OR $t.expires_at > ?)';
+
+  /// Contacts minus `avatar` (binary media) and with `profile_at` forced to 0,
+  /// so a restored contact re-applies the peer's next profile broadcast and
+  /// gets its avatar back that way.
+  Future<List<Map<String, Object?>>> backupContacts() => _db.rawQuery(
+      'SELECT zeon_id, display_name, pubkey, status, server_address, tls_fp, '
+      'created_at, pinned_at, expire_timer_ms, expire_timer_at, blocked_at, '
+      'muted_until, archived_at, 0 AS profile_at '
+      'FROM contacts ORDER BY created_at');
+
+  Future<List<Map<String, Object?>>> backupGroups() =>
+      _db.query('groups', orderBy: 'created_at');
+
+  Future<List<Map<String, Object?>>> backupGroupMembers() =>
+      _db.query('group_members', orderBy: 'group_id, zeon_id');
+
+  Future<List<Map<String, Object?>>> backupMessages(int nowMs) => _db.rawQuery(
+      'SELECT id, contact_id, sender_id, outgoing, text, kind, duration_ms, '
+      'sent_at, status, edited_at, expires_at, reply_to_id, reply_to_sender, '
+      'reply_to_preview FROM messages '
+      'WHERE ${_backupMessageWhere('messages')} ORDER BY sent_at',
+      [nowMs]);
+
+  /// Reactions on exported messages only, so the payload can't hold orphans.
+  Future<List<Map<String, Object?>>> backupReactions(int nowMs) => _db.rawQuery(
+      'SELECT r.message_id, r.peer_id, r.emoji, r.at FROM reactions r '
+      'JOIN messages m ON m.id = r.message_id '
+      'WHERE ${_backupMessageWhere('m')}',
+      [nowMs]);
+
+  // Columns accepted from a backup payload, per table. Inserts go through this
+  // whitelist so unknown keys from a future payload revision can't raise
+  // "no such column", and so a crafted file can't touch other columns.
+  static const _importCols = {
+    'contacts': {
+      'zeon_id', 'display_name', 'pubkey', 'status', 'server_address',
+      'tls_fp', 'created_at', 'pinned_at', 'expire_timer_ms',
+      'expire_timer_at', 'blocked_at', 'muted_until', 'archived_at',
+      'profile_at',
+    },
+    'groups': {
+      'id', 'name', 'admin_id', 'version', 'created_at', 'pinned_at',
+      'expire_timer_ms', 'expire_timer_at', 'muted_until', 'archived_at',
+    },
+    'group_members': {
+      'group_id', 'zeon_id', 'pubkey', 'display_name', 'server_address',
+      'tls_fp',
+    },
+    'messages': {
+      'id', 'contact_id', 'sender_id', 'outgoing', 'text', 'kind',
+      'duration_ms', 'sent_at', 'status', 'edited_at', 'expires_at',
+      'reply_to_id', 'reply_to_sender', 'reply_to_preview',
+    },
+    'reactions': {'message_id', 'peer_id', 'emoji', 'at'},
+  };
+
+  static const _importRequired = {
+    'contacts': {'zeon_id', 'display_name', 'pubkey', 'status', 'created_at'},
+    'groups': {'id', 'name', 'admin_id', 'version', 'created_at'},
+    'group_members': {'group_id', 'zeon_id', 'pubkey', 'display_name'},
+    'messages': {'id', 'contact_id', 'outgoing', 'text', 'kind', 'sent_at',
+        'status'},
+    'reactions': {'message_id', 'peer_id', 'emoji', 'at'},
+  };
+
+  /// Merge a decrypted backup payload into the live tables. Everything runs in
+  /// one transaction with INSERT OR IGNORE: existing rows (same primary key)
+  /// always win, so restoring can never clobber a contact's current key or
+  /// name, and re-restoring the same file is a no-op. Malformed rows are
+  /// skipped, not fatal — one bad row shouldn't sink the other few thousand.
+  Future<({int contactsAdded, int groupsAdded, int messagesAdded,
+      int messagesSkipped})> importBackup({
+    required List<Map<String, Object?>> contacts,
+    required List<Map<String, Object?>> groups,
+    required List<Map<String, Object?>> groupMembers,
+    required List<Map<String, Object?>> messages,
+    required List<Map<String, Object?>> reactions,
+    required int nowMs,
+  }) async {
+    return _db.transaction((tx) async {
+      Future<int> count(String table) async => Sqflite.firstIntValue(
+          await tx.rawQuery('SELECT COUNT(*) FROM $table'))!;
+
+      // insert() returns the last rowid even when IGNORE dropped the row, so
+      // "added" has to come from before/after counts.
+      Future<int> merge(String table, List<Map<String, Object?>> rows,
+          {bool Function(Map<String, Object?>)? accept}) async {
+        final before = await count(table);
+        final cols = _importCols[table]!;
+        final required = _importRequired[table]!;
+        for (final row in rows) {
+          if (required.any((c) => row[c] == null)) continue;
+          if (accept != null && !accept(row)) continue;
+          try {
+            await tx.insert(
+                table, {for (final c in cols) if (row.containsKey(c)) c: row[c]},
+                conflictAlgorithm: ConflictAlgorithm.ignore);
+          } catch (_) {
+            // Wrong value type for a column, etc. — skip the row.
+          }
+        }
+        return await count(table) - before;
+      }
+
+      final contactsAdded = await merge('contacts', contacts);
+      final groupsAdded = await merge('groups', groups);
+      await merge('group_members', groupMembers);
+      final messagesAdded = await merge('messages', messages,
+          accept: (row) {
+        final expiresAt = row['expires_at'];
+        return expiresAt is! int || expiresAt > nowMs;
+      });
+      await merge('reactions', reactions);
+
+      return (
+        contactsAdded: contactsAdded,
+        groupsAdded: groupsAdded,
+        messagesAdded: messagesAdded,
+        messagesSkipped: messages.length - messagesAdded,
+      );
+    });
+  }
 }

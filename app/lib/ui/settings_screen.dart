@@ -60,10 +60,20 @@ class SettingsScreen extends StatelessWidget {
             title: const Text('Message history'),
             subtitle: const Text(
                 'Stored only on this phone, in an encrypted database. '
-                'There is no cloud copy — losing the phone loses the history.',
+                'There is no cloud copy — losing the phone loses the history '
+                'unless you export a backup.',
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
             leading: const Icon(Icons.enhanced_encryption_outlined,
                 color: Zn.muted, size: 20),
+          ),
+          ListTile(
+            title: const Text('Chat backup'),
+            subtitle: const Text(
+                'Export an encrypted file of your text messages, '
+                'or restore one.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            leading: const Icon(Icons.save_alt, color: Zn.muted, size: 20),
+            onTap: () => Navigator.pushNamed(context, '/backup'),
           ),
           const _SectionLabel('Subscription'),
           const _SubscriptionSection(),

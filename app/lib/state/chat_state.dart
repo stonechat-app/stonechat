@@ -206,6 +206,18 @@ class ChatState extends ChangeNotifier {
     unawaited(sweepExpired());
   }
 
+  /// A backup restore merged rows straight into the DB underneath the
+  /// per-conversation caches — drop them and reload. Not reset(): sessions,
+  /// timers and push registration all belong to the live identity and must
+  /// survive a restore.
+  Future<void> reloadAfterRestore() async {
+    _messages.clear();
+    reactionsByMessage.clear();
+    groupMembers.clear();
+    lastMessage.clear();
+    await load();
+  }
+
   /// Identity reset: drop every in-memory trace of the dead identity. The DB
   /// is wiped separately (AppState.resetIdentity); mailbox coordinates are
   /// cleared by ServerState.reset via setMailbox. The device push token
