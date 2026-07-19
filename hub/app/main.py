@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 import os
@@ -39,7 +40,7 @@ from .providers import (
     available_providers,
     get_provider,
 )
-from .providers.bootstrap import HOST_AGENT_PORT
+from .providers.bootstrap import HOST_AGENT_PORT, relay_binary_path
 
 log = logging.getLogger("zeon.hub")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -138,6 +139,19 @@ class TlsSigIn(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok", "providers": available_providers()}
+
+
+@app.get("/v1/relay-binary")
+async def relay_binary():
+    """The static relay binary sovereign startup scripts fetch (their pinned
+    SHA-256 makes this integrity-critical path tamper-evident — bootstrap.py).
+    Public like the binary itself; 404 until the operator sets
+    ZEON_RELAY_BINARY."""
+    path = relay_binary_path()
+    if path is None or not path.is_file():
+        raise HTTPException(404, "no relay binary configured on this hub")
+    return FileResponse(path, media_type="application/octet-stream",
+                        filename="zeon-relay")
 
 
 @app.post("/v1/register", status_code=201)

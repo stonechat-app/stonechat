@@ -1,50 +1,73 @@
 """Builds the startup script that turns a bare VM into a Zeon routing server.
 
-The routing server is a single file (server/main.py). We embed it gzipped and
-base64-encoded in a cloud-init/startup script, so every provider boots the
-exact same server with zero provider-specific packaging — no image registry
-required. Payloads are compressed because clouds cap startup-script size:
-GCP allows 256 KB but DigitalOcean and Azure allow only 64 KB (AWS's 16 KB
-can't fit even the compressed script — that provider needs a fetch-stub
-approach instead, see TODO.md).
+The relay is a static Rust binary (relay/ — see docs/RUST_PORT.md), far too
+big to inline in a startup script (clouds cap them: GCP 256 KB, DigitalOcean
+64 KB, AWS 16 KB — the old gzip+base64-embedded Python relay already broke
+AWS). So the script is a **fetch-stub**: it downloads the binary and verifies
+a SHA-256 **pinned inside the script** before executing anything. The pin is
+what keeps the trust model intact — this script travels over the cloud
+metadata channel that already carries the owner token, so a hostile artifact
+host or network can only make provisioning fail, never substitute a relay.
+
+Where the binary comes from (hub env):
+
+    ZEON_RELAY_BINARY      path to a static x86_64-musl `zeon-relay` on the
+                           hub box. The hub serves it at GET /v1/relay-binary
+                           and pins its SHA-256 in every startup script.
+    ZEON_RELAY_BINARY_URL  URL the VM fetches. Defaults to
+                           {ZEON_HUB_URL}/v1/relay-binary; point it at a GCS
+                           bucket / GitHub release to take the hub out of the
+                           download path.
+    ZEON_HUB_URL           public base URL of this hub (e.g.
+                           https://hub.zeonchat.com) — needed only to build
+                           the default URL above.
 
 Dedicated (sovereign) VMs additionally get the **host agent** pre-installed
 (PROTOCOL.md "Host agent"): the hub mints an admin token, bakes it into the
 startup script, and the owner's app connects to `https://<vm>:8200` to mint
-invites — no SSH required. The agent needs Docker plus the zeon-server build
-context on the box, both of which this script provides. Agent install is
-best-effort: a VM where Docker fails to install still routes its owner's mail.
+invites — no SSH required. The agent is still Python, so its section installs
+a venv; its guest-mailbox build context is the fetched relay binary plus a
+two-line Dockerfile. Agent install is best-effort: a VM where Docker or pip
+fails still routes its owner's mail.
 """
 
 import base64
 import gzip
+import hashlib
 import os
 from pathlib import Path
 
 from ..pushkey import mint_push_key
+from .base import ProviderError
 
-_DEFAULT_SOURCE = Path(__file__).resolve().parents[3] / "server" / "main.py"
 _HOST_AGENT_SOURCE = Path(__file__).resolve().parents[3] / "host_agent" / "main.py"
+
+# Runtime image for a relay container built from a prebuilt binary — the same
+# stage relay/Dockerfile ends in. Shared with the local/fleet providers.
+RELAY_RUNTIME_DOCKERFILE = """\
+FROM scratch
+COPY zeon-relay /zeon-relay
+ENV ZEON_DB=/data/mailbox.db
+ENV ZEON_BLOBS=/data/blobs
+ENV ZEON_TLS_DIR=/data
+EXPOSE 8080
+ENTRYPOINT ["/zeon-relay"]
+"""
 
 _TEMPLATE = """#!/usr/bin/env bash
 set -euo pipefail
 
 mkdir -p /opt/zeon /var/lib/zeon
 
-cat > /opt/zeon/main.py.gz.b64 <<'ZEON_EOF'
-{source_b64}
-ZEON_EOF
-base64 -d /opt/zeon/main.py.gz.b64 | gunzip > /opt/zeon/main.py
-
-# Debian/Ubuntu vs Amazon Linux/Fedora (openssl: self-signed TLS cert at boot)
-if command -v apt-get >/dev/null; then
-  apt-get update -y && apt-get install -y python3-venv openssl
-elif command -v dnf >/dev/null; then
-  dnf install -y python3 python3-pip openssl
+# ---- fetch the relay binary (pinned SHA-256; see bootstrap.py) --------------
+if ! command -v curl >/dev/null; then
+  if command -v apt-get >/dev/null; then apt-get update -y && apt-get install -y curl
+  elif command -v dnf >/dev/null; then dnf install -y curl
+  fi
 fi
-
-python3 -m venv /opt/zeon/venv
-/opt/zeon/venv/bin/pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.32" "httpx>=0.27"
+curl -fsSL --retry 5 --retry-delay 3 "{binary_url}" -o /opt/zeon/zeon-relay
+echo "{binary_sha256}  /opt/zeon/zeon-relay" | sha256sum -c -
+chmod +x /opt/zeon/zeon-relay
 
 # Cloud VMs sit behind 1:1 NAT — services must advertise the public address
 # (coturn below, and the host agent's invite URLs).
@@ -59,9 +82,9 @@ fi
 # coturn still routes mail — the app just falls back to STUN-only calling.
 TURN_SECRET=""
 if command -v apt-get >/dev/null; then
-  apt-get install -y coturn || true
+  apt-get update -y && apt-get install -y coturn openssl || true
 elif command -v dnf >/dev/null; then
-  dnf install -y coturn || true
+  dnf install -y coturn openssl || true
 fi
 if command -v turnserver >/dev/null; then
   TURN_SECRET=$(openssl rand -hex 32)
@@ -99,7 +122,7 @@ Environment=ZEON_PUSH_GATEWAY={push_gateway}
 Environment=ZEON_PUSH_KEY={push_key}
 Environment=ZEON_TURN_SECRET=$TURN_SECRET
 Environment=ZEON_TURN_PORT={turn_port}
-ExecStart=/opt/zeon/venv/bin/python /opt/zeon/main.py
+ExecStart=/opt/zeon/zeon-relay
 Restart=always
 RestartSec=2
 
@@ -111,18 +134,18 @@ systemctl daemon-reload
 systemctl enable --now zeon
 {host_agent_section}"""
 
-# Appended after the mailbox is up so the hub's health poll never waits on a
-# Docker install. Same venv: the agent's deps are a subset of the server's.
+# Appended after the mailbox is up so the hub's health poll never waits on
+# Docker/pip installs. The agent itself is still Python.
 _HOST_AGENT_TEMPLATE = """
 # ---- host agent ("host your circle") ----------------------------------------
 # Best-effort from here on: the owner's mailbox is already serving.
 set +e
 
+# Guest-mailbox build context: the relay binary + its runtime Dockerfile.
 mkdir -p /opt/zeon/server
-cat > /opt/zeon/server.tar.gz.b64 <<'ZEON_EOF'
-{server_ctx_b64}
-ZEON_EOF
-base64 -d /opt/zeon/server.tar.gz.b64 | tar -xz -C /opt/zeon/server
+cp /opt/zeon/zeon-relay /opt/zeon/server/zeon-relay
+cat > /opt/zeon/server/Dockerfile <<'DOCKER_EOF'
+{runtime_dockerfile}DOCKER_EOF
 
 cat > /opt/zeon/host_agent.py.gz.b64 <<'ZEON_EOF'
 {host_agent_b64}
@@ -130,11 +153,14 @@ ZEON_EOF
 base64 -d /opt/zeon/host_agent.py.gz.b64 | gunzip > /opt/zeon/host_agent.py
 
 if command -v apt-get >/dev/null; then
-  apt-get install -y docker.io
+  apt-get install -y docker.io python3-venv
 elif command -v dnf >/dev/null; then
-  dnf install -y docker
+  dnf install -y docker python3 python3-pip
 fi
 systemctl enable --now docker
+
+python3 -m venv /opt/zeon/venv
+/opt/zeon/venv/bin/pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.32" "httpx>=0.27"
 
 cat > /etc/systemd/system/zeon-host-agent.service <<UNIT_EOF
 [Unit]
@@ -173,9 +199,32 @@ HOST_AGENT_PORT = 8200
 GUEST_PORT_RANGE = (32768, 60999)
 
 
-def server_source() -> str:
-    path = Path(os.environ.get("ZEON_SERVER_SOURCE", _DEFAULT_SOURCE))
-    return path.read_text()
+def relay_binary_path() -> Path | None:
+    path = os.environ.get("ZEON_RELAY_BINARY", "")
+    return Path(path) if path else None
+
+
+def _relay_binary_sha256() -> str:
+    path = relay_binary_path()
+    if path is None or not path.is_file():
+        raise ProviderError(
+            "sovereign provisioning needs ZEON_RELAY_BINARY: a static "
+            "x86_64-musl zeon-relay build on the hub box (see relay/README.md)"
+        )
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _relay_binary_url() -> str:
+    url = os.environ.get("ZEON_RELAY_BINARY_URL", "")
+    if url:
+        return url
+    hub_url = os.environ.get("ZEON_HUB_URL", "").rstrip("/")
+    if not hub_url:
+        raise ProviderError(
+            "set ZEON_RELAY_BINARY_URL (artifact URL VMs can reach) or "
+            "ZEON_HUB_URL (the hub then serves the binary at /v1/relay-binary)"
+        )
+    return f"{hub_url}/v1/relay-binary"
 
 
 def _b64_wrap(data: bytes) -> str:
@@ -189,20 +238,6 @@ def _gz_b64(data: bytes) -> str:
     return _b64_wrap(gzip.compress(data, mtime=0))
 
 
-def _server_context_tar() -> bytes:
-    """The zeon-server docker build context (main.py, Dockerfile,
-    requirements.txt) as a tar.gz, for the host agent to build guest images."""
-    import io
-    import tarfile
-
-    source_dir = Path(os.environ.get("ZEON_SERVER_SOURCE", _DEFAULT_SOURCE)).parent
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name in ("main.py", "Dockerfile", "requirements.txt"):
-            tar.add(source_dir / name, arcname=name)
-    return buf.getvalue()
-
-
 def build_startup_script(
     owner_id: str, owner_token: str, host_agent_token: str | None = None
 ) -> str:
@@ -210,14 +245,15 @@ def build_startup_script(
     host_agent_section = ""
     if host_agent_token:
         host_agent_section = _HOST_AGENT_TEMPLATE.format(
-            server_ctx_b64=_b64_wrap(_server_context_tar()),
+            runtime_dockerfile=RELAY_RUNTIME_DOCKERFILE,
             host_agent_b64=_gz_b64(_HOST_AGENT_SOURCE.read_bytes()),
             host_agent_token=host_agent_token,
             host_agent_port=HOST_AGENT_PORT,
             push_gateway=push_gateway,
         )
     return _TEMPLATE.format(
-        source_b64=_gz_b64(server_source().encode()),
+        binary_url=_relay_binary_url(),
+        binary_sha256=_relay_binary_sha256(),
         owner_id=owner_id,
         owner_token=owner_token,
         port=SERVER_PORT,

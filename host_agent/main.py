@@ -28,7 +28,7 @@ Config (env):
     ZEON_HOST_AGENT_PORT_BASE     first guest mailbox port; guests are published
                                   on base..base+capacity-1 (default 42000)
     ZEON_HOST_AGENT_IMAGE         mailbox image (default zeon-server:dev)
-    ZEON_HOST_AGENT_SERVER_DIR    build context if the image is missing (default ../server)
+    ZEON_HOST_AGENT_SERVER_DIR    build context if the image is missing (default ../relay)
     ZEON_HOST_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
     ZEON_PUSH_GATEWAY        passed through to guest mailboxes (optional)
     ZEON_HOST_AGENT_PORT          listen port (default 8200)
@@ -59,7 +59,7 @@ CAPACITY = int(os.environ.get("ZEON_HOST_AGENT_CAPACITY", "25"))
 PORT_BASE = int(os.environ.get("ZEON_HOST_AGENT_PORT_BASE", "42000"))
 IMAGE = os.environ.get("ZEON_HOST_AGENT_IMAGE", "zeon-server:dev")
 SERVER_DIR = Path(os.environ.get("ZEON_HOST_AGENT_SERVER_DIR",
-                                 str(Path(__file__).resolve().parents[1] / "server")))
+                                 str(Path(__file__).resolve().parents[1] / "relay")))
 RUNTIME = os.environ.get("ZEON_HOST_AGENT_RUNTIME", "")
 PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "")
 SERVER_PORT = 8080

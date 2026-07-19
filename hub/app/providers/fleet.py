@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
 from .bootstrap import SERVER_PORT
-from .local import IMAGE, SERVER_DIR
+from .local import IMAGE, image_context
 
 FLEET_LABEL = "zeon.fleet=1"
 MEMORY_LIMIT = "192m"
@@ -111,8 +111,12 @@ class FleetProvider(CloudProvider):
             capture_output=True,
         )
         if probe.returncode != 0:
-            # docker build ships the local server/ context to the remote daemon
-            self._docker(host, "build", "-t", IMAGE, str(SERVER_DIR))
+            # docker build ships the local context to the remote daemon. With
+            # ZEON_RELAY_BINARY set this is a prebuilt-binary COPY (instant);
+            # without it the host compiles the crate — dev only, keep real
+            # fleet hosts on the prebuilt path.
+            with image_context() as ctx:
+                self._docker(host, "build", "-t", IMAGE, ctx)
 
     # -- provider interface ----------------------------------------------------------
 

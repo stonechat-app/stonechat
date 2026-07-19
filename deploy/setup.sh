@@ -44,6 +44,18 @@ ZEON_PUSH_SOURCE_CIDR="${ZEON_PUSH_SOURCE_CIDR:-10.128.0.0/9}"
 # account with compute.instanceAdmin.v1 + compute.securityAdmin to this VM.
 ZEON_GCP_PROJECT="${ZEON_GCP_PROJECT:-}"
 
+# Relay binary (Rust, docs/RUST_PORT.md). A static x86_64-musl `zeon-relay`
+# on this box: fleet hosts then build their image from it instantly (no
+# compile), and sovereign VM startup scripts fetch it (served by the hub at
+# /v1/relay-binary, SHA-256-pinned). Without it, fleet/local hosts compile
+# the crate via relay/'s Dockerfile and sovereign provisioning is refused.
+ZEON_RELAY_BINARY="${ZEON_RELAY_BINARY:-}"
+# Public base URL of this hub (e.g. https://hub.example.com) — how sovereign
+# VMs reach /v1/relay-binary. ZEON_RELAY_BINARY_URL overrides with an
+# external artifact URL (GCS bucket, GitHub release).
+ZEON_HUB_URL="${ZEON_HUB_URL:-}"
+ZEON_RELAY_BINARY_URL="${ZEON_RELAY_BINARY_URL:-}"
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="$REPO_ROOT/hub/.venv"
 DB_PATH="/var/lib/zeon/hub.db"
@@ -109,6 +121,9 @@ Environment=ZEON_PUSH_GATEWAY=$ZEON_PUSH_GATEWAY
 Environment=ZEON_PUSH_MINT_SECRET=$ZEON_PUSH_MINT_SECRET
 Environment=ZEON_GCP_PROJECT=$ZEON_GCP_PROJECT
 Environment="ZEON_FLEET_HOSTS=$ZEON_FLEET_HOSTS"
+Environment=ZEON_RELAY_BINARY=$ZEON_RELAY_BINARY
+Environment=ZEON_HUB_URL=$ZEON_HUB_URL
+Environment=ZEON_RELAY_BINARY_URL=$ZEON_RELAY_BINARY_URL
 ExecStart=$VENV/bin/uvicorn app.main:app --host 0.0.0.0 --port $ZEON_HUB_PORT
 Restart=always
 RestartSec=2

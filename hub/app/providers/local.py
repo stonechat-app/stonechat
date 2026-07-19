@@ -1,25 +1,48 @@
 """Local Docker provider — for development, no cloud account needed.
 
 "Provisions" a routing server as a Docker container on the machine running the
-hub. Builds the image from server/ on first use. The advertised
-address uses ZEON_LOCAL_HOST (default 127.0.0.1); set it to your machine's LAN
-IP when testing from a real phone.
+hub. The image comes from `image_context()`: with ZEON_RELAY_BINARY set (a
+prebuilt static x86_64-musl relay), the build is an instant two-line COPY;
+without it, relay/'s self-building Dockerfile compiles the crate inside the
+build (dev fallback — also the path that produces the right architecture on
+ARM laptops). The advertised address uses ZEON_LOCAL_HOST (default
+127.0.0.1); set it to your machine's LAN IP when testing from a real phone.
 
 MachineSpec is accepted but only used as labels — a container has no
 machine_type.
 """
 
+import contextlib
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
-from .bootstrap import SERVER_PORT
+from .bootstrap import RELAY_RUNTIME_DOCKERFILE, SERVER_PORT, relay_binary_path
 
 IMAGE = "zeon-server:dev"
-SERVER_DIR = Path(__file__).resolve().parents[3] / "server"
+RELAY_DIR = Path(__file__).resolve().parents[3] / "relay"
+
+
+@contextlib.contextmanager
+def image_context():
+    """Docker build context for the relay image: a prebuilt-binary context
+    when ZEON_RELAY_BINARY is set (instant build, what fleet hosts should
+    get), else the self-building relay/ crate."""
+    binary = relay_binary_path()
+    if binary is None:
+        yield str(RELAY_DIR)
+        return
+    if not binary.is_file():
+        raise ProviderError(f"ZEON_RELAY_BINARY={binary} does not exist")
+    with tempfile.TemporaryDirectory() as td:
+        shutil.copy(binary, Path(td) / "zeon-relay")
+        (Path(td) / "Dockerfile").write_text(RELAY_RUNTIME_DOCKERFILE)
+        yield td
 
 
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -73,7 +96,8 @@ class LocalDockerProvider(CloudProvider):
             ["docker", "image", "inspect", IMAGE], capture_output=True
         )
         if exists.returncode != 0:
-            _run(["docker", "build", "-t", IMAGE, str(SERVER_DIR)])
+            with image_context() as ctx:
+                _run(["docker", "build", "-t", IMAGE, ctx])
 
     def _host_port(self, name: str) -> str:
         out = _run(["docker", "inspect", name]).stdout

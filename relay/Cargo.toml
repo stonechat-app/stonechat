@@ -1,0 +1,34 @@
+[package]
+name = "zeon-relay"
+version = "0.1.0"
+edition = "2021"
+description = "Zeon routing server — a single user's encrypted mailbox (Rust port of server/main.py)"
+
+[[bin]]
+name = "zeon-relay"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rcgen = "0.13"
+blake2 = "0.10"
+base64 = "0.22"
+hmac = "0.12"
+sha1 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+futures-util = "0.3"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
