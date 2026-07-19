@@ -16,6 +16,7 @@ import 'ui/backup_screen.dart';
 import 'ui/call_screen.dart';
 import 'ui/create_group_screen.dart';
 import 'ui/home_screen.dart';
+import 'ui/identity_export_screen.dart';
 import 'ui/invites_screen.dart';
 import 'ui/lock_screen.dart';
 import 'ui/mailbox_setup_screen.dart';
@@ -219,6 +220,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
         '/invites': (_) => const InvitesScreen(),
         '/settings': (_) => const SettingsScreen(),
         '/backup': (_) => const BackupScreen(),
+        '/identity-export': (_) => const IdentityExportScreen(),
       },
     );
   }

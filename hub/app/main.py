@@ -128,6 +128,12 @@ class RegisterIn(BaseModel):
     pubkey: str  # base64-encoded Ed25519 identity public key
 
 
+class RecoverIn(BaseModel):
+    pubkey: str = Field(max_length=64)  # base64 Ed25519 identity public key
+    timestamp: int  # unix seconds, signed by the client
+    signature: str = Field(max_length=128)  # sig over "zeon-v1-recover"||str(timestamp)
+
+
 class MachineIn(BaseModel):
     machine_type: str = Field(examples=["e2-micro", "t3.micro"])
     region: str = Field(examples=["us-central1-a", "us-east-1"])
@@ -206,6 +212,54 @@ def register(body: RegisterIn, request: Request):
         raise HTTPException(409, "this key is already registered")
     log.info("registered %s", zeon_id[:12])
     return {"zeon_id": zeon_id, "account_token": token}
+
+
+# Same budget as registration: recovery is a rare, human-paced event, and a
+# guessing loop should die instantly (each attempt also costs a signature
+# verify).
+_recover_limiter = RateLimiter(limit=10, window_s=60.0)
+
+
+@app.post("/v1/recover")
+def recover(body: RecoverIn, request: Request):
+    """Re-issue an account token to whoever holds the identity secret key.
+
+    Restore path for an identity export (the app's Settings → Identity
+    export): the same key always derives the same Zeon ID, but /v1/register
+    409s once the key exists, and the old token is gone with the old phone.
+    Possession is proven with a signature over "zeon-v1-recover" || the
+    current unix time; the ±5-minute freshness window bounds replay to the
+    TLS channel it was heard on. Success rotates the account token, so the
+    recovering device becomes the account and any previous token dies —
+    recovery is also the remedy for a stolen still-registered phone.
+    """
+    _recover_limiter.check(request.client.host if request.client else "unknown")
+    try:
+        pubkey = base64.b64decode(body.pubkey, validate=True)
+    except Exception:
+        raise HTTPException(400, "pubkey is not valid base64")
+    if len(pubkey) != PUBKEY_LEN:
+        raise HTTPException(400, f"pubkey must be {PUBKEY_LEN} bytes")
+    now = int(datetime.now(timezone.utc).timestamp())
+    if abs(now - body.timestamp) > 300:
+        raise HTTPException(400, "signature timestamp out of range — check the device clock")
+    try:
+        from nacl.signing import VerifyKey
+
+        VerifyKey(pubkey).verify(
+            b"zeon-v1-recover" + str(body.timestamp).encode(),
+            base64.b64decode(body.signature),
+        )
+    except Exception:
+        raise HTTPException(401, "bad signature")
+
+    user = store.user_by_id(zeon_id_from_pubkey(pubkey))
+    if not user:
+        raise HTTPException(404, "unknown identity")
+    token = secrets.token_urlsafe(32)
+    store.rotate_token(user["zeon_id"], token)
+    log.info("recovered %s", user["zeon_id"][:12])
+    return {"zeon_id": user["zeon_id"], "account_token": token}
 
 
 # Deliberately generous: a cold-cache group send resolves every member at

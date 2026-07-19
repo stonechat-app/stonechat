@@ -152,6 +152,27 @@ class HubApi {
         ));
   }
 
+  /// Identity restore: trade a proof of key possession (CryptoService
+  /// .signRecovery) for a fresh account token. 404 means the hub has never
+  /// seen this key — the caller falls back to register().
+  Future<({String zeonId, String accountToken})> recover({
+    required String pubkeyB64,
+    required int timestamp,
+    required String signatureB64,
+  }) async {
+    final r = await http.post(Uri.parse('$baseUrl/v1/recover'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'pubkey': pubkeyB64,
+          'timestamp': timestamp,
+          'signature': signatureB64,
+        }));
+    return _check(r, (j) => (
+          zeonId: j['zeon_id'] as String,
+          accountToken: j['account_token'] as String,
+        ));
+  }
+
   /// Resolves a full ZC- Zeon ID to its directory record. Lookup is by ID
   /// only — there are no handles. [hubUrl] asks a different hub's directory
   /// (federation): the answer is verified by the caller exactly like one from

@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 import '../core/api.dart';
 import '../core/crypto.dart';
 import '../core/db.dart';
+import '../core/identity_export.dart';
 
 class AppState extends ChangeNotifier {
   static const _storage = FlutterSecureStorage();
@@ -271,6 +272,65 @@ class AppState extends ChangeNotifier {
     final result = await api.register(crypto.publicKeyB64);
     api.accountToken = result.accountToken;
 
+    await _storage.write(
+        key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
+    await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
+    await _storage.write(key: 'zn_id', value: result.zeonId);
+    await _storage.write(key: 'zn_token', value: result.accountToken);
+    await _storage.write(key: 'zn_name', value: name);
+    await _storage.write(key: 'zn_hub_url', value: hubUrl);
+
+    _crypto = crypto;
+    zeonId = result.zeonId;
+    displayName = name;
+    notifyListeners();
+  }
+
+  /// Settings → Identity export: the passphrase-encrypted string the QR
+  /// encodes (identity_export.dart). The one deliberate exception to
+  /// "identity dies with the app" — created only on explicit user action.
+  Future<String> exportIdentity(String passphrase) =>
+      IdentityCodec(_sodium!).encode(
+        secretKey: crypto.exportSecretKey(),
+        passphrase: passphrase,
+        name: displayName,
+      );
+
+  /// Onboarding → Restore: decrypt an identity export, prove key possession
+  /// to the hub (/v1/recover) and persist exactly as createIdentity would.
+  /// A hub that has never seen the key (directory reset, different hub)
+  /// answers 404 — fall back to plain registration, which yields the same
+  /// Zeon ID because the ID is derived from the key.
+  Future<void> restoreIdentity({
+    required String export,
+    required String passphrase,
+    required String hubUrl,
+  }) async {
+    final sodium = _sodium!;
+    final decoded = await IdentityCodec(sodium).decode(export, passphrase);
+    // An Ed25519 secret key carries its public half in bytes 32..64.
+    final crypto = CryptoService.fromKeys(
+      sodium,
+      publicKey: decoded.secretKey.sublist(32),
+      secretKey: decoded.secretKey,
+    );
+    api.baseUrl = hubUrl;
+
+    ({String zeonId, String accountToken}) result;
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    try {
+      result = await api.recover(
+        pubkeyB64: crypto.publicKeyB64,
+        timestamp: now,
+        signatureB64: crypto.signRecovery(now),
+      );
+    } on ApiException catch (e) {
+      if (e.status != 404) rethrow;
+      result = await api.register(crypto.publicKeyB64);
+    }
+    api.accountToken = result.accountToken;
+
+    final name = decoded.name ?? 'Me';
     await _storage.write(
         key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);

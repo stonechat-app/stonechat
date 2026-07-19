@@ -118,6 +118,14 @@ class Store:
         except sqlite3.IntegrityError:
             return False
 
+    def rotate_token(self, zeon_id: str, token: str) -> None:
+        """Identity recovery: the recovering device becomes the account —
+        whatever held the previous token (an old phone, a thief) is out."""
+        self._db.execute(
+            "UPDATE users SET token_hash = ? WHERE zeon_id = ?",
+            (hash_token(token), zeon_id),
+        )
+
     def user_by_token(self, token: str) -> dict | None:
         row = self._db.execute(
             "SELECT * FROM users WHERE token_hash = ?", (hash_token(token),)

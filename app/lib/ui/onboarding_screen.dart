@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import 'identity_export_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -103,6 +104,21 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
               ),
               const Spacer(flex: 2),
+              Center(
+                child: TextButton(
+                  onPressed: _working
+                      ? null
+                      : () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => IdentityRestoreScreen(
+                                  hubUrl: _url.text.trim()),
+                            ),
+                          ),
+                  child: const Text('Restore an exported identity',
+                      style: TextStyle(color: Zn.muted, fontSize: 12)),
+                ),
+              ),
               Center(
                 child: TextButton(
                   onPressed: () => setState(() => _showAdvanced = !_showAdvanced),

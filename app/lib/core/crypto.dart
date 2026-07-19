@@ -51,6 +51,7 @@ Uint8List base32Decode(String s) {
 final x3dhKdfKey = utf8.encode('zeon-v1-x3dh-kdf'); // 16 bytes, generichash min
 final spkSigContext = utf8.encode('zeon-v1-spk');
 final tlsSigContext = utf8.encode('zeon-v1-tls');
+final recoverSigContext = utf8.encode('zeon-v1-recover');
 
 class CryptoService {
   final SodiumSumo sodium;
@@ -162,6 +163,16 @@ class CryptoService {
       return false;
     }
   }
+
+  /// Proof of key possession for POST /v1/recover (identity restore): a
+  /// signature over "zeon-v1-recover" || the current unix time, so the hub
+  /// can re-issue an account token without ever having stored one.
+  String signRecovery(int unixSeconds) =>
+      base64Encode(sodium.crypto.sign.detached(
+        message: Uint8List.fromList(
+            [...recoverSigContext, ...utf8.encode('$unixSeconds')]),
+        secretKey: _identity.secretKey,
+      ));
 
   // -- prekeys -----------------------------------------------------------------
 

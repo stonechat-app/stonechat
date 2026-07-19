@@ -75,6 +75,15 @@ class SettingsScreen extends StatelessWidget {
             leading: const Icon(Icons.save_alt, color: Zn.muted, size: 20),
             onTap: () => Navigator.pushNamed(context, '/backup'),
           ),
+          ListTile(
+            title: const Text('Identity export'),
+            subtitle: const Text(
+                'Save an encrypted QR of your identity key — the only way '
+                'to keep your Zeon ID if this phone is lost.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            leading: const Icon(Icons.qr_code_2, color: Zn.muted, size: 20),
+            onTap: () => Navigator.pushNamed(context, '/identity-export'),
+          ),
           const _SectionLabel('Subscription'),
           const _SubscriptionSection(),
           const _SectionLabel('Account'),
@@ -106,7 +115,7 @@ class SettingsScreen extends StatelessWidget {
         content: const Text(
             'Your Zeon ID, mailbox and entire message history on this phone '
             'are erased. Contacts keep only what they already received. '
-            'There is no way back.'),
+            'There is no way back unless you saved an identity export.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
