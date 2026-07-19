@@ -93,7 +93,10 @@ class Store:
             # autocommit: each statement commits at once, so a failed INSERT
             # (dup-key claim) can never leave a transaction idling on the WAL
             # write lock. No method needs multi-statement atomicity.
-            conn = sqlite3.connect(self._path, timeout=5, autocommit=True)
+            # isolation_level=None is the ≤3.11-compatible spelling (the
+            # autocommit= kwarg is 3.12+; the deployed hub runs Debian 12's
+            # 3.11) — legacy autocommit mode, same per-statement behavior.
+            conn = sqlite3.connect(self._path, timeout=5, isolation_level=None)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
