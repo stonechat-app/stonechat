@@ -8,7 +8,7 @@ the subscription to their Zeon ID. Stripe never learns the Zeon ID; we never
 learn the buyer's name or email.
 
 Assumes a single uvicorn process (as deployed): the rate limiter is
-in-process and the Store is thread-lock guarded.
+in-process and the Store keeps one WAL-mode sqlite connection per thread.
 
 Config (env):
     ZEON_STRIPE_WEBHOOK_SECRET  webhook signing secret (whsec_…); unset →
@@ -178,7 +178,7 @@ def _handle_invoice(invoice, *, paid: bool) -> None:
 # -- landing success page ---------------------------------------------------------
 
 @router.get("/v1/billing/activation/{session_id}")
-async def activation(session_id: str, request: Request):
+def activation(session_id: str, request: Request):
     """Code lookup for the /activate page. The checkout session id (cs_…,
     high-entropy, only ever handed to the buyer's browser) is the secret."""
     _activation_limiter.check(request.client.host if request.client else "unknown")
@@ -224,7 +224,7 @@ def _grant_test_subscription(zeon_id: str) -> dict | None:
 
 
 @router.post("/v1/billing/redeem")
-async def redeem(body: RedeemIn, user: User):
+def redeem(body: RedeemIn, user: User):
     if store.entitlement_for(user["zeon_id"]):
         raise HTTPException(409, {
             "code": "already_subscribed",
@@ -251,7 +251,7 @@ async def redeem(body: RedeemIn, user: User):
 
 
 @router.get("/v1/billing/entitlement")
-async def entitlement(user: User):
+def entitlement(user: User):
     ent = store.entitlement_for(user["zeon_id"])
     if not ent:
         return {"plan": None}
@@ -271,7 +271,7 @@ class CompIn(BaseModel):
 
 
 @router.post("/v1/billing/comp", status_code=201)
-async def comp(
+def comp(
     body: CompIn,
     x_admin_token: Annotated[str | None, Header()] = None,
 ):

@@ -147,7 +147,9 @@ cd ~/zeonchat && git pull && \
 ```
 
 State that survives restarts: the hub DB at
-`/var/lib/zeon/hub.db` and each mailbox's SQLite + TLS key inside its
+`/var/lib/zeon/hub.db` (WAL mode — recent writes live in the `-wal`/`-shm`
+sidecars, so snapshot a *live* hub with `sqlite3 hub.db ".backup out.db"`,
+not a bare `cp hub.db`) and each mailbox's SQLite + TLS key inside its
 container volume. Destroying a mailbox from the app (or `docker rm -f`) is
 final — its undelivered ciphertext is gone, by design.
 

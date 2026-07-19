@@ -143,7 +143,7 @@ async def health():
 
 
 @app.get("/v1/relay-binary")
-async def relay_binary(authorization: str | None = Header(default=None)):
+def relay_binary(authorization: str | None = Header(default=None)):
     """The static relay binary sovereign startup scripts fetch (their pinned
     SHA-256 makes this integrity-critical path tamper-evident — bootstrap.py).
     Auth is the fetching VM's server_token, which the startup script already
@@ -168,7 +168,7 @@ _register_limiter = RateLimiter(limit=10, window_s=60.0)
 
 
 @app.post("/v1/register", status_code=201)
-async def register(body: RegisterIn, request: Request):
+def register(body: RegisterIn, request: Request):
     """Create an identity: deliberately open, no auth.
 
     The Zeon ID is derived (identity.py) from the submitted Ed25519 pubkey,
@@ -227,7 +227,7 @@ async def directory(zeon_id: str):
 
 
 @app.post("/v1/server", status_code=202)
-async def create_server(body: ServerIn, user: User, background: BackgroundTasks):
+def create_server(body: ServerIn, user: User, background: BackgroundTasks):
     if body.provider not in available_providers():
         raise HTTPException(
             400, f"unknown provider; available: {', '.join(available_providers())}"
@@ -265,7 +265,7 @@ async def create_server(body: ServerIn, user: User, background: BackgroundTasks)
 
 
 @app.post("/v1/server/external", status_code=201)
-async def register_external_server(body: ExternalServerIn, user: User):
+def register_external_server(body: ExternalServerIn, user: User):
     """The free tier: the user runs their own relay anywhere and we list it in
     the directory. Ownership is proven, not claimed: the relay confirms this
     user's Zeon ID via /owner (it never exposes its owner to anonymous callers,
@@ -277,11 +277,13 @@ async def register_external_server(body: ExternalServerIn, user: User):
     try:
         # verify=False: relay certs are self-signed by design; the client-side
         # pin (owner-signed fingerprint) is the real trust anchor, not this probe.
-        async with httpx.AsyncClient(timeout=8, verify=False) as client:
-            health = (await client.get(f"{address}/health")).json()
+        # Sync client: this handler runs in the threadpool, so the up-to-8s
+        # probe never touches the event loop.
+        with httpx.Client(timeout=8, verify=False) as client:
+            health = client.get(f"{address}/health").json()
             # Confirm ownership by asking the box to agree to the caller's own
             # ID — it answers 200/404, never handing back an identity.
-            owner_ok = (await client.get(
+            owner_ok = (client.get(
                 f"{address}/owner",
                 params={"zeon_id": user["zeon_id"]})).status_code == 200
     except Exception:
@@ -301,7 +303,7 @@ async def register_external_server(body: ExternalServerIn, user: User):
 
 
 @app.post("/v1/server/tls")
-async def publish_tls_sig(body: TlsSigIn, user: User):
+def publish_tls_sig(body: TlsSigIn, user: User):
     """The owner vouches for their mailbox's TLS key: an Ed25519 signature
     over "zeon-v1-tls" || fingerprint, verifiable by anyone against the
     identity key their Zeon ID commits to. We check it so the directory never
@@ -332,7 +334,7 @@ def _host_agent_address(server_address: str) -> str:
 
 
 @app.get("/v1/server")
-async def get_server(user: User):
+def get_server(user: User):
     server = store.server_for(user["zeon_id"])
     if not server:
         return {"status": "none"}
@@ -359,7 +361,7 @@ async def get_server(user: User):
 
 
 @app.delete("/v1/server")
-async def delete_server(user: User):
+def delete_server(user: User):
     server = store.server_for(user["zeon_id"])
     if not server:
         raise HTTPException(404, "no server")

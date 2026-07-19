@@ -27,10 +27,14 @@ def _now() -> str:
 
 
 class Store:
+    """One sqlite connection per thread, WAL mode: reads run concurrently
+    across the threadpool FastAPI dispatches sync handlers to; writers queue
+    on busy_timeout. No global lock — statement-level atomicity (single
+    UPDATE/INSERT claims) is what correctness rests on, same as before."""
+
     def __init__(self, path: str):
-        self._lock = threading.Lock()
-        self._db = sqlite3.connect(path, check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._path = path
+        self._local = threading.local()
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -81,36 +85,46 @@ class Store:
             );
             """
         )
-        self._db.commit()
+
+    @property
+    def _db(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            # autocommit: each statement commits at once, so a failed INSERT
+            # (dup-key claim) can never leave a transaction idling on the WAL
+            # write lock. No method needs multi-statement atomicity.
+            conn = sqlite3.connect(self._path, timeout=5, autocommit=True)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._local.conn = conn
+        return conn
 
     # -- users ---------------------------------------------------------------
 
     def create_user(self, zeon_id: str, pubkey_b64: str, token: str) -> bool:
         """True on success, False if the key is already registered."""
-        with self._lock:
-            try:
-                self._db.execute(
-                    "INSERT INTO users (zeon_id, pubkey, token_hash, created_at)"
-                    " VALUES (?, ?, ?, ?)",
-                    (zeon_id, pubkey_b64, hash_token(token), _now()),
-                )
-                self._db.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
+        try:
+            self._db.execute(
+                "INSERT INTO users (zeon_id, pubkey, token_hash, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (zeon_id, pubkey_b64, hash_token(token), _now()),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
     def user_by_token(self, token: str) -> dict | None:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM users WHERE token_hash = ?", (hash_token(token),)
-            ).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM users WHERE token_hash = ?", (hash_token(token),)
+        ).fetchone()
         return dict(row) if row else None
 
     def user_by_id(self, zeon_id: str) -> dict | None:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM users WHERE zeon_id = ?", (zeon_id,)
-            ).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM users WHERE zeon_id = ?", (zeon_id,)
+        ).fetchone()
         return dict(row) if row else None
 
     # -- servers -------------------------------------------------------------
@@ -118,40 +132,35 @@ class Store:
     def create_server(self, zeon_id: str, provider: str, machine: dict, server_token: str,
                       host_agent_token: str | None = None) -> bool:
         """Atomically claim the one-server-per-user slot. False if occupied."""
-        with self._lock:
-            try:
-                self._db.execute(
-                    "INSERT INTO servers (zeon_id, provider, status, machine, server_token,"
-                    " host_agent_token, created_at)"
-                    " VALUES (?, ?, 'provisioning', ?, ?, ?, ?)",
-                    (zeon_id, provider, json.dumps(machine), server_token,
-                     host_agent_token, _now()),
-                )
-                self._db.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
+        try:
+            self._db.execute(
+                "INSERT INTO servers (zeon_id, provider, status, machine, server_token,"
+                " host_agent_token, created_at)"
+                " VALUES (?, ?, 'provisioning', ?, ?, ?, ?)",
+                (zeon_id, provider, json.dumps(machine), server_token,
+                 host_agent_token, _now()),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
     def create_external_server(self, zeon_id: str, address: str, tls_fp: str | None) -> bool:
         """User provisioned their own relay; we only list its address.
         No server_token stored — it never leaves the user's device."""
-        with self._lock:
-            try:
-                self._db.execute(
-                    "INSERT INTO servers (zeon_id, provider, status, machine, address, tls_fp, created_at)"
-                    " VALUES (?, 'external', 'running', '{}', ?, ?, ?)",
-                    (zeon_id, address, tls_fp, _now()),
-                )
-                self._db.commit()
-                return True
-            except sqlite3.IntegrityError:
-                return False
+        try:
+            self._db.execute(
+                "INSERT INTO servers (zeon_id, provider, status, machine, address, tls_fp, created_at)"
+                " VALUES (?, 'external', 'running', '{}', ?, ?, ?)",
+                (zeon_id, address, tls_fp, _now()),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
     def server_for(self, zeon_id: str) -> dict | None:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM servers WHERE zeon_id = ?", (zeon_id,)
-            ).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM servers WHERE zeon_id = ?", (zeon_id,)
+        ).fetchone()
         if not row:
             return None
         server = dict(row)
@@ -163,37 +172,30 @@ class Store:
         """Auth for GET /v1/relay-binary: the fetching VM presents the
         server_token its startup script carries. External servers never
         match — their token is NULL (never stored)."""
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM servers WHERE server_token = ?", (server_token,)
-            ).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM servers WHERE server_token = ?", (server_token,)
+        ).fetchone()
         return dict(row) if row else None
 
     def mark_running(self, zeon_id: str, resource_id: str, address: str, meta: dict,
                      tls_fp: str | None) -> None:
-        with self._lock:
-            self._db.execute(
-                "UPDATE servers SET status='running', resource_id=?, address=?, meta=?,"
-                " tls_fp=?, tls_sig=NULL, error=NULL"  # new box, new cert — old sig is void
-                " WHERE zeon_id=?",
-                (resource_id, address, json.dumps(meta), tls_fp, zeon_id),
-            )
-            self._db.commit()
+        self._db.execute(
+            "UPDATE servers SET status='running', resource_id=?, address=?, meta=?,"
+            " tls_fp=?, tls_sig=NULL, error=NULL"  # new box, new cert — old sig is void
+            " WHERE zeon_id=?",
+            (resource_id, address, json.dumps(meta), tls_fp, zeon_id),
+        )
 
     def set_tls_sig(self, zeon_id: str, tls_sig: str) -> None:
-        with self._lock:
-            self._db.execute(
-                "UPDATE servers SET tls_sig=? WHERE zeon_id=?", (tls_sig, zeon_id)
-            )
-            self._db.commit()
+        self._db.execute(
+            "UPDATE servers SET tls_sig=? WHERE zeon_id=?", (tls_sig, zeon_id)
+        )
 
     def mark_error(self, zeon_id: str, error: str) -> None:
-        with self._lock:
-            self._db.execute(
-                "UPDATE servers SET status='error', error=? WHERE zeon_id=?",
-                (error[:1000], zeon_id),
-            )
-            self._db.commit()
+        self._db.execute(
+            "UPDATE servers SET status='error', error=? WHERE zeon_id=?",
+            (error[:1000], zeon_id),
+        )
 
     def reapable_servers(self, providers: tuple[str, ...], lapsed_before: str) -> list[dict]:
         """Servers on paid providers whose owner has no live subscription and
@@ -203,16 +205,15 @@ class Store:
         if not providers:
             return []
         marks = ",".join("?" * len(providers))
-        with self._lock:
-            rows = self._db.execute(
-                f"SELECT s.* FROM servers s"
-                f" WHERE s.provider IN ({marks})"
-                "  AND NOT EXISTS (SELECT 1 FROM subscriptions"
-                "    WHERE zeon_id = s.zeon_id AND status IN ('active', 'grace'))"
-                "  AND (SELECT MAX(lapsed_at) FROM subscriptions"
-                "    WHERE zeon_id = s.zeon_id AND status = 'lapsed') <= ?",
-                (*providers, lapsed_before),
-            ).fetchall()
+        rows = self._db.execute(
+            f"SELECT s.* FROM servers s"
+            f" WHERE s.provider IN ({marks})"
+            "  AND NOT EXISTS (SELECT 1 FROM subscriptions"
+            "    WHERE zeon_id = s.zeon_id AND status IN ('active', 'grace'))"
+            "  AND (SELECT MAX(lapsed_at) FROM subscriptions"
+            "    WHERE zeon_id = s.zeon_id AND status = 'lapsed') <= ?",
+            (*providers, lapsed_before),
+        ).fetchall()
         servers = []
         for row in rows:
             server = dict(row)
@@ -222,22 +223,18 @@ class Store:
         return servers
 
     def delete_server(self, zeon_id: str) -> None:
-        with self._lock:
-            self._db.execute("DELETE FROM servers WHERE zeon_id = ?", (zeon_id,))
-            self._db.commit()
+        self._db.execute("DELETE FROM servers WHERE zeon_id = ?", (zeon_id,))
 
     # -- billing ---------------------------------------------------------------
 
     def record_event(self, event_id: str, event_type: str) -> bool:
         """Webhook idempotency: True if this is the first delivery."""
-        with self._lock:
-            cur = self._db.execute(
-                "INSERT OR IGNORE INTO stripe_events (event_id, type, received_at)"
-                " VALUES (?, ?, ?)",
-                (event_id, event_type, _now()),
-            )
-            self._db.commit()
-            return cur.rowcount == 1
+        cur = self._db.execute(
+            "INSERT OR IGNORE INTO stripe_events (event_id, type, received_at)"
+            " VALUES (?, ?, ?)",
+            (event_id, event_type, _now()),
+        )
+        return cur.rowcount == 1
 
     def create_subscription(
         self,
@@ -255,66 +252,59 @@ class Store:
         session, or Stripe subscription id — callers retry or bail."""
         now = _now()
         row_id = str(uuid.uuid4())
-        with self._lock:
-            self._db.execute(
-                "INSERT INTO subscriptions (id, source, plan, status,"
-                " stripe_customer_id, stripe_subscription_id, checkout_session_id,"
-                " code_hash, code_plain, note, created_at, updated_at)"
-                " VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)",
-                (row_id, source, plan, stripe_customer_id, stripe_subscription_id,
-                 checkout_session_id, code_hash, code_plain, note, now, now),
-            )
-            self._db.commit()
-            row = self._db.execute(
-                "SELECT * FROM subscriptions WHERE id = ?", (row_id,)
-            ).fetchone()
+        self._db.execute(
+            "INSERT INTO subscriptions (id, source, plan, status,"
+            " stripe_customer_id, stripe_subscription_id, checkout_session_id,"
+            " code_hash, code_plain, note, created_at, updated_at)"
+            " VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (row_id, source, plan, stripe_customer_id, stripe_subscription_id,
+             checkout_session_id, code_hash, code_plain, note, now, now),
+        )
+        row = self._db.execute(
+            "SELECT * FROM subscriptions WHERE id = ?", (row_id,)
+        ).fetchone()
         return dict(row)
 
     def subscription_by_session(self, session_id: str) -> dict | None:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM subscriptions WHERE checkout_session_id = ?",
-                (session_id,),
-            ).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM subscriptions WHERE checkout_session_id = ?",
+            (session_id,),
+        ).fetchone()
         return dict(row) if row else None
 
     def subscription_by_stripe_sub(self, sub_id: str) -> dict | None:
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM subscriptions WHERE stripe_subscription_id = ?",
-                (sub_id,),
-            ).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM subscriptions WHERE stripe_subscription_id = ?",
+            (sub_id,),
+        ).fetchone()
         return dict(row) if row else None
 
     def claim_subscription(self, code_hash: str, zeon_id: str) -> dict | None:
         """Atomically bind an unclaimed, non-lapsed code to an account and
         drop the plaintext code. None if the code is unknown, spent, or dead."""
-        with self._lock:
-            cur = self._db.execute(
-                "UPDATE subscriptions SET zeon_id = ?, code_plain = NULL,"
-                " updated_at = ?"
-                " WHERE code_hash = ? AND zeon_id IS NULL AND status != 'lapsed'",
-                (zeon_id, _now(), code_hash),
-            )
-            self._db.commit()
-            if cur.rowcount != 1:
-                return None
-            row = self._db.execute(
-                "SELECT * FROM subscriptions WHERE code_hash = ?", (code_hash,)
-            ).fetchone()
+        cur = self._db.execute(
+            "UPDATE subscriptions SET zeon_id = ?, code_plain = NULL,"
+            " updated_at = ?"
+            " WHERE code_hash = ? AND zeon_id IS NULL AND status != 'lapsed'",
+            (zeon_id, _now(), code_hash),
+        )
+        if cur.rowcount != 1:
+            return None
+        row = self._db.execute(
+            "SELECT * FROM subscriptions WHERE code_hash = ?", (code_hash,)
+        ).fetchone()
         return dict(row) if row else None
 
     def entitlement_for(self, zeon_id: str) -> dict | None:
         """The account's best live subscription (sovereign beats private).
         `grace` still counts — payment trouble shouldn't cut service instantly."""
-        with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM subscriptions"
-                " WHERE zeon_id = ? AND status IN ('active', 'grace')"
-                " ORDER BY CASE plan WHEN 'sovereign' THEN 0 ELSE 1 END, created_at"
-                " LIMIT 1",
-                (zeon_id,),
-            ).fetchone()
+        row = self._db.execute(
+            "SELECT * FROM subscriptions"
+            " WHERE zeon_id = ? AND status IN ('active', 'grace')"
+            " ORDER BY CASE plan WHEN 'sovereign' THEN 0 ELSE 1 END, created_at"
+            " LIMIT 1",
+            (zeon_id,),
+        ).fetchone()
         return dict(row) if row else None
 
     def set_subscription_status(
@@ -327,30 +317,28 @@ class Store:
         """Lifecycle transitions, guarded so out-of-order webhooks can't
         resurrect a lapsed subscription or re-grace an already-lapsed one."""
         now = _now()
-        with self._lock:
-            if status == "active":
-                cur = self._db.execute(
-                    "UPDATE subscriptions SET status = 'active', grace_since = NULL,"
-                    " current_period_end = COALESCE(?, current_period_end),"
-                    " updated_at = ?"
-                    " WHERE stripe_subscription_id = ? AND status != 'lapsed'",
-                    (current_period_end, now, stripe_subscription_id),
-                )
-            elif status == "grace":
-                cur = self._db.execute(
-                    "UPDATE subscriptions SET status = 'grace', grace_since = ?,"
-                    " updated_at = ?"
-                    " WHERE stripe_subscription_id = ? AND status = 'active'",
-                    (now, now, stripe_subscription_id),
-                )
-            elif status == "lapsed":
-                cur = self._db.execute(
-                    "UPDATE subscriptions SET status = 'lapsed', lapsed_at = ?,"
-                    " updated_at = ?"
-                    " WHERE stripe_subscription_id = ? AND status != 'lapsed'",
-                    (now, now, stripe_subscription_id),
-                )
-            else:
-                raise ValueError(f"unknown subscription status: {status}")
-            self._db.commit()
-            return cur.rowcount == 1
+        if status == "active":
+            cur = self._db.execute(
+                "UPDATE subscriptions SET status = 'active', grace_since = NULL,"
+                " current_period_end = COALESCE(?, current_period_end),"
+                " updated_at = ?"
+                " WHERE stripe_subscription_id = ? AND status != 'lapsed'",
+                (current_period_end, now, stripe_subscription_id),
+            )
+        elif status == "grace":
+            cur = self._db.execute(
+                "UPDATE subscriptions SET status = 'grace', grace_since = ?,"
+                " updated_at = ?"
+                " WHERE stripe_subscription_id = ? AND status = 'active'",
+                (now, now, stripe_subscription_id),
+            )
+        elif status == "lapsed":
+            cur = self._db.execute(
+                "UPDATE subscriptions SET status = 'lapsed', lapsed_at = ?,"
+                " updated_at = ?"
+                " WHERE stripe_subscription_id = ? AND status != 'lapsed'",
+                (now, now, stripe_subscription_id),
+            )
+        else:
+            raise ValueError(f"unknown subscription status: {status}")
+        return cur.rowcount == 1
