@@ -19,12 +19,15 @@ Config (env):
                                 webhook endpoint answers 503
     ZEON_ADMIN_TOKEN            enables POST /v1/billing/comp (comp grants
                                 for testers); unset → endpoint disabled
-    ZEON_TEST_CODE              reusable tester code: redeeming it mints a
+    ZEON_TEST_CODES             reusable tester codes with per-code plans:
+                                "ZEON-AAAA-AAAA=private,ZEON-BBBB-BBBB=sovereign"
+                                (plan omitted → private). Redeeming one mints a
                                 fresh comp subscription every time instead of
                                 consuming a stored one (TestFlight testers can
                                 reset identity and reactivate with the same
                                 code); unset → disabled
-    ZEON_TEST_CODE_PLAN         plan the test code grants (default private)
+    ZEON_TEST_CODE              legacy single code, still honored
+    ZEON_TEST_CODE_PLAN         plan the legacy code grants (default private)
 """
 
 import logging
@@ -210,17 +213,32 @@ class RedeemIn(BaseModel):
     code: str = Field(max_length=40)
 
 
-def _is_test_code(normalized: str) -> bool:
-    configured = normalize_code(os.environ.get("ZEON_TEST_CODE", ""))
-    return bool(configured) and secrets.compare_digest(configured, normalized)
+def _test_code_plan(normalized: str) -> str | None:
+    """The plan granted if `normalized` is a configured tester code, else None.
+
+    ZEON_TEST_CODES holds several codes with per-code plans:
+    "ZEON-AAAA-AAAA=private,ZEON-BBBB-BBBB=sovereign" (plan omitted →
+    private). The legacy single ZEON_TEST_CODE (+ ZEON_TEST_CODE_PLAN) is
+    still honored alongside."""
+    entries: list[tuple[str, str]] = []
+    for part in os.environ.get("ZEON_TEST_CODES", "").split(","):
+        part = part.strip()
+        if part:
+            code, _, plan = part.partition("=")
+            entries.append((normalize_code(code), plan.strip() or "private"))
+    legacy = normalize_code(os.environ.get("ZEON_TEST_CODE", ""))
+    if legacy:
+        entries.append((legacy, os.environ.get("ZEON_TEST_CODE_PLAN", "private")))
+    granted = None
+    for code, plan in entries:  # no early exit — comparisons stay constant-time
+        if code and secrets.compare_digest(code, normalized):
+            granted = plan if plan in PLANS else "private"
+    return granted
 
 
-def _grant_test_subscription(zeon_id: str) -> dict | None:
-    """The test code is never consumed: each redemption mints and claims a
+def _grant_test_subscription(zeon_id: str, plan: str) -> dict | None:
+    """A test code is never consumed: each redemption mints and claims a
     fresh comp subscription, so it survives identity resets on test devices."""
-    plan = os.environ.get("ZEON_TEST_CODE_PLAN", "private")
-    if plan not in PLANS:
-        plan = "private"
     for _ in range(5):
         code = mint_code()
         try:
@@ -240,8 +258,8 @@ def redeem(body: RedeemIn, user: User):
             "message": "this account already has an active plan",
         })
     normalized = normalize_code(body.code)
-    if _is_test_code(normalized):
-        sub = _grant_test_subscription(user["zeon_id"])
+    if (test_plan := _test_code_plan(normalized)) is not None:
+        sub = _grant_test_subscription(user["zeon_id"], test_plan)
     else:
         sub = (
             store.claim_subscription(hash_token(normalized), user["zeon_id"])

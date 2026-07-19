@@ -161,9 +161,10 @@ in `setup.sh`, which rewrites the main unit on every deploy — so it persists
 across code updates:
 
 ```bash
-# on the hub box — set (or rotate) the code:
+# on the hub box — set (or rotate) the codes; several codes with per-code
+# plans are supported (plan omitted → private):
 sudo mkdir -p /etc/systemd/system/zeon-hub.service.d
-printf '[Service]\nEnvironment=ZEON_TEST_CODE=ZEON-XXXX-XXXX\n' \
+printf '[Service]\nEnvironment=ZEON_TEST_CODES=ZEON-XXXX-XXXX=private,ZEON-YYYY-YYYY=sovereign\n' \
   | sudo tee /etc/systemd/system/zeon-hub.service.d/test-code.conf
 sudo systemctl daemon-reload && sudo systemctl restart zeon-hub
 
