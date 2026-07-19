@@ -10,6 +10,10 @@ learn the buyer's name or email.
 Assumes a single uvicorn process (as deployed): the rate limiter is
 in-process and the Store keeps one WAL-mode sqlite connection per thread.
 
+The `stripe` package is an optional dependency (requirements.txt): only the
+webhook needs it, and it imports lazily there. Comp grants, the test code and
+redemption all work without it.
+
 Config (env):
     ZEON_STRIPE_WEBHOOK_SECRET  webhook signing secret (whsec_…); unset →
                                 webhook endpoint answers 503
@@ -31,7 +35,6 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-import stripe
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -76,6 +79,12 @@ _activation_limiter = RateLimiter(limit=30, window_s=60.0)
 async def stripe_webhook(request: Request):
     secret = os.environ.get("ZEON_STRIPE_WEBHOOK_SECRET")
     if not secret:
+        raise HTTPException(503, "billing is not configured")
+    try:
+        import stripe
+    except ImportError:
+        log.error("ZEON_STRIPE_WEBHOOK_SECRET is set but the stripe package "
+                  "is not installed (pip install stripe)")
         raise HTTPException(503, "billing is not configured")
     payload = await request.body()
     signature = request.headers.get("stripe-signature", "")

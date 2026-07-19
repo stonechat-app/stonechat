@@ -5,6 +5,9 @@ Config (env):
     ZEON_HUB_DB                  sqlite path (default hub.db)
     ZEON_GCP_PROJECT            required for provider=gcp
     ZEON_LOCAL_HOST             advertised host for provider=local (default 127.0.0.1)
+    ZEON_BILLING                "off" disables the billing plane entirely: no
+                                billing endpoints, no plan gates (every
+                                provider is free to use), no reaper (default on)
     ZEON_STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (billing.py)
     ZEON_ADMIN_TOKEN            enables comp grants (billing.py)
     ZEON_TEST_CODE              reusable tester activation code (billing.py)
@@ -49,6 +52,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 REAP_RETENTION_DAYS = int(os.environ.get("ZEON_REAP_RETENTION_DAYS", "14"))
 REAP_INTERVAL_S = int(os.environ.get("ZEON_REAP_INTERVAL_S", "3600"))
 
+# Billing exists for the hosted service; a private hub doesn't need it.
+# ZEON_BILLING=off removes the whole plane: the /v1/billing/* endpoints are
+# not mounted, no provider requires a plan, and mailboxes are never reaped —
+# lifecycle is billing-driven, so without billing nothing lapses.
+BILLING = os.environ.get("ZEON_BILLING", "on").strip().lower() != "off"
+
 # Wire protocol version served by hub.zeonchat.com (PROTOCOL.md "Versioning").
 # Clients send theirs in X-Zeon-Version; anything below the minimum is told to
 # upgrade rather than served a contract it can't speak. An absent header is a
@@ -69,7 +78,7 @@ async def require_wire_version(x_zeon_version: int | None = Header(default=None)
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     reaper = None
-    if REAP_RETENTION_DAYS >= 0:
+    if BILLING and REAP_RETENTION_DAYS >= 0:
         reaper = asyncio.create_task(_reap_loop())
     yield
     if reaper:
@@ -78,7 +87,10 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="zeon-hub", lifespan=_lifespan,
               dependencies=[Depends(require_wire_version)])
-app.include_router(billing_router)
+if BILLING:
+    app.include_router(billing_router)
+else:
+    log.info("billing disabled (ZEON_BILLING=off) — all providers ungated")
 
 # Browser access is only the landing page's activation lookup (GET); the
 # webhook is server-to-server and the app is not a browser.
@@ -97,13 +109,14 @@ HEALTH_TIMEOUT_S = 240  # cloud VMs need to apt-get + pip install on first boot
 
 # Paid providers and the plan each requires. Sovereign outranks private, so a
 # Sovereign subscriber may also run on the shared fleet. `local` and
-# `external` (self-hosted free tier) stay ungated.
+# `external` (self-hosted free tier) stay ungated. With billing off nothing
+# is gated (and the reap query, which sweeps these providers, matches nothing).
 GATED_PROVIDERS = {
     "fleet": "private",
     "gcp": "sovereign",
     "aws": "sovereign",
     "digitalocean": "sovereign",
-}
+} if BILLING else {}
 PLAN_RANK = {"private": 1, "sovereign": 2}
 # Dedicated-VM providers get the host agent baked into the VM.
 DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean"}

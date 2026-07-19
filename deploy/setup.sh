@@ -43,6 +43,10 @@ ZEON_PUSH_SOURCE_CIDR="${ZEON_PUSH_SOURCE_CIDR:-10.128.0.0/9}"
 # VMs on Compute Engine). Needs credentials via ADC — on GCE, attach a service
 # account with compute.instanceAdmin.v1 + compute.securityAdmin to this VM.
 ZEON_GCP_PROJECT="${ZEON_GCP_PROJECT:-}"
+# Set to "off" to run without the billing plane entirely: no /v1/billing/*
+# endpoints, every provider ungated, no reaper, and the stripe package is not
+# installed. The right choice for a private hub (docs/SELF_HOSTED_HUB.md).
+ZEON_BILLING="${ZEON_BILLING:-on}"
 
 # Relay binary (Rust, docs/RUST_PORT.md). A static x86_64-musl `zeon-relay`
 # on this box: fleet hosts then build their image from it instantly (no
@@ -72,6 +76,7 @@ echo "    hub port:    $ZEON_HUB_PORT"
 echo "    gcp project: ${ZEON_GCP_PROJECT:-(unset — gcp provider disabled)}"
 echo "    fleet hosts: ${ZEON_FLEET_HOSTS:-(unset — fleet provider disabled)}"
 echo "    domain:      ${ZEON_HUB_DOMAIN:-(unset — plain HTTP, no TLS)}"
+echo "    billing:     $ZEON_BILLING"
 
 # -- packages -----------------------------------------------------------------
 
@@ -92,6 +97,10 @@ echo "==> building hub venv"
 python3 -m venv "$VENV"
 "$VENV/bin/pip" install --quiet --upgrade pip
 "$VENV/bin/pip" install --quiet -r "$REPO_ROOT/hub/requirements.txt"
+if [[ "$ZEON_BILLING" != "off" ]]; then
+  echo "==> installing billing dependency (stripe)"
+  "$VENV/bin/pip" install --quiet "stripe>=11"
+fi
 if [[ -n "$ZEON_GCP_PROJECT" ]]; then
   echo "==> installing GCP provider dependency (google-cloud-compute)"
   "$VENV/bin/pip" install --quiet "google-cloud-compute>=1.19"
@@ -116,6 +125,7 @@ Requires=docker.service
 User=$SERVICE_USER
 WorkingDirectory=$REPO_ROOT/hub
 Environment=ZEON_HUB_DB=$DB_PATH
+Environment=ZEON_BILLING=$ZEON_BILLING
 Environment=ZEON_LOCAL_HOST=$ZEON_PUBLIC_IP
 Environment=ZEON_PUSH_GATEWAY=$ZEON_PUSH_GATEWAY
 Environment=ZEON_PUSH_MINT_SECRET=$ZEON_PUSH_MINT_SECRET
