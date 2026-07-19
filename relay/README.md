@@ -39,8 +39,11 @@ All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
 - **Sovereign VM startup scripts** are fetch-stubs (~3 KB — fits every
   cloud's cap, including AWS's 16 KB): they download the binary and verify a
   SHA-256 pinned in the script. The hub serves the artifact at
-  `GET /v1/relay-binary` (set `ZEON_HUB_URL` for the default URL, or
-  `ZEON_RELAY_BINARY_URL` to host it on GCS/GitHub instead).
+  `GET /v1/relay-binary`, authenticated with the per-server token the
+  script already carries — an egress-cost gate, not an integrity measure
+  (that's the pin). Set `ZEON_HUB_URL` for the default URL, or
+  `ZEON_RELAY_BINARY_URL` to host it on GCS/GitHub instead (fetched
+  anonymously).
 - **Host agent** guest mailboxes build from the same binary; the sovereign
   startup script writes `/opt/zeon/server/` (binary + Dockerfile) for it.
 

@@ -28,7 +28,6 @@ import os
 import re
 import secrets
 import sqlite3
-import time
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
@@ -38,6 +37,7 @@ from pydantic import BaseModel, Field
 
 from .db import hash_token
 from .deps import User, store
+from .ratelimit import RateLimiter
 
 log = logging.getLogger("zeon.hub.billing")
 
@@ -67,20 +67,7 @@ def _code_hash(raw: str) -> str:
 
 # -- activation-page rate limit (per IP, in-process) ---------------------------
 
-_BUCKETS: dict[str, list[float]] = {}
-_RATE_LIMIT = 30  # requests
-_RATE_WINDOW = 60.0  # seconds
-
-
-def _rate_limit(key: str) -> None:
-    now = time.monotonic()
-    bucket = _BUCKETS.setdefault(key, [])
-    bucket[:] = [t for t in bucket if now - t < _RATE_WINDOW]
-    if len(bucket) >= _RATE_LIMIT:
-        raise HTTPException(429, "too many requests")
-    bucket.append(now)
-    if len(_BUCKETS) > 10_000:  # bound memory under address churn
-        _BUCKETS.clear()
+_activation_limiter = RateLimiter(limit=30, window_s=60.0)
 
 
 # -- webhook --------------------------------------------------------------------
@@ -194,7 +181,7 @@ def _handle_invoice(invoice, *, paid: bool) -> None:
 async def activation(session_id: str, request: Request):
     """Code lookup for the /activate page. The checkout session id (cs_…,
     high-entropy, only ever handed to the buyer's browser) is the secret."""
-    _rate_limit(request.client.host if request.client else "unknown")
+    _activation_limiter.check(request.client.host if request.client else "unknown")
     sub = store.subscription_by_session(session_id)
     if not sub:
         # also the "webhook hasn't arrived yet" case — the page polls on 404

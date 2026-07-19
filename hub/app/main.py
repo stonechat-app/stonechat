@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -33,6 +33,7 @@ import os
 from .billing import router as billing_router
 from .deps import User, store
 from .identity import PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
+from .ratelimit import RateLimiter
 from .providers import (
     MachineSpec,
     ProviderError,
@@ -142,11 +143,17 @@ async def health():
 
 
 @app.get("/v1/relay-binary")
-async def relay_binary():
+async def relay_binary(authorization: str | None = Header(default=None)):
     """The static relay binary sovereign startup scripts fetch (their pinned
     SHA-256 makes this integrity-critical path tamper-evident — bootstrap.py).
-    Public like the binary itself; 404 until the operator sets
+    Auth is the fetching VM's server_token, which the startup script already
+    carries; it gates egress cost only — integrity comes from the pin, and
+    the binary itself is not secret. 404 until the operator sets
     ZEON_RELAY_BINARY."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "missing bearer token")
+    if not store.server_by_token(authorization.removeprefix("Bearer ").strip()):
+        raise HTTPException(401, "invalid token")
     path = relay_binary_path()
     if path is None or not path.is_file():
         raise HTTPException(404, "no relay binary configured on this hub")
@@ -154,8 +161,25 @@ async def relay_binary():
                         filename="zeon-relay")
 
 
+# Registration is once per install, so 10/min/IP is roomy even for a NAT'd
+# office — while a scripted loop dies on its first second (ABUSE.md
+# "Scripted registration").
+_register_limiter = RateLimiter(limit=10, window_s=60.0)
+
+
 @app.post("/v1/register", status_code=201)
-async def register(body: RegisterIn):
+async def register(body: RegisterIn, request: Request):
+    """Create an identity: deliberately open, no auth.
+
+    The Zeon ID is derived (identity.py) from the submitted Ed25519 pubkey,
+    so there is nothing to squat or hijack — "registering as someone else"
+    requires their pubkey and just yields the ID they'd get anyway (409 if
+    taken). Returns the account_token that authenticates every account-scoped
+    endpoint; anything costly (provisioning) additionally sits behind plan
+    entitlements. Rate-limited per IP: mass signups are cheap junk rows to
+    us, but read as card-testing fraud to the payment stack.
+    """
+    _register_limiter.check(request.client.host if request.client else "unknown")
     try:
         pubkey = base64.b64decode(body.pubkey, validate=True)
     except Exception:

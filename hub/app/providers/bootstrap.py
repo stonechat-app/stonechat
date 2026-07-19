@@ -13,7 +13,9 @@ Where the binary comes from (hub env):
 
     ZEON_RELAY_BINARY      path to a static x86_64-musl `zeon-relay` on the
                            hub box. The hub serves it at GET /v1/relay-binary
-                           and pins its SHA-256 in every startup script.
+                           (auth: the fetching VM's server_token, which this
+                           script already carries) and pins its SHA-256 in
+                           every startup script.
     ZEON_RELAY_BINARY_URL  URL the VM fetches. Defaults to
                            {ZEON_HUB_URL}/v1/relay-binary; point it at a GCS
                            bucket / GitHub release to take the hub out of the
@@ -65,7 +67,7 @@ if ! command -v curl >/dev/null; then
   elif command -v dnf >/dev/null; then dnf install -y curl
   fi
 fi
-curl -fsSL --retry 5 --retry-delay 3 "{binary_url}" -o /opt/zeon/zeon-relay
+curl -fsSL --retry 5 --retry-delay 3 {binary_auth}"{binary_url}" -o /opt/zeon/zeon-relay
 echo "{binary_sha256}  /opt/zeon/zeon-relay" | sha256sum -c -
 chmod +x /opt/zeon/zeon-relay
 
@@ -251,8 +253,15 @@ def build_startup_script(
             host_agent_port=HOST_AGENT_PORT,
             push_gateway=push_gateway,
         )
+    # Hub-served downloads authenticate with the server_token this script
+    # already carries (egress gate — main.py relay_binary). An external
+    # artifact URL (GCS, GitHub) is fetched anonymously.
+    hub_served = not os.environ.get("ZEON_RELAY_BINARY_URL", "")
     return _TEMPLATE.format(
         binary_url=_relay_binary_url(),
+        binary_auth=(
+            f'-H "Authorization: Bearer {owner_token}" ' if hub_served else ""
+        ),
         binary_sha256=_relay_binary_sha256(),
         owner_id=owner_id,
         owner_token=owner_token,

@@ -75,7 +75,7 @@ Knobs (env vars):
 | `ZEON_PUBLIC_IP` | — (required) | Address phones use for the hub |
 | `ZEON_FLEET_HOSTS` | — | Fleet host pool: `name=ssh://user@addr\|advertise_ip,…` (unset → fleet provider disabled) |
 | `ZEON_HUB_PORT` | `8000` | Hub listen port |
-| `ZEON_RELAY_BINARY` | — | Static x86_64-musl `zeon-relay` on this box (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for sovereign VMs. Unset → fleet hosts compile the crate on first ignite; sovereign provisioning refused. |
+| `ZEON_RELAY_BINARY` | — | Static x86_64-musl `zeon-relay` on this box (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for sovereign VMs (authenticated with the per-server token in their startup script). Unset → fleet hosts compile the crate on first ignite; sovereign provisioning refused. |
 | `ZEON_HUB_URL` | — | Public base URL of the hub (`https://hub.example.com`) — how sovereign startup scripts reach `/v1/relay-binary` |
 | `ZEON_RELAY_BINARY_URL` | — | Override: fetch the relay from an external artifact URL (GCS/GitHub release) instead of the hub |
 

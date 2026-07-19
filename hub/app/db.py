@@ -159,6 +159,16 @@ class Store:
         server["meta"] = json.loads(server["meta"])
         return server
 
+    def server_by_token(self, server_token: str) -> dict | None:
+        """Auth for GET /v1/relay-binary: the fetching VM presents the
+        server_token its startup script carries. External servers never
+        match — their token is NULL (never stored)."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT * FROM servers WHERE server_token = ?", (server_token,)
+            ).fetchone()
+        return dict(row) if row else None
+
     def mark_running(self, zeon_id: str, resource_id: str, address: str, meta: dict,
                      tls_fp: str | None) -> None:
         with self._lock:
