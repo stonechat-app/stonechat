@@ -195,12 +195,21 @@ def register(body: RegisterIn, request: Request):
     return {"zeon_id": zeon_id, "account_token": token}
 
 
+# Deliberately generous: a cold-cache group send resolves every member at
+# once, and NAT'd networks share an IP — the wall only exists for floods
+# (each lookup costs a DB read; the data itself is public to ID-holders).
+_directory_limiter = RateLimiter(limit=120, window_s=60.0)
+
+
 @app.get("/v1/directory/{zeon_id}")
-async def directory(zeon_id: str):
+def directory(zeon_id: str, request: Request):
     """Resolve a ZC- cryptographic ID to its record. Lookup is by full ID
     only — there is no enumerable handle namespace (a Zeon ID is a 160-bit
     commitment, not walkable). Clients MUST still verify the returned pubkey
-    hashes to the returned zeon_id; the directory is untrusted."""
+    hashes to the returned zeon_id; the directory is untrusted — and open:
+    federated senders from other hubs resolve through here with no account
+    on this hub, and auth would add nothing when accounts are free."""
+    _directory_limiter.check(request.client.host if request.client else "unknown")
     try:
         canonical = normalize_zeon_id(zeon_id)
     except ValueError as e:
