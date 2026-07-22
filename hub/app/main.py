@@ -281,7 +281,7 @@ def directory(zeon_id: str, request: Request):
     only — there is no enumerable handle namespace (a Zeon ID is a 160-bit
     commitment, not walkable). Clients MUST still verify the returned pubkey
     hashes to the returned zeon_id; the directory is untrusted — and open:
-    federated senders from other hubs resolve through here with no account
+    senders on other hubs resolve through here with no account
     on this hub, and auth would add nothing when accounts are free."""
     _directory_limiter.check(request.client.host if request.client else "unknown")
     try:

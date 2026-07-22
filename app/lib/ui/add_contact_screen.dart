@@ -80,7 +80,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
             if (_scanHandled) return;
             final raw = capture.barcodes.firstOrNull?.rawValue;
             // Pass the raw scan through: addContact re-parses it, so a hub
-            // tag on a federated invite survives to resolution.
+            // tag on a hub-tagged invite survives to resolution.
             if (raw != null && zeonInviteFromInput(raw) != null) {
               _scanHandled = true;
               _add(raw);

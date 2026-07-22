@@ -37,7 +37,7 @@ class ChatDb {
       version: 2,
       onUpgrade: (db, from, _) async {
         if (from < 2) {
-          // v2: a contact's home hub for cross-hub resolution (federation).
+          // v2: a contact's home hub for cross-hub resolution.
           await db.execute('ALTER TABLE contacts ADD COLUMN hub TEXT');
         }
       },

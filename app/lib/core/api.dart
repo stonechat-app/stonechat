@@ -175,7 +175,7 @@ class HubApi {
 
   /// Resolves a full ZC- Zeon ID to its directory record. Lookup is by ID
   /// only — there are no handles. [hubUrl] asks a different hub's directory
-  /// (federation): the answer is verified by the caller exactly like one from
+  /// (cross-hub): the answer is verified by the caller exactly like one from
   /// our own hub, so the foreign hub is trusted for availability only.
   Future<DirectoryEntry> directory(String zeonId, {String? hubUrl}) async {
     final r =

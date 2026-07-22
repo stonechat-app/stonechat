@@ -146,7 +146,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
   /// A tapped invite link opens add-contact with the invite prefilled; the
   /// user still confirms before a request is sent. Ignored until the user has
   /// their own identity (there's nothing to add a contact to yet). The raw
-  /// fragment goes through as typed so a federated invite keeps its hub tag.
+  /// fragment goes through as typed so a hub-tagged invite keeps its tag.
   void _handleInviteLink(Uri uri) {
     if (zeonInviteFromUri(uri) == null || !mounted) return;
     if (!context.read<AppState>().hasIdentity) return;

@@ -16,7 +16,7 @@ class Contact {
   String status;
   String? serverAddress; // last known, refreshed from directory on demand
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
-  String? hub; // home hub base URL; null = the hub this app uses (federation)
+  String? hub; // home hub base URL; null = the hub this app uses (cross-hub)
   final int createdAt;
   int? pinnedAt; // ms epoch when the user pinned this conversation
   int expireTimerMs; // disappearing-messages TTL, 0 = off

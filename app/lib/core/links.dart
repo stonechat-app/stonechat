@@ -5,22 +5,26 @@
 /// to the server, so an un-installed tap that falls back to the web page never
 /// tells zeonchat.com whose ID was being added (PROTOCOL.md "No handles").
 ///
-/// Federated builds (`--dart-define=ZEON_FEDERATION=true`) may append the
+/// Cross-hub builds (`--dart-define=ZEON_CROSS_HUB=true`) may append the
 /// sender's home hub to the fragment — `#ZC-…@hub.example.com` — so the
 /// recipient's client knows which directory can resolve the ID. The hub tag is
 /// routing information only, never trusted: resolution still verifies the
 /// pubkey↔ID commitment and the owner-signed TLS fingerprint, so a lying tag
-/// can at worst fail to resolve (PROTOCOL.md "Federation (experimental)").
+/// can at worst fail to resolve (PROTOCOL.md "Cross-hub resolution").
 library;
 
 /// Cross-hub invites and directory lookups. Off in store builds: resolving a
 /// foreign ID sends your IP and the looked-up ID to a hub you didn't choose.
-const zeonFederation = bool.fromEnvironment('ZEON_FEDERATION');
+///
+/// Not federation: hubs never talk to each other and share no namespace, so
+/// this only changes *which URL the client asks* (PROTOCOL.md "Cross-hub
+/// resolution").
+const zeonCrossHub = bool.fromEnvironment('ZEON_CROSS_HUB');
 
 const zeonInviteHost = 'zeonchat.com';
 const zeonInvitePath = '/add';
 
-/// A parsed invite: who, and (federated invites only) which hub resolves them.
+/// A parsed invite: who, and (hub-tagged invites only) which hub resolves them.
 /// [hub] is a normalized base URL (`https://…`, no trailing slash), or null
 /// for "the hub this app already uses".
 typedef ZeonInvite = ({String zeonId, String? hub});

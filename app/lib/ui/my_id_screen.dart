@@ -17,10 +17,10 @@ class MyIdScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     final zeonId = app.zeonId ?? '';
-    // Federated builds tag the invite with our hub so a peer on another hub
+    // Cross-hub builds tag the invite with our hub so a peer on another hub
     // can resolve the ID; untagged invites keep meaning "the scanner's hub".
     final inviteLink = zeonInviteLink(zeonId,
-        hub: zeonFederation ? app.api.baseUrl : null);
+        hub: zeonCrossHub ? app.api.baseUrl : null);
 
     return Scaffold(
       appBar: AppBar(

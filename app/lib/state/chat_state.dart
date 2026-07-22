@@ -305,7 +305,7 @@ class ChatState extends ChangeNotifier {
   /// fingerprint signed by that pubkey. A server that fails the transport
   /// check is treated as absent — never connected to.
   ///
-  /// Federation: a peer on another hub is resolved through *their* directory —
+  /// Cross-hub: a peer on another hub is resolved through *their* directory —
   /// [hub] when the caller has it (fresh invite, request payload), else the
   /// contact's stored home hub. The verification below is what makes asking a
   /// foreign hub safe: it can lie only into a failed lookup.
@@ -651,22 +651,22 @@ class ChatState extends ChangeNotifier {
 
   /// Our display name + current photo — what contact_request, contact_accept
   /// and profile_update carry. The avatar key is always present (null =
-  /// cleared) so receivers converge on removals too. Federated builds also
+  /// cleared) so receivers converge on removals too. Cross-hub builds also
   /// name our home hub, so a peer on another hub can resolve us back.
   Map<String, Object?> _profilePayload() => {
         'display_name': app.displayName,
         'avatar': app.avatar == null
             ? null
             : {'data': base64Encode(app.avatar!), 'mime': 'image/jpeg'},
-        if (zeonFederation) 'hub': app.api.baseUrl,
+        if (zeonCrossHub) 'hub': app.api.baseUrl,
       };
 
   /// A peer's home hub from a contact_request/accept payload: only under the
-  /// federation flag, only http(s), and null when it's just our own hub. The
+  /// cross-hub flag, only http(s), and null when it's just our own hub. The
   /// URL is routing data from an E2EE-authenticated sender — a wrong one can
   /// only make lookups fail, never redirect trust (_resolve verifies).
   String? _peerHubFrom(Map<String, dynamic> payload) {
-    if (!zeonFederation) return null;
+    if (!zeonCrossHub) return null;
     var hub = payload['hub'];
     if (hub is! String) return null;
     while (hub.endsWith('/')) {
@@ -731,7 +731,7 @@ class ChatState extends ChangeNotifier {
     final invite = zeonInviteFromInput(input) ?? (zeonId: input, hub: null);
     final query = app.crypto.normalizeZeonId(invite.zeonId);
     final hub = invite.hub == app.api.baseUrl ? null : invite.hub;
-    if (hub != null && !zeonFederation) {
+    if (hub != null && !zeonCrossHub) {
       throw const FormatException(
           'This invite lives on a different Zeon hub — this build only '
           'reaches people on yours');
