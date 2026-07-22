@@ -1,0 +1,102 @@
+# App Store listing copy — en-US.
+#
+# Pushed to App Store Connect by scripts/appstore_listing.py. This file is the
+# source of truth: edit here, not in the ASC web UI, or the next push overwrites
+# your edit. Apple's length limits are enforced by the script before anything is
+# sent, so a too-long subtitle fails locally instead of halfway through a push.
+#
+# Every privacy claim below has to stay true of landing/src/pages/privacy.astro
+# and of the code. If one stops being true, all three change together.
+
+locale = "en-US"
+
+[app_info]
+# Shown on the product page regardless of which version is live.
+name     = "ZeonChat - private messenger"   # <= 30
+subtitle = "Your server. Your messages."    # <= 30
+
+privacy_policy_url = "https://zeonchat.com/privacy"
+
+primary_category   = "SOCIAL_NETWORKING"
+secondary_category = "UTILITIES"
+
+[version]
+# Per-version copy, attached to whichever version is editable.
+support_url   = "https://zeonchat.com/support"
+marketing_url = "https://zeonchat.com"
+
+# <= 170. Changeable without submitting a build — the one field you can edit
+# to react to press or a launch moment.
+promotional_text = """
+Every user runs their own server. Messages are end-to-end encrypted, wiped from the relay the moment they are delivered, and stored only on your phone."""
+
+# <= 100 total, comma-separated. Words already in the app name ("private",
+# "messenger") are indexed from the name — spending keyword bytes on them again
+# is wasted, so this list deliberately avoids them.
+keywords = "encrypted,e2ee,secure,self-hosted,sovereign,privacy,no phone number,anonymous,server,relay"
+
+# <= 4000.
+description = """
+Zeon Chat is a messenger where every user runs their own server.
+
+There is no central message store to subpoena, breach, or mine. Your "relay" is a small machine that belongs to you — rented in the country you choose, or self-hosted on your own hardware for free. Its only job is to hold end-to-end encrypted envelopes until your phone picks them up. Then they are deleted.
+
+NO PHONE NUMBER. NO EMAIL.
+Your identity is a cryptographic keypair generated on your device the first time you open the app. Your Zeon ID reveals nothing about you — share it by QR code or as plain text. There is no directory of users to search, and no way for strangers to find you.
+
+ENCRYPTION THAT DOESN'T ASK FOR TRUST
+X3DH key agreement and a double ratchet — the same primitives Signal uses — with prekeys served by your own relay instead of a company's. Every message gets a fresh key. Keys stolen today cannot decrypt traffic recorded yesterday.
+
+YOUR HISTORY LIVES ON YOUR PHONE
+Messages are stored encrypted on your device and nowhere else. Delivered envelopes are wiped from the relay immediately. Uninstall the app and your history is genuinely gone — there is no cloud copy, because there is no cloud.
+
+PINNED TLS, NO CERTIFICATE AUTHORITIES
+Relays sign their own certificates. Your app pins a fingerprint that the relay's owner signed with their identity key. Trust chains to a person's key, not to an authority you have never met.
+
+HOST YOUR CIRCLE
+On a dedicated machine you can invite friends and family and give each of them their own isolated mailbox on your box. You host the metal; you never host the meaning — their messages stay end-to-end encrypted, including from you.
+
+OPEN SOURCE
+The relay is a few hundred lines of Python. Read every one of them. Audit it, run it yourself, and still talk to everyone on the network. If you can edit a config file, you never owe us anything.
+
+Subscriptions are optional, and exist only for people who would rather not administer a server. Self-hosting is free, forever."""
+
+# <= 4000. Only meaningful on an update; Apple rejects it on a first version,
+# so the script skips it while the app has never been released.
+whats_new = ""
+
+# Apple derives the displayed age rating from these answers. An unmoderated
+# end-to-end encrypted messenger genuinely carries user-generated content we
+# cannot inspect — answering otherwise would be a lie that App Review is
+# specifically good at catching.
+#
+# Apple treats this as one questionnaire: every attribute must be sent in the
+# same request, so the script always PATCHes the whole block rather than a diff.
+# Some fields are booleans and some are NONE/INFREQUENT_OR_MILD/FREQUENT_OR_INTENSE
+# enums; the split below is what the API actually accepts, not a guess.
+[age_rating]
+# booleans
+messagingAndChat      = true    # it is a messenger
+userGeneratedContent  = true    # E2EE means we cannot moderate it, by design
+unrestrictedWebAccess = false
+advertising           = false
+gambling              = false
+lootBox               = false
+parentalControls      = false
+healthOrWellnessTopics = false
+ageAssurance          = false
+
+# frequency enums
+violenceCartoonOrFantasy                    = "NONE"
+violenceRealistic                           = "NONE"
+violenceRealisticProlongedGraphicOrSadistic = "NONE"
+gunsOrOtherWeapons                          = "NONE"
+profanityOrCrudeHumor                       = "NONE"
+sexualContentOrNudity                       = "NONE"
+sexualContentGraphicAndNudity               = "NONE"
+alcoholTobaccoOrDrugUseOrReferences         = "NONE"
+horrorOrFearThemes                          = "NONE"
+matureOrSuggestiveThemes                    = "NONE"
+gamblingSimulated                           = "NONE"
+medicalOrTreatmentInformation               = "NONE"
+contests                                    = "NONE"
