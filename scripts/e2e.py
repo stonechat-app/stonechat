@@ -28,6 +28,7 @@ import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import httpx
 import websockets
@@ -879,6 +880,88 @@ def main():
         assert seen, "gateway never received the wake-up ping"
         asyncio.run(bob.receive_one(
             process=lambda e: bob.open_envelope(e, alice)))  # drain before teardown
+
+    print("8b) abuse actions: whois → destroy → ban (docs/abuse_reply_template.md)")
+    # The abuse-desk reply templates promise "we can destroy any individual
+    # customer's machine immediately". This is that promise, exercised against
+    # a real container — an abuse report carries an IP and nothing else, so the
+    # whole chain starts from one.
+    admin_hdr = {"X-Admin-Token": ADMIN_TOKEN}
+    mallory = Phone("mallory")
+    mallory.register()
+    mallory.provision()
+    mallory.wait_running()
+    host = urlsplit(mallory.server["address"]).hostname
+
+    # admin surface is closed without the token — no anonymous fleet enumeration
+    assert httpx.get(f"{HUB}/v1/admin/whois", params={"host": host}).status_code == 403
+    assert httpx.get(f"{HUB}/v1/admin/whois", params={"host": host},
+                     headers={"X-Admin-Token": "wrong"}).status_code == 403
+
+    r = httpx.get(f"{HUB}/v1/admin/whois", params={"host": host}, headers=admin_hdr)
+    r.raise_for_status()
+    hit = next(s for s in r.json()["servers"] if s["zeon_id"] == mallory.zeon_id)
+    assert hit["provider"] == "local" and hit["prior_destroys"] == 0
+    assert hit["banned_at"] is None
+    assert "server_token" not in r.text and "host_agent_token" not in r.text, \
+        "triage output must not hand back credentials"
+
+    # exact host match, not a substring: 27.0.0.1 must not resolve to 127.0.0.1's
+    # owner, or a malformed report destroys the wrong customer's mailbox
+    r = httpx.get(f"{HUB}/v1/admin/whois", params={"host": host[1:]}, headers=admin_hdr)
+    assert r.json()["servers"] == [], "substring matched — wrong customer at risk"
+
+    # ban shuts BOTH provisioning doors; the external one is the cheap bypass
+    r = httpx.post(f"{HUB}/v1/admin/users/{mallory.zeon_id}/ban",
+                   headers=admin_hdr, json={"reason": "e2e: phishing report"})
+    r.raise_for_status()
+    r = httpx.post(f"{HUB}/v1/server", headers=mallory.auth,
+                   json={"provider": "local",
+                         "machine": {"machine_type": "x", "region": "y"}})
+    assert r.status_code == 403, f"banned /v1/server: expected 403, got {r.status_code}"
+    assert r.json()["detail"]["code"] == "account_suspended"
+    r = httpx.post(f"{HUB}/v1/server/external", headers=mallory.auth,
+                   json={"address": "https://198.51.100.9:8443"})
+    assert r.status_code == 403, \
+        f"banned /v1/server/external: expected 403, got {r.status_code}"
+
+    # ...but a ban is narrow: it refuses infrastructure, it does not erase the
+    # account. Making "banned" and "never existed" the same state would be a
+    # censorship lever the hub shouldn't have.
+    assert httpx.get(f"{HUB}/v1/server", headers=mallory.auth).status_code == 200
+    assert httpx.get(f"{HUB}/v1/directory/{mallory.zeon_id}").status_code == 200
+
+    r = httpx.post(f"{HUB}/v1/admin/servers/{mallory.zeon_id}/destroy",
+                   headers=admin_hdr, json={"reason": "e2e: provider case 12345"})
+    r.raise_for_status()
+    assert httpx.get(f"{HUB}/v1/server", headers=mallory.auth).json()["status"] == "none"
+    assert httpx.get(f"{HUB}/v1/directory/{mallory.zeon_id}").json()["server"] is None
+    try:
+        MX.get(f"{mallory.server['address']}/health", timeout=3)
+        raise AssertionError("mailbox still answering after destroy")
+    except httpx.HTTPError:
+        pass  # container is gone, not merely delisted
+    r = httpx.post(f"{HUB}/v1/admin/servers/{mallory.zeon_id}/destroy",
+                   headers=admin_hdr, json={"reason": "e2e: repeat"})
+    assert r.status_code == 404, f"second destroy: expected 404, got {r.status_code}"
+
+    # unban reopens the door, and the tombstone outlives the machine — that
+    # history is what tells a first offence from a pattern on the next report
+    httpx.post(f"{HUB}/v1/admin/users/{mallory.zeon_id}/unban",
+               headers=admin_hdr).raise_for_status()
+    mallory.provision()
+    mallory.wait_running()
+    r = httpx.get(f"{HUB}/v1/admin/whois",
+                  params={"host": urlsplit(mallory.server["address"]).hostname},
+                  headers=admin_hdr)
+    hit = next(s for s in r.json()["servers"] if s["zeon_id"] == mallory.zeon_id)
+    assert hit["prior_destroys"] == 1, "tombstone did not survive the destroy"
+    assert hit["banned_at"] is None
+    mallory.destroy()
+
+    r = httpx.post(f"{HUB}/v1/admin/users/ZC-NOBODY/ban",
+                   headers=admin_hdr, json={"reason": "e2e: unknown"})
+    assert r.status_code == 404, f"unknown ID ban: expected 404, got {r.status_code}"
 
     print("9) destroy relays")
     alice.destroy()

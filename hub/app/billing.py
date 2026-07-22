@@ -36,13 +36,13 @@ import re
 import secrets
 import sqlite3
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Literal
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .db import hash_token
-from .deps import User, store
+from .deps import Admin, User, store
 from .ratelimit import RateLimiter
 
 log = logging.getLogger("zeon.hub.billing")
@@ -298,16 +298,9 @@ class CompIn(BaseModel):
 
 
 @router.post("/v1/billing/comp", status_code=201)
-def comp(
-    body: CompIn,
-    x_admin_token: Annotated[str | None, Header()] = None,
-):
+def comp(body: CompIn, _admin: Admin):
     """Mint a free activation code (TestFlight testers, e2e). Redeemed in the
     app exactly like a paid one. Disabled unless ZEON_ADMIN_TOKEN is set."""
-    admin_token = os.environ.get("ZEON_ADMIN_TOKEN")
-    if not admin_token or not x_admin_token or not secrets.compare_digest(
-            admin_token, x_admin_token):
-        raise HTTPException(403, "admin token required")
     for _ in range(5):
         code = mint_code()
         try:

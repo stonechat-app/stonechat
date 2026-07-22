@@ -16,6 +16,7 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 
 def hash_token(token: str) -> str:
@@ -41,7 +42,9 @@ class Store:
                 zeon_id    TEXT PRIMARY KEY,
                 pubkey     TEXT NOT NULL,          -- base64
                 token_hash TEXT NOT NULL UNIQUE,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                banned_at  TEXT,                   -- abuse: no more provisioning
+                ban_reason TEXT
             );
             CREATE TABLE IF NOT EXISTS servers (
                 zeon_id      TEXT PRIMARY KEY REFERENCES users(zeon_id),
@@ -83,8 +86,42 @@ class Store:
                 type        TEXT NOT NULL,
                 received_at TEXT NOT NULL
             );
+            -- Append-only record of machines we destroyed for abuse. Separate
+            -- from `servers` on purpose: `servers` holds at most one *live*
+            -- machine per user (that PRIMARY KEY is the one-per-user claim), so
+            -- a tombstone kept there would lock a wrongly-hit user out of
+            -- re-provisioning. Here it can be preserved indefinitely — abuse
+            -- cases carry evidence-preservation duties (ABUSE.md §5) and the
+            -- second report from a provider is only easy to answer if the
+            -- first one was written down.
+            CREATE TABLE IF NOT EXISTS server_tombstones (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                zeon_id      TEXT NOT NULL,
+                provider     TEXT NOT NULL,
+                resource_id  TEXT,
+                address      TEXT,
+                meta         TEXT NOT NULL DEFAULT '{}',
+                reason       TEXT NOT NULL,
+                created_at   TEXT NOT NULL,        -- when the machine was made
+                destroyed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tombstones_zeon
+                ON server_tombstones(zeon_id);
             """
         )
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Additive column migrations for hubs whose DB predates them.
+        CREATE TABLE IF NOT EXISTS only builds fresh databases; the deployed
+        hub.db needs the ALTER. Idempotent, so it runs on every boot."""
+        have = {r["name"] for r in self._db.execute("PRAGMA table_info(users)")}
+        for column, ddl in (
+            ("banned_at", "ALTER TABLE users ADD COLUMN banned_at TEXT"),
+            ("ban_reason", "ALTER TABLE users ADD COLUMN ban_reason TEXT"),
+        ):
+            if column not in have:
+                self._db.execute(ddl)
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -137,6 +174,21 @@ class Store:
             "SELECT * FROM users WHERE zeon_id = ?", (zeon_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def set_ban(self, zeon_id: str, reason: str | None) -> bool:
+        """Ban (reason set) or unban (reason None). False if no such user.
+
+        A ban only refuses future infrastructure — it does not delete the
+        account, and a banned identity can still be recovered and still
+        resolves in the directory. Making "banned" indistinguishable from
+        "never existed" would hand the hub a censorship lever it should not
+        have, and identities are cheap to regenerate anyway: this is a cost on
+        paying abusers, a speed bump on everyone else (docs/ABUSE.md)."""
+        cur = self._db.execute(
+            "UPDATE users SET banned_at = ?, ban_reason = ? WHERE zeon_id = ?",
+            (_now() if reason else None, reason, zeon_id),
+        )
+        return cur.rowcount > 0
 
     # -- servers -------------------------------------------------------------
 
@@ -235,6 +287,44 @@ class Store:
 
     def delete_server(self, zeon_id: str) -> None:
         self._db.execute("DELETE FROM servers WHERE zeon_id = ?", (zeon_id,))
+
+    def servers_by_host(self, host: str) -> list[dict]:
+        """Abuse triage: an abuse report carries an IP and nothing else, so
+        this is the only lookup that matters operationally.
+
+        Matches the *host component* exactly rather than a LIKE '%ip%' over
+        the address, which would report 10.0.0.1 and 110.0.0.19 as the same
+        machine — an off-by-one-character way to destroy the wrong customer's
+        mailbox. No index: a leading-wildcard LIKE could not use one anyway,
+        the table is one row per customer, and this runs when a human asks."""
+        wanted = host.strip().lower().strip("[]")
+        found = []
+        for row in self._db.execute("SELECT * FROM servers WHERE address IS NOT NULL"):
+            server = dict(row)
+            hostname = urlsplit(server["address"]).hostname or ""
+            if hostname.lower() == wanted:
+                server["machine"] = json.loads(server["machine"])
+                server["meta"] = json.loads(server["meta"])
+                found.append(server)
+        return found
+
+    def record_tombstone(self, server: dict, reason: str) -> None:
+        """Write the abuse record *before* the machine goes away — a destroy
+        that half-fails must not also lose the evidence of what was there."""
+        self._db.execute(
+            "INSERT INTO server_tombstones (zeon_id, provider, resource_id, address,"
+            " meta, reason, created_at, destroyed_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (server["zeon_id"], server["provider"], server["resource_id"],
+             server["address"], json.dumps(server.get("meta") or {}), reason,
+             server["created_at"], _now()),
+        )
+
+    def tombstones_for(self, zeon_id: str) -> list[dict]:
+        return [dict(r) for r in self._db.execute(
+            "SELECT * FROM server_tombstones WHERE zeon_id = ? ORDER BY id DESC",
+            (zeon_id,),
+        )]
 
     # -- billing ---------------------------------------------------------------
 

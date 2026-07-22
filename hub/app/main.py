@@ -9,7 +9,8 @@ Config (env):
                                 billing endpoints, no plan gates (every
                                 provider is free to use), no reaper (default on)
     ZEON_STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (billing.py)
-    ZEON_ADMIN_TOKEN            enables comp grants (billing.py)
+    ZEON_ADMIN_TOKEN            enables comp grants (billing.py) and the
+                                abuse routes under /v1/admin (admin.py)
     ZEON_TEST_CODE              reusable tester activation code (billing.py)
     ZEON_CORS_EXTRA             comma-separated extra CORS origins (dev)
     ZEON_REAP_RETENTION_DAYS    destroy servers this many days after their
@@ -33,8 +34,9 @@ from pydantic import BaseModel, Field
 
 import os
 
+from .admin import router as admin_router
 from .billing import router as billing_router
-from .deps import User, store
+from .deps import UnbannedUser, User, store
 from .identity import PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
 from .ratelimit import RateLimiter
 from .providers import (
@@ -91,6 +93,11 @@ if BILLING:
     app.include_router(billing_router)
 else:
     log.info("billing disabled (ZEON_BILLING=off) — all providers ungated")
+
+# Abuse handling is not part of the billing plane — a hub with billing off
+# still hosts machines someone can complain about. Every route inside is dead
+# unless ZEON_ADMIN_TOKEN is set.
+app.include_router(admin_router)
 
 # Browser access is only the landing page's activation lookup (GET); the
 # webhook is server-to-server and the app is not a browser.
@@ -303,7 +310,7 @@ def directory(zeon_id: str, request: Request):
 
 
 @app.post("/v1/server", status_code=202)
-def create_server(body: ServerIn, user: User, background: BackgroundTasks):
+def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTasks):
     if body.provider not in available_providers():
         raise HTTPException(
             400, f"unknown provider; available: {', '.join(available_providers())}"
@@ -341,11 +348,14 @@ def create_server(body: ServerIn, user: User, background: BackgroundTasks):
 
 
 @app.post("/v1/server/external", status_code=201)
-def register_external_server(body: ExternalServerIn, user: User):
+def register_external_server(body: ExternalServerIn, user: UnbannedUser):
     """The free tier: the user runs their own relay anywhere and we list it in
     the directory. Ownership is proven, not claimed: the relay confirms this
     user's Zeon ID via /owner (it never exposes its owner to anonymous callers,
-    so this probe leaks nothing). We never see their token."""
+    so this probe leaks nothing). We never see their token.
+
+    Banned accounts are refused here too, not just on /v1/server: this is the
+    cheaper door, and a ban that left it open would be bypassed in one call."""
     address = body.address.strip().rstrip("/")
     if not re.match(r"^https://[a-zA-Z0-9.\-:\[\]]+$", address):
         raise HTTPException(400, "address must look like https://host[:port]")

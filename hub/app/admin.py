@@ -1,0 +1,138 @@
+"""Operator-only abuse actions.
+
+Every managed mailbox lives in GazelleLabs' provider accounts, so a report
+about one customer's machine is a threat to every customer's machine
+(docs/ABUSE.md). These three routes are what turn "we can act on a credible
+report" from a claim in an abuse-desk reply into something doable at 3am:
+
+    whois   — an abuse report carries an IP; this turns it into a Zeon ID
+    destroy — the machine is gone, the record of it is kept
+    ban     — this account gets no more machines from us
+
+`destroy` and `ban` are deliberately separate verbs. Destroying is cheap:
+mailboxes hold no history (it lives on the phone) and the client re-resolves
+through the directory on the first delivery failure, so a wrongly-destroyed
+mailbox costs its owner a re-provision and the undelivered queue, not their
+account. That makes it safe to do fast, on the balance of probabilities,
+which is the posture an abuse desk needs. Banning says someone is not a
+customer any more — a slower, colder decision that should not ride along with
+an urgent one.
+
+Runbook and the reply templates these routes back up: docs/abuse_reply_template.md.
+
+Disabled entirely unless ZEON_ADMIN_TOKEN is set.
+"""
+
+import logging
+
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from .deps import Admin, store
+from .providers import ProviderError, get_provider
+
+log = logging.getLogger("zeon.hub.admin")
+
+router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+
+class ReasonIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
+
+
+def _public(server: dict) -> dict:
+    """Never hand back server_token / host_agent_token — this is a report, not
+    a credential dump, and abuse triage never needs them."""
+    return {
+        "zeon_id": server["zeon_id"],
+        "provider": server["provider"],
+        "status": server["status"],
+        "resource_id": server["resource_id"],
+        "address": server["address"],
+        "meta": server["meta"],
+        "created_at": server["created_at"],
+    }
+
+
+@router.get("/whois")
+def whois(host: str, _: Admin):
+    """IP (or hostname) → the account behind it, plus its ban and abuse
+    history. Step 1 of every abuse report.
+
+    An empty `servers` result usually means the IP is not ours *any more*:
+    recycled provider IPs arrive carrying someone else's history (ABUSE.md §9),
+    and that is an answer worth sending quickly rather than investigating."""
+    servers = store.servers_by_host(host)
+    out = []
+    for server in servers:
+        user = store.user_by_id(server["zeon_id"]) or {}
+        out.append({
+            **_public(server),
+            "banned_at": user.get("banned_at"),
+            "ban_reason": user.get("ban_reason"),
+            "prior_destroys": len(store.tombstones_for(server["zeon_id"])),
+        })
+    return {"host": host, "servers": out}
+
+
+@router.post("/servers/{zeon_id}/destroy")
+def destroy(zeon_id: str, body: ReasonIn, _: Admin):
+    """Destroy one customer's machine. Does not touch their account, their
+    subscription or their identity — only the machine.
+
+    Ordering is load-bearing: the tombstone is written first, so a provider
+    call that fails halfway leaves us with a record of what existed rather
+    than an orphaned VM nobody can name. Subscription rows are deliberately
+    left alone — deleting them would make the machine invisible to
+    `reapable_servers`, which skips owners with no subscription, and an
+    un-reapable VM bills forever."""
+    server = store.server_for(zeon_id)
+    if not server:
+        raise HTTPException(404, "no server for that Zeon ID")
+
+    store.record_tombstone(server, body.reason)
+
+    if server["resource_id"]:
+        try:
+            get_provider(server["provider"]).destroy(
+                server["resource_id"], server["meta"])
+        except ProviderError as e:
+            # The tombstone survives — the machine is still out there and
+            # someone has to go and kill it by hand.
+            log.error("abuse destroy failed for %s: %s", zeon_id[:12], e)
+            raise HTTPException(502, f"failed to destroy: {e}")
+
+    store.delete_server(zeon_id)
+    log.warning("abuse destroy: %s (%s) — %s",
+                zeon_id[:12], server["provider"], body.reason)
+    return {"status": "destroyed", "zeon_id": zeon_id,
+            "provider": server["provider"], "address": server["address"]}
+
+
+@router.post("/users/{zeon_id}/ban")
+def ban(zeon_id: str, body: ReasonIn, _: Admin):
+    """Refuse this account further infrastructure. Blocks POST /v1/server and
+    POST /v1/server/external — the second one matters most, because without it
+    a banned user re-enters the directory in one call by pointing it at a
+    relay they run themselves.
+
+    Does not destroy anything: ban then destroy, or the machine keeps running
+    while its owner is banned from replacing it.
+
+    Worth being honest about the ceiling. A Zeon ID is a hash of a freshly
+    generated keypair, so anyone can mint a new identity in seconds and this
+    is a speed bump, not a wall. It bites where re-entry has a cost: once
+    provisioning is entitlement-gated, coming back means a new payment
+    method."""
+    if not store.set_ban(zeon_id, body.reason):
+        raise HTTPException(404, "unknown Zeon ID")
+    log.warning("banned %s — %s", zeon_id[:12], body.reason)
+    return {"status": "banned", "zeon_id": zeon_id}
+
+
+@router.post("/users/{zeon_id}/unban")
+def unban(zeon_id: str, _: Admin):
+    if not store.set_ban(zeon_id, None):
+        raise HTTPException(404, "unknown Zeon ID")
+    log.warning("unbanned %s", zeon_id[:12])
+    return {"status": "active", "zeon_id": zeon_id}
