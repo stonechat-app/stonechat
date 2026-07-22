@@ -2,12 +2,14 @@
 
 Every managed mailbox lives in GazelleLabs' provider accounts, so a report
 about one customer's machine is a threat to every customer's machine
-(docs/ABUSE.md). These three routes are what turn "we can act on a credible
-report" from a claim in an abuse-desk reply into something doable at 3am:
+(docs/ABUSE.md). These routes are what turn "we can act on a credible report"
+from a claim in an abuse-desk reply into something doable at 3am:
 
     whois   — an abuse report carries an IP; this turns it into a Zeon ID
     destroy — the machine is gone, the record of it is kept
     ban     — this account gets no more machines from us
+    reports — the queue of complaints raised by users against other users
+              (filed at POST /v1/report, report.py), and the verb to close one
 
 `destroy` and `ban` are deliberately separate verbs. Destroying is cheap:
 mailboxes hold no history (it lives on the phone) and the client re-resolves
@@ -136,3 +138,66 @@ def unban(zeon_id: str, _: Admin):
         raise HTTPException(404, "unknown Zeon ID")
     log.warning("unbanned %s", zeon_id[:12])
     return {"status": "active", "zeon_id": zeon_id}
+
+
+# -- reports from users ---------------------------------------------------------
+#
+# The queue that feeds the three verbs above. Reports arrive signed and
+# unauthenticated at POST /v1/report (report.py); everything here is the
+# operator side of that pipe. Reading a report is a separate call from listing
+# them because only the detail view returns attached message plaintext, and
+# that should take a deliberate act.
+
+
+class ResolveIn(BaseModel):
+    status: str = Field(pattern="^(actioned|dismissed)$")
+    resolution: str = Field(min_length=3, max_length=500)
+
+
+@router.get("/reports")
+def list_reports(_: Admin, status: str = "open", limit: int = 100):
+    """The triage queue, newest first. `status=all` includes closed reports.
+
+    Evidence is summarised as a byte count here, never inlined — see
+    Store.list_reports."""
+    return {"reports": store.list_reports(
+        None if status == "all" else status, min(limit, 500))}
+
+
+@router.get("/reports/{report_id}")
+def get_report(report_id: str, _: Admin):
+    """One report in full, including any attached plaintext, plus the context
+    that decides what to do with it: whether this account has been reported
+    before and by how many *distinct* people, whether it is already banned,
+    and how many machines it has had destroyed."""
+    report = store.report_by_id(report_id)
+    if not report:
+        raise HTTPException(404, "unknown report")
+    user = store.user_by_id(report["reported_id"]) or {}
+    server = store.server_for(report["reported_id"])
+    return {
+        "report": report,
+        "reported": {
+            "zeon_id": report["reported_id"],
+            "banned_at": user.get("banned_at"),
+            "ban_reason": user.get("ban_reason"),
+            "prior_destroys": len(store.tombstones_for(report["reported_id"])),
+            "server": _public(server) if server else None,
+            **store.report_counts(report["reported_id"]),
+        },
+    }
+
+
+@router.post("/reports/{report_id}/resolve")
+def resolve_report(report_id: str, body: ResolveIn, _: Admin):
+    """Close a report once a human has decided. Records the outcome and drops
+    the attached plaintext (Store.resolve_report).
+
+    Purely a bookkeeping call: acting on a report means calling destroy and/or
+    ban, which are separate on purpose — see the module docstring. Resolving
+    without having called either is a legitimate outcome and what `dismissed`
+    is for."""
+    if not store.resolve_report(report_id, body.status, body.resolution):
+        raise HTTPException(404, "unknown report")
+    log.warning("report %s %s — %s", report_id[:8], body.status, body.resolution)
+    return {"status": body.status, "report_id": report_id}

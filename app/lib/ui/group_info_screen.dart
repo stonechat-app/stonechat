@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 
 import '../models.dart';
 import '../state/chat_state.dart';
+import 'report_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -84,6 +85,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   ? Text('ADMIN',
                       style: Zn.mono(size: 8, color: Zn.orange, letterSpacing: 2))
                   : null,
+              onLongPress: m.zeonId == chat.app.zeonId
+                  ? null
+                  : () => _reportMember(chat, m),
               trailing: isAdmin && m.zeonId != chat.app.zeonId
                   ? IconButton(
                       icon: const Icon(Icons.person_remove_outlined,
@@ -162,6 +166,30 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     );
     if (confirmed != true || !mounted) return;
     await chat.updateGroupMembership(widget.group, removeIds: {m.zeonId});
+  }
+
+  /// Report a group member. Two things differ from reporting a contact.
+  ///
+  /// Evidence comes from the *group* conversation, filtered to this member —
+  /// what they said in the room is the whole complaint. And blocking is only
+  /// offered when they are already a contact, because that is where the flag
+  /// lives (models.dart); for a stranger met in a group, leaving is still the
+  /// only remedy the client has.
+  Future<void> _reportMember(ChatState chat, GroupMember m) async {
+    final history = await chat.historyFor(widget.group.id);
+    if (!mounted) return;
+    final contact = chat.contactById(m.zeonId);
+    final outcome = await showReportSheet(
+      context,
+      zeonId: m.zeonId,
+      displayName: m.displayName,
+      hub: contact?.hub,
+      conversation: history.where((msg) => msg.senderId == m.zeonId).toList(),
+      canBlock: contact != null && !contact.isBlocked,
+    );
+    if (outcome.alsoBlock && contact != null && !contact.isBlocked) {
+      await chat.toggleBlock(contact);
+    }
   }
 
   void _showAddSheet(ChatState chat, List<GroupMember> members) {

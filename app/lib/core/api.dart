@@ -279,6 +279,51 @@ class HubApi {
   }
 }
 
+/// File an abuse report with the hub hosting the reported account
+/// (hub/app/report.py). Returns the reference id.
+///
+/// Deliberately not a HubApi method: the report goes to the *reported* user's
+/// home hub, which under cross-hub resolution is not the one this account belongs to,
+/// and the account token would mean nothing there anyway. The Ed25519
+/// signature is the whole credential.
+///
+/// Throws ApiException with code `not_our_account` when that hub does not host
+/// them — the caller should say so rather than swallow it, because the report
+/// has gone nowhere.
+Future<String> fileReport({
+  required String hubUrl,
+  required String reportedId,
+  required String reporterPubkeyB64,
+  required int timestamp,
+  required String category,
+  required String note,
+  required String? evidence,
+  required String signatureB64,
+}) async {
+  final r = await http
+      .post(Uri.parse('$hubUrl/v1/report'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'reported_id': reportedId,
+            'reporter_pubkey': reporterPubkeyB64,
+            'timestamp': timestamp,
+            'category': category,
+            'note': note,
+            'evidence': evidence,
+            'signature': signatureB64,
+          }))
+      .timeout(const Duration(seconds: 20));
+  final body = r.body.isEmpty ? <String, dynamic>{} : jsonDecode(r.body);
+  if (r.statusCode >= 400) {
+    final detail = body is Map ? body['detail'] : null;
+    final message = detail is Map
+        ? (detail['message'] as String? ?? '$detail')
+        : (detail?.toString() ?? r.body);
+    throw ApiException(message, r.statusCode, detail);
+  }
+  return (body as Map<String, dynamic>)['report_id'] as String;
+}
+
 /// Fetch a peer's prekey bundle from their mailbox (consumes a one-time
 /// prekey server-side). The caller must verify the SPK signature against the
 /// peer's directory identity key.

@@ -16,6 +16,10 @@ Config (env):
     ZEON_REAP_RETENTION_DAYS    destroy servers this many days after their
                                 subscription lapses (default 14; -1 disables)
     ZEON_REAP_INTERVAL_S        seconds between reap passes (default 3600)
+    ZEON_REPORT_RETENTION_DAYS  delete user-filed abuse reports this many days
+                                after they are filed (default 180; -1 disables
+                                the purge, which also discards the retention
+                                promise the privacy policy makes — report.py)
 """
 
 import asyncio
@@ -39,6 +43,8 @@ from .billing import router as billing_router
 from .deps import UnbannedUser, User, store
 from .identity import PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
 from .ratelimit import RateLimiter
+from .report import RETENTION_DAYS as REPORT_RETENTION_DAYS
+from .report import router as report_router
 from .providers import (
     MachineSpec,
     ProviderError,
@@ -79,12 +85,17 @@ async def require_wire_version(x_zeon_version: int | None = Header(default=None)
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    reaper = None
+    tasks = []
     if BILLING and REAP_RETENTION_DAYS >= 0:
-        reaper = asyncio.create_task(_reap_loop())
+        tasks.append(asyncio.create_task(_reap_loop()))
+    # Deliberately not conditioned on BILLING: a hub with billing off still
+    # accepts reports, and a retention promise that only holds on the paid
+    # configuration is not a retention promise.
+    if REPORT_RETENTION_DAYS >= 0:
+        tasks.append(asyncio.create_task(_purge_reports_loop()))
     yield
-    if reaper:
-        reaper.cancel()
+    for task in tasks:
+        task.cancel()
 
 
 app = FastAPI(title="zeon-hub", lifespan=_lifespan,
@@ -98,6 +109,12 @@ else:
 # still hosts machines someone can complain about. Every route inside is dead
 # unless ZEON_ADMIN_TOKEN is set.
 app.include_router(admin_router)
+
+# Filing a report, unlike reading one, is open to any client that can sign as
+# a Zeon ID — including one belonging to another hub (report.py). It stays
+# mounted even with no ZEON_ADMIN_TOKEN: refusing to *record* a complaint
+# because nobody has configured a way to read it is the wrong failure.
+app.include_router(report_router)
 
 # Browser access is only the landing page's activation lookup (GET); the
 # webhook is server-to-server and the app is not a browser.
@@ -500,6 +517,22 @@ async def _reap_loop():
             await asyncio.to_thread(_reap_once)
         except Exception:
             log.exception("reap pass failed")
+
+
+async def _purge_reports_loop():
+    """Enforce the abuse-report retention window (report.py's module
+    docstring explains why there is one). Runs on the same interval as the
+    reaper; the window is measured in days, so the cadence barely matters."""
+    while True:
+        await asyncio.sleep(REAP_INTERVAL_S)
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=REPORT_RETENTION_DAYS)
+            purged = await asyncio.to_thread(store.purge_reports, cutoff.isoformat())
+            if purged:
+                log.info("purged %d report(s) older than %d days",
+                         purged, REPORT_RETENTION_DAYS)
+        except Exception:
+            log.exception("report purge failed")
 
 
 def _reap_once() -> None:

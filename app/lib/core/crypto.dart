@@ -52,6 +52,7 @@ final x3dhKdfKey = utf8.encode('zeon-v1-x3dh-kdf'); // 16 bytes, generichash min
 final spkSigContext = utf8.encode('zeon-v1-spk');
 final tlsSigContext = utf8.encode('zeon-v1-tls');
 final recoverSigContext = utf8.encode('zeon-v1-recover');
+final reportSigContext = utf8.encode('zeon-v1-report');
 
 class CryptoService {
   final SodiumSumo sodium;
@@ -173,6 +174,44 @@ class CryptoService {
             [...recoverSigContext, ...utf8.encode('$unixSeconds')]),
         secretKey: _identity.secretKey,
       ));
+
+  /// Signs an abuse report (PROTOCOL.md "Reporting", hub/app/report.py).
+  ///
+  /// Reports are judged by the hub hosting the *reported* account, which under
+  /// cross-hub resolution is often not ours — and our account token means nothing there.
+  /// A signature does cross that boundary: any hub can check that this key
+  /// hashes to the reporter's Zeon ID. The body is committed to by digest
+  /// rather than signed directly, because it has to survive a round trip
+  /// through JSON, where field order and whitespace do not.
+  String signReport({
+    required String reportedId,
+    required int unixSeconds,
+    required String category,
+    required String note,
+    required String? evidence,
+  }) {
+    // 0x1f (unit separator) between fields: without it a note ending in what
+    // looks like the next field could collide with a different report.
+    final digest = sodium.crypto.genericHash(
+      message: Uint8List.fromList([
+        ...utf8.encode(category),
+        0x1f,
+        ...utf8.encode(note),
+        0x1f,
+        ...utf8.encode(evidence ?? ''),
+      ]),
+      outLen: 32,
+    );
+    return base64Encode(sodium.crypto.sign.detached(
+      message: Uint8List.fromList([
+        ...reportSigContext,
+        ...utf8.encode(reportedId),
+        ...utf8.encode('$unixSeconds'),
+        ...digest,
+      ]),
+      secretKey: _identity.secretKey,
+    ));
+  }
 
   // -- prekeys -----------------------------------------------------------------
 

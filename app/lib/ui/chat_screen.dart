@@ -30,6 +30,7 @@ import '../models.dart';
 import '../state/call_state.dart';
 import '../state/chat_state.dart';
 import 'group_info_screen.dart';
+import 'report_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -968,6 +969,21 @@ class _ChatScreenState extends State<ChatScreen> {
                 await chat.toggleBlock(widget.contact!);
                 return;
               }
+              if (value == 'report') {
+                final contact = widget.contact!;
+                final outcome = await showReportSheet(
+                  context,
+                  zeonId: contact.zeonId,
+                  displayName: contact.displayName,
+                  hub: contact.hub,
+                  conversation: chat.messagesFor(contact.zeonId),
+                  canBlock: !contact.isBlocked,
+                );
+                if (outcome.alsoBlock && !contact.isBlocked) {
+                  await chat.toggleBlock(contact);
+                }
+                return;
+              }
               if (value == 'leave') {
                 await chat.leaveGroup(widget.group!);
                 if (context.mounted) Navigator.pop(context);
@@ -994,6 +1010,11 @@ class _ChatScreenState extends State<ChatScreen> {
                       ? const Text('Unblock')
                       : const Text('Block',
                           style: TextStyle(color: Zn.danger)),
+                ),
+              if (!isGroup)
+                const PopupMenuItem(
+                  value: 'report',
+                  child: Text('Report', style: TextStyle(color: Zn.danger)),
                 ),
               if (isGroup)
                 const PopupMenuItem(

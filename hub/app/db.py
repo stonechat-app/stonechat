@@ -107,6 +107,40 @@ class Store:
             );
             CREATE INDEX IF NOT EXISTS idx_tombstones_zeon
                 ON server_tombstones(zeon_id);
+            -- Abuse reports raised by users against other users (report.py).
+            --
+            -- This table is the largest deliberate expansion of the privacy
+            -- budget in the file header, and it is worth naming precisely.
+            -- A row records that `reporter_id` complained about
+            -- `reported_id`: an edge in the contact graph the hub otherwise
+            -- never holds. Storing a hash of the reporter instead would be
+            -- theatre — the hub owns the `users` table, so any candidate ID
+            -- is one cheap brute-force away. Retention is the real mitigation
+            -- (ZEON_REPORT_RETENTION_DAYS, purged by the reaper), and the
+            -- outcome of an actioned report outlives its row in
+            -- `server_tombstones` and `users.ban_reason` anyway.
+            --
+            -- `evidence` is an opaque JSON document composed by the reporting
+            -- client and stored verbatim: the hub never parses it and its
+            -- bytes are covered by the report signature. NULL is the default
+            -- and the common case — plaintext arrives only when the reporter
+            -- explicitly attached it.
+            CREATE TABLE IF NOT EXISTS reports (
+                id          TEXT PRIMARY KEY,      -- uuid4, the reference number
+                reported_id TEXT NOT NULL,
+                reporter_id TEXT NOT NULL,         -- derived from the signing pubkey
+                category    TEXT NOT NULL,
+                note        TEXT NOT NULL DEFAULT '',
+                evidence    TEXT,                  -- opaque client JSON, usually NULL
+                created_at  TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'open',  -- open | actioned | dismissed
+                resolution  TEXT,
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_reports_reported
+                ON reports(reported_id);
+            CREATE INDEX IF NOT EXISTS idx_reports_triage
+                ON reports(status, created_at);
             """
         )
         self._migrate()
@@ -325,6 +359,82 @@ class Store:
             "SELECT * FROM server_tombstones WHERE zeon_id = ? ORDER BY id DESC",
             (zeon_id,),
         )]
+
+    # -- reports ---------------------------------------------------------------
+
+    def create_report(self, reported_id: str, reporter_id: str, category: str,
+                      note: str, evidence: str | None) -> str:
+        """Record one user's report about another. Returns the reference id."""
+        report_id = str(uuid.uuid4())
+        self._db.execute(
+            "INSERT INTO reports (id, reported_id, reporter_id, category, note,"
+            " evidence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (report_id, reported_id, reporter_id, category, note, evidence, _now()),
+        )
+        return report_id
+
+    def report_by_id(self, report_id: str) -> dict | None:
+        row = self._db.execute(
+            "SELECT * FROM reports WHERE id = ?", (report_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_reports(self, status: str | None = None, limit: int = 100) -> list[dict]:
+        """Triage queue, newest first. `evidence` is replaced by its size:
+        the list view is for choosing what to open, and a queue that pastes
+        every attached conversation into one response is a queue nobody reads
+        — and a much worse thing to leave in a terminal scrollback."""
+        if status:
+            rows = self._db.execute(
+                "SELECT * FROM reports WHERE status = ?"
+                " ORDER BY created_at DESC LIMIT ?", (status, limit),
+            )
+        else:
+            rows = self._db.execute(
+                "SELECT * FROM reports ORDER BY created_at DESC LIMIT ?", (limit,)
+            )
+        out = []
+        for row in rows:
+            report = dict(row)
+            evidence = report.pop("evidence")
+            report["evidence_bytes"] = len(evidence) if evidence else 0
+            out.append(report)
+        return out
+
+    def report_counts(self, reported_id: str) -> dict:
+        """How many reports this account has drawn, and from how many distinct
+        reporters. The second number is the one that matters: ten reports from
+        one person is a feud, three from strangers who cannot know each other
+        is a pattern."""
+        row = self._db.execute(
+            "SELECT COUNT(*) AS total, COUNT(DISTINCT reporter_id) AS reporters"
+            " FROM reports WHERE reported_id = ?", (reported_id,),
+        ).fetchone()
+        return {"total": row["total"], "distinct_reporters": row["reporters"]}
+
+    def resolve_report(self, report_id: str, status: str, resolution: str) -> bool:
+        """Close a report. False if there is no such report.
+
+        Resolving also drops the evidence: it has served its purpose once a
+        human has decided, and the decision itself is preserved here, in
+        `server_tombstones`, and in `users.ban_reason`. Keeping the plaintext
+        past the decision buys nothing and costs everything."""
+        cur = self._db.execute(
+            "UPDATE reports SET status = ?, resolution = ?, resolved_at = ?,"
+            " evidence = NULL WHERE id = ?",
+            (status, resolution, _now(), report_id),
+        )
+        return cur.rowcount > 0
+
+    def purge_reports(self, older_than: str) -> int:
+        """Delete reports created before `older_than` (ISO-8601), whatever
+        their status. Unresolved is not a reason to keep plaintext forever —
+        a report nobody triaged in the retention window is a process failure,
+        not a record to preserve."""
+        cur = self._db.execute(
+            "DELETE FROM reports WHERE created_at < ?", (older_than,)
+        )
+        return cur.rowcount
 
     # -- billing ---------------------------------------------------------------
 

@@ -262,6 +262,12 @@ class ChatState extends ChangeNotifier {
 
   List<Message> messagesFor(String contactId) => _messages[contactId] ?? [];
 
+  /// Stored history for a conversation that may never have been opened, so
+  /// its messages are not in the in-memory cache. The report sheet needs this:
+  /// someone can be reported straight from the chat list.
+  Future<List<Message>> historyFor(String contactId) =>
+      app.db.messagesFor(contactId);
+
   Future<void> openConversation(String contactId) async {
     _openConversationId = contactId;
     await sweepExpired(); // never render an already-expired message

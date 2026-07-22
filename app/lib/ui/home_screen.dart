@@ -6,6 +6,7 @@ import '../models.dart';
 import '../state/chat_state.dart';
 import '../state/server_state.dart';
 import 'chat_screen.dart';
+import 'report_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -263,7 +264,9 @@ Widget? _tileTrailing(Message? last, bool pinned,
 }
 
 /// Long-press menu for a conversation tile: pin, mute, archive — and for
-/// direct chats, block. All of these are local-only settings.
+/// direct chats, block and report. Everything here except report is a
+/// local-only setting; report is the one entry that leaves the device, which
+/// is why it sits last and behind its own sheet.
 void _showConversationSheet(
   BuildContext context, {
   required bool pinned,
@@ -274,6 +277,7 @@ void _showConversationSheet(
   required Future<void> Function() onToggleArchive,
   bool blocked = false,
   Future<void> Function()? onToggleBlock, // null for groups
+  VoidCallback? onReport, // null for groups
 }) {
   showModalBottomSheet<void>(
     context: context,
@@ -330,6 +334,15 @@ void _showConversationSheet(
               onTap: () {
                 Navigator.pop(sheetContext);
                 onToggleBlock();
+              },
+            ),
+          if (onReport != null)
+            ListTile(
+              leading: const Icon(Icons.flag_outlined, color: Zn.danger),
+              title: const Text('Report', style: TextStyle(color: Zn.danger)),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                onReport();
               },
             ),
         ],
@@ -439,6 +452,10 @@ class _RequestTile extends StatelessWidget {
           style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text('${contact.zeonId.substring(0, 12)} · wants to connect',
           style: const TextStyle(color: Zn.muted, fontSize: 12)),
+      // An unsolicited request from a stranger is the one abuse that arrives
+      // before there is any conversation to report from, so the report path
+      // has to exist here too — decline alone only makes it stop for you.
+      onLongPress: () => _reportContact(context, chat, contact),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -553,8 +570,31 @@ class _ConversationTile extends StatelessWidget {
           onTogglePin: () => chat.togglePinContact(contact),
           onMute: (until) => chat.setMute(contact.zeonId, until),
           onToggleArchive: () => chat.toggleArchive(contact.zeonId),
-          onToggleBlock: () => chat.toggleBlock(contact)),
+          onToggleBlock: () => chat.toggleBlock(contact),
+          onReport: () => _reportContact(context, chat, contact)),
     );
+  }
+}
+
+/// Report a contact from the conversation list, honouring the sheet's
+/// "block them as well" choice.
+Future<void> _reportContact(
+    BuildContext context, ChatState chat, Contact contact) async {
+  // From the list, the conversation may never have been opened — read the
+  // stored history rather than the in-memory cache, which would be empty and
+  // silently offer nothing to attach.
+  final history = await chat.historyFor(contact.zeonId);
+  if (!context.mounted) return;
+  final outcome = await showReportSheet(
+    context,
+    zeonId: contact.zeonId,
+    displayName: contact.displayName,
+    hub: contact.hub,
+    conversation: history,
+    canBlock: !contact.isBlocked,
+  );
+  if (outcome.alsoBlock && !contact.isBlocked) {
+    await chat.toggleBlock(contact);
   }
 }
 

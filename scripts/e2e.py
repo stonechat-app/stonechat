@@ -211,6 +211,28 @@ class Phone:
     def auth(self):
         return {"Authorization": f"Bearer {self.token}"}
 
+    def file_report(self, reported_id, category="harassment", note="e2e",
+                    evidence=None, hub=None):
+        """Report another user (PROTOCOL.md "Reporting"). Mirrors what the
+        Flutter client's CryptoService.signReport builds — no account token is
+        sent, because a report is judged by the hub hosting the *reported*
+        account, which with cross-hub resolution is not necessarily ours."""
+        timestamp = int(time.time())
+        digest = hashlib.blake2b(
+            category.encode() + b"\x1f" + note.encode() + b"\x1f"
+            + (evidence or "").encode(), digest_size=32).digest()
+        material = (b"zeon-v1-report" + reported_id.encode()
+                    + str(timestamp).encode() + digest)
+        return httpx.post(f"{hub or HUB}/v1/report", json={
+            "reported_id": reported_id,
+            "reporter_pubkey": self.pubkey_b64,
+            "timestamp": timestamp,
+            "category": category,
+            "note": note,
+            "evidence": evidence,
+            "signature": b64(self.identity.sign(material).signature),
+        })
+
     def provision(self):
         r = httpx.post(
             f"{HUB}/v1/server",
@@ -962,6 +984,73 @@ def main():
     r = httpx.post(f"{HUB}/v1/admin/users/ZC-NOBODY/ban",
                    headers=admin_hdr, json={"reason": "e2e: unknown"})
     assert r.status_code == 404, f"unknown ID ban: expected 404, got {r.status_code}"
+
+    print("8c) user reports: signed filing → triage queue → resolve")
+    # App Store Guideline 1.2 in one flow. The property under test is that a
+    # report authenticates by *signature*, so it works across a hub
+    # boundary where the reporter has no account — and that message plaintext
+    # only ever appears when the reporter attached it.
+    r = alice.file_report(mallory.zeon_id, note="e2e: unsolicited messages")
+    assert r.status_code == 202, f"report: expected 202, got {r.status_code} {r.text}"
+    ref = r.json()["report_id"]
+
+    # a tampered body must not verify under the original signature
+    timestamp = int(time.time())
+    digest = hashlib.blake2b(b"harassment\x1fe2e\x1f", digest_size=32).digest()
+    good = alice.identity.sign(
+        b"zeon-v1-report" + mallory.zeon_id.encode()
+        + str(timestamp).encode() + digest).signature
+    r = httpx.post(f"{HUB}/v1/report", json={
+        "reported_id": mallory.zeon_id, "reporter_pubkey": alice.pubkey_b64,
+        "timestamp": timestamp, "category": "harassment",
+        "note": "something the reporter never wrote", "evidence": None,
+        "signature": b64(good)})
+    assert r.status_code == 401, f"tampered note: expected 401, got {r.status_code}"
+
+    # reporting yourself, and reporting into a hub that does not host you
+    assert alice.file_report(alice.zeon_id).status_code == 400
+    stranger = zeon_id_from_pubkey(bytes(SigningKey.generate().verify_key))
+    r = alice.file_report(stranger)
+    assert r.status_code == 404 and r.json()["detail"]["code"] == "not_our_account", \
+        "a report about an account we don't host must say so, not vanish"
+
+    # a second, independent reporter — distinct reporters is the triage signal
+    evidence = json.dumps({"v": 1, "messages": [
+        {"sent_at": 1, "kind": "text", "text": "e2e attached message"}]})
+    r = bob.file_report(mallory.zeon_id, category="spam",
+                        note="e2e: with transcript", evidence=evidence)
+    assert r.status_code == 202, r.text
+
+    # the queue is closed without the admin token
+    assert httpx.get(f"{HUB}/v1/admin/reports").status_code == 403
+    r = httpx.get(f"{HUB}/v1/admin/reports", headers=admin_hdr)
+    r.raise_for_status()
+    queue = r.json()["reports"]
+    assert len(queue) == 2, f"expected 2 open reports, got {len(queue)}"
+    assert all("evidence" not in row for row in queue), \
+        "the list view must not spill attached plaintext"
+
+    r = httpx.get(f"{HUB}/v1/admin/reports/{ref}", headers=admin_hdr)
+    r.raise_for_status()
+    detail = r.json()
+    assert detail["report"]["evidence"] is None, \
+        "an unattached report must carry no message content"
+    assert detail["reported"]["distinct_reporters"] == 2, detail["reported"]
+    assert detail["reported"]["prior_destroys"] == 1, \
+        "triage must see the abuse history alongside the report"
+
+    # resolving records the decision and drops the evidence with it
+    with_evidence = next(row for row in queue if row["evidence_bytes"] > 0)
+    r = httpx.post(f"{HUB}/v1/admin/reports/{with_evidence['id']}/resolve",
+                   headers=admin_hdr,
+                   json={"status": "actioned", "resolution": "e2e: destroyed"})
+    r.raise_for_status()
+    r = httpx.get(f"{HUB}/v1/admin/reports/{with_evidence['id']}", headers=admin_hdr)
+    assert r.json()["report"]["evidence"] is None, \
+        "attached plaintext must not outlive the decision it informed"
+    assert r.json()["report"]["status"] == "actioned"
+    assert len(httpx.get(f"{HUB}/v1/admin/reports",
+                         headers=admin_hdr).json()["reports"]) == 1
 
     print("9) destroy relays")
     alice.destroy()
