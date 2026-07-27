@@ -41,7 +41,7 @@ import os
 from .admin import router as admin_router
 from .billing import router as billing_router
 from .deps import UnbannedUser, User, store
-from .identity import PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
+from .identity import PQ_PK_LEN, PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
 from .ratelimit import RateLimiter
 from .report import RETENTION_DAYS as REPORT_RETENTION_DAYS
 from .report import router as report_router
@@ -150,6 +150,11 @@ DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean"}
 
 class RegisterIn(BaseModel):
     pubkey: str  # base64-encoded Ed25519 identity public key
+    # X-Wing identity encryption key (1216 bytes → 1622 base64 chars) and the
+    # Ed25519 signature over "zeon-v1-pqpk" || pq_pk that lets every resolver
+    # trust it (docs/POST_QUANTUM.md — hybrid envelope seal).
+    pq_pk: str = Field(max_length=1700)
+    pq_sig: str = Field(max_length=128)
 
 
 class RecoverIn(BaseModel):
@@ -229,10 +234,27 @@ def register(body: RegisterIn, request: Request):
         raise HTTPException(400, "pubkey is not valid base64")
     if len(pubkey) != PUBKEY_LEN:
         raise HTTPException(400, f"pubkey must be {PUBKEY_LEN} bytes")
+    # The X-Wing identity key rides in the directory only under a valid
+    # Ed25519 signature. Clients re-verify on every resolve (the directory
+    # is untrusted); rejecting garbage here just fails fast at signup.
+    try:
+        pq_pk = base64.b64decode(body.pq_pk, validate=True)
+    except Exception:
+        raise HTTPException(400, "pq_pk is not valid base64")
+    if len(pq_pk) != PQ_PK_LEN:
+        raise HTTPException(400, f"pq_pk must be {PQ_PK_LEN} bytes")
+    try:
+        from nacl.signing import VerifyKey
+
+        VerifyKey(pubkey).verify(
+            b"zeon-v1-pqpk" + pq_pk, base64.b64decode(body.pq_sig)
+        )
+    except Exception:
+        raise HTTPException(400, "bad pq_sig")
 
     zeon_id = zeon_id_from_pubkey(pubkey)
     token = secrets.token_urlsafe(32)
-    if not store.create_user(zeon_id, body.pubkey, token):
+    if not store.create_user(zeon_id, body.pubkey, body.pq_pk, body.pq_sig, token):
         raise HTTPException(409, "this key is already registered")
     log.info("registered %s", zeon_id[:12])
     return {"zeon_id": zeon_id, "account_token": token}
@@ -313,6 +335,8 @@ def directory(zeon_id: str, request: Request):
     return {
         "zeon_id": user["zeon_id"],
         "pubkey": user["pubkey"],
+        "pq_pk": user["pq_pk"],
+        "pq_sig": user["pq_sig"],
         "server": (
             {
                 "address": server["address"],

@@ -47,6 +47,7 @@ class ChatDb {
             zeon_id        TEXT PRIMARY KEY,
             display_name   TEXT NOT NULL,
             pubkey         TEXT NOT NULL,
+            pq_pk          TEXT,
             status         TEXT NOT NULL,
             server_address TEXT,
             tls_fp         TEXT,
@@ -120,6 +121,7 @@ class ChatDb {
       group_id       TEXT NOT NULL,
       zeon_id        TEXT NOT NULL,
       pubkey         TEXT NOT NULL,
+      pq_pk          TEXT,
       display_name   TEXT NOT NULL,
       server_address TEXT,
       tls_fp         TEXT,
@@ -534,29 +536,39 @@ class ChatDb {
     return rows.isEmpty ? null : rows.first;
   }
 
-  /// Newest signed prekey (the one we currently publish).
-  Future<Map<String, Object?>?> currentSpk() async {
+  /// Newest signed prekey of [kind] ('spk' X25519 | 'kspk' ML-KEM) — the
+  /// one we currently publish.
+  Future<Map<String, Object?>?> currentSigned(String kind) async {
     final rows = await _db.query('prekeys',
-        where: "kind = 'spk'", orderBy: 'id DESC', limit: 1);
+        where: 'kind = ?', whereArgs: [kind], orderBy: 'id DESC', limit: 1);
     return rows.isEmpty ? null : rows.first;
   }
 
-  Future<List<Map<String, Object?>>> opks() =>
-      _db.query('prekeys', where: "kind = 'opk'", orderBy: 'id');
+  Future<Map<String, Object?>?> currentSpk() => currentSigned('spk');
+  Future<Map<String, Object?>?> currentKspk() => currentSigned('kspk');
+
+  /// One-time prekeys of [kind] ('opk' X25519 | 'kopk' ML-KEM).
+  Future<List<Map<String, Object?>>> oneTimePrekeys(String kind) =>
+      _db.query('prekeys', where: 'kind = ?', whereArgs: [kind], orderBy: 'id');
+
+  Future<List<Map<String, Object?>>> opks() => oneTimePrekeys('opk');
+  Future<List<Map<String, Object?>>> kopks() => oneTimePrekeys('kopk');
 
   Future<void> deletePrekey(int id) async {
     await _db.delete('prekeys', where: 'id = ?', whereArgs: [id]);
   }
 
-  /// Drop retired signed prekeys (keep the newest two: current + previous,
-  /// so in-flight initial messages keep working across a rotation).
-  Future<void> pruneSpks() async {
+  /// Drop retired signed prekeys of [kind] (keep the newest two: current +
+  /// previous, so in-flight initial messages keep working across a rotation).
+  Future<void> pruneSigned(String kind) async {
     await _db.execute('''
-      DELETE FROM prekeys WHERE kind = 'spk' AND id NOT IN (
-        SELECT id FROM prekeys WHERE kind = 'spk' ORDER BY id DESC LIMIT 2
+      DELETE FROM prekeys WHERE kind = ? AND id NOT IN (
+        SELECT id FROM prekeys WHERE kind = ? ORDER BY id DESC LIMIT 2
       )
-    ''');
+    ''', [kind, kind]);
   }
+
+  Future<void> pruneSpks() => pruneSigned('spk');
 
   // -- backup -------------------------------------------------------------------
   // Text-only export/restore. The SQL lives here beside the schema it mirrors;

@@ -500,6 +500,17 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = G6D8JHBKSK;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-force_load",
+					"$(PROJECT_DIR)/PqCore/libpqcore.a",
+					"-Wl,-u,_zeon_mlkem_pk_from_seed",
+					"-Wl,-u,_zeon_mlkem_encaps",
+					"-Wl,-u,_zeon_mlkem_decaps",
+					"-Wl,-u,_zeon_xwing_pk_from_seed",
+					"-Wl,-u,_zeon_xwing_encaps",
+					"-Wl,-u,_zeon_xwing_decaps",
+				);
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -687,6 +698,17 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = G6D8JHBKSK;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-force_load",
+					"$(PROJECT_DIR)/PqCore/libpqcore.a",
+					"-Wl,-u,_zeon_mlkem_pk_from_seed",
+					"-Wl,-u,_zeon_mlkem_encaps",
+					"-Wl,-u,_zeon_mlkem_decaps",
+					"-Wl,-u,_zeon_xwing_pk_from_seed",
+					"-Wl,-u,_zeon_xwing_encaps",
+					"-Wl,-u,_zeon_xwing_decaps",
+				);
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -714,6 +736,17 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = G6D8JHBKSK;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-force_load",
+					"$(PROJECT_DIR)/PqCore/libpqcore.a",
+					"-Wl,-u,_zeon_mlkem_pk_from_seed",
+					"-Wl,-u,_zeon_mlkem_encaps",
+					"-Wl,-u,_zeon_mlkem_decaps",
+					"-Wl,-u,_zeon_xwing_pk_from_seed",
+					"-Wl,-u,_zeon_xwing_encaps",
+					"-Wl,-u,_zeon_xwing_decaps",
+				);
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

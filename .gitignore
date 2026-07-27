@@ -10,3 +10,6 @@ __pycache__/
 # App Store Connect credentials
 .env.appstore
 credentials/
+
+# Rust build artifacts (relay/, pqcore/)
+target/

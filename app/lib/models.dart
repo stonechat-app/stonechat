@@ -13,6 +13,7 @@ class Contact {
   final String zeonId;
   String displayName;
   final String pubkeyB64;
+  String? pqPkB64; // X-Wing identity key (envelope seal), sig-verified on resolve
   String status;
   String? serverAddress; // last known, refreshed from directory on demand
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
@@ -31,6 +32,7 @@ class Contact {
     required this.zeonId,
     required this.displayName,
     required this.pubkeyB64,
+    this.pqPkB64,
     required this.status,
     this.serverAddress,
     this.tlsFp,
@@ -57,6 +59,7 @@ class Contact {
         'zeon_id': zeonId,
         'display_name': displayName,
         'pubkey': pubkeyB64,
+        'pq_pk': pqPkB64,
         'status': status,
         'server_address': serverAddress,
         'tls_fp': tlsFp,
@@ -76,6 +79,7 @@ class Contact {
         zeonId: r['zeon_id'] as String,
         displayName: r['display_name'] as String,
         pubkeyB64: r['pubkey'] as String,
+        pqPkB64: r['pq_pk'] as String?,
         status: r['status'] as String,
         serverAddress: r['server_address'] as String?,
         tlsFp: r['tls_fp'] as String?,
@@ -342,6 +346,7 @@ class GroupMember {
   final String groupId;
   final String zeonId;
   final String pubkeyB64;
+  String? pqPkB64; // X-Wing identity key (envelope seal), sig-verified on resolve
   String displayName;
   String? serverAddress; // cached, refreshed on delivery failure
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
@@ -350,6 +355,7 @@ class GroupMember {
     required this.groupId,
     required this.zeonId,
     required this.pubkeyB64,
+    this.pqPkB64,
     required this.displayName,
     this.serverAddress,
     this.tlsFp,
@@ -359,6 +365,7 @@ class GroupMember {
         'group_id': groupId,
         'zeon_id': zeonId,
         'pubkey': pubkeyB64,
+        'pq_pk': pqPkB64,
         'display_name': displayName,
         'server_address': serverAddress,
         'tls_fp': tlsFp,
@@ -368,6 +375,7 @@ class GroupMember {
         groupId: r['group_id'] as String,
         zeonId: r['zeon_id'] as String,
         pubkeyB64: r['pubkey'] as String,
+        pqPkB64: r['pq_pk'] as String?,
         displayName: r['display_name'] as String,
         serverAddress: r['server_address'] as String?,
         tlsFp: r['tls_fp'] as String?,

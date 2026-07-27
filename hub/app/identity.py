@@ -12,6 +12,7 @@ import hashlib
 HASH_LEN = 20
 CHECKSUM_LEN = 2
 PUBKEY_LEN = 32  # Ed25519
+PQ_PK_LEN = 1216  # X-Wing encapsulation key (docs/POST_QUANTUM.md)
 
 
 def zeon_id_from_pubkey(pubkey: bytes) -> str:

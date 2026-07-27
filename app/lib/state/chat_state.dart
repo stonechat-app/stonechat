@@ -322,6 +322,19 @@ class ChatState extends ChangeNotifier {
       throw ApiException(
           'Directory returned a key that does not match this ID — refusing.');
     }
+    // The X-Wing identity key seals every envelope to this peer; it is only
+    // trusted signed by the (commitment-verified) Ed25519 key. Absent or
+    // forged → unusable entry: the protocol has no classical-seal fallback.
+    final pqOk = entry.pqPkB64 != null &&
+        entry.pqSigB64 != null &&
+        app.crypto.verifyPqPkSig(
+            Uint8List.fromList(base64Decode(entry.pqPkB64!)),
+            Uint8List.fromList(base64Decode(entry.pqSigB64!)),
+            Uint8List.fromList(base64Decode(entry.pubkeyB64)));
+    if (!pqOk) {
+      throw ApiException(
+          'Directory entry lacks a valid post-quantum key — refusing.');
+    }
     if (entry.serverAddress != null) {
       final fp = entry.serverTlsFp;
       final sig = entry.serverTlsSig;
@@ -341,7 +354,10 @@ class ChatState extends ChangeNotifier {
   }
 
   Future<String> _addressFor(Contact contact, {bool refresh = false}) async {
-    if (!refresh && contact.serverAddress != null && contact.tlsFp != null) {
+    if (!refresh &&
+        contact.serverAddress != null &&
+        contact.tlsFp != null &&
+        contact.pqPkB64 != null) {
       return contact.serverAddress!;
     }
     final entry = await _resolve(contact.zeonId);
@@ -351,22 +367,25 @@ class ChatState extends ChangeNotifier {
     }
     contact.serverAddress = entry.serverAddress;
     contact.tlsFp = entry.serverTlsFp;
+    contact.pqPkB64 = entry.pqPkB64; // sig-verified in _resolve
     await app.db.upsertContact(contact);
     return entry.serverAddress!;
   }
 
-  /// Transport wrap (PROTOCOL.md "Envelope"): seal the whole envelope to the
-  /// recipient's identity key. Their mailbox stores only {v, id, to, blob_id}
-  /// plus an opaque box — it never learns who wrote to its owner.
-  /// [transient] (typing, call ICE), [noPush] (receipts) and [ring] (call
-  /// offers) are the delivery hints the mailbox is allowed to see.
-  SealedEnvelope _wireSeal(Envelope envelope, String toPubkeyB64,
+  /// Transport wrap (PROTOCOL.md "Envelope"): hybrid-seal the whole envelope
+  /// to the recipient's X-Wing identity key (directory `pq_pk`, verified
+  /// against their Ed25519 key on resolve). Their mailbox stores only
+  /// {v, id, to, blob_id} plus an opaque box — it never learns who wrote to
+  /// its owner. [transient] (typing, call ICE), [noPush] (receipts) and
+  /// [ring] (call offers) are the delivery hints the mailbox is allowed to
+  /// see.
+  SealedEnvelope _wireSeal(Envelope envelope, String toPqPkB64,
           {bool transient = false, bool noPush = false, bool ring = false}) =>
       SealedEnvelope(
         id: envelope.id,
         to: envelope.to,
         sealedB64: base64Encode(app.crypto.sealTo(
-            Uint8List.fromList(base64Decode(toPubkeyB64)),
+            Uint8List.fromList(base64Decode(toPqPkB64)),
             utf8.encode(jsonEncode(envelope.toJson())))),
         blobId: envelope.blobId,
         transient: transient,
@@ -376,15 +395,20 @@ class ChatState extends ChangeNotifier {
 
   Future<void> _deliver(Contact contact, Envelope envelope,
       {bool transient = false, bool noPush = false, bool ring = false}) async {
-    final wire = _wireSeal(envelope, contact.pubkeyB64,
-        transient: transient, noPush: noPush, ring: ring);
+    // _addressFor also backfills pq_pk for contacts saved before a resolve
+    // (e.g. a pending_in row built from an x3dh block alone).
     var address = await _addressFor(contact);
+    var wire = _wireSeal(envelope, contact.pqPkB64!,
+        transient: transient, noPush: noPush, ring: ring);
     try {
       await deliverEnvelope(address, wire, contact.tlsFp!);
     } on Exception {
       // Their server may have been recreated at a new IP (or with a new TLS
-      // key) — refresh both and retry once.
+      // key) — refresh everything and retry once, re-sealing in case their
+      // directory entry rotated.
       address = await _addressFor(contact, refresh: true);
+      wire = _wireSeal(envelope, contact.pqPkB64!,
+          transient: transient, noPush: noPush, ring: ring);
       await deliverEnvelope(address, wire, contact.tlsFp!);
     }
   }
@@ -434,7 +458,9 @@ class ChatState extends ChangeNotifier {
     }
 
     final peerEd = Uint8List.fromList(base64Decode(peerPubkeyB64));
-    if (!app.crypto.verifyPrekeySig(bundle.spkPub, bundle.spkSig, peerEd)) {
+    if (!app.crypto.verifyPrekeySig(bundle.spkPub, bundle.spkSig, peerEd) ||
+        !app.crypto
+            .verifyKemPrekeySig(bundle.kspkPub, bundle.kspkSig, peerEd)) {
       throw ApiException(
           'Their mailbox served a forged prekey — refusing to send.');
     }
@@ -538,6 +564,13 @@ class ChatState extends ChangeNotifier {
         return null;
       }
     }
+    final kemKind = block.kemOneTime ? 'kopk' : 'kspk';
+    final kemRow = await app.db.prekeyById(block.kemId, kemKind);
+    if (kemRow == null) {
+      _dropLog(envelope,
+          '$kemKind ${block.kemId} not held (rotated/consumed/replay?)');
+      return null; // sender will re-encrypt
+    }
     final fresh = RatchetSession.respond(
       app.crypto,
       envelope.from,
@@ -548,6 +581,7 @@ class ChatState extends ChangeNotifier {
       opkSec: opkRow == null
           ? null
           : Uint8List.fromList(base64Decode(opkRow['sec'] as String)),
+      kemSeed: Uint8List.fromList(base64Decode(kemRow['sec'] as String)),
     );
     final plain = fresh.decrypt(header, nonce, ciphertext, adPrefix);
     if (plain == null) {
@@ -556,6 +590,9 @@ class ChatState extends ChangeNotifier {
     }
     if (block.opkId != null) {
       await app.db.deletePrekey(block.opkId!); // one-time means one time
+    }
+    if (block.kemOneTime) {
+      await app.db.deletePrekey(block.kemId); // one-time means one time
     }
     await _saveSession(fresh); // replaces any prior session with this peer
     return plain;
@@ -583,16 +620,29 @@ class ChatState extends ChangeNotifier {
     final tlsFp = mailboxTlsFp;
     if (address == null || token == null || tlsFp == null) return;
 
-    var spkRow = await app.db.currentSpk();
     final now = DateTime.now().millisecondsSinceEpoch;
+
+    var spkRow = await app.db.currentSpk();
     if (spkRow == null || now - (spkRow['created_at'] as int) > _spkRotateMs) {
       final kp = app.crypto.newX25519();
       final sec = kp.secretKey.extractBytes();
       kp.secretKey.dispose();
       final id = await app.db.insertPrekey(
           'spk', base64Encode(kp.publicKey), base64Encode(sec));
-      await app.db.pruneSpks();
+      await app.db.pruneSigned('spk');
       spkRow = await app.db.prekeyById(id, 'spk');
+    }
+
+    // The ML-KEM signed prekey rotates on the same cadence as the SPK
+    // (PQXDH's last-resort KEM key; docs/POST_QUANTUM.md).
+    var kspkRow = await app.db.currentKspk();
+    if (kspkRow == null ||
+        now - (kspkRow['created_at'] as int) > _spkRotateMs) {
+      final kp = app.crypto.newMlkemPrekey();
+      final id = await app.db.insertPrekey(
+          'kspk', base64Encode(kp.pub), base64Encode(kp.seed));
+      await app.db.pruneSigned('kspk');
+      kspkRow = await app.db.prekeyById(id, 'kspk');
     }
 
     final existing = await app.db.opks();
@@ -604,13 +654,23 @@ class ChatState extends ChangeNotifier {
           .insertPrekey('opk', base64Encode(kp.publicKey), base64Encode(sec));
     }
 
+    final existingKem = await app.db.kopks();
+    for (var i = existingKem.length; i < _opkTarget; i++) {
+      final kp = app.crypto.newMlkemPrekey();
+      await app.db
+          .insertPrekey('kopk', base64Encode(kp.pub), base64Encode(kp.seed));
+    }
+
     // Upload the FULL remaining stock; the mailbox replaces its store with
     // it (PROTOCOL.md "Prekeys"). Consumed OPKs are deleted locally, so what
     // we hold is exactly what we can decrypt — this heals a mailbox left
     // holding keys from a previous install.
     final toPublish = await app.db.opks();
+    final kemToPublish = await app.db.kopks();
     final spkPubBytes =
         Uint8List.fromList(base64Decode(spkRow!['pub'] as String));
+    final kspkPubBytes =
+        Uint8List.fromList(base64Decode(kspkRow!['pub'] as String));
     await uploadPrekeys(
       address,
       token,
@@ -622,6 +682,14 @@ class ChatState extends ChangeNotifier {
       },
       [
         for (final o in toPublish) {'id': o['id'], 'pub': o['pub']}
+      ],
+      {
+        'id': kspkRow['id'],
+        'pub': kspkRow['pub'],
+        'sig': base64Encode(app.crypto.signKemPrekey(kspkPubBytes)),
+      },
+      [
+        for (final o in kemToPublish) {'id': o['id'], 'pub': o['pub']}
       ],
     );
   }
@@ -636,19 +704,24 @@ class ChatState extends ChangeNotifier {
       }
       member.serverAddress = entry.serverAddress;
       member.tlsFp = entry.serverTlsFp;
+      member.pqPkB64 = entry.pqPkB64; // sig-verified in _resolve
       await app.db.updateMember(member);
       return entry.serverAddress!;
     }
 
-    final wire =
-        _wireSeal(envelope, member.pubkeyB64, transient: transient, noPush: noPush);
-    var address = (member.serverAddress != null && member.tlsFp != null)
+    var address = (member.serverAddress != null &&
+            member.tlsFp != null &&
+            member.pqPkB64 != null)
         ? member.serverAddress!
         : await resolve();
+    var wire = _wireSeal(envelope, member.pqPkB64!,
+        transient: transient, noPush: noPush);
     try {
       await deliverEnvelope(address, wire, member.tlsFp!);
     } on Exception {
       address = await resolve(); // their mailbox may have moved
+      wire = _wireSeal(envelope, member.pqPkB64!,
+          transient: transient, noPush: noPush);
       await deliverEnvelope(address, wire, member.tlsFp!);
     }
   }
@@ -754,6 +827,7 @@ class ChatState extends ChangeNotifier {
       zeonId: entry.zeonId,
       displayName: entry.zeonId.substring(3, 12),
       pubkeyB64: entry.pubkeyB64,
+      pqPkB64: entry.pqPkB64, // sig-verified in _resolve
       status: ContactStatus.pendingOut,
       serverAddress: entry.serverAddress,
       tlsFp: entry.serverTlsFp,
@@ -2023,6 +2097,9 @@ class ChatState extends ChangeNotifier {
           displayName: (payload['display_name'] as String?) ??
               envelope.from.substring(3, 12),
           pubkeyB64: pubkeyB64,
+          // May be null when the directory was unreachable; _deliver
+          // backfills it (sig-verified) before anything is sealed to them.
+          pqPkB64: senderEntry?.pqPkB64,
           status: ContactStatus.pendingIn,
           serverAddress: senderEntry?.serverAddress,
           tlsFp: senderEntry?.serverTlsFp,

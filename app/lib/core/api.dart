@@ -81,6 +81,8 @@ class ApiException implements Exception {
 class DirectoryEntry {
   final String zeonId;
   final String pubkeyB64;
+  final String? pqPkB64; // X-Wing identity key (hybrid envelope seal)…
+  final String? pqSigB64; // …signed by the Ed25519 identity key
   final String? serverAddress; // null → peer's mailbox is off right now
   final String? serverTlsFp; // pinned cert fingerprint…
   final String? serverTlsSig; // …vouched for by the owner's identity key
@@ -88,6 +90,8 @@ class DirectoryEntry {
   DirectoryEntry(
       {required this.zeonId,
       required this.pubkeyB64,
+      this.pqPkB64,
+      this.pqSigB64,
       this.serverAddress,
       this.serverTlsFp,
       this.serverTlsSig});
@@ -141,11 +145,14 @@ class HubApi {
     return Future.value(parse(body as Map<String, dynamic>));
   }
 
+  /// [pqPkB64]/[pqSigB64]: the X-Wing identity key and its Ed25519
+  /// signature, published in the directory for the hybrid envelope seal.
   Future<({String zeonId, String accountToken})> register(
-      String pubkeyB64) async {
+      String pubkeyB64, String pqPkB64, String pqSigB64) async {
     final r = await http.post(Uri.parse('$baseUrl/v1/register'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'pubkey': pubkeyB64}));
+        body: jsonEncode(
+            {'pubkey': pubkeyB64, 'pq_pk': pqPkB64, 'pq_sig': pqSigB64}));
     return _check(r, (j) => (
           zeonId: j['zeon_id'] as String,
           accountToken: j['account_token'] as String,
@@ -185,6 +192,8 @@ class HubApi {
       return DirectoryEntry(
         zeonId: j['zeon_id'] as String,
         pubkeyB64: j['pubkey'] as String,
+        pqPkB64: j['pq_pk'] as String?,
+        pqSigB64: j['pq_sig'] as String?,
         serverAddress: server?['address'] as String?,
         serverTlsFp: server?['tls_fp'] as String?,
         serverTlsSig: server?['tls_sig'] as String?,
@@ -344,14 +353,23 @@ Future<Map<String, dynamic>> fetchPrekeyBundle(
 }
 
 /// Publish our public prekeys to our own mailbox (owner token required).
-Future<void> uploadPrekeys(String serverAddress, String token, String tlsFp,
-    Map<String, Object?> spk, List<Map<String, Object?>> opks) async {
+/// Carries both halves of PQXDH: X25519 (spk/opks) and ML-KEM-768
+/// (kspk/kopks).
+Future<void> uploadPrekeys(
+    String serverAddress,
+    String token,
+    String tlsFp,
+    Map<String, Object?> spk,
+    List<Map<String, Object?>> opks,
+    Map<String, Object?> kspk,
+    List<Map<String, Object?>> kopks) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
         .post(Uri.parse('$serverAddress/prekeys?token=$token'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'spk': spk, 'opks': opks}))
+            body: jsonEncode(
+                {'spk': spk, 'opks': opks, 'kspk': kspk, 'kopks': kopks}))
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
       throw ApiException('prekey upload failed (${r.statusCode})', r.statusCode);
@@ -362,7 +380,7 @@ Future<void> uploadPrekeys(String serverAddress, String token, String tlsFp,
 }
 
 /// Our own mailbox's prekey inventory, from the owner-authenticated /status.
-Future<({bool spk, int opks})?> mailboxPrekeyStatus(
+Future<({bool spk, int opks, bool kspk, int kopks})?> mailboxPrekeyStatus(
     String address, String tlsFp, String token) async {
   final client = pinnedClient(tlsFp);
   try {
@@ -374,7 +392,12 @@ Future<({bool spk, int opks})?> mailboxPrekeyStatus(
     final prekeys =
         (jsonDecode(r.body) as Map<String, dynamic>)['prekeys'] as Map<String, dynamic>?;
     if (prekeys == null) return null;
-    return (spk: prekeys['spk'] as bool, opks: prekeys['opks'] as int);
+    return (
+      spk: prekeys['spk'] as bool,
+      opks: prekeys['opks'] as int,
+      kspk: prekeys['kspk'] as bool? ?? false,
+      kopks: prekeys['kopks'] as int? ?? 0,
+    );
   } catch (_) {
     return null;
   } finally {

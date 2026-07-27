@@ -1,11 +1,13 @@
 """End-to-end test of the Zeon stack (protocol v1), no Flutter needed.
 
-Simulates phones with PyNaCl (same libsodium primitives the app uses):
-register → provision local-Docker relays → pin TLS + publish prekeys → X3DH
-contact handshake → double-ratchet messages inside sealed envelopes → ack →
-forward-secrecy + sealed-sender proofs → destroy.
+Simulates phones with PyNaCl (same libsodium primitives the app uses) plus
+the pqcore Rust library over ctypes (the same C ABI the app loads over FFI —
+build once with scripts/build_pqcore.sh host):
+register → provision local-Docker relays → pin TLS + publish prekeys → PQXDH
+contact handshake → double-ratchet messages inside hybrid-sealed envelopes →
+ack → forward-secrecy + sealed-sender proofs → destroy.
 
-The X3DH + double-ratchet + sealed-envelope implementation below mirrors
+The PQXDH + double-ratchet + sealed-envelope implementation below mirrors
 PROTOCOL.md "Session crypto" and "Envelope" constant-for-constant; it doubles
 as the reference implementation the Dart client must interoperate with.
 
@@ -84,8 +86,15 @@ def assert_pinned(phone: "Phone") -> None:
 
 # -- session crypto (PROTOCOL.md) ----------------------------------------------
 
-X3DH_KDF_KEY = b"zeon-v1-x3dh-kdf"
+import pqcore  # noqa: E402  (scripts/pqcore.py — ctypes over the Rust core)
+
+X3DH_KDF_KEY = b"zeon-v1-pqxdh-kdf"
 SPK_SIG_CONTEXT = b"zeon-v1-spk"
+KSPK_SIG_CONTEXT = b"zeon-v1-kspk"
+PQPK_SIG_CONTEXT = b"zeon-v1-pqpk"
+PQID_SEED_KEY = b"zeon-v1-pqidseed"
+HSEAL_KDF_KEY = b"zeon-v1-hsealkdf"
+HSEAL_AD = b"zeon-v1-hseal"
 MAX_SKIP = 256
 
 
@@ -193,12 +202,29 @@ class Phone:
         self.sessions = {}  # peer zeon_id -> ratchet state dict
         self.spk = None  # {"id", "priv", "pub"}
         self.opks = {}  # id -> priv bytes
+        self.kspk = None  # {"id", "seed", "pub"} — ML-KEM-768 signed prekey
+        self.kopks = {}  # id -> 64-byte seed
         self._next_prekey_id = 1
+        self.derive_pq()
+
+    def derive_pq(self):
+        """The X-Wing identity is derived from the Ed25519 secret exactly as
+        the app does (crypto.dart): seed = H(sk64, key="zeon-v1-pqidseed").
+        Re-call after replacing self.identity (echo_bot restore path)."""
+        sk64 = bytes(self.identity) + bytes(self.identity.verify_key)
+        self.pq_seed = H(sk64, PQID_SEED_KEY, 32)
+        self.pq_pk = pqcore.xwing_pk_from_seed(self.pq_seed)
+        self.pq_pk_b64 = b64(self.pq_pk)
 
     # -- hub -----------------------------------------------------------
 
     def register(self):
-        r = httpx.post(f"{HUB}/v1/register", json={"pubkey": self.pubkey_b64})
+        pq_sig = self.identity.sign(PQPK_SIG_CONTEXT + self.pq_pk).signature
+        r = httpx.post(f"{HUB}/v1/register", json={
+            "pubkey": self.pubkey_b64,
+            "pq_pk": self.pq_pk_b64,
+            "pq_sig": b64(pq_sig),
+        })
         r.raise_for_status()
         data = r.json()
         self.zeon_id, self.token = data["zeon_id"], data["account_token"]
@@ -267,19 +293,33 @@ class Phone:
             self.spk = {"id": self._next_prekey_id, "priv": bytes(kp),
                         "pub": bytes(kp.public_key)}
             self._next_prekey_id += 1
+        if self.kspk is None:
+            seed, pub = pqcore.mlkem_keygen()
+            self.kspk = {"id": self._next_prekey_id, "seed": seed, "pub": pub}
+            self._next_prekey_id += 1
         new_opks = []
         for _ in range(opk_count):
             kp = PrivateKey.generate()
             self.opks[self._next_prekey_id] = bytes(kp)
             new_opks.append({"id": self._next_prekey_id, "pub": b64(bytes(kp.public_key))})
             self._next_prekey_id += 1
+        new_kopks = []
+        for _ in range(opk_count):
+            seed, pub = pqcore.mlkem_keygen()
+            self.kopks[self._next_prekey_id] = seed
+            new_kopks.append({"id": self._next_prekey_id, "pub": b64(pub)})
+            self._next_prekey_id += 1
         sig = self.identity.sign(SPK_SIG_CONTEXT + self.spk["pub"]).signature
+        ksig = self.identity.sign(KSPK_SIG_CONTEXT + self.kspk["pub"]).signature
         r = MX.post(
             f"{self.server['address']}/prekeys",
             params={"token": self.server["server_token"]},
             json={"spk": {"id": self.spk["id"], "pub": b64(self.spk["pub"]),
                           "sig": b64(sig)},
-                  "opks": new_opks},
+                  "opks": new_opks,
+                  "kspk": {"id": self.kspk["id"], "pub": b64(self.kspk["pub"]),
+                           "sig": b64(ksig)},
+                  "kopks": new_kopks},
         )
         r.raise_for_status()
 
@@ -297,13 +337,15 @@ class Phone:
     # -- sessions --------------------------------------------------------------------
 
     def _initiate_session(self, to: "Phone"):
-        """Fetch the peer's bundle from their mailbox, verify, run X3DH."""
+        """Fetch the peer's bundle from their mailbox, verify, run PQXDH."""
         r = MX.get(f"{to.server['address']}/prekeys/bundle")
         r.raise_for_status()
         bundle = r.json()
         peer_ed = VerifyKey(unb64(to.pubkey_b64))
         spk_pub = unb64(bundle["spk"]["pub"])
         peer_ed.verify(SPK_SIG_CONTEXT + spk_pub, unb64(bundle["spk"]["sig"]))
+        kspk_pub = unb64(bundle["kspk"]["pub"])
+        peer_ed.verify(KSPK_SIG_CONTEXT + kspk_pub, unb64(bundle["kspk"]["sig"]))
 
         ikx_priv = bytes(self.identity.to_curve25519_private_key())
         peer_ikx = bytes(peer_ed.to_curve25519_public_key())
@@ -316,7 +358,12 @@ class Phone:
         opk = bundle.get("opk")
         if opk:
             dhs.append(crypto_scalarmult(bytes(ek), unb64(opk["pub"])))
-        sk = H(b"".join(dhs), X3DH_KDF_KEY, 32)
+        # KEM half of PQXDH: one-time prekey when available, else the signed
+        # last-resort key (same degradation story as the missing opk).
+        kopk = bundle.get("kopk")
+        kem_pub = unb64(kopk["pub"]) if kopk else kspk_pub
+        kct, kem_ss = pqcore.mlkem_encaps(kem_pub)
+        sk = H(b"".join(dhs) + kem_ss, X3DH_KDF_KEY, 32)
 
         ratchet = PrivateKey.generate()
         rk, cks = kdf_rk(sk, crypto_scalarmult(bytes(ratchet), spk_pub))
@@ -329,11 +376,14 @@ class Phone:
                 "ek": b64(bytes(ek.public_key)),
                 "spk_id": bundle["spk"]["id"],
                 **({"opk_id": opk["id"]} if opk else {}),
+                "kct": b64(kct),
+                "kem_id": kopk["id"] if kopk else bundle["kspk"]["id"],
+                "kem_one_time": bool(kopk),
             },
         }
 
     def _respond_session(self, envelope: dict):
-        """Responder X3DH from an initial envelope's x3dh block."""
+        """Responder PQXDH from an initial envelope's x3dh block."""
         block = envelope["x3dh"]
         sender_ed = VerifyKey(unb64(block["ik"]))
         assert zeon_id_from_pubkey(bytes(sender_ed)) == envelope["from"], \
@@ -350,14 +400,21 @@ class Phone:
         opk_id = block.get("opk_id")
         if opk_id is not None:
             dhs.append(crypto_scalarmult(self.opks[opk_id], ek_pub))
-        sk = H(b"".join(dhs), X3DH_KDF_KEY, 32)
+        if block["kem_one_time"]:
+            kem_seed = self.kopks[block["kem_id"]]
+        else:
+            assert block["kem_id"] == self.kspk["id"]
+            kem_seed = self.kspk["seed"]
+        kem_ss = pqcore.mlkem_decaps(kem_seed, unb64(block["kct"]))
+        sk = H(b"".join(dhs) + kem_ss, X3DH_KDF_KEY, 32)
         state = {
             "rk": sk, "dhs_priv": self.spk["priv"], "dhs_pub": self.spk["pub"],
             "dhr": None, "cks": None, "ckr": None,
             "ns": 0, "nr": 0, "pn": 0, "skipped": {}, "confirmed": True,
             "pending_x3dh": None,
         }
-        return state, opk_id
+        kopk_id = block["kem_id"] if block["kem_one_time"] else None
+        return state, opk_id, kopk_id
 
     def make_envelope(self, to: "Phone", type_: str, payload: dict,
                       envelope_id=None, blob_id=None) -> dict:
@@ -384,14 +441,19 @@ class Phone:
         return envelope
 
     def wrap(self, to: "Phone", inner: dict) -> dict:
-        """The wire form (PROTOCOL.md "Envelope"): an anonymous sealed box to
-        the recipient's identity key. The mailbox sees only the recipient."""
-        peer_ikx = VerifyKey(unb64(to.pubkey_b64)).to_curve25519_public_key()
+        """The wire form (PROTOCOL.md "Envelope"): an anonymous hybrid seal
+        (X-Wing) to the recipient's directory pq_pk. The mailbox sees only
+        the recipient. Wire: kem_ct || nonce || aead_ct."""
+        kct, ss = pqcore.xwing_encaps(to.pq_pk)
+        key = H(ss, HSEAL_KDF_KEY, 32)
+        nonce = nacl_random(24)
+        box = crypto_aead_xchacha20poly1305_ietf_encrypt(
+            json.dumps(inner).encode(), HSEAL_AD, nonce, key)
         outer = {
             "v": 1,
             "id": inner["id"],
             "to": inner["to"],
-            "sealed": b64(SealedBox(peer_ikx).encrypt(json.dumps(inner).encode())),
+            "sealed": b64(kct + nonce + box),
         }
         if "blob_id" in inner:
             outer["blob_id"] = inner["blob_id"]
@@ -404,8 +466,13 @@ class Phone:
 
     def unseal(self, outer: dict) -> dict:
         """Recover the inner envelope from a sealed wire envelope."""
-        box = SealedBox(self.identity.to_curve25519_private_key())
-        return json.loads(box.decrypt(unb64(outer["sealed"])))
+        sealed = unb64(outer["sealed"])
+        kct, nonce, box = (sealed[:pqcore.XWING_CT],
+                           sealed[pqcore.XWING_CT:pqcore.XWING_CT + 24],
+                           sealed[pqcore.XWING_CT + 24:])
+        key = H(pqcore.xwing_decaps(self.pq_seed, kct), HSEAL_KDF_KEY, 32)
+        return json.loads(
+            crypto_aead_xchacha20poly1305_ietf_decrypt(box, HSEAL_AD, nonce, key))
 
     def open_envelope(self, envelope: dict, sender: "Phone") -> dict:
         if "sealed" in envelope:
@@ -420,10 +487,12 @@ class Phone:
             except Exception:
                 if "x3dh" not in envelope:
                     raise
-        fresh, opk_id = self._respond_session(envelope)
+        fresh, opk_id, kopk_id = self._respond_session(envelope)
         plain = session_decrypt(fresh, envelope)
         if opk_id is not None:
             del self.opks[opk_id]  # one-time means one time
+        if kopk_id is not None:
+            del self.kopks[kopk_id]  # one-time means one time
         self.sessions[envelope["from"]] = fresh
         return json.loads(plain)
 
@@ -466,7 +535,23 @@ def main():
     entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
     assert entry["pubkey"] == bob.pubkey_b64
     assert zeon_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.zeon_id
+    # The X-Wing identity key rides in the directory under an Ed25519
+    # signature — resolvers verify it before sealing anything to it.
+    assert entry["pq_pk"] == bob.pq_pk_b64
+    VerifyKey(unb64(entry["pubkey"])).verify(
+        PQPK_SIG_CONTEXT + unb64(entry["pq_pk"]), unb64(entry["pq_sig"]))
     assert entry["server"] is None
+
+    print("2a2) registration rejects a pq_pk the identity key didn't sign")
+    mallory = Phone("mallory")
+    sig_by_other_key = mallory.identity.sign(
+        PQPK_SIG_CONTEXT + b"\x00" * 1216).signature
+    r = httpx.post(f"{HUB}/v1/register", json={
+        "pubkey": Phone("eve").pubkey_b64,
+        "pq_pk": b64(b"\x00" * 1216),
+        "pq_sig": b64(sig_by_other_key),
+    })
+    assert r.status_code == 400, f"forged pq_sig: expected 400, got {r.status_code}"
     lower = bob.zeon_id.lower().replace("-", "")
     assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
     assert "handle" not in entry, "directory must not return a handle"
@@ -510,8 +595,10 @@ def main():
     health = MX.get(f"{bob.server['address']}/status",
                     params={"token": bob.server["server_token"]}).json()
     assert health["prekeys"]["spk"] is True
+    assert health["prekeys"]["kspk"] is True
     opks_before = health["prekeys"]["opks"]
     assert opks_before == 8
+    assert health["prekeys"]["kopks"] == 8
 
     print("3b) fleet provider: plan-gated, container-per-user on a shared host")
     carol = Phone("carol")

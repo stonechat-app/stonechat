@@ -1,0 +1,19 @@
+[package]
+name = "pqcore"
+version = "0.1.0"
+edition = "2024"
+description = "Zeon post-quantum KEM core: ML-KEM-768 + X-Wing behind a C ABI (Flutter FFI) and a Rust API (wasm later)."
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+kem = "0.3.0"
+ml-kem = "0.3.2"
+x-wing = { version = "0.1.0", features = ["zeroize"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[workspace]

@@ -36,7 +36,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import httpx
 import websockets
-from nacl.signing import SigningKey
+from nacl.signing import SigningKey, VerifyKey
 
 import e2e
 from e2e import MX, WS_SSL, Phone
@@ -65,9 +65,10 @@ class Peer:
     """Duck-typed stand-in for e2e.Phone on the remote side: exactly the
     attributes Phone.make_envelope/wrap/deliver_to read from `to`."""
 
-    def __init__(self, zeon_id: str, pubkey_b64: str, address: str):
+    def __init__(self, zeon_id: str, pubkey_b64: str, pq_pk: bytes, address: str):
         self.zeon_id = zeon_id
         self.pubkey_b64 = pubkey_b64
+        self.pq_pk = pq_pk
         self.server = {"address": address}
 
 
@@ -77,9 +78,15 @@ def resolve(zeon_id: str) -> Peer:
     entry = entry.json()
     assert zeon_id_from_pubkey(base64.b64decode(entry["pubkey"])) == entry["zeon_id"], \
         "directory pubkey does not commit to the Zeon ID"
+    # The X-Wing key seals every envelope to this peer — only trust it
+    # signed by the (commitment-checked) identity key.
+    VerifyKey(base64.b64decode(entry["pubkey"])).verify(
+        e2e.PQPK_SIG_CONTEXT + base64.b64decode(entry["pq_pk"]),
+        base64.b64decode(entry["pq_sig"]))
     if not entry["server"]:
         raise RuntimeError(f"{zeon_id} has no running relay — can't deliver")
-    return Peer(entry["zeon_id"], entry["pubkey"], entry["server"]["address"])
+    return Peer(entry["zeon_id"], entry["pubkey"],
+                base64.b64decode(entry["pq_pk"]), entry["server"]["address"])
 
 
 # -- state ---------------------------------------------------------------------
@@ -93,6 +100,8 @@ def save(bot: Phone) -> None:
         "sessions": bot.sessions,
         "spk": bot.spk,
         "opks": bot.opks,
+        "kspk": bot.kspk,
+        "kopks": bot.kopks,
         "next_prekey_id": bot._next_prekey_id,
     }))
 
@@ -104,8 +113,10 @@ def load() -> Phone | None:
     bot = Phone(BOT_NAME)
     bot.identity = SigningKey(s["seed"])
     bot.pubkey_b64 = e2e.b64(bytes(bot.identity.verify_key))
+    bot.derive_pq()  # the X-Wing identity is derived from the Ed25519 key
     bot.zeon_id, bot.token, bot.server = s["zeon_id"], s["token"], s["server"]
     bot.sessions, bot.spk, bot.opks = s["sessions"], s["spk"], s["opks"]
+    bot.kspk, bot.kopks = s.get("kspk"), s.get("kopks", {})
     bot._next_prekey_id = s["next_prekey_id"]
     return bot
 

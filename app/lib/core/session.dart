@@ -15,13 +15,21 @@ import 'crypto.dart';
 const maxSkip = 256; // per-chain gap tolerance
 const maxSkippedKeys = 512; // stored per session, oldest evicted
 
-/// A peer's prekey bundle as served by their mailbox.
+/// A peer's prekey bundle as served by their mailbox. `kspk`/`kopk` are the
+/// ML-KEM-768 halves of PQXDH (docs/POST_QUANTUM.md): a signed KEM prekey
+/// that is always present, plus a one-time KEM prekey when the pool isn't
+/// dry — mirroring the SPK/OPK split.
 class PrekeyBundle {
   final int spkId;
   final Uint8List spkPub;
   final Uint8List spkSig;
   final int? opkId;
   final Uint8List? opkPub;
+  final int kspkId;
+  final Uint8List kspkPub;
+  final Uint8List kspkSig;
+  final int? kopkId;
+  final Uint8List? kopkPub;
 
   PrekeyBundle({
     required this.spkId,
@@ -29,39 +37,63 @@ class PrekeyBundle {
     required this.spkSig,
     this.opkId,
     this.opkPub,
+    required this.kspkId,
+    required this.kspkPub,
+    required this.kspkSig,
+    this.kopkId,
+    this.kopkPub,
   });
 
   factory PrekeyBundle.fromJson(Map<String, dynamic> j) {
     final spk = j['spk'] as Map<String, dynamic>;
     final opk = j['opk'] as Map<String, dynamic>?;
+    final kspk = j['kspk'] as Map<String, dynamic>;
+    final kopk = j['kopk'] as Map<String, dynamic>?;
     return PrekeyBundle(
       spkId: spk['id'] as int,
       spkPub: base64Decode(spk['pub'] as String),
       spkSig: base64Decode(spk['sig'] as String),
       opkId: opk?['id'] as int?,
       opkPub: opk == null ? null : base64Decode(opk['pub'] as String),
+      kspkId: kspk['id'] as int,
+      kspkPub: base64Decode(kspk['pub'] as String),
+      kspkSig: base64Decode(kspk['sig'] as String),
+      kopkId: kopk?['id'] as int?,
+      kopkPub: kopk == null ? null : base64Decode(kopk['pub'] as String),
     );
   }
 }
 
-/// The x3dh block attached to a session's initial envelopes.
+/// The x3dh block attached to a session's initial envelopes. `kct` is the
+/// ML-KEM ciphertext, encapsulated to the one-time KEM prekey when the
+/// bundle had one (its id in `kem_id`), else to the signed KEM prekey.
 class X3dhBlock {
   final String ikB64; // sender's Ed25519 identity key
   final String ekB64; // sender's ephemeral X25519 key
   final int spkId;
   final int? opkId;
+  final String kctB64; // ML-KEM-768 ciphertext (PQXDH)
+  final int kemId; // id of the KEM prekey encapsulated to
+  final bool kemOneTime; // whether kem_id names a one-time KEM prekey
 
-  X3dhBlock(
-      {required this.ikB64,
-      required this.ekB64,
-      required this.spkId,
-      this.opkId});
+  X3dhBlock({
+    required this.ikB64,
+    required this.ekB64,
+    required this.spkId,
+    this.opkId,
+    required this.kctB64,
+    required this.kemId,
+    required this.kemOneTime,
+  });
 
   Map<String, Object?> toJson() => {
         'ik': ikB64,
         'ek': ekB64,
         'spk_id': spkId,
         if (opkId != null) 'opk_id': opkId,
+        'kct': kctB64,
+        'kem_id': kemId,
+        'kem_one_time': kemOneTime,
       };
 
   static X3dhBlock? fromJson(Map<String, dynamic>? j) => j == null
@@ -71,6 +103,9 @@ class X3dhBlock {
           ekB64: j['ek'] as String,
           spkId: j['spk_id'] as int,
           opkId: j['opk_id'] as int?,
+          kctB64: j['kct'] as String,
+          kemId: j['kem_id'] as int,
+          kemOneTime: j['kem_one_time'] as bool? ?? false,
         );
 }
 
@@ -104,8 +139,8 @@ class RatchetSession {
     this.pendingX3dh,
   });
 
-  /// X3DH as the initiator. [peerEdPub] must already be commitment-verified
-  /// against the peer's Zeon ID and [bundle]'s SPK signature checked.
+  /// PQXDH as the initiator. [peerEdPub] must already be commitment-verified
+  /// against the peer's Zeon ID and [bundle]'s SPK + KSPK signatures checked.
   factory RatchetSession.initiate(
       CryptoService crypto, String peerId, Uint8List peerEdPub, PrekeyBundle bundle) {
     final peerIkx = crypto.toX25519(peerEdPub);
@@ -116,7 +151,11 @@ class RatchetSession {
       crypto.dh(ek.secretKey, bundle.spkPub), // DH3
       if (bundle.opkPub != null) crypto.dh(ek.secretKey, bundle.opkPub!), // DH4
     ];
-    final sk = crypto.x3dhSharedKey(dhs);
+    // The KEM half: one-time prekey when the pool had one, else the signed
+    // last-resort key (same degradation story as DH4).
+    final kemOneTime = bundle.kopkPub != null;
+    final kem = crypto.kemEncaps(kemOneTime ? bundle.kopkPub! : bundle.kspkPub);
+    final sk = crypto.x3dhSharedKey(dhs, kem.ss);
 
     // The peer's SPK doubles as their initial ratchet key.
     final ratchetKp = crypto.newX25519();
@@ -141,13 +180,17 @@ class RatchetSession {
         ekB64: base64Encode(ek.publicKey),
         spkId: bundle.spkId,
         opkId: bundle.opkId,
+        kctB64: base64Encode(kem.ct),
+        kemId: kemOneTime ? bundle.kopkId! : bundle.kspkId,
+        kemOneTime: kemOneTime,
       ),
     );
   }
 
-  /// X3DH as the responder, from an initial envelope's x3dh block and our
+  /// PQXDH as the responder, from an initial envelope's x3dh block and our
   /// stored prekey private halves. [senderEdPub] must already be
-  /// commitment-verified against the envelope's `from`.
+  /// commitment-verified against the envelope's `from`. [kemSeed] is the
+  /// stored seed of the KEM prekey named by `block.kemId`.
   factory RatchetSession.respond(
     CryptoService crypto,
     String peerId,
@@ -156,6 +199,7 @@ class RatchetSession {
     required Uint8List spkPub,
     required Uint8List spkSec,
     Uint8List? opkSec,
+    required Uint8List kemSeed,
   }) {
     final senderIkx = crypto.toX25519(senderEdPub);
     final ek = base64Decode(block.ekB64);
@@ -169,7 +213,9 @@ class RatchetSession {
         crypto.dh(spkKey, ek), // DH3
         if (opkKey != null) crypto.dh(opkKey, ek), // DH4
       ];
-      final sk = crypto.x3dhSharedKey(dhs);
+      final kemSs = crypto.kemDecaps(
+          kemSeed, Uint8List.fromList(base64Decode(block.kctB64)));
+      final sk = crypto.x3dhSharedKey(dhs, kemSs);
       // Our SPK is our initial ratchet key; the first received header
       // triggers the usual DH-ratchet step before we can send.
       return RatchetSession._(

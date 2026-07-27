@@ -269,7 +269,8 @@ class AppState extends ChangeNotifier {
     final crypto = CryptoService.generate(_sodium!);
     api.baseUrl = hubUrl;
 
-    final result = await api.register(crypto.publicKeyB64);
+    final result = await api.register(
+        crypto.publicKeyB64, crypto.pqPublicKeyB64, crypto.signPqPk());
     api.accountToken = result.accountToken;
 
     await _storage.write(
@@ -326,7 +327,10 @@ class AppState extends ChangeNotifier {
       );
     } on ApiException catch (e) {
       if (e.status != 404) rethrow;
-      result = await api.register(crypto.publicKeyB64);
+      // The X-Wing identity is derived from the Ed25519 secret, so a
+      // restored identity re-publishes the same pq_pk it always had.
+      result = await api.register(
+          crypto.publicKeyB64, crypto.pqPublicKeyB64, crypto.signPqPk());
     }
     api.accountToken = result.accountToken;
 

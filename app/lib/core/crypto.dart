@@ -3,14 +3,19 @@
 ///
 /// PROTOCOL.md: the identity is an Ed25519 signing keypair; the Zeon ID is
 /// "ZC-" + base32(blake2b20(pubkey) || checksum2). Messages are encrypted
-/// with per-message keys from an X3DH + double-ratchet session (session.dart)
-/// — this file provides the identity and the shared primitives.
+/// with per-message keys from a PQXDH + double-ratchet session
+/// (session.dart) — this file provides the identity and the shared
+/// primitives. The post-quantum half (ML-KEM-768 prekeys, X-Wing envelope
+/// seal — docs/POST_QUANTUM.md) comes from pqcore; both KEMs are always
+/// hybrid alongside the classical DHs, never a replacement for them.
 library;
 
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:sodium/sodium_sumo.dart';
+
+import 'pqcore.dart';
 
 const _b32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
@@ -48,32 +53,50 @@ Uint8List base32Decode(String s) {
 }
 
 /// Domain-separation constants — must match scripts/e2e.py and PROTOCOL.md.
-final x3dhKdfKey = utf8.encode('zeon-v1-x3dh-kdf'); // 16 bytes, generichash min
+final x3dhKdfKey = utf8.encode('zeon-v1-pqxdh-kdf'); // 16+ bytes, generichash key
+final hsealKdfKey = utf8.encode('zeon-v1-hsealkdf'); // 16 bytes, generichash min
+final hsealAd = utf8.encode('zeon-v1-hseal');
+final pqidSeedKey = utf8.encode('zeon-v1-pqidseed'); // 16 bytes
 final spkSigContext = utf8.encode('zeon-v1-spk');
+final kspkSigContext = utf8.encode('zeon-v1-kspk');
+final pqPkSigContext = utf8.encode('zeon-v1-pqpk');
 final tlsSigContext = utf8.encode('zeon-v1-tls');
 final recoverSigContext = utf8.encode('zeon-v1-recover');
 final reportSigContext = utf8.encode('zeon-v1-report');
 
 class CryptoService {
   final SodiumSumo sodium;
+  final PqCore pq;
   final KeyPair _identity; // Ed25519
   late final SecureKey _identityXsk; // converted X25519 secret, cached
+  late final Uint8List _pqSeed; // X-Wing identity seed, derived
+  late final Uint8List pqPublicKey; // X-Wing identity public (directory pq_pk)
 
-  CryptoService._(this.sodium, this._identity) {
+  CryptoService._(this.sodium, this._identity, {PqCore? pqCore})
+      : pq = pqCore ?? PqCore() {
     _identityXsk = sodium.crypto.sign.skToCurve25519(_identity.secretKey);
+    // The X-Wing identity is *derived* from the Ed25519 secret (domain-
+    // separated KDF), not stored: identity export, recovery and backups
+    // restore it for free, and holding the Ed25519 key already means total
+    // identity compromise, so the derivation adds no new custody risk.
+    final edSk = _identity.secretKey.extractBytes();
+    _pqSeed = _keyedHash(edSk, Uint8List.fromList(pqidSeedKey), 32);
+    edSk.fillRange(0, edSk.length, 0);
+    pqPublicKey = pq.xwingPkFromSeed(_pqSeed);
   }
 
   static Future<SodiumSumo> loadSodium() async => SodiumSumoInit.init();
 
   /// Fresh identity (onboarding).
-  factory CryptoService.generate(SodiumSumo sodium) =>
-      CryptoService._(sodium, sodium.crypto.sign.keyPair());
+  factory CryptoService.generate(SodiumSumo sodium, {PqCore? pqCore}) =>
+      CryptoService._(sodium, sodium.crypto.sign.keyPair(), pqCore: pqCore);
 
   /// Restore from stored key material.
   factory CryptoService.fromKeys(
     SodiumSumo sodium, {
     required Uint8List publicKey,
     required Uint8List secretKey,
+    PqCore? pqCore,
   }) {
     return CryptoService._(
       sodium,
@@ -81,11 +104,13 @@ class CryptoService {
         publicKey: publicKey,
         secretKey: SecureKey.fromList(sodium, secretKey),
       ),
+      pqCore: pqCore,
     );
   }
 
   Uint8List get publicKey => _identity.publicKey;
   String get publicKeyB64 => base64Encode(_identity.publicKey);
+  String get pqPublicKeyB64 => base64Encode(pqPublicKey);
   Uint8List exportSecretKey() => _identity.secretKey.extractBytes();
 
   String get zeonId => deriveZeonId(_identity.publicKey);
@@ -101,19 +126,63 @@ class CryptoService {
 
   // -- sealed envelopes (PROTOCOL.md "Envelope") --------------------------------
 
-  /// Anonymous sealed box to a peer's identity key — the wrap that hides the
-  /// sender (and every other envelope field) from the recipient's mailbox.
-  Uint8List sealTo(Uint8List recipientEdPub, Uint8List message) =>
-      sodium.crypto.box
-          .seal(message: message, publicKey: toX25519(recipientEdPub));
+  /// Anonymous hybrid seal to a peer's X-Wing identity key (`pq_pk` in the
+  /// directory, signature-verified against their Ed25519 key on resolve) —
+  /// the wrap that hides the sender (and every other envelope field) from
+  /// the recipient's mailbox. X-Wing is X25519 + ML-KEM-768 in one KEM, so
+  /// a recorded envelope stays sealed against a future quantum attacker
+  /// (docs/POST_QUANTUM.md step 2). Wire form:
+  ///
+  ///   kem_ct (1120) || nonce (24) || xchacha20poly1305(inner, ad="zeon-v1-hseal")
+  ///   with key = H(kem_ss, key="zeon-v1-hsealkdf", 32)
+  ///
+  /// Like crypto_box_seal, encapsulation is fresh-randomness-per-envelope and
+  /// involves no sender key: nothing on the wire identifies or links senders.
+  Uint8List sealTo(Uint8List recipientPqPk, Uint8List message) {
+    final enc = pq.xwingEncaps(
+        recipientPqPk, sodium.randombytes.buf(xwingEncapsRandomBytes));
+    final key = _keyedHash(enc.ss, Uint8List.fromList(hsealKdfKey), 32);
+    final sealed = aeadSeal(key, message, Uint8List.fromList(hsealAd));
+    return Uint8List.fromList(
+        [...enc.ct, ...sealed.nonce, ...sealed.ciphertext]);
+  }
 
-  /// Returns null when the box wasn't sealed to this identity (or is garbage).
+  /// Returns null when the envelope wasn't sealed to this identity (or is
+  /// garbage): a wrong recipient decapsulates to a wrong shared secret and
+  /// the AEAD refuses.
   Uint8List? unseal(Uint8List sealed) {
+    const nonceBytes = 24;
+    if (sealed.length < xwingCiphertextBytes + nonceBytes + 16) return null;
     try {
-      return sodium.crypto.box.sealOpen(
-          cipherText: sealed, publicKey: identityXpk, secretKey: _identityXsk);
+      final kemCt = Uint8List.sublistView(sealed, 0, xwingCiphertextBytes);
+      final nonce = Uint8List.sublistView(
+          sealed, xwingCiphertextBytes, xwingCiphertextBytes + nonceBytes);
+      final box =
+          Uint8List.sublistView(sealed, xwingCiphertextBytes + nonceBytes);
+      final ss = pq.xwingDecaps(_pqSeed, kemCt);
+      final key = _keyedHash(ss, Uint8List.fromList(hsealKdfKey), 32);
+      return aeadOpen(key, nonce, box, Uint8List.fromList(hsealAd));
     } catch (_) {
       return null;
+    }
+  }
+
+  /// The owner vouching for their X-Wing identity key; published beside it
+  /// in the hub directory and verified by every resolver.
+  String signPqPk() => base64Encode(sodium.crypto.sign.detached(
+        message: Uint8List.fromList([...pqPkSigContext, ...pqPublicKey]),
+        secretKey: _identity.secretKey,
+      ));
+
+  bool verifyPqPkSig(Uint8List pqPk, Uint8List sig, Uint8List identityEdPub) {
+    try {
+      return sodium.crypto.sign.verifyDetached(
+        message: Uint8List.fromList([...pqPkSigContext, ...pqPk]),
+        signature: sig,
+        publicKey: identityEdPub,
+      );
+    } catch (_) {
+      return false;
     }
   }
 
@@ -218,6 +287,23 @@ class CryptoService {
   /// New X25519 keypair (signed prekeys, one-time prekeys, ratchet keys).
   KeyPair newX25519() => sodium.crypto.box.keyPair();
 
+  /// New ML-KEM-768 prekey (signed and one-time KEM prekeys, PQXDH). The
+  /// seed is the stored secret half; the pub is what the mailbox serves.
+  ({Uint8List seed, Uint8List pub}) newMlkemPrekey() {
+    final seed = sodium.randombytes.buf(mlkemSeedBytes);
+    return (seed: seed, pub: pq.mlkemPkFromSeed(seed));
+  }
+
+  /// Encapsulate to a peer's ML-KEM prekey (initiator side of PQXDH).
+  /// Throws [StateError] on a malformed key — treat like a forged bundle.
+  ({Uint8List ct, Uint8List ss}) kemEncaps(Uint8List peerKemPub) =>
+      pq.mlkemEncaps(
+          peerKemPub, sodium.randombytes.buf(mlkemEncapsRandomBytes));
+
+  /// Decapsulate with a stored prekey seed (responder side of PQXDH).
+  Uint8List kemDecaps(Uint8List seed, Uint8List ct) =>
+      pq.mlkemDecaps(seed, ct);
+
   Uint8List signPrekey(Uint8List spkPub) => sodium.crypto.sign.detached(
         message: Uint8List.fromList([...spkSigContext, ...spkPub]),
         secretKey: _identity.secretKey,
@@ -228,6 +314,24 @@ class CryptoService {
     try {
       return sodium.crypto.sign.verifyDetached(
         message: Uint8List.fromList([...spkSigContext, ...spkPub]),
+        signature: sig,
+        publicKey: identityEdPub,
+      );
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Uint8List signKemPrekey(Uint8List kspkPub) => sodium.crypto.sign.detached(
+        message: Uint8List.fromList([...kspkSigContext, ...kspkPub]),
+        secretKey: _identity.secretKey,
+      );
+
+  bool verifyKemPrekeySig(
+      Uint8List kspkPub, Uint8List sig, Uint8List identityEdPub) {
+    try {
+      return sodium.crypto.sign.verifyDetached(
+        message: Uint8List.fromList([...kspkSigContext, ...kspkPub]),
         signature: sig,
         publicKey: identityEdPub,
       );
@@ -279,9 +383,14 @@ class CryptoService {
     }
   }
 
-  /// SK = H(DH1 || DH2 || DH3 [|| DH4], key="zeon-v1-x3dh-kdf", 32)
-  Uint8List x3dhSharedKey(List<Uint8List> dhs) => _keyedHash(
-      Uint8List.fromList([for (final d in dhs) ...d]),
+  /// SK = H(DH1 || DH2 || DH3 [|| DH4] || KEM_SS,
+  ///        key="zeon-v1-pqxdh-kdf", 32)
+  ///
+  /// PQXDH: the classical X3DH transcript plus the ML-KEM shared secret.
+  /// A PQ-secure SK makes the whole ratchet chain harvest-proof — every
+  /// later root key derives from it (docs/POST_QUANTUM.md step 1).
+  Uint8List x3dhSharedKey(List<Uint8List> dhs, Uint8List kemSs) => _keyedHash(
+      Uint8List.fromList([for (final d in dhs) ...d, ...kemSs]),
       Uint8List.fromList(x3dhKdfKey),
       32);
 
