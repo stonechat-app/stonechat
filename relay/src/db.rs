@@ -1,15 +1,16 @@
 //! SQLite-backed envelope queue + prekey/push-config store. Rows die on ack.
 //!
-//! Schema is byte-identical to server/main.py's — a Rust relay pointed at a
-//! volume Python wrote must serve the queued mail it left there (that is the
-//! canary/rollback guarantee in RUST_PORT.md).
+//! Schema is byte-identical to the retired Python relay's — the cutover
+//! guarantee (RUST_PORT.md) was that a Rust relay pointed at a volume
+//! Python wrote serves the queued mail it left there; keep it true for any
+//! long-lived volumes.
 
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
-use crate::{MAX_OPKS, MAX_QUEUE_DEPTH};
+use crate::{MAX_KOPKS, MAX_OPKS, MAX_QUEUE_DEPTH};
 
 pub struct SpkUpload {
     pub id: i64,
@@ -45,24 +46,42 @@ impl Mailbox {
                sig TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS one_time_prekeys (
                id INTEGER PRIMARY KEY,
+               pub TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS kem_signed_prekey (
+               row INTEGER PRIMARY KEY CHECK (row = 1),
+               id INTEGER NOT NULL,
+               pub TEXT NOT NULL,
+               sig TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS kem_one_time_prekeys (
+               id INTEGER PRIMARY KEY,
                pub TEXT NOT NULL);",
         )?;
         Ok(Self { db: Mutex::new(db) })
     }
 
-    /// Owner upload: replace the SPK and the whole OPK stock. The owner is
-    /// the source of truth for which private halves it still holds — merge
-    /// semantics kept keys from a previous install alive forever, handing
-    /// senders bundles the owner could no longer decrypt.
-    pub fn set_prekeys(&self, spk: &SpkUpload, opks: &[OpkUpload]) {
+    /// Owner upload: replace the SPK/KSPK and the whole OPK/KOPK stock. The
+    /// owner is the source of truth for which private halves it still holds
+    /// — merge semantics kept keys from a previous install alive forever,
+    /// handing senders bundles the owner could no longer decrypt.
+    pub fn set_prekeys(
+        &self,
+        spk: &SpkUpload,
+        opks: &[OpkUpload],
+        kspk: &SpkUpload,
+        kopks: &[OpkUpload],
+    ) {
         let db = self.db.lock().unwrap();
-        db.execute(
-            "INSERT INTO signed_prekey (row, id, pub, sig) VALUES (1, ?1, ?2, ?3)
-             ON CONFLICT(row) DO UPDATE SET id=excluded.id,
-             pub=excluded.pub, sig=excluded.sig",
-            params![spk.id, spk.pub_key, spk.sig],
-        )
-        .unwrap();
+        for (table, signed) in [("signed_prekey", spk), ("kem_signed_prekey", kspk)] {
+            db.execute(
+                &format!(
+                    "INSERT INTO {table} (row, id, pub, sig) VALUES (1, ?1, ?2, ?3)
+                     ON CONFLICT(row) DO UPDATE SET id=excluded.id,
+                     pub=excluded.pub, sig=excluded.sig"
+                ),
+                params![signed.id, signed.pub_key, signed.sig],
+            )
+            .unwrap();
+        }
         db.execute("DELETE FROM one_time_prekeys", []).unwrap();
         for opk in opks.iter().take(MAX_OPKS) {
             db.execute(
@@ -71,48 +90,66 @@ impl Mailbox {
             )
             .unwrap();
         }
+        db.execute("DELETE FROM kem_one_time_prekeys", []).unwrap();
+        for kopk in kopks.iter().take(MAX_KOPKS) {
+            db.execute(
+                "INSERT OR IGNORE INTO kem_one_time_prekeys (id, pub) VALUES (?1, ?2)",
+                params![kopk.id, kopk.pub_key],
+            )
+            .unwrap();
+        }
     }
 
     /// The prekey bundle for a sender starting a session. Consumes the
-    /// returned one-time prekey — each is handed out at most once.
+    /// returned one-time prekeys (X25519 and ML-KEM independently) — each
+    /// is handed out at most once. No bundle until both signed halves are
+    /// published: PQXDH has no classical-only fallback.
     pub fn take_bundle(&self) -> Option<Value> {
         let db = self.db.lock().unwrap();
-        let spk: Option<(i64, String, String)> = db
-            .query_row(
-                "SELECT id, pub, sig FROM signed_prekey WHERE row = 1",
+        let signed = |table: &str| -> Option<(i64, String, String)> {
+            db.query_row(
+                &format!("SELECT id, pub, sig FROM {table} WHERE row = 1"),
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
-            .unwrap();
-        let (spk_id, spk_pub, spk_sig) = spk?;
-        let opk: Option<(i64, String)> = db
-            .query_row(
-                "SELECT id, pub FROM one_time_prekeys ORDER BY id LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .unwrap();
-        if let Some((opk_id, _)) = &opk {
-            db.execute("DELETE FROM one_time_prekeys WHERE id = ?1", params![opk_id])
+            .unwrap()
+        };
+        let (spk_id, spk_pub, spk_sig) = signed("signed_prekey")?;
+        let (kspk_id, kspk_pub, kspk_sig) = signed("kem_signed_prekey")?;
+        let take_one = |table: &str| -> Option<(i64, String)> {
+            let one: Option<(i64, String)> = db
+                .query_row(
+                    &format!("SELECT id, pub FROM {table} ORDER BY id LIMIT 1"),
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
                 .unwrap();
-        }
+            if let Some((id, _)) = &one {
+                db.execute(&format!("DELETE FROM {table} WHERE id = ?1"), params![id])
+                    .unwrap();
+            }
+            one
+        };
+        let opk = take_one("one_time_prekeys");
+        let kopk = take_one("kem_one_time_prekeys");
         Some(serde_json::json!({
             "spk": {"id": spk_id, "pub": spk_pub, "sig": spk_sig},
             "opk": opk.map(|(id, pub_key)| serde_json::json!({"id": id, "pub": pub_key})),
+            "kspk": {"id": kspk_id, "pub": kspk_pub, "sig": kspk_sig},
+            "kopk": kopk.map(|(id, pub_key)| serde_json::json!({"id": id, "pub": pub_key})),
         }))
     }
 
     pub fn prekey_status(&self) -> Value {
         let db = self.db.lock().unwrap();
-        let has_spk: i64 = db
-            .query_row("SELECT COUNT(*) FROM signed_prekey", [], |r| r.get(0))
-            .unwrap();
-        let opks: i64 = db
-            .query_row("SELECT COUNT(*) FROM one_time_prekeys", [], |r| r.get(0))
-            .unwrap();
-        serde_json::json!({"spk": has_spk > 0, "opks": opks})
+        let count = |sql: &str| -> i64 { db.query_row(sql, [], |r| r.get(0)).unwrap() };
+        let has_spk = count("SELECT COUNT(*) FROM signed_prekey") > 0;
+        let opks = count("SELECT COUNT(*) FROM one_time_prekeys");
+        let has_kspk = count("SELECT COUNT(*) FROM kem_signed_prekey") > 0;
+        let kopks = count("SELECT COUNT(*) FROM kem_one_time_prekeys");
+        serde_json::json!({"spk": has_spk, "opks": opks, "kspk": has_kspk, "kopks": kopks})
     }
 
     pub fn set_push_config(&self, device_token: &str, platform: &str) {

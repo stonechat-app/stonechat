@@ -1,6 +1,7 @@
-//! HTTP handlers. Status codes, JSON shapes and error bodies mirror
-//! server/main.py exactly (FastAPI errors are `{"detail": "<msg>"}` — the
-//! conformance harness diffs bodies, so we keep that shape).
+//! HTTP handlers. Status codes, JSON shapes and error bodies keep the
+//! FastAPI-era `{"detail": "<msg>"}` shape inherited from the retired
+//! Python relay — the conformance harness (tests/conformance.py) diffs
+//! bodies against recorded goldens, so the shape is load-bearing.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +18,7 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 
 use crate::db::{OpkUpload, SpkUpload};
-use crate::{blobs, push, AppState, MAX_BLOB_BYTES, MAX_ENVELOPE_BYTES, MAX_OPKS, TURN_TTL_S, WIRE_VERSION};
+use crate::{blobs, push, AppState, MAX_BLOB_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
 
 fn detail(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"detail": msg}))).into_response()
@@ -83,36 +84,55 @@ pub async fn upload_prekeys(
     if let Err(r) = owner_only(&state, &q) {
         return r;
     }
-    if body.len() > MAX_ENVELOPE_BYTES {
+    // A full ML-KEM restock is ~55 KB of base64 — prekey uploads get their
+    // own cap instead of the envelope one.
+    if body.len() > MAX_PREKEY_UPLOAD_BYTES {
         return detail(StatusCode::PAYLOAD_TOO_LARGE, "too large");
     }
-    let bad = || detail(StatusCode::BAD_REQUEST, "expected {spk: {id, pub, sig}, opks: [{id, pub}]}");
+    let bad = || {
+        detail(
+            StatusCode::BAD_REQUEST,
+            "expected {spk: {id, pub, sig}, opks: [{id, pub}], kspk: {id, pub, sig}, kopks: [{id, pub}]}",
+        )
+    };
     let Ok(parsed) = serde_json::from_slice::<Value>(&body) else { return bad() };
-    let Some((spk, opks)) = parse_prekey_upload(&parsed) else { return bad() };
-    state.mailbox.set_prekeys(&spk, &opks);
+    let Some((spk, opks, kspk, kopks)) = parse_prekey_upload(&parsed) else { return bad() };
+    state.mailbox.set_prekeys(&spk, &opks, &kspk, &kopks);
     Json(json!({"status": "ok", "prekeys": state.mailbox.prekey_status()})).into_response()
 }
 
-fn parse_prekey_upload(body: &Value) -> Option<(SpkUpload, Vec<OpkUpload>)> {
-    let spk = body.get("spk")?;
-    let spk = SpkUpload {
-        id: spk.get("id")?.as_i64().filter(|_| spk["id"].is_i64())?,
-        pub_key: spk.get("pub")?.as_str()?.to_string(),
-        sig: spk.get("sig")?.as_str()?.to_string(),
-    };
-    let opks_val = body.get("opks").unwrap_or(&Value::Array(vec![])).clone();
-    let opks_arr = opks_val.as_array()?;
-    if opks_arr.len() > MAX_OPKS {
+fn parse_signed(v: &Value) -> Option<SpkUpload> {
+    Some(SpkUpload {
+        id: v.get("id")?.as_i64().filter(|_| v["id"].is_i64())?,
+        pub_key: v.get("pub")?.as_str()?.to_string(),
+        sig: v.get("sig")?.as_str()?.to_string(),
+    })
+}
+
+fn parse_one_time(body: &Value, field: &str, max: usize) -> Option<Vec<OpkUpload>> {
+    let val = body.get(field).unwrap_or(&Value::Array(vec![])).clone();
+    let arr = val.as_array()?;
+    if arr.len() > max {
         return None;
     }
-    let mut opks = Vec::with_capacity(opks_arr.len());
-    for o in opks_arr {
-        opks.push(OpkUpload {
+    let mut out = Vec::with_capacity(arr.len());
+    for o in arr {
+        out.push(OpkUpload {
             id: o.get("id")?.as_i64().filter(|_| o["id"].is_i64())?,
             pub_key: o.get("pub")?.as_str()?.to_string(),
         });
     }
-    Some((spk, opks))
+    Some(out)
+}
+
+type PrekeyUpload = (SpkUpload, Vec<OpkUpload>, SpkUpload, Vec<OpkUpload>);
+
+fn parse_prekey_upload(body: &Value) -> Option<PrekeyUpload> {
+    let spk = parse_signed(body.get("spk")?)?;
+    let kspk = parse_signed(body.get("kspk")?)?;
+    let opks = parse_one_time(body, "opks", MAX_OPKS)?;
+    let kopks = parse_one_time(body, "kopks", MAX_KOPKS)?;
+    Some((spk, opks, kspk, kopks))
 }
 
 /// Anyone may start a session (like /inbox). Consumes the returned OPK; a
@@ -353,18 +373,34 @@ mod tests {
 
     #[test]
     fn prekey_upload_parsing() {
-        let good = v(r#"{"spk":{"id":7,"pub":"p","sig":"s"},"opks":[{"id":1,"pub":"a"},{"id":2,"pub":"b"}]}"#);
-        let (spk, opks) = parse_prekey_upload(&good).unwrap();
-        assert_eq!((spk.id, opks.len()), (7, 2));
-        // opks optional
-        assert!(parse_prekey_upload(&v(r#"{"spk":{"id":7,"pub":"p","sig":"s"}}"#)).is_some());
-        // float id, missing sig, non-list opks → reject
-        assert!(parse_prekey_upload(&v(r#"{"spk":{"id":7.5,"pub":"p","sig":"s"}}"#)).is_none());
-        assert!(parse_prekey_upload(&v(r#"{"spk":{"id":7,"pub":"p"}}"#)).is_none());
-        assert!(parse_prekey_upload(&v(r#"{"spk":{"id":7,"pub":"p","sig":"s"},"opks":{}}"#)).is_none());
+        let good = v(
+            r#"{"spk":{"id":7,"pub":"p","sig":"s"},"opks":[{"id":1,"pub":"a"},{"id":2,"pub":"b"}],
+                "kspk":{"id":3,"pub":"kp","sig":"ks"},"kopks":[{"id":9,"pub":"ka"}]}"#,
+        );
+        let (spk, opks, kspk, kopks) = parse_prekey_upload(&good).unwrap();
+        assert_eq!((spk.id, opks.len(), kspk.id, kopks.len()), (7, 2, 3, 1));
+        // one-time pools optional; both signed halves required
+        assert!(parse_prekey_upload(
+            &v(r#"{"spk":{"id":7,"pub":"p","sig":"s"},"kspk":{"id":3,"pub":"kp","sig":"ks"}}"#)
+        )
+        .is_some());
+        assert!(parse_prekey_upload(&v(r#"{"spk":{"id":7,"pub":"p","sig":"s"}}"#)).is_none());
+        // float id, missing sig, non-list pools → reject
+        assert!(parse_prekey_upload(
+            &v(r#"{"spk":{"id":7.5,"pub":"p","sig":"s"},"kspk":{"id":3,"pub":"kp","sig":"ks"}}"#)
+        )
+        .is_none());
+        assert!(parse_prekey_upload(
+            &v(r#"{"spk":{"id":7,"pub":"p"},"kspk":{"id":3,"pub":"kp","sig":"ks"}}"#)
+        )
+        .is_none());
+        assert!(parse_prekey_upload(
+            &v(r#"{"spk":{"id":7,"pub":"p","sig":"s"},"kspk":{"id":3,"pub":"kp","sig":"ks"},"opks":{}}"#)
+        )
+        .is_none());
     }
 
-    /// Vector computed with server/main.py's exact recipe:
+    /// Vector computed with the retired Python relay's exact recipe:
     /// b64(HMAC-SHA1("test-turn-secret", "1760000000:zeon"))
     #[test]
     fn turn_credential_vector() {

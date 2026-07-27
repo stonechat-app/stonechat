@@ -5,9 +5,12 @@ Privacy-first messaging where **every user runs their own server**.
 - No central message store. Your "relay" is a tiny VM you spin up (GCP, AWS, or
   a local Docker container for dev) whose only job is to hold **end-to-end
   encrypted envelopes** until your phone picks them up — then they're deleted.
-- **Forward secrecy**: X3DH + double ratchet (Signal-style), with prekeys
-  served by your own relay instead of a central server. Every message gets a
-  fresh key; stealing keys today can't decrypt traffic recorded yesterday.
+- **Forward secrecy, post-quantum hybrid**: PQXDH (X3DH + ML-KEM-768) +
+  double ratchet (Signal-style), with prekeys served by your own relay
+  instead of a central server. Every message gets a fresh key; stealing keys
+  today can't decrypt traffic recorded yesterday, and recording traffic
+  today doesn't let a future quantum computer decrypt it
+  (docs/POST_QUANTUM.md).
 - **Pinned TLS, no CAs**: relays self-sign their certificates; clients pin a
   fingerprint the owner signs with their identity key and publishes in the
   directory. Trust chains to the Zeon ID, not to any authority — same as
@@ -24,7 +27,7 @@ See [PROTOCOL.md](docs/PROTOCOL.md) for the full wire protocol and threat notes.
 | Directory | What it is |
 |---|---|
 | `app/` | Flutter app (iOS/Android). Keys, history, encryption — all client-side. |
-| `server/` | Routing server ("relay"). Single-file FastAPI + SQLite mailbox that runs on the user's VM. Stores ciphertext only, deletes on ack. |
+| `relay/` | Routing server ("relay", "mailbox"). Rust + SQLite; a static binary that runs on the user's VM. Stores ciphertext only, deletes on ack. |
 | `hub/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Zeon IDs → pubkeys + current relay address. Never sees message content. |
 | `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
 |  `host_agent/` | Host agent ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
@@ -46,7 +49,7 @@ flutter run
 ```
 
 In the app: **Forge identity** → open the relay screen → pick **LOCAL** →
-**Ignite**. The hub builds the relay Docker image from `server/` and
+**Ignite**. The hub builds the relay Docker image from `relay/` and
 runs it as a container. Run a second simulator, forge a second identity,
 exchange Zeon IDs, and chat.
 
@@ -63,7 +66,7 @@ you can message everyone, and the mailbox token never leaves your phone:
 docker run -d --restart unless-stopped -p 8080:8080 \
   -e ZEON_OWNER_ID=<your ZC- id> \
   -e ZEON_OWNER_TOKEN=<any long random secret you keep> \
-  zeon-server   # or: python server/main.py with the same env
+  zeon-server   # image built from relay/ (see relay/README.md)
 ```
 
 In the app: Mailbox → **I already run a mailbox** → enter
@@ -116,8 +119,9 @@ giving up the network.
 ## Cloud providers
 
 The provider layer (`hub/app/providers/`) is deliberately thin:
-every provider boots the **same** startup script that embeds `server/main.py`,
-so an adapter is only "create VM, pass script, return IP".
+every provider boots the **same** startup script, a small fetch-stub that
+downloads the static relay binary (`relay/`) and verifies its pinned
+SHA-256, so an adapter is only "create VM, pass script, return IP".
 
 | Provider | Setup |
 |---|---|
@@ -132,6 +136,10 @@ register it in `providers/__init__.py`.
 ## Testing
 
 ```bash
+# once: build the pqcore KEM library the protocol clients load
+# (ML-KEM/X-Wing — docs/POST_QUANTUM.md; needs a Rust toolchain)
+./scripts/build_pqcore.sh host
+
 # end-to-end: register → provision (docker) → handshake → message → ack → destroy
 # (ZEON_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only;
 #  ZEON_ADMIN_TOKEN lets the test mint the comp entitlement the fleet gate needs)
@@ -139,8 +147,8 @@ cd hub && .venv/bin/pip install pynacl websockets
 ZEON_FLEET_HOSTS="local=|127.0.0.1" ZEON_ADMIN_TOKEN=test-admin ZEON_TEST_CODE=ZEON-TEST-TEST .venv/bin/uvicorn app.main:app --port 8477 &
 .venv/bin/python ../scripts/e2e.py
 
-# app unit tests + static analysis
-cd app && flutter test && flutter analyze
+# app unit tests + static analysis (pqcore lib enables the FFI vector tests)
+cd app && ZEON_PQCORE_LIB=$PWD/../pqcore/target/release/libpqcore.dylib flutter test && flutter analyze
 ```
 
 ## Honest limitations (v1)
@@ -161,7 +169,7 @@ cd app && flutter test && flutter analyze
   or the owner token. But one mailbox = one user, so *which IP you connect to*
   still reveals *that* you contacted that person. Inherent to per-user servers;
   hiding it (padding, onion routing) is a separate, larger project.
-- **The ratchet is young.** The protocol implements X3DH + double ratchet to
+- **The ratchet is young.** The protocol implements PQXDH + double ratchet to
   spec (see docs/PROTOCOL.md "Session crypto"), but it has not had an external
   cryptographic review yet — get one before charging money for privacy.
 - **Groups are minimal**: client-side fan-out, creator-as-admin, ~25 members,

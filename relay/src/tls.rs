@@ -2,9 +2,9 @@
 //! fingerprint = BLAKE2b-256 of the DER certificate (what clients pin).
 //!
 //! Parity-critical (RUST_PORT.md "TLS"): if PEM files already exist —
-//! including ones the Python relay generated via the openssl CLI — they are
-//! loaded unchanged, so the pinned fingerprint survives a Python→Rust swap
-//! on the same volume. Only a fresh volume generates a new keypair.
+//! including openssl-CLI ones the retired Python relay generated — they are
+//! loaded unchanged, so the pinned fingerprint survives a relay swap on the
+//! same volume. Only a fresh volume generates a new keypair.
 
 use std::path::Path;
 
@@ -77,9 +77,9 @@ impl Tls {
 mod tests {
     use super::*;
 
-    /// The fixture was generated with the exact openssl invocation
-    /// server/main.py uses; the expected value is what its Python code
-    /// (hashlib.blake2b(der, digest_size=32)) reports. If this test fails,
+    /// The fixture was generated with the retired Python relay's exact
+    /// openssl invocation; the expected value is what its Python code
+    /// (hashlib.blake2b(der, digest_size=32)) reported. If this test fails,
     /// a Rust relay taking over an existing volume would break every
     /// client's pin — do not ship.
     #[test]

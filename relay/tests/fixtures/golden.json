@@ -1,0 +1,323 @@
+{
+  "health": [
+    200,
+    {
+      "status": "ok",
+      "v": 1,
+      "tls_fp": "X"
+    }
+  ],
+  "status-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "status": [
+    200,
+    {
+      "status": "ok",
+      "v": 1,
+      "queued": 0,
+      "prekeys": {
+        "spk": false,
+        "opks": 0,
+        "kspk": false,
+        "kopks": 0
+      }
+    }
+  ],
+  "owner-missing": [
+    400,
+    {
+      "detail": "zeon_id query parameter required"
+    }
+  ],
+  "owner-wrong": [
+    404,
+    {
+      "detail": "not this mailbox's owner"
+    }
+  ],
+  "owner-right": [
+    200,
+    {
+      "owner_matches": true
+    }
+  ],
+  "bundle-empty": [
+    404,
+    {
+      "detail": "owner has not published prekeys yet"
+    }
+  ],
+  "prekeys-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "prekeys-badshape": [
+    400,
+    {
+      "detail": "expected {spk: {id, pub, sig}, opks: [{id, pub}], kspk: {id, pub, sig}, kopks: [{id, pub}]}"
+    }
+  ],
+  "prekeys-missing-kspk": [
+    400,
+    {
+      "detail": "expected {spk: {id, pub, sig}, opks: [{id, pub}], kspk: {id, pub, sig}, kopks: [{id, pub}]}"
+    }
+  ],
+  "prekeys-toomany-opks": [
+    400,
+    {
+      "detail": "expected {spk: {id, pub, sig}, opks: [{id, pub}], kspk: {id, pub, sig}, kopks: [{id, pub}]}"
+    }
+  ],
+  "prekeys-toomany-kopks": [
+    400,
+    {
+      "detail": "expected {spk: {id, pub, sig}, opks: [{id, pub}], kspk: {id, pub, sig}, kopks: [{id, pub}]}"
+    }
+  ],
+  "prekeys-ok": [
+    200,
+    {
+      "status": "ok",
+      "prekeys": {
+        "spk": true,
+        "opks": 2,
+        "kspk": true,
+        "kopks": 2
+      }
+    }
+  ],
+  "bundle-consumes-lowest": [
+    200,
+    {
+      "spk": {
+        "id": 7,
+        "pub": "spk-pub",
+        "sig": "spk-sig"
+      },
+      "opk": {
+        "id": 41,
+        "pub": "opk-41"
+      },
+      "kspk": {
+        "id": 8,
+        "pub": "kspk-pub",
+        "sig": "kspk-sig"
+      },
+      "kopk": {
+        "id": 51,
+        "pub": "kopk-51"
+      }
+    }
+  ],
+  "bundle-second": [
+    200,
+    {
+      "spk": {
+        "id": 7,
+        "pub": "spk-pub",
+        "sig": "spk-sig"
+      },
+      "opk": {
+        "id": 42,
+        "pub": "opk-42"
+      },
+      "kspk": {
+        "id": 8,
+        "pub": "kspk-pub",
+        "sig": "kspk-sig"
+      },
+      "kopk": {
+        "id": 52,
+        "pub": "kopk-52"
+      }
+    }
+  ],
+  "bundle-dry": [
+    200,
+    {
+      "spk": {
+        "id": 7,
+        "pub": "spk-pub",
+        "sig": "spk-sig"
+      },
+      "opk": null,
+      "kspk": {
+        "id": 8,
+        "pub": "kspk-pub",
+        "sig": "kspk-sig"
+      },
+      "kopk": null
+    }
+  ],
+  "inbox-notjson": [
+    400,
+    {
+      "detail": "not json"
+    }
+  ],
+  "inbox-missing": [
+    400,
+    {
+      "detail": "missing fields"
+    }
+  ],
+  "inbox-badver": [
+    400,
+    {
+      "detail": "unsupported protocol version (need v1)"
+    }
+  ],
+  "inbox-badver-str": [
+    400,
+    {
+      "detail": "unsupported protocol version (need v1)"
+    }
+  ],
+  "inbox-empty-id": [
+    400,
+    {
+      "detail": "bad id"
+    }
+  ],
+  "inbox-int-id": [
+    400,
+    {
+      "detail": "bad id"
+    }
+  ],
+  "inbox-bad-sealed": [
+    400,
+    {
+      "detail": "bad sealed body"
+    }
+  ],
+  "inbox-bad-blobid": [
+    400,
+    {
+      "detail": "bad blob_id"
+    }
+  ],
+  "inbox-bad-hint": [
+    400,
+    {
+      "detail": "bad transient flag"
+    }
+  ],
+  "inbox-wrong-owner": [
+    403,
+    {
+      "detail": "not this mailbox's owner"
+    }
+  ],
+  "inbox-ok": [
+    200,
+    {
+      "status": "queued"
+    }
+  ],
+  "inbox-dup": [
+    200,
+    {
+      "status": "queued"
+    }
+  ],
+  "inbox-push-false": [
+    200,
+    {
+      "status": "queued"
+    }
+  ],
+  "inbox-transient-offline": [
+    200,
+    {
+      "status": "dropped"
+    }
+  ],
+  "status-after": [
+    200,
+    {
+      "status": "ok",
+      "v": 1,
+      "queued": 2,
+      "prekeys": {
+        "spk": true,
+        "opks": 0,
+        "kspk": true,
+        "kopks": 0
+      }
+    }
+  ],
+  "push-config-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "push-config-badplat": [
+    400,
+    {
+      "detail": "bad platform or token"
+    }
+  ],
+  "push-config-missing": [
+    400,
+    {
+      "detail": "expected {device_token, platform}"
+    }
+  ],
+  "push-config-ok": [
+    200,
+    {
+      "status": "ok"
+    }
+  ],
+  "turn-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "turn-notoken-404": [
+    404,
+    {
+      "detail": "no TURN relay on this mailbox"
+    }
+  ],
+  "blob-empty": [
+    400,
+    {
+      "detail": "empty blob"
+    }
+  ],
+  "blob-ok": [
+    200,
+    {
+      "blob_id": "X"
+    }
+  ],
+  "blob-get-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "blob-get-badid": [
+    400,
+    {
+      "detail": "bad blob id"
+    }
+  ],
+  "blob-get-missing": [
+    404,
+    {
+      "detail": "no such blob"
+    }
+  ]
+}

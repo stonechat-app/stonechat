@@ -1,11 +1,11 @@
-# zeon-relay — Rust port of the routing server
+# zeon-relay — the routing server
 
-Rust implementation of the per-user mailbox (`server/main.py`). Same wire
-contract (PROTOCOL.md "Routing server API"), same SQLite schema, same TLS
-PEM files — a Rust relay pointed at a volume the Python relay wrote serves
-its queued mail with an **unchanged pinned TLS fingerprint**, in both
-directions. `server/main.py` remains in-tree as the executable spec until
-cutover (docs/RUST_PORT.md "Rollout").
+The per-user mailbox. Wire contract: PROTOCOL.md "Routing server API";
+behavioral contract: the golden corpus in `tests/` (recorded at the 2026-07
+cutover that retired the Python relay — docs/RUST_PORT.md is the port
+record). SQLite schema and TLS PEM handling are unchanged from the Python
+era, so a relay pointed at an old volume serves its queued mail with an
+unchanged pinned TLS fingerprint.
 
 Why it exists: one relay process runs per hosted user, so idle RSS is the
 Private plan's unit cost. Measured at port time: **Python 57 MB → Rust
@@ -19,7 +19,7 @@ cargo build --release
 ZEON_OWNER_ID=ZC-… ZEON_OWNER_TOKEN=secret ./target/release/zeon-relay
 ```
 
-Same env contract as the Python relay: `ZEON_PORT` (8080), `ZEON_DB`
+Env contract: `ZEON_PORT` (8080), `ZEON_DB`
 (`mailbox.db`), `ZEON_BLOBS` (`blobs`), `ZEON_TLS_DIR` (DB's directory),
 `ZEON_TURN_SECRET`/`ZEON_TURN_PORT`, `ZEON_PUSH_GATEWAY`/`ZEON_PUSH_KEY`.
 
@@ -62,16 +62,20 @@ id=$(docker create --platform linux/amd64 zeon-relay-build) && \
 cargo test          # unit + parity vectors (TLS fingerprint, TURN HMAC)
 ```
 
-Conformance against the Python relay (both started with
-`ZEON_OWNER_ID=ZC-TEST-OWNER ZEON_OWNER_TOKEN=tok-secret` on fresh data
-dirs; python needs the hub venv's fastapi/uvicorn):
+Conformance against the golden corpus (start a **fresh** relay —
+`ZEON_OWNER_ID=ZC-TEST-OWNER ZEON_OWNER_TOKEN=tok-secret`, empty data
+dir — the corpus is stateful and order-dependent):
 
 ```bash
-python3 tests/conformance.py https://127.0.0.1:<py_port> https://127.0.0.1:<rs_port>
-python3 tests/ws_test.py https://127.0.0.1:<either_port>   # needs `websockets`
+python3 tests/conformance.py https://127.0.0.1:<port>            # check
+python3 tests/conformance.py https://127.0.0.1:<port> --record   # after intentional changes
+python3 tests/ws_test.py https://127.0.0.1:<port>   # needs `websockets`
 ```
 
-Status at last run: 40/40 HTTP corpus identical (status codes + bodies,
-including FastAPI-style `{"detail": …}` error shapes), WS suite identical
-(drain order, ack-delete + blob GC, close 4000 replacement, 403 bad token),
-volume-takeover fingerprint match verified.
+Status at last run: 42/42 HTTP corpus identical to the goldens (status
+codes + bodies, including the FastAPI-style `{"detail": …}` error shapes
+inherited from the Python era), WS suite pass (drain order, ack-delete +
+blob GC, close 4000 replacement, 403 bad token). Provenance: the live
+Python↔Rust diff passed 40/40 pre-PQXDH (2026-07-19); the PQXDH prekey
+surface was then added to both relays in lockstep, and the goldens were
+recorded from the Rust relay at cutover (2026-07-27).

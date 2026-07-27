@@ -1,7 +1,8 @@
 //! Zeon routing server — a single user's encrypted mailbox.
 //!
-//! Rust port of `server/main.py` (the executable spec until cutover; see
-//! docs/RUST_PORT.md for the parity contract). Runs on a VM the user owns.
+//! The relay implementation (ported from the retired Python relay —
+//! docs/RUST_PORT.md is the port record; PROTOCOL.md "Routing server API"
+//! is the wire contract). Runs on a VM the user owns.
 //! Stores only sealed envelopes addressed to its owner and deletes each one
 //! the moment the owner's device acks it. Plaintext never exists here, and
 //! neither does sender identity: everything beyond the recipient rides inside
@@ -45,6 +46,10 @@ pub const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024; // videos/documents; mirrore
 pub const MAX_TOTAL_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 pub const BLOB_TTL: Duration = Duration::from_secs(14 * 24 * 3600);
 pub const MAX_OPKS: usize = 256;
+// ML-KEM-768 one-time prekeys are ~1.6 KB each as base64 (docs/POST_QUANTUM.md);
+// prekey uploads get their own body cap so a full restock fits one request.
+pub const MAX_KOPKS: usize = 64;
+pub const MAX_PREKEY_UPLOAD_BYTES: usize = 256 * 1024;
 pub const PUSH_DEBOUNCE: Duration = Duration::from_secs(5);
 // A socket write succeeding is not delivery: a freshly-backgrounded phone
 // keeps its TCP connection open while the suspended app never reads the

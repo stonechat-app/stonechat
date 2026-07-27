@@ -2,7 +2,7 @@
 //! Plain files on disk; the server can't decrypt them (secretbox key travels
 //! inside the envelope ciphertext).
 //!
-//! Differences from server/main.py, per RUST_PORT.md "Permitted
+//! Differences from the retired Python relay, per RUST_PORT.md "Permitted
 //! improvements": used-bytes is tracked incrementally (one scan at boot)
 //! instead of re-stat()ing the whole directory on every upload, and TTL GC
 //! runs on a timer plus on-demand when the cap would reject an upload —
