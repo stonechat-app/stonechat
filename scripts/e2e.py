@@ -990,7 +990,7 @@ def main():
         asyncio.run(bob.receive_one(
             process=lambda e: bob.open_envelope(e, alice)))  # drain before teardown
 
-    print("8b) abuse actions: whois → destroy → ban (docs/abuse_reply_template.md)")
+    print("8b) abuse actions: whois → destroy → ban (notes/docs/abuse_reply_template.md, internal)")
     # The abuse-desk reply templates promise "we can destroy any individual
     # customer's machine immediately". This is that promise, exercised against
     # a real container — an abuse report carries an IP and nothing else, so the

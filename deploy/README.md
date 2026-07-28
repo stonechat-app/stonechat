@@ -13,7 +13,7 @@ real iPhones.
 > stays one port.
 
 Everything here assumes fresh **Debian or Ubuntu** VMs. Per
-[BUSINESS.md](../BUSINESS.md), **DigitalOcean or Hetzner** are the right hosts
+the internal business notes (notes/BUSINESS.md), **DigitalOcean or Hetzner** are the right hosts
 (≈$4–5/mo, bundled IPv4, and — unlike AWS — you can reach your own public IP
 from inside the box, which the health checks rely on).
 
@@ -290,7 +290,7 @@ invites from the app ("Host friends on my server"). Friends redeem with
 ## What this setup skips (fine for two people)
 
 - **The reconciler, billing, abuse handling** — the "before charging money"
-  list in BUSINESS.md. Not needed for a test.
+  list in notes/BUSINESS.md (internal). Not needed for a test.
 - **A domain + HTTPS on the hub** — the app talks to it over plain HTTP
   unless you set one. (Mailbox traffic is already pinned TLS regardless.) For
   anything public, point a name at the box and pass
@@ -308,4 +308,4 @@ harden containers with `STONECHAT_FLEET_RUNTIME=runsc` (gVisor), offer per-user
 VMs as the premium tier (`gcp` provider today; `DigitalOceanProvider`/
 `HetznerProvider` adapters to come), pin the mailbox port range, add the
 reconciler and push gateway, and front the hub with TLS. See
-BUSINESS.md's "Before charging money" checklist.
+the "Before charging money" checklist in notes/BUSINESS.md (internal).

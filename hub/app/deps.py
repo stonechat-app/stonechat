@@ -31,7 +31,7 @@ def unbanned_user(user: User) -> dict:
     """A ban is narrow on purpose: it blocks *acquiring infrastructure*, not
     the account. Reading your own record, publishing a TLS signature and
     recovering the identity all still work — the ban is a refusal to keep
-    hosting someone, not an attempt to erase them. See docs/ABUSE.md."""
+    hosting someone, not an attempt to erase them. See notes/docs/ABUSE.md."""
     if user.get("banned_at"):
         raise HTTPException(403, {
             "code": "account_suspended",

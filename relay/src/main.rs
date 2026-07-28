@@ -1,7 +1,7 @@
 //! Stonechat routing server — a single user's encrypted mailbox.
 //!
 //! The relay implementation (ported from the retired Python relay —
-//! docs/RUST_PORT.md is the port record; PROTOCOL.md "Routing server API"
+//! notes/docs/RUST_PORT.md is the port record; PROTOCOL.md "Routing server API"
 //! is the wire contract). Runs on a VM the user owns.
 //! Stores only sealed envelopes addressed to its owner and deletes each one
 //! the moment the owner's device acks it. Plaintext never exists here, and
@@ -46,7 +46,7 @@ pub const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024; // videos/documents; mirrore
 pub const MAX_TOTAL_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 pub const BLOB_TTL: Duration = Duration::from_secs(14 * 24 * 3600);
 pub const MAX_OPKS: usize = 256;
-// ML-KEM-768 one-time prekeys are ~1.6 KB each as base64 (docs/POST_QUANTUM.md);
+// ML-KEM-768 one-time prekeys are ~1.6 KB each as base64 (notes/notes/docs/POST_QUANTUM.md, internal);
 // prekey uploads get their own body cap so a full restock fits one request.
 pub const MAX_KOPKS: usize = 64;
 pub const MAX_PREKEY_UPLOAD_BYTES: usize = 256 * 1024;

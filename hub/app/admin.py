@@ -2,7 +2,7 @@
 
 Every managed mailbox lives in GazelleLabs' provider accounts, so a report
 about one customer's machine is a threat to every customer's machine
-(docs/ABUSE.md). These routes are what turn "we can act on a credible report"
+(notes/docs/ABUSE.md, internal). These routes are what turn "we can act on a credible report"
 from a claim in an abuse-desk reply into something doable at 3am:
 
     whois   — an abuse report carries an IP; this turns it into a Stonechat ID
@@ -20,7 +20,7 @@ which is the posture an abuse desk needs. Banning says someone is not a
 customer any more — a slower, colder decision that should not ride along with
 an urgent one.
 
-Runbook and the reply templates these routes back up: docs/abuse_reply_template.md.
+Runbook and the reply templates these routes back up: notes/docs/abuse_reply_template.md.
 
 Disabled entirely unless STONECHAT_ADMIN_TOKEN is set.
 """

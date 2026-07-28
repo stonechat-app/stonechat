@@ -1,4 +1,4 @@
-// The pqcore FFI boundary (ML-KEM-768 + X-Wing, docs/POST_QUANTUM.md).
+// The pqcore FFI boundary (ML-KEM-768 + X-Wing, notes/docs/POST_QUANTUM.md).
 // Needs the host library: `scripts/build_pqcore.sh host`, then
 // `STONECHAT_PQCORE_LIB=$PWD/../pqcore/target/release/libpqcore.dylib flutter test`
 // (auto-skips when the library isn't available). The seed→pk vectors were

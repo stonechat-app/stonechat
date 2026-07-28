@@ -3,7 +3,7 @@
 //!
 //! Wraps RustCrypto `ml-kem` (FIPS 203, ML-KEM-768 — PQXDH prekeys, see
 //! PROTOCOL.md "Prekeys") and `x-wing` (draft-connolly-cfrg-xwing-kem —
-//! the hybrid envelope seal, PROTOCOL.md "Envelope"). docs/POST_QUANTUM.md
+//! the hybrid envelope seal, PROTOCOL.md "Envelope"). notes/docs/POST_QUANTUM.md
 //! is the design record.
 //!
 //! Secret keys are carried as seeds — 64 bytes for an ML-KEM-768 prekey,

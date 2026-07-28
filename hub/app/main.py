@@ -152,7 +152,7 @@ class RegisterIn(BaseModel):
     pubkey: str  # base64-encoded Ed25519 identity public key
     # X-Wing identity encryption key (1216 bytes → 1622 base64 chars) and the
     # Ed25519 signature over "stonechat-v1-pqpk" || pq_pk that lets every resolver
-    # trust it (docs/POST_QUANTUM.md — hybrid envelope seal).
+    # trust it (notes/docs/POST_QUANTUM.md — hybrid envelope seal).
     pq_pk: str = Field(max_length=1700)
     pq_sig: str = Field(max_length=128)
 

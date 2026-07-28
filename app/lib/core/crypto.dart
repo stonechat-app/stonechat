@@ -6,7 +6,7 @@
 /// with per-message keys from a PQXDH + double-ratchet session
 /// (session.dart) — this file provides the identity and the shared
 /// primitives. The post-quantum half (ML-KEM-768 prekeys, X-Wing envelope
-/// seal — docs/POST_QUANTUM.md) comes from pqcore; both KEMs are always
+/// seal — notes/docs/POST_QUANTUM.md) comes from pqcore; both KEMs are always
 /// hybrid alongside the classical DHs, never a replacement for them.
 library;
 
@@ -131,7 +131,7 @@ class CryptoService {
   /// the wrap that hides the sender (and every other envelope field) from
   /// the recipient's mailbox. X-Wing is X25519 + ML-KEM-768 in one KEM, so
   /// a recorded envelope stays sealed against a future quantum attacker
-  /// (docs/POST_QUANTUM.md step 2). Wire form:
+  /// (notes/docs/POST_QUANTUM.md step 2). Wire form:
   ///
   ///   kem_ct (1120) || nonce (24) || xchacha20poly1305(inner, ad="stonechat-v1-hseal")
   ///   with key = H(kem_ss, key="stonechat-v1-hsealkdf", 32)
@@ -388,7 +388,7 @@ class CryptoService {
   ///
   /// PQXDH: the classical X3DH transcript plus the ML-KEM shared secret.
   /// A PQ-secure SK makes the whole ratchet chain harvest-proof — every
-  /// later root key derives from it (docs/POST_QUANTUM.md step 1).
+  /// later root key derives from it (notes/docs/POST_QUANTUM.md step 1).
   Uint8List x3dhSharedKey(List<Uint8List> dhs, Uint8List kemSs) => _keyedHash(
       Uint8List.fromList([for (final d in dhs) ...d, ...kemSs]),
       Uint8List.fromList(x3dhKdfKey),

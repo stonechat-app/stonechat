@@ -5,7 +5,7 @@ implementation. Build it once with `scripts/build_pqcore.sh host`; point
 STONECHAT_PQCORE_LIB at the library to override discovery.
 
 ML-KEM-768 secrets are 64-byte seeds, X-Wing secrets 32-byte seeds
-(docs/POST_QUANTUM.md). Randomness is drawn here (secrets module) and passed
+(notes/docs/POST_QUANTUM.md, internal). Randomness is drawn here (secrets module) and passed
 in explicitly — the Rust core never touches an RNG.
 """
 

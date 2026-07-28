@@ -3,7 +3,7 @@ sequence and diff status codes + JSON bodies against the golden expectations
 in fixtures/golden.json.
 
 The corpus began life as a live diff between the Python relay and this Rust
-port; the Python relay is gone (cutover 2026-07, docs/RUST_PORT.md), so the
+port; the Python relay is gone (cutover 2026-07, notes/docs/RUST_PORT.md), so the
 recorded behavior IS the contract now. The corpus is stateful and
 order-dependent — always run it against a FRESH relay (empty DB/blob dir)
 started with OWNER_ID=SC-TEST-OWNER, OWNER_TOKEN=tok-secret.
@@ -55,7 +55,7 @@ CORPUS = [
     ("bundle-empty", "GET", "/prekeys/bundle", None, None),
     ("prekeys-noauth", "POST", "/prekeys", {"spk": {"id": 1, "pub": "p", "sig": "s"}}, None),
     ("prekeys-badshape", "POST", f"/prekeys?token={TOKEN}", {"spk": {"id": "x"}}, None),
-    # both signed halves are required (PQXDH — docs/POST_QUANTUM.md)
+    # both signed halves are required (PQXDH — notes/docs/POST_QUANTUM.md)
     ("prekeys-missing-kspk", "POST", f"/prekeys?token={TOKEN}",
      {"spk": {"id": 1, "pub": "p", "sig": "s"}}, None),
     ("prekeys-toomany-opks", "POST", f"/prekeys?token={TOKEN}",

@@ -232,7 +232,7 @@ class Store:
         resolves in the directory. Making "banned" indistinguishable from
         "never existed" would hand the hub a censorship lever it should not
         have, and identities are cheap to regenerate anyway: this is a cost on
-        paying abusers, a speed bump on everyone else (docs/ABUSE.md)."""
+        paying abusers, a speed bump on everyone else (notes/docs/ABUSE.md, internal)."""
         cur = self._db.execute(
             "UPDATE users SET banned_at = ?, ban_reason = ? WHERE stonechat_id = ?",
             (_now() if reason else None, reason, stonechat_id),

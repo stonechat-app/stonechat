@@ -2,7 +2,7 @@
 
 `admin.py` gave an operator the verbs to act on abuse — whois, destroy, ban —
 but every one of them assumed the complaint arrived by mail, from a provider
-or a law-enforcement contact (docs/abuse_reply_template.md). Nothing carried a
+or a law-enforcement contact (notes/docs/abuse_reply_template.md, internal). Nothing carried a
 complaint from the one party who always knows first: the person being
 harassed. This module is that path, and it is also what App Store review
 Guideline 1.2 requires of an app carrying user-generated content.

@@ -2,7 +2,7 @@
 
 The per-user mailbox. Wire contract: PROTOCOL.md "Routing server API";
 behavioral contract: the golden corpus in `tests/` (recorded at the 2026-07
-cutover that retired the Python relay — docs/RUST_PORT.md is the port
+cutover that retired the Python relay — notes/docs/RUST_PORT.md is the port
 record). SQLite schema and TLS PEM handling are unchanged from the Python
 era, so a relay pointed at an old volume serves its queued mail with an
 unchanged pinned TLS fingerprint.
@@ -10,7 +10,7 @@ unchanged pinned TLS fingerprint.
 Why it exists: one relay process runs per hosted user, so idle RSS is the
 Private plan's unit cost. Measured at port time: **Python 57 MB → Rust
 10 MB idle** (macOS dev build of the fleet's dominant cost; lower still in
-the `scratch` container). Full economics: docs/COSTS.md.
+the `scratch` container). Full economics: notes/docs/COSTS.md.
 
 ## Run
 

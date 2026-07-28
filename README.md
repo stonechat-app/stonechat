@@ -10,7 +10,7 @@ Privacy-first messaging where **every user runs their own server**.
   instead of a central server. Every message gets a fresh key; stealing keys
   today can't decrypt traffic recorded yesterday, and recording traffic
   today doesn't let a future quantum computer decrypt it
-  (docs/POST_QUANTUM.md).
+  (notes/docs/POST_QUANTUM.md, internal).
 - **Pinned TLS, no CAs**: relays self-sign their certificates; clients pin a
   fingerprint the owner signs with their identity key and publishes in the
   directory. Trust chains to the Stonechat ID, not to any authority — same as
@@ -20,7 +20,7 @@ Privacy-first messaging where **every user runs their own server**.
   device; your **Stonechat ID** (`SC-XXXX-…`) is a hash commitment to the public key.
   Share it by QR or text — it reveals nothing about you.
 
-See [PROTOCOL.md](docs/PROTOCOL.md) for the full wire protocol and threat notes.
+See PROTOCOL.md (notes/docs/PROTOCOL.md, internal) for the full wire protocol and threat notes.
 
 ## Components
 
@@ -109,7 +109,7 @@ model: [host_agent/README.md](host_agent/README.md).
 The two options above keep you on the main directory, so you can still message
 everyone. If instead you want a network that depends on nobody — a company, a
 family, an experiment — you can run the hub itself:
-[docs/SELF_HOSTED_HUB.md](docs/SELF_HOSTED_HUB.md).
+`notes/docs/SELF_HOSTED_HUB.md` (internal).
 
 Know the trade before you start: **there is no federation.** Hubs never talk to
 each other — no server-to-server protocol, no shared namespace, no replicated
@@ -129,7 +129,7 @@ SHA-256, so an adapter is only "create VM, pass script, return IP".
 | `gcp` | `pip install google-cloud-compute`, set `STONECHAT_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier). |
 | `aws` | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`. |
 | `local` | Docker only. For development. |
-| `fleet` | Container-per-user across a pool of shared Docker hosts (`STONECHAT_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `STONECHAT_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Private-plan workhorse — see BUSINESS.md. |
+| `fleet` | Container-per-user across a pool of shared Docker hosts (`STONECHAT_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `STONECHAT_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Private-plan workhorse — see notes/BUSINESS.md (internal). |
 
 Adding one: subclass `CloudProvider` (two methods: `provision`, `destroy`) and
 register it in `providers/__init__.py`.
@@ -138,7 +138,7 @@ register it in `providers/__init__.py`.
 
 ```bash
 # once: build the pqcore KEM library the protocol clients load
-# (ML-KEM/X-Wing — docs/POST_QUANTUM.md; needs a Rust toolchain)
+# (ML-KEM/X-Wing — notes/docs/POST_QUANTUM.md; needs a Rust toolchain)
 ./scripts/build_pqcore.sh host
 
 # end-to-end: register → provision (docker) → handshake → message → ack → destroy
@@ -171,7 +171,7 @@ cd app && STONECHAT_PQCORE_LIB=$PWD/../pqcore/target/release/libpqcore.dylib flu
   still reveals *that* you contacted that person. Inherent to per-user servers;
   hiding it (padding, onion routing) is a separate, larger project.
 - **The ratchet is young.** The protocol implements PQXDH + double ratchet to
-  spec (see docs/PROTOCOL.md "Session crypto"), but it has not had an external
+  spec (see notes/docs/PROTOCOL.md "Session crypto"), but it has not had an external
   cryptographic review yet — get one before charging money for privacy.
 - **Groups are minimal**: client-side fan-out, creator-as-admin, ~25 members,
-  text-only (media in groups is planned — see docs/PROTOCOL.md).
+  text-only (media in groups is planned — see notes/docs/PROTOCOL.md).

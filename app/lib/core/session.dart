@@ -16,7 +16,7 @@ const maxSkip = 256; // per-chain gap tolerance
 const maxSkippedKeys = 512; // stored per session, oldest evicted
 
 /// A peer's prekey bundle as served by their mailbox. `kspk`/`kopk` are the
-/// ML-KEM-768 halves of PQXDH (docs/POST_QUANTUM.md): a signed KEM prekey
+/// ML-KEM-768 halves of PQXDH (notes/docs/POST_QUANTUM.md, internal): a signed KEM prekey
 /// that is always present, plus a one-time KEM prekey when the pool isn't
 /// dry — mirroring the SPK/OPK split.
 class PrekeyBundle {
