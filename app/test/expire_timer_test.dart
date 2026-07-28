@@ -1,11 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:zeon_chat/models.dart';
+import 'package:stonechat/models.dart';
 
 void main() {
   test('Message row round-trip preserves expiresAt', () {
     final m = Message(
       id: 'abc',
-      contactId: 'ZC-PEER',
+      contactId: 'SC-PEER',
       outgoing: true,
       text: 'hi',
       sentAt: 1000,
@@ -17,7 +17,7 @@ void main() {
 
     final never = Message(
       id: 'def',
-      contactId: 'ZC-PEER',
+      contactId: 'SC-PEER',
       outgoing: false,
       text: 'yo',
       sentAt: 2000,
@@ -28,7 +28,7 @@ void main() {
 
   test('Contact/Group rows round-trip the timer', () {
     final c = Contact(
-      zeonId: 'ZC-X',
+      stonechatId: 'SC-X',
       displayName: 'x',
       pubkeyB64: 'k',
       status: ContactStatus.accepted,
@@ -43,7 +43,7 @@ void main() {
     final g = Group(
       id: 'g1',
       name: 'crew',
-      adminId: 'ZC-A',
+      adminId: 'SC-A',
       version: 3,
       createdAt: 1,
       expireTimerMs: 604800000,

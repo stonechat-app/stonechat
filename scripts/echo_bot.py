@@ -1,20 +1,20 @@
-"""Echo bot: a headless Zeon identity for testing the app against production.
+"""Echo bot: a headless Stonechat identity for testing the app against production.
 
 Registers a real identity on the hub, ignites a fleet mailbox, then sits on
 its websocket forever: auto-accepts contact requests and replies to every
-message with a random canned sentence. Add its ZC- ID from the phone's
+message with a random canned sentence. Add its SC- ID from the phone's
 "Add contact" screen and you have someone to chat with.
 
 Usage (first run provisions; later runs reuse the saved identity):
 
-    ZEON_TEST_CODE=ZEON-XXXX-XXXX python3 scripts/echo_bot.py
+    STONECHAT_TEST_CODE=STONECHAT-XXXX-XXXX python3 scripts/echo_bot.py
 
-    python3 scripts/echo_bot.py --add ZC-...   # bot sends YOU the request
+    python3 scripts/echo_bot.py --add SC-...   # bot sends YOU the request
     python3 scripts/echo_bot.py --destroy      # tear down mailbox + state
 
-Env: ZEON_HUB (default https://hub.zeonchat.com), ZEON_TEST_CODE (required on
-first run — fleet is plan-gated), ZEON_BOT_NAME (default "Echo Bot"),
-ZEON_BOT_STATE (default ~/.zeon_echo_bot.pkl).
+Env: STONECHAT_HUB (default https://hub.stonechat.app), STONECHAT_TEST_CODE (required on
+first run — fleet is plan-gated), STONECHAT_BOT_NAME (default "Echo Bot"),
+STONECHAT_BOT_STATE (default ~/.stonechat_echo_bot.pkl).
 
 Identity, prekeys, and ratchet sessions persist in the state file, so the bot
 survives restarts without breaking established chats. Deps: httpx, pynacl,
@@ -31,7 +31,7 @@ import random
 import sys
 import time
 
-os.environ.setdefault("ZEON_HUB", "https://hub.zeonchat.com")
+os.environ.setdefault("STONECHAT_HUB", "https://hub.stonechat.app")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import httpx
@@ -40,12 +40,12 @@ from nacl.signing import SigningKey, VerifyKey
 
 import e2e
 from e2e import MX, WS_SSL, Phone
-from app.identity import zeon_id_from_pubkey  # noqa: E402 (path set by e2e)
+from app.identity import stonechat_id_from_pubkey  # noqa: E402 (path set by e2e)
 
 HUB = e2e.HUB
-BOT_NAME = os.environ.get("ZEON_BOT_NAME", "Echo Bot")
+BOT_NAME = os.environ.get("STONECHAT_BOT_NAME", "Echo Bot")
 STATE_PATH = pathlib.Path(
-    os.environ.get("ZEON_BOT_STATE", pathlib.Path.home() / ".zeon_echo_bot.pkl"))
+    os.environ.get("STONECHAT_BOT_STATE", pathlib.Path.home() / ".stonechat_echo_bot.pkl"))
 
 SENTENCES = [
     "Interesting — tell me more.",
@@ -65,27 +65,27 @@ class Peer:
     """Duck-typed stand-in for e2e.Phone on the remote side: exactly the
     attributes Phone.make_envelope/wrap/deliver_to read from `to`."""
 
-    def __init__(self, zeon_id: str, pubkey_b64: str, pq_pk: bytes, address: str):
-        self.zeon_id = zeon_id
+    def __init__(self, stonechat_id: str, pubkey_b64: str, pq_pk: bytes, address: str):
+        self.stonechat_id = stonechat_id
         self.pubkey_b64 = pubkey_b64
         self.pq_pk = pq_pk
         self.server = {"address": address}
 
 
-def resolve(zeon_id: str) -> Peer:
-    entry = httpx.get(f"{HUB}/v1/directory/{zeon_id}", timeout=10)
+def resolve(stonechat_id: str) -> Peer:
+    entry = httpx.get(f"{HUB}/v1/directory/{stonechat_id}", timeout=10)
     entry.raise_for_status()
     entry = entry.json()
-    assert zeon_id_from_pubkey(base64.b64decode(entry["pubkey"])) == entry["zeon_id"], \
-        "directory pubkey does not commit to the Zeon ID"
+    assert stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == entry["stonechat_id"], \
+        "directory pubkey does not commit to the Stonechat ID"
     # The X-Wing key seals every envelope to this peer — only trust it
     # signed by the (commitment-checked) identity key.
     VerifyKey(base64.b64decode(entry["pubkey"])).verify(
         e2e.PQPK_SIG_CONTEXT + base64.b64decode(entry["pq_pk"]),
         base64.b64decode(entry["pq_sig"]))
     if not entry["server"]:
-        raise RuntimeError(f"{zeon_id} has no running relay — can't deliver")
-    return Peer(entry["zeon_id"], entry["pubkey"],
+        raise RuntimeError(f"{stonechat_id} has no running relay — can't deliver")
+    return Peer(entry["stonechat_id"], entry["pubkey"],
                 base64.b64decode(entry["pq_pk"]), entry["server"]["address"])
 
 
@@ -94,7 +94,7 @@ def resolve(zeon_id: str) -> Peer:
 def save(bot: Phone) -> None:
     STATE_PATH.write_bytes(pickle.dumps({
         "seed": bytes(bot.identity),
-        "zeon_id": bot.zeon_id,
+        "stonechat_id": bot.stonechat_id,
         "token": bot.token,
         "server": bot.server,
         "sessions": bot.sessions,
@@ -114,7 +114,7 @@ def load() -> Phone | None:
     bot.identity = SigningKey(s["seed"])
     bot.pubkey_b64 = e2e.b64(bytes(bot.identity.verify_key))
     bot.derive_pq()  # the X-Wing identity is derived from the Ed25519 key
-    bot.zeon_id, bot.token, bot.server = s["zeon_id"], s["token"], s["server"]
+    bot.stonechat_id, bot.token, bot.server = s["stonechat_id"], s["token"], s["server"]
     bot.sessions, bot.spk, bot.opks = s["sessions"], s["spk"], s["opks"]
     bot.kspk, bot.kopks = s.get("kspk"), s.get("kopks", {})
     bot._next_prekey_id = s["next_prekey_id"]
@@ -124,9 +124,9 @@ def load() -> Phone | None:
 # -- provisioning --------------------------------------------------------------
 
 def redeem(bot: Phone) -> None:
-    code = os.environ.get("ZEON_TEST_CODE") or sys.exit(
-        "fleet is plan-gated — set ZEON_TEST_CODE (the current tester codes "
-        "live in the hub's systemd drop-in, ZEON_TEST_CODES)")
+    code = os.environ.get("STONECHAT_TEST_CODE") or sys.exit(
+        "fleet is plan-gated — set STONECHAT_TEST_CODE (the current tester codes "
+        "live in the hub's systemd drop-in, STONECHAT_TEST_CODES)")
     r = httpx.post(f"{HUB}/v1/billing/redeem", headers=bot.auth,
                    json={"code": code})
     if r.status_code == 404:
@@ -251,7 +251,7 @@ def main() -> None:
         save(bot)
     ensure_provisioned(bot)
 
-    print(f"\n  {BOT_NAME}: {bot.zeon_id}")
+    print(f"\n  {BOT_NAME}: {bot.stonechat_id}")
     print("  add this ID as a contact on your phone\n")
 
     if "--add" in sys.argv:

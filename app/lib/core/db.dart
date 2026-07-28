@@ -22,7 +22,7 @@ class ChatDb {
   /// persisted DB encrypted under the old key would be unopenable — drop it
   /// and let a clean one be created.
   static Future<void> deleteDatabaseFiles() async {
-    final base = p.join(await getDatabasesPath(), 'zeon.db');
+    final base = p.join(await getDatabasesPath(), 'stonechat.db');
     for (final suffix in ['', '-wal', '-shm']) {
       final f = File('$base$suffix');
       if (await f.exists()) await f.delete();
@@ -30,7 +30,7 @@ class ChatDb {
   }
 
   static Future<ChatDb> open(String password) async {
-    final path = p.join(await getDatabasesPath(), 'zeon.db');
+    final path = p.join(await getDatabasesPath(), 'stonechat.db');
     final db = await openDatabase(
       path,
       password: password,
@@ -44,7 +44,7 @@ class ChatDb {
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE contacts (
-            zeon_id        TEXT PRIMARY KEY,
+            stonechat_id        TEXT PRIMARY KEY,
             display_name   TEXT NOT NULL,
             pubkey         TEXT NOT NULL,
             pq_pk          TEXT,
@@ -66,7 +66,7 @@ class ChatDb {
         await db.execute('''
           CREATE TABLE messages (
             id          TEXT PRIMARY KEY,
-            contact_id  TEXT NOT NULL REFERENCES contacts(zeon_id),
+            contact_id  TEXT NOT NULL REFERENCES contacts(stonechat_id),
             sender_id   TEXT,
             outgoing    INTEGER NOT NULL,
             text        TEXT NOT NULL,
@@ -119,13 +119,13 @@ class ChatDb {
   static const _createGroupMembers = '''
     CREATE TABLE group_members (
       group_id       TEXT NOT NULL,
-      zeon_id        TEXT NOT NULL,
+      stonechat_id        TEXT NOT NULL,
       pubkey         TEXT NOT NULL,
       pq_pk          TEXT,
       display_name   TEXT NOT NULL,
       server_address TEXT,
       tls_fp         TEXT,
-      PRIMARY KEY (group_id, zeon_id)
+      PRIMARY KEY (group_id, stonechat_id)
     )
   ''';
 
@@ -164,7 +164,7 @@ class ChatDb {
   ''';
 
   // Emoji reactions, one per (message, reactor) — a new reaction replaces the
-  // old one, an empty emoji clears it. peer_id is the reactor's Zeon ID
+  // old one, an empty emoji clears it. peer_id is the reactor's Stonechat ID
   // (our own for reactions we set).
   static const _createReactions = '''
     CREATE TABLE reactions (
@@ -249,15 +249,15 @@ class ChatDb {
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<void> setContactPinned(String zeonId, int? pinnedAt) async {
+  Future<void> setContactPinned(String stonechatId, int? pinnedAt) async {
     await _db.update('contacts', {'pinned_at': pinnedAt},
-        where: 'zeon_id = ?', whereArgs: [zeonId]);
+        where: 'stonechat_id = ?', whereArgs: [stonechatId]);
   }
 
-  Future<void> deleteContact(String zeonId) async {
-    await _purgeConversationExtras(zeonId);
-    await _db.delete('messages', where: 'contact_id = ?', whereArgs: [zeonId]);
-    await _db.delete('contacts', where: 'zeon_id = ?', whereArgs: [zeonId]);
+  Future<void> deleteContact(String stonechatId) async {
+    await _purgeConversationExtras(stonechatId);
+    await _db.delete('messages', where: 'contact_id = ?', whereArgs: [stonechatId]);
+    await _db.delete('contacts', where: 'stonechat_id = ?', whereArgs: [stonechatId]);
   }
 
   Future<void> _purgeConversationExtras(String contactId) async {
@@ -585,7 +585,7 @@ class ChatDb {
   /// so a restored contact re-applies the peer's next profile broadcast and
   /// gets its avatar back that way.
   Future<List<Map<String, Object?>>> backupContacts() => _db.rawQuery(
-      'SELECT zeon_id, display_name, pubkey, status, server_address, tls_fp, '
+      'SELECT stonechat_id, display_name, pubkey, status, server_address, tls_fp, '
       'hub, created_at, pinned_at, expire_timer_ms, expire_timer_at, '
       'blocked_at, muted_until, archived_at, 0 AS profile_at '
       'FROM contacts ORDER BY created_at');
@@ -594,7 +594,7 @@ class ChatDb {
       _db.query('groups', orderBy: 'created_at');
 
   Future<List<Map<String, Object?>>> backupGroupMembers() =>
-      _db.query('group_members', orderBy: 'group_id, zeon_id');
+      _db.query('group_members', orderBy: 'group_id, stonechat_id');
 
   Future<List<Map<String, Object?>>> backupMessages(int nowMs) => _db.rawQuery(
       'SELECT id, contact_id, sender_id, outgoing, text, kind, duration_ms, '
@@ -615,7 +615,7 @@ class ChatDb {
   // "no such column", and so a crafted file can't touch other columns.
   static const _importCols = {
     'contacts': {
-      'zeon_id', 'display_name', 'pubkey', 'status', 'server_address',
+      'stonechat_id', 'display_name', 'pubkey', 'status', 'server_address',
       'tls_fp', 'hub', 'created_at', 'pinned_at', 'expire_timer_ms',
       'expire_timer_at', 'blocked_at', 'muted_until', 'archived_at',
       'profile_at',
@@ -625,7 +625,7 @@ class ChatDb {
       'expire_timer_ms', 'expire_timer_at', 'muted_until', 'archived_at',
     },
     'group_members': {
-      'group_id', 'zeon_id', 'pubkey', 'display_name', 'server_address',
+      'group_id', 'stonechat_id', 'pubkey', 'display_name', 'server_address',
       'tls_fp',
     },
     'messages': {
@@ -637,9 +637,9 @@ class ChatDb {
   };
 
   static const _importRequired = {
-    'contacts': {'zeon_id', 'display_name', 'pubkey', 'status', 'created_at'},
+    'contacts': {'stonechat_id', 'display_name', 'pubkey', 'status', 'created_at'},
     'groups': {'id', 'name', 'admin_id', 'version', 'created_at'},
-    'group_members': {'group_id', 'zeon_id', 'pubkey', 'display_name'},
+    'group_members': {'group_id', 'stonechat_id', 'pubkey', 'display_name'},
     'messages': {'id', 'contact_id', 'outgoing', 'text', 'kind', 'sent_at',
         'status'},
     'reactions': {'message_id', 'peer_id', 'emoji', 'at'},

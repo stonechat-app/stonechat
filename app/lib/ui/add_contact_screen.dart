@@ -81,7 +81,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
             final raw = capture.barcodes.firstOrNull?.rawValue;
             // Pass the raw scan through: addContact re-parses it, so a hub
             // tag on a hub-tagged invite survives to resolution.
-            if (raw != null && zeonInviteFromInput(raw) != null) {
+            if (raw != null && stonechatInviteFromInput(raw) != null) {
               _scanHandled = true;
               _add(raw);
             }
@@ -92,7 +92,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
           left: 0,
           right: 0,
           child: Center(
-            child: Text('Point at a friend\'s Zeon code',
+            child: Text('Point at a friend\'s Stonechat code',
                 style: TextStyle(fontSize: 13, color: Zn.text)),
           ),
         ),
@@ -106,12 +106,12 @@ class _AddContactScreenState extends State<AddContactScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Their Zeon code',
+          const Text('Their Stonechat code',
               style: TextStyle(
                   color: Zn.text, fontSize: 13, fontWeight: FontWeight.w600)),
           const SizedBox(height: 6),
           const Text(
-            'Ask them for their Zeon code — or scan their QR with the '
+            'Ask them for their Stonechat code — or scan their QR with the '
             'camera button above.',
             style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
           ),
@@ -120,7 +120,7 @@ class _AddContactScreenState extends State<AddContactScreen> {
             controller: _id,
             style: Zn.mono(size: 14, color: Zn.text),
             autocorrect: false,
-            decoration: const InputDecoration(hintText: 'ZC-K3M9-QF2X-…'),
+            decoration: const InputDecoration(hintText: 'SC-K3M9-QF2X-…'),
           ),
           const SizedBox(height: 20),
           SizedBox(

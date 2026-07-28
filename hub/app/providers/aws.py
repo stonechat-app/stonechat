@@ -26,7 +26,7 @@ from .bootstrap import (
     build_startup_script,
 )
 
-SECURITY_GROUP = "zeon-server"
+SECURITY_GROUP = "stonechat-server"
 AL2023_SSM_PARAM = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 
 
@@ -68,8 +68,8 @@ class AWSProvider(CloudProvider):
                 {
                     "ResourceType": "instance",
                     "Tags": [
-                        {"Key": "Name", "Value": f"zeon-{req.owner_id[3:11].lower()}"},
-                        {"Key": "zeon", "Value": "routing-server"},
+                        {"Key": "Name", "Value": f"stonechat-{req.owner_id[3:11].lower()}"},
+                        {"Key": "stonechat", "Value": "routing-server"},
                     ],
                 }
             ],
@@ -107,7 +107,7 @@ class AWSProvider(CloudProvider):
         else:
             sg_id = ec2.create_security_group(
                 GroupName=SECURITY_GROUP,
-                Description="Zeon routing server inbound",
+                Description="Stonechat routing server inbound",
             )["GroupId"]
         # Re-assert ingress every time (duplicates are swallowed) so groups
         # created before TURN existed grow the UDP rules on the next provision.

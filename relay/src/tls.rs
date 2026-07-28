@@ -48,7 +48,7 @@ impl Tls {
             let mut params = rcgen::CertificateParams::default();
             params.distinguished_name = {
                 let mut dn = rcgen::DistinguishedName::new();
-                dn.push(rcgen::DnType::CommonName, "zeon-mailbox");
+                dn.push(rcgen::DnType::CommonName, "stonechat-mailbox");
                 dn
             };
             // openssl used -days 36500; pin explicit far-out bounds instead
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn generated_cert_roundtrips_and_persists() {
-        let dir = std::env::temp_dir().join(format!("zeon-tls-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stonechat-tls-test-{}", std::process::id()));
         let t1 = Tls::load_or_generate(&dir).unwrap();
         let t2 = Tls::load_or_generate(&dir).unwrap(); // second boot: reuse, same fp
         assert_eq!(t1.fingerprint_b64, t2.fingerprint_b64);

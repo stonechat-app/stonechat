@@ -9,7 +9,7 @@ Guideline 1.2 requires of an app carrying user-generated content.
 
 Three things make it unlike the rest of the hub's surface.
 
-**It is unauthenticated, but not anonymous.** A Zeon ID is a BLAKE2b
+**It is unauthenticated, but not anonymous.** A Stonechat ID is a BLAKE2b
 commitment to an Ed25519 public key (identity.py), so a report signed by the
 reporter's identity key is verifiable by *any* hub, including one the reporter
 has no account on. That matters: a report has to be judged by the hub that can
@@ -28,7 +28,7 @@ it and cannot ask for more.
 
 **Its rows expire.** See the `reports` table comment in db.py: a report is an
 edge in a contact graph the hub otherwise never holds, so retention is bounded
-(ZEON_REPORT_RETENTION_DAYS, swept by the reaper in main.py) and resolving a
+(STONECHAT_REPORT_RETENTION_DAYS, swept by the reaper in main.py) and resolving a
 report drops its evidence immediately.
 
 What this module deliberately does not do is decide anything. It writes a row
@@ -46,14 +46,14 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from .deps import store
-from .identity import PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
+from .identity import PUBKEY_LEN, normalize_stonechat_id, stonechat_id_from_pubkey
 from .ratelimit import RateLimiter
 
-log = logging.getLogger("zeon.hub.report")
+log = logging.getLogger("stonechat.hub.report")
 
 router = APIRouter(tags=["report"])
 
-RETENTION_DAYS = int(os.environ.get("ZEON_REPORT_RETENTION_DAYS", "180"))
+RETENTION_DAYS = int(os.environ.get("STONECHAT_REPORT_RETENTION_DAYS", "180"))
 
 # Fixed vocabulary rather than free text, so triage can sort a queue and so
 # the urgent categories are recognisable without reading every note first.
@@ -103,7 +103,7 @@ def _signed_material(reported_id: str, timestamp: int, category: str,
         + (evidence or "").encode(),
         digest_size=32,
     ).digest()
-    return (b"zeon-v1-report" + reported_id.encode()
+    return (b"stonechat-v1-report" + reported_id.encode()
             + str(timestamp).encode() + digest)
 
 
@@ -124,7 +124,7 @@ def report(body: ReportIn, request: Request):
     _report_ip_limiter.check(request.client.host if request.client else "unknown")
 
     try:
-        reported_id = normalize_zeon_id(body.reported_id)
+        reported_id = normalize_stonechat_id(body.reported_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -155,7 +155,7 @@ def report(body: ReportIn, request: Request):
     except Exception:
         raise HTTPException(401, "bad signature")
 
-    reporter_id = zeon_id_from_pubkey(pubkey)
+    reporter_id = stonechat_id_from_pubkey(pubkey)
     _report_id_limiter.check(reporter_id)
 
     if reporter_id == reported_id:
@@ -164,7 +164,7 @@ def report(body: ReportIn, request: Request):
         raise HTTPException(404, {
             "code": "not_our_account",
             "message": "This hub does not host that account. Report it to the "
-                       "hub that does, or write to abuse@zeonchat.com.",
+                       "hub that does, or write to abuse@stonechat.app.",
         })
 
     report_id = store.create_report(

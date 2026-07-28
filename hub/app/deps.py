@@ -12,7 +12,7 @@ from fastapi import Depends, Header, HTTPException
 
 from .db import Store
 
-store = Store(os.environ.get("ZEON_HUB_DB", "hub.db"))
+store = Store(os.environ.get("STONECHAT_HUB_DB", "hub.db"))
 
 
 def current_user(authorization: Annotated[str | None, Header()] = None) -> dict:
@@ -36,7 +36,7 @@ def unbanned_user(user: User) -> dict:
         raise HTTPException(403, {
             "code": "account_suspended",
             "message": "This account may no longer provision mailboxes. "
-                       "Contact abuse@zeonchat.com if you believe this is an error.",
+                       "Contact abuse@stonechat.app if you believe this is an error.",
         })
     return user
 
@@ -45,9 +45,9 @@ UnbannedUser = Annotated[dict, Depends(unbanned_user)]
 
 
 def require_admin(x_admin_token: Annotated[str | None, Header()] = None) -> None:
-    """Operator-only routes. Disabled entirely unless ZEON_ADMIN_TOKEN is set,
+    """Operator-only routes. Disabled entirely unless STONECHAT_ADMIN_TOKEN is set,
     so a hub that never configures one has no admin surface to attack."""
-    admin_token = os.environ.get("ZEON_ADMIN_TOKEN")
+    admin_token = os.environ.get("STONECHAT_ADMIN_TOKEN")
     if not admin_token or not x_admin_token or not secrets.compare_digest(
             admin_token, x_admin_token):
         raise HTTPException(403, "admin token required")

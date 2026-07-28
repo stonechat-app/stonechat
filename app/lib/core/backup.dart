@@ -1,5 +1,5 @@
 /// Encrypted, text-only chat backup: exports the local history as a single
-/// passphrase-protected `.zeonbackup` file, and merges such a file back in.
+/// passphrase-protected `.stonechatbackup` file, and merges such a file back in.
 ///
 /// The payload is gzip-compressed JSON (contacts, groups, members, text-kind
 /// messages, reactions — see ChatDb's backup queries for what is excluded;
@@ -8,7 +8,7 @@
 /// File layout (integers little-endian):
 /// ```
 /// offset  size  field
-/// 0       8     magic "ZEONBAK1"
+/// 0       8     magic "SC-BAK-1"
 /// 8       1     format version (1)
 /// 9       1     kdf id (1 = Argon2id13)
 /// 10      1     reserved (0)
@@ -59,7 +59,7 @@ class BackupService {
 
   BackupService(this.sodium, this.db);
 
-  static const magic = 'ZEONBAK1';
+  static const magic = 'SC-BAK-1';
   static const formatVersion = 1;
   static const kdfArgon2id13 = 1;
   static const saltLength = 16;
@@ -68,9 +68,9 @@ class BackupService {
   static const payloadVersion = 1;
   static const minPassphraseChars = 8;
 
-  static const _notABackup = 'Not a Zeon backup file.';
+  static const _notABackup = 'Not a Stonechat backup file.';
   static const _newerVersion =
-      'This backup was created by a newer version of Zeon — update the app '
+      'This backup was created by a newer version of Stonechat — update the app '
       'first.';
   static const _wrongPassphrase = 'Wrong passphrase, or the file is damaged.';
 
@@ -126,7 +126,7 @@ class BackupService {
     List<Map<String, Object?>> copy(List<Map<String, Object?>> rows) =>
         [for (final r in rows) Map<String, Object?>.from(r)];
     return {
-      'format': 'zeon-backup',
+      'format': 'stonechat-backup',
       'version': payloadVersion,
       'created_at': nowMs,
       'counts': {
@@ -189,7 +189,7 @@ class BackupService {
 
     final date = DateFormat('yyyy-MM-dd').format(DateTime.now());
     final file = File(p.join(
-        (await getTemporaryDirectory()).path, 'zeon-backup-$date.zeonbackup'));
+        (await getTemporaryDirectory()).path, 'stonechat-backup-$date.stonechatbackup'));
     await file.writeAsBytes(bytes, flush: true);
     return file;
   }
@@ -235,7 +235,7 @@ class BackupService {
 
     // `decoded` is assigned inside try/catch, so it never promotes — pin the
     // Map into a fresh local for the closure below.
-    if (decoded is! Map || decoded['format'] != 'zeon-backup') {
+    if (decoded is! Map || decoded['format'] != 'stonechat-backup') {
       throw const BackupException(_notABackup);
     }
     final payload = decoded;
@@ -279,8 +279,8 @@ class BackupService {
     final dir = await getTemporaryDirectory();
     await for (final f in dir.list()) {
       if (f is File &&
-          p.basename(f.path).startsWith('zeon-backup-') &&
-          f.path.endsWith('.zeonbackup')) {
+          p.basename(f.path).startsWith('stonechat-backup-') &&
+          f.path.endsWith('.stonechatbackup')) {
         try {
           await f.delete();
         } catch (_) {}

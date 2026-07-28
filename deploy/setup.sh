@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Zeon single-box deploy: hub + local Docker provider on one VM.
+# Stonechat single-box deploy: hub + local Docker provider on one VM.
 # Good for a first live test (you + a friend). Run as root on a fresh
 # Debian/Ubuntu box, from inside a checkout of this repo:
 #
-#     sudo ZEON_PUBLIC_IP=203.0.113.7 deploy/setup.sh
+#     sudo STONECHAT_PUBLIC_IP=203.0.113.7 deploy/setup.sh
 #
-# Add ZEON_HUB_DOMAIN=hub.example.com to front it with Caddy + Let's Encrypt
+# Add STONECHAT_HUB_DOMAIN=hub.example.com to front it with Caddy + Let's Encrypt
 # (the name must already resolve here).
 #
 # It installs Docker + Python, builds a venv for the hub, writes a
@@ -17,66 +17,66 @@ set -euo pipefail
 
 # -- config -------------------------------------------------------------------
 
-: "${ZEON_PUBLIC_IP:?set ZEON_PUBLIC_IP to this VM public IP - the address phones connect to}"
-ZEON_HUB_PORT="${ZEON_HUB_PORT:-8000}"
+: "${STONECHAT_PUBLIC_IP:?set STONECHAT_PUBLIC_IP to this VM public IP - the address phones connect to}"
+STONECHAT_HUB_PORT="${STONECHAT_HUB_PORT:-8000}"
 SERVICE_USER="${SERVICE_USER:-root}"
 # Optional: public hostname for the hub. Set it and Caddy fronts the hub with
 # an auto-renewing Let's Encrypt cert, so the app can use https://. The name
 # must ALREADY resolve to this box — Caddy proves ownership over :80 on
 # startup and the issue fails if DNS points elsewhere. Empty → plain HTTP.
-ZEON_HUB_DOMAIN="${ZEON_HUB_DOMAIN:-}"
+STONECHAT_HUB_DOMAIN="${STONECHAT_HUB_DOMAIN:-}"
 # Fleet host pool for the "fleet" provider (mailbox containers on SEPARATE
 # machines — mailboxes never run on this box; see deploy/README.md):
-#   ZEON_FLEET_HOSTS="fleet1=ssh://zeon-fleet@10.0.0.5|203.0.113.5"
-ZEON_FLEET_HOSTS="${ZEON_FLEET_HOSTS:-}"
+#   STONECHAT_FLEET_HOSTS="fleet1=ssh://stonechat-fleet@10.0.0.5|203.0.113.5"
+STONECHAT_FLEET_HOSTS="${STONECHAT_FLEET_HOSTS:-}"
 # Optional: address of the push gateway, reachable from mailbox CONTAINERS.
 # On Linux that's the Docker bridge host address (172.17.0.1), not 127.0.0.1.
 # Leave empty to run without push (see deploy/README.md "Enable push").
-ZEON_PUSH_GATEWAY="${ZEON_PUSH_GATEWAY:-}"
+STONECHAT_PUSH_GATEWAY="${STONECHAT_PUSH_GATEWAY:-}"
 # Optional: shared secret for hub-minted push keys (PROTOCOL.md "Push
 # gateway"). Set the SAME value on the gateway service. Empty → pings unsigned.
-ZEON_PUSH_MINT_SECRET="${ZEON_PUSH_MINT_SECRET:-}"
+STONECHAT_PUSH_MINT_SECRET="${STONECHAT_PUSH_MINT_SECRET:-}"
 # Where relay pings come FROM (fleet hosts / mailbox VMs) — used to open the
 # gateway port to internal traffic only. GCP's internal range by default.
-ZEON_PUSH_SOURCE_CIDR="${ZEON_PUSH_SOURCE_CIDR:-10.128.0.0/9}"
+STONECHAT_PUSH_SOURCE_CIDR="${STONECHAT_PUSH_SOURCE_CIDR:-10.128.0.0/9}"
 # Optional: GCP project id. Set to enable the "gcp" provider (per-user mailbox
 # VMs on Compute Engine). Needs credentials via ADC — on GCE, attach a service
 # account with compute.instanceAdmin.v1 + compute.securityAdmin to this VM.
-ZEON_GCP_PROJECT="${ZEON_GCP_PROJECT:-}"
+STONECHAT_GCP_PROJECT="${STONECHAT_GCP_PROJECT:-}"
 # Set to "off" to run without the billing plane entirely: no /v1/billing/*
 # endpoints, every provider ungated, no reaper, and the stripe package is not
 # installed. The right choice for a private hub (docs/SELF_HOSTED_HUB.md).
-ZEON_BILLING="${ZEON_BILLING:-on}"
+STONECHAT_BILLING="${STONECHAT_BILLING:-on}"
 
-# Relay binary (Rust, docs/RUST_PORT.md). A static x86_64-musl `zeon-relay`
+# Relay binary (Rust, docs/RUST_PORT.md). A static x86_64-musl `stonechat-relay`
 # on this box: fleet hosts then build their image from it instantly (no
 # compile), and sovereign VM startup scripts fetch it (served by the hub at
 # /v1/relay-binary, SHA-256-pinned). Without it, fleet/local hosts compile
 # the crate via relay/'s Dockerfile and sovereign provisioning is refused.
-ZEON_RELAY_BINARY="${ZEON_RELAY_BINARY:-}"
+STONECHAT_RELAY_BINARY="${STONECHAT_RELAY_BINARY:-}"
 # Public base URL of this hub (e.g. https://hub.example.com) — how sovereign
-# VMs reach /v1/relay-binary. ZEON_RELAY_BINARY_URL overrides with an
+# VMs reach /v1/relay-binary. STONECHAT_RELAY_BINARY_URL overrides with an
 # external artifact URL (GCS bucket, GitHub release).
-ZEON_HUB_URL="${ZEON_HUB_URL:-}"
-ZEON_RELAY_BINARY_URL="${ZEON_RELAY_BINARY_URL:-}"
+STONECHAT_HUB_URL="${STONECHAT_HUB_URL:-}"
+STONECHAT_RELAY_BINARY_URL="${STONECHAT_RELAY_BINARY_URL:-}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="$REPO_ROOT/hub/.venv"
-DB_PATH="/var/lib/zeon/hub.db"
+DB_PATH="/var/lib/stonechat/hub.db"
 
 if [[ $EUID -ne 0 ]]; then
   echo "run me as root (sudo)" >&2
   exit 1
 fi
 
-echo "==> Zeon deploy"
+echo "==> Stonechat deploy"
 echo "    repo:        $REPO_ROOT"
-echo "    public IP:   $ZEON_PUBLIC_IP"
-echo "    hub port:    $ZEON_HUB_PORT"
-echo "    gcp project: ${ZEON_GCP_PROJECT:-(unset — gcp provider disabled)}"
-echo "    fleet hosts: ${ZEON_FLEET_HOSTS:-(unset — fleet provider disabled)}"
-echo "    domain:      ${ZEON_HUB_DOMAIN:-(unset — plain HTTP, no TLS)}"
-echo "    billing:     $ZEON_BILLING"
+echo "    public IP:   $STONECHAT_PUBLIC_IP"
+echo "    hub port:    $STONECHAT_HUB_PORT"
+echo "    gcp project: ${STONECHAT_GCP_PROJECT:-(unset — gcp provider disabled)}"
+echo "    fleet hosts: ${STONECHAT_FLEET_HOSTS:-(unset — fleet provider disabled)}"
+echo "    domain:      ${STONECHAT_HUB_DOMAIN:-(unset — plain HTTP, no TLS)}"
+echo "    billing:     $STONECHAT_BILLING"
 
 # -- packages -----------------------------------------------------------------
 
@@ -97,11 +97,11 @@ echo "==> building hub venv"
 python3 -m venv "$VENV"
 "$VENV/bin/pip" install --quiet --upgrade pip
 "$VENV/bin/pip" install --quiet -r "$REPO_ROOT/hub/requirements.txt"
-if [[ "$ZEON_BILLING" != "off" ]]; then
+if [[ "$STONECHAT_BILLING" != "off" ]]; then
   echo "==> installing billing dependency (stripe)"
   "$VENV/bin/pip" install --quiet "stripe>=11"
 fi
-if [[ -n "$ZEON_GCP_PROJECT" ]]; then
+if [[ -n "$STONECHAT_GCP_PROJECT" ]]; then
   echo "==> installing GCP provider dependency (google-cloud-compute)"
   "$VENV/bin/pip" install --quiet "google-cloud-compute>=1.19"
 fi
@@ -115,26 +115,26 @@ mkdir -p "$(dirname "$DB_PATH")"
 # -- systemd unit -------------------------------------------------------------
 
 echo "==> writing systemd unit"
-cat > /etc/systemd/system/zeon-hub.service <<UNIT
+cat > /etc/systemd/system/stonechat-hub.service <<UNIT
 [Unit]
-Description=Zeon hub (provisioner + directory)
+Description=Stonechat hub (provisioner + directory)
 After=network-online.target docker.service
 Requires=docker.service
 
 [Service]
 User=$SERVICE_USER
 WorkingDirectory=$REPO_ROOT/hub
-Environment=ZEON_HUB_DB=$DB_PATH
-Environment=ZEON_BILLING=$ZEON_BILLING
-Environment=ZEON_LOCAL_HOST=$ZEON_PUBLIC_IP
-Environment=ZEON_PUSH_GATEWAY=$ZEON_PUSH_GATEWAY
-Environment=ZEON_PUSH_MINT_SECRET=$ZEON_PUSH_MINT_SECRET
-Environment=ZEON_GCP_PROJECT=$ZEON_GCP_PROJECT
-Environment="ZEON_FLEET_HOSTS=$ZEON_FLEET_HOSTS"
-Environment=ZEON_RELAY_BINARY=$ZEON_RELAY_BINARY
-Environment=ZEON_HUB_URL=$ZEON_HUB_URL
-Environment=ZEON_RELAY_BINARY_URL=$ZEON_RELAY_BINARY_URL
-ExecStart=$VENV/bin/uvicorn app.main:app --host 0.0.0.0 --port $ZEON_HUB_PORT
+Environment=STONECHAT_HUB_DB=$DB_PATH
+Environment=STONECHAT_BILLING=$STONECHAT_BILLING
+Environment=STONECHAT_LOCAL_HOST=$STONECHAT_PUBLIC_IP
+Environment=STONECHAT_PUSH_GATEWAY=$STONECHAT_PUSH_GATEWAY
+Environment=STONECHAT_PUSH_MINT_SECRET=$STONECHAT_PUSH_MINT_SECRET
+Environment=STONECHAT_GCP_PROJECT=$STONECHAT_GCP_PROJECT
+Environment="STONECHAT_FLEET_HOSTS=$STONECHAT_FLEET_HOSTS"
+Environment=STONECHAT_RELAY_BINARY=$STONECHAT_RELAY_BINARY
+Environment=STONECHAT_HUB_URL=$STONECHAT_HUB_URL
+Environment=STONECHAT_RELAY_BINARY_URL=$STONECHAT_RELAY_BINARY_URL
+ExecStart=$VENV/bin/uvicorn app.main:app --host 0.0.0.0 --port $STONECHAT_HUB_PORT
 Restart=always
 RestartSec=2
 
@@ -143,14 +143,14 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now zeon-hub
-systemctl restart zeon-hub
+systemctl enable --now stonechat-hub
+systemctl restart stonechat-hub
 
 # -- TLS (optional) -----------------------------------------------------------
 
 # Caddy terminates HTTPS and proxies to the hub on loopback. It fetches and
 # renews the certificate itself; there is no certbot timer to babysit.
-if [[ -n "$ZEON_HUB_DOMAIN" ]]; then
+if [[ -n "$STONECHAT_HUB_DOMAIN" ]]; then
   if ! command -v caddy >/dev/null; then
     echo "==> installing Caddy"
     apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
@@ -162,10 +162,10 @@ if [[ -n "$ZEON_HUB_DOMAIN" ]]; then
     apt-get install -y caddy
   fi
 
-  echo "==> configuring Caddy for $ZEON_HUB_DOMAIN"
+  echo "==> configuring Caddy for $STONECHAT_HUB_DOMAIN"
   cat > /etc/caddy/Caddyfile <<CADDY
-$ZEON_HUB_DOMAIN {
-	reverse_proxy 127.0.0.1:$ZEON_HUB_PORT
+$STONECHAT_HUB_DOMAIN {
+	reverse_proxy 127.0.0.1:$STONECHAT_HUB_PORT
 }
 CADDY
   systemctl enable --now caddy
@@ -178,19 +178,19 @@ fi
 # so only the hub port is opened here.
 echo "==> configuring firewall (ufw)"
 ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp
-ufw allow "${ZEON_HUB_PORT}/tcp" comment "zeon hub"
+ufw allow "${STONECHAT_HUB_PORT}/tcp" comment "stonechat hub"
 # Caddy needs :80 as well as :443 — that's where it answers the ACME
 # challenge, so closing it breaks renewal 60 days later, not today.
-if [[ -n "$ZEON_HUB_DOMAIN" ]]; then
-  ufw allow 80/tcp comment "zeon hub (ACME challenge)"
-  ufw allow 443/tcp comment "zeon hub (TLS)"
+if [[ -n "$STONECHAT_HUB_DOMAIN" ]]; then
+  ufw allow 80/tcp comment "stonechat hub (ACME challenge)"
+  ufw allow 443/tcp comment "stonechat hub (TLS)"
 fi
 # The push gateway (:8100 on this box) must be reachable from the fleet
 # hosts' relays — but never from the public internet. Without this rule
 # relay pings time out SILENTLY and push just doesn't work.
-if [ -n "$ZEON_PUSH_GATEWAY" ]; then
-  ufw allow from "$ZEON_PUSH_SOURCE_CIDR" to any port 8100 proto tcp \
-    comment "zeon push gateway (internal only)"
+if [ -n "$STONECHAT_PUSH_GATEWAY" ]; then
+  ufw allow from "$STONECHAT_PUSH_SOURCE_CIDR" to any port 8100 proto tcp \
+    comment "stonechat push gateway (internal only)"
 fi
 ufw --force enable
 
@@ -201,16 +201,16 @@ echo "==> health check"
 # uvicorn can take >10s to boot on the smallest VMs — retry, don't race it.
 health_ok=""
 for _ in $(seq 1 15); do
-  if curl -fsS "http://127.0.0.1:${ZEON_HUB_PORT}/health"; then
+  if curl -fsS "http://127.0.0.1:${STONECHAT_HUB_PORT}/health"; then
     health_ok=1
     break
   fi
   sleep 2
 done
 if [[ -n "$health_ok" ]]; then
-  HUB_URL="http://${ZEON_PUBLIC_IP}:${ZEON_HUB_PORT}"
-  if [[ -n "$ZEON_HUB_DOMAIN" ]]; then
-    HUB_URL="https://${ZEON_HUB_DOMAIN}"
+  HUB_URL="http://${STONECHAT_PUBLIC_IP}:${STONECHAT_HUB_PORT}"
+  if [[ -n "$STONECHAT_HUB_DOMAIN" ]]; then
+    HUB_URL="https://${STONECHAT_HUB_DOMAIN}"
     echo
     echo
     echo "==> checking TLS"
@@ -218,19 +218,19 @@ if [[ -n "$health_ok" ]]; then
     # almost always DNS: the name must point at THIS box for the challenge.
     tls_ok=""
     for _ in $(seq 1 15); do
-      if curl -fsS "https://${ZEON_HUB_DOMAIN}/health" >/dev/null 2>&1; then
+      if curl -fsS "https://${STONECHAT_HUB_DOMAIN}/health" >/dev/null 2>&1; then
         tls_ok=1
         break
       fi
       sleep 2
     done
     if [[ -z "$tls_ok" ]]; then
-      echo "  TLS not answering yet on https://${ZEON_HUB_DOMAIN}"
-      echo "  Check that ${ZEON_HUB_DOMAIN} resolves to ${ZEON_PUBLIC_IP}, that"
+      echo "  TLS not answering yet on https://${STONECHAT_HUB_DOMAIN}"
+      echo "  Check that ${STONECHAT_HUB_DOMAIN} resolves to ${STONECHAT_PUBLIC_IP}, that"
       echo "  80 and 443 are open in the CLOUD firewall, then:"
       echo "      journalctl -u caddy -n 50 --no-pager"
     else
-      echo "  https://${ZEON_HUB_DOMAIN} serving a valid certificate"
+      echo "  https://${STONECHAT_HUB_DOMAIN} serving a valid certificate"
     fi
   fi
   echo
@@ -239,9 +239,9 @@ if [[ -n "$health_ok" ]]; then
   echo "    ${HUB_URL}"
   echo
   echo "Build the app with that baked in:"
-  echo "    flutter build ipa --dart-define=ZEON_HUB=${HUB_URL}"
+  echo "    flutter build ipa --dart-define=STONECHAT_HUB=${HUB_URL}"
   echo
-  echo "IMPORTANT: also open port ${ZEON_HUB_PORT}${ZEON_HUB_DOMAIN:+, 80 and 443} to this box"
+  echo "IMPORTANT: also open port ${STONECHAT_HUB_PORT}${STONECHAT_HUB_DOMAIN:+, 80 and 443} to this box"
   echo "in your CLOUD firewall / security group (ufw alone isn't enough on"
   echo "AWS/GCP/Azure)."
   echo "Mailbox ports (32768-60999) are opened on the FLEET HOSTS, never here"
@@ -249,6 +249,6 @@ if [[ -n "$health_ok" ]]; then
 else
   echo
   echo "Health check failed — inspect logs with:"
-  echo "    journalctl -u zeon-hub -n 50 --no-pager"
+  echo "    journalctl -u stonechat-hub -n 50 --no-pager"
   exit 1
 fi

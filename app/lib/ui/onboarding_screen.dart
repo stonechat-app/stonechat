@@ -35,7 +35,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
-        builder: (_) => _CodeRevealDialog(zeonId: app.zeonId ?? ''),
+        builder: (_) => _CodeRevealDialog(stonechatId: app.stonechatId ?? ''),
       );
       if (mounted) {
         Navigator.pushReplacementNamed(context, '/mailbox-setup');
@@ -59,7 +59,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Spacer(),
-              Text('ZEON',
+              Text('STONECHAT',
                   style: Zn.mono(
                       size: 42,
                       color: Zn.orange,
@@ -148,8 +148,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 }
 
 class _CodeRevealDialog extends StatelessWidget {
-  final String zeonId;
-  const _CodeRevealDialog({required this.zeonId});
+  final String stonechatId;
+  const _CodeRevealDialog({required this.stonechatId});
 
   @override
   Widget build(BuildContext context) {
@@ -159,13 +159,13 @@ class _CodeRevealDialog extends StatelessWidget {
         borderRadius: BorderRadius.circular(Zn.radius),
         side: const BorderSide(color: Zn.line),
       ),
-      title: const Text('Your Zeon code',
+      title: const Text('Your Stonechat code',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SelectableText(zeonId,
+          SelectableText(stonechatId,
               style:
                   Zn.mono(size: 14, color: Zn.orange, weight: FontWeight.w700)),
           const SizedBox(height: 12),
@@ -180,7 +180,7 @@ class _CodeRevealDialog extends StatelessWidget {
       actions: [
         TextButton(
           onPressed: () {
-            Clipboard.setData(ClipboardData(text: zeonId));
+            Clipboard.setData(ClipboardData(text: stonechatId));
             showZnSnack(context, 'Copied');
           },
           child: const Text('Copy'),

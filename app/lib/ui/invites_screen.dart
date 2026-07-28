@@ -70,7 +70,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
         throw ApiException(auto
             ? "Your mailbox VM isn't answering on the host agent port yet — "
                 "it can take a few minutes after setup. Pull down to retry."
-            : "Couldn't reach a Zeon host agent at that address");
+            : "Couldn't reach a Stonechat host agent at that address");
       }
       // listing doubles as the admin-token check
       final invites = await listHostInvites(url, fp, token);
@@ -152,7 +152,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Your mailbox VM comes with the Zeon host agent built in. Each '
+            'Your mailbox VM comes with the Stonechat host agent built in. Each '
             'friend who accepts an invite gets their own mailbox on your box '
             '— you can see that they host with you, never their messages.',
             style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
@@ -184,7 +184,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Run the Zeon host agent on your server, then connect it here to '
+          'Run the Stonechat host agent on your server, then connect it here to '
           'create invites. Each friend who accepts gets their own mailbox on '
           'your box — you can see that they host with you, never their '
           'messages.',
@@ -380,13 +380,13 @@ class _InviteCard extends StatelessWidget {
   }
 
   /// A redeemer we already chat with shows as their name; anyone else as a
-  /// shortened Zeon ID.
-  String _guestName(BuildContext context, String zeonId) {
+  /// shortened Stonechat ID.
+  String _guestName(BuildContext context, String stonechatId) {
     final contacts = context.read<ChatState>().contacts;
     for (final c in contacts) {
-      if (c.zeonId == zeonId) return c.displayName;
+      if (c.stonechatId == stonechatId) return c.displayName;
     }
-    return zeonId.length > 16 ? '${zeonId.substring(0, 15)}…' : zeonId;
+    return stonechatId.length > 16 ? '${stonechatId.substring(0, 15)}…' : stonechatId;
   }
 
   String _when(DateTime t) {

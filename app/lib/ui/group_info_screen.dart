@@ -29,7 +29,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     final chat = context.watch<ChatState>();
     final group = widget.group;
     final members = chat.groupMembers[group.id] ?? const <GroupMember>[];
-    final isAdmin = group.adminId == chat.app.zeonId;
+    final isAdmin = group.adminId == chat.app.stonechatId;
 
     return Scaffold(
       appBar: AppBar(
@@ -49,7 +49,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
             padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
             child: Row(
               children: [
-                ZeonAvatar(zeonId: group.id, name: '◈ ${group.name}', size: 54),
+                StonechatAvatar(stonechatId: group.id, name: '◈ ${group.name}', size: 54),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
@@ -73,22 +73,22 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           ),
           for (final m in members)
             ListTile(
-              leading: ZeonAvatar(
-                  zeonId: m.zeonId,
+              leading: StonechatAvatar(
+                  stonechatId: m.stonechatId,
                   name: m.displayName,
                   size: 38,
-                  image: chat.contactById(m.zeonId)?.avatar),
-              title: Text(m.zeonId == chat.app.zeonId
+                  image: chat.contactById(m.stonechatId)?.avatar),
+              title: Text(m.stonechatId == chat.app.stonechatId
                   ? '${m.displayName} (you)'
                   : m.displayName),
-              subtitle: m.zeonId == group.adminId
+              subtitle: m.stonechatId == group.adminId
                   ? Text('ADMIN',
                       style: Zn.mono(size: 8, color: Zn.orange, letterSpacing: 2))
                   : null,
-              onLongPress: m.zeonId == chat.app.zeonId
+              onLongPress: m.stonechatId == chat.app.stonechatId
                   ? null
                   : () => _reportMember(chat, m),
-              trailing: isAdmin && m.zeonId != chat.app.zeonId
+              trailing: isAdmin && m.stonechatId != chat.app.stonechatId
                   ? IconButton(
                       icon: const Icon(Icons.person_remove_outlined,
                           color: Zn.danger, size: 20),
@@ -165,7 +165,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    await chat.updateGroupMembership(widget.group, removeIds: {m.zeonId});
+    await chat.updateGroupMembership(widget.group, removeIds: {m.stonechatId});
   }
 
   /// Report a group member. Two things differ from reporting a contact.
@@ -178,13 +178,13 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   Future<void> _reportMember(ChatState chat, GroupMember m) async {
     final history = await chat.historyFor(widget.group.id);
     if (!mounted) return;
-    final contact = chat.contactById(m.zeonId);
+    final contact = chat.contactById(m.stonechatId);
     final outcome = await showReportSheet(
       context,
-      zeonId: m.zeonId,
+      stonechatId: m.stonechatId,
       displayName: m.displayName,
       hub: contact?.hub,
-      conversation: history.where((msg) => msg.senderId == m.zeonId).toList(),
+      conversation: history.where((msg) => msg.senderId == m.stonechatId).toList(),
       canBlock: contact != null && !contact.isBlocked,
     );
     if (outcome.alsoBlock && contact != null && !contact.isBlocked) {
@@ -195,7 +195,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   void _showAddSheet(ChatState chat, List<GroupMember> members) {
     final candidates = chat.acceptedContacts
         .where((c) =>
-            !c.isBlocked && !members.any((m) => m.zeonId == c.zeonId))
+            !c.isBlocked && !members.any((m) => m.stonechatId == c.stonechatId))
         .toList();
     if (candidates.isEmpty) {
       showZnSnack(context, 'Everyone you know is already in this group');
@@ -234,8 +234,8 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                           value: selected.contains(c),
                           activeColor: Zn.orange,
                           controlAffinity: ListTileControlAffinity.trailing,
-                          secondary: ZeonAvatar(
-                              zeonId: c.zeonId,
+                          secondary: StonechatAvatar(
+                              stonechatId: c.stonechatId,
                               name: c.displayName,
                               size: 34,
                               image: c.avatar),

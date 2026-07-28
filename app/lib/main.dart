@@ -63,8 +63,8 @@ Future<void> main() async {
       notices.show(
         ok ? 'Your mailbox is ready' : 'Mailbox setup failed',
         ok
-            ? 'Zeon is set up — you can send and receive messages.'
-            : 'Open Zeon to see what happened and retry.',
+            ? 'Stonechat is set up — you can send and receive messages.'
+            : 'Open Stonechat to see what happened and retry.',
       );
     },
   );
@@ -100,19 +100,19 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: server),
         Provider<PushService>.value(value: push),
       ],
-      child: const ZeonApp(),
+      child: const StonechatApp(),
     ),
   );
 }
 
-class ZeonApp extends StatefulWidget {
-  const ZeonApp({super.key});
+class StonechatApp extends StatefulWidget {
+  const StonechatApp({super.key});
 
   @override
-  State<ZeonApp> createState() => _ZeonAppState();
+  State<StonechatApp> createState() => _StonechatAppState();
 }
 
-class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
+class _StonechatAppState extends State<StonechatApp> with WidgetsBindingObserver {
   final _navKey = GlobalKey<NavigatorState>();
   final _appLinks = AppLinks();
   StreamSubscription<Uri>? _linkSub;
@@ -125,7 +125,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _call = context.read<CallState>();
     _call!.addListener(_syncCallRoute);
-    // Contact invite universal links (https://zeonchat.com/add#ZC-…).
+    // Contact invite universal links (https://stonechat.app/add#SC-…).
     _linkSub = _appLinks.uriLinkStream.listen(_handleInviteLink);
     _appLinks.getInitialLink().then((uri) {
       if (uri != null) {
@@ -148,7 +148,7 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
   /// their own identity (there's nothing to add a contact to yet). The raw
   /// fragment goes through as typed so a hub-tagged invite keeps its tag.
   void _handleInviteLink(Uri uri) {
-    if (zeonInviteFromUri(uri) == null || !mounted) return;
+    if (stonechatInviteFromUri(uri) == null || !mounted) return;
     if (!context.read<AppState>().hasIdentity) return;
     _navKey.currentState?.push(MaterialPageRoute<void>(
       builder: (_) => AddContactScreen(initialId: uri.fragment),
@@ -202,10 +202,10 @@ class _ZeonAppState extends State<ZeonApp> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
     return MaterialApp(
-      title: 'Zeon',
+      title: 'Stonechat',
       debugShowCheckedModeBanner: false,
       navigatorKey: _navKey,
-      theme: zeonTheme(),
+      theme: stonechatTheme(),
       // The lock gate sits above the Navigator so it covers every route.
       builder: (context, child) => LockGate(child: child ?? const SizedBox()),
       initialRoute: app.hasIdentity ? '/home' : '/onboarding',

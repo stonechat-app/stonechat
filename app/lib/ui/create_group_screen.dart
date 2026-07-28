@@ -32,7 +32,7 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
     setState(() => _working = true);
     try {
       final members = chat.acceptedContacts
-          .where((c) => _selected.contains(c.zeonId))
+          .where((c) => _selected.contains(c.stonechatId))
           .toList();
       final group = await chat.createGroup(name, members);
       if (!mounted) return;
@@ -88,23 +88,23 @@ class _CreateGroupScreenState extends State<CreateGroupScreen> {
                     children: [
                       for (final c in contacts)
                         CheckboxListTile(
-                          value: _selected.contains(c.zeonId),
+                          value: _selected.contains(c.stonechatId),
                           activeColor: Zn.orange,
                           checkColor: Zn.onAccent,
                           onChanged: (v) => setState(() {
                             v == true
-                                ? _selected.add(c.zeonId)
-                                : _selected.remove(c.zeonId);
+                                ? _selected.add(c.stonechatId)
+                                : _selected.remove(c.stonechatId);
                           }),
-                          secondary: ZeonAvatar(
-                              zeonId: c.zeonId,
+                          secondary: StonechatAvatar(
+                              stonechatId: c.stonechatId,
                               name: c.displayName,
                               size: 36,
                               image: c.avatar),
                           title: Text(c.displayName,
                               style:
                                   const TextStyle(fontWeight: FontWeight.w600)),
-                          subtitle: Text(c.zeonId.substring(0, 12),
+                          subtitle: Text(c.stonechatId.substring(0, 12),
                               style: Zn.mono(size: 10)),
                         ),
                     ],

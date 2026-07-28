@@ -44,7 +44,7 @@ Future<void> maybeAskForPush(BuildContext context) async {
             const SizedBox(height: 10),
             const Text(
               'We\'ll let you know when your request is accepted and when '
-              'messages arrive. Zeon notifications are content-free — the '
+              'messages arrive. Stonechat notifications are content-free — the '
               'alert never carries who wrote or what they said.',
               style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
             ),

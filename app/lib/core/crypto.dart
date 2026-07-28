@@ -1,8 +1,8 @@
 /// Identity + end-to-end encryption primitives. The only place plaintext
 /// meets keys.
 ///
-/// PROTOCOL.md: the identity is an Ed25519 signing keypair; the Zeon ID is
-/// "ZC-" + base32(blake2b20(pubkey) || checksum2). Messages are encrypted
+/// PROTOCOL.md: the identity is an Ed25519 signing keypair; the Stonechat ID is
+/// "SC-" + base32(blake2b20(pubkey) || checksum2). Messages are encrypted
 /// with per-message keys from a PQXDH + double-ratchet session
 /// (session.dart) — this file provides the identity and the shared
 /// primitives. The post-quantum half (ML-KEM-768 prekeys, X-Wing envelope
@@ -53,16 +53,16 @@ Uint8List base32Decode(String s) {
 }
 
 /// Domain-separation constants — must match scripts/e2e.py and PROTOCOL.md.
-final x3dhKdfKey = utf8.encode('zeon-v1-pqxdh-kdf'); // 16+ bytes, generichash key
-final hsealKdfKey = utf8.encode('zeon-v1-hsealkdf'); // 16 bytes, generichash min
-final hsealAd = utf8.encode('zeon-v1-hseal');
-final pqidSeedKey = utf8.encode('zeon-v1-pqidseed'); // 16 bytes
-final spkSigContext = utf8.encode('zeon-v1-spk');
-final kspkSigContext = utf8.encode('zeon-v1-kspk');
-final pqPkSigContext = utf8.encode('zeon-v1-pqpk');
-final tlsSigContext = utf8.encode('zeon-v1-tls');
-final recoverSigContext = utf8.encode('zeon-v1-recover');
-final reportSigContext = utf8.encode('zeon-v1-report');
+final x3dhKdfKey = utf8.encode('stonechat-v1-pqxdh-kdf'); // 16+ bytes, generichash key
+final hsealKdfKey = utf8.encode('stonechat-v1-hsealkdf'); // 16 bytes, generichash min
+final hsealAd = utf8.encode('stonechat-v1-hseal');
+final pqidSeedKey = utf8.encode('stonechat-v1-pqidseed'); // 16 bytes
+final spkSigContext = utf8.encode('stonechat-v1-spk');
+final kspkSigContext = utf8.encode('stonechat-v1-kspk');
+final pqPkSigContext = utf8.encode('stonechat-v1-pqpk');
+final tlsSigContext = utf8.encode('stonechat-v1-tls');
+final recoverSigContext = utf8.encode('stonechat-v1-recover');
+final reportSigContext = utf8.encode('stonechat-v1-report');
 
 class CryptoService {
   final SodiumSumo sodium;
@@ -113,7 +113,7 @@ class CryptoService {
   String get pqPublicKeyB64 => base64Encode(pqPublicKey);
   Uint8List exportSecretKey() => _identity.secretKey.extractBytes();
 
-  String get zeonId => deriveZeonId(_identity.publicKey);
+  String get stonechatId => deriveStonechatId(_identity.publicKey);
 
   /// Own identity as X25519, for X3DH.
   SecureKey get identityXsk => _identityXsk;
@@ -133,8 +133,8 @@ class CryptoService {
   /// a recorded envelope stays sealed against a future quantum attacker
   /// (docs/POST_QUANTUM.md step 2). Wire form:
   ///
-  ///   kem_ct (1120) || nonce (24) || xchacha20poly1305(inner, ad="zeon-v1-hseal")
-  ///   with key = H(kem_ss, key="zeon-v1-hsealkdf", 32)
+  ///   kem_ct (1120) || nonce (24) || xchacha20poly1305(inner, ad="stonechat-v1-hseal")
+  ///   with key = H(kem_ss, key="stonechat-v1-hsealkdf", 32)
   ///
   /// Like crypto_box_seal, encapsulation is fresh-randomness-per-envelope and
   /// involves no sender key: nothing on the wire identifies or links senders.
@@ -186,9 +186,9 @@ class CryptoService {
     }
   }
 
-  // -- Zeon ID ----------------------------------------------------------------
+  // -- Stonechat ID ----------------------------------------------------------------
 
-  String deriveZeonId(Uint8List pubkey) {
+  String deriveStonechatId(Uint8List pubkey) {
     final hash = sodium.crypto.genericHash(message: pubkey, outLen: 20);
     final check = sodium.crypto.genericHash(message: hash, outLen: 16);
     final payload = Uint8List.fromList([...hash, check[0], check[1]]);
@@ -197,15 +197,15 @@ class CryptoService {
     for (var i = 0; i < b32.length; i += 4) {
       groups.add(b32.substring(i, i + 4));
     }
-    return 'ZC-${groups.join('-')}';
+    return 'SC-${groups.join('-')}';
   }
 
   /// Canonicalize user input; throws [FormatException] with a friendly message.
-  String normalizeZeonId(String raw) {
+  String normalizeStonechatId(String raw) {
     final compact =
         raw.trim().toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
     if (!compact.startsWith('ZC')) {
-      throw const FormatException('Zeon IDs start with ZC-');
+      throw const FormatException('Stonechat IDs start with SC-');
     }
     final b32 = compact.substring(2);
     if (b32.length != 36) {
@@ -221,21 +221,21 @@ class CryptoService {
     for (var i = 0; i < b32.length; i += 4) {
       groups.add(b32.substring(i, i + 4));
     }
-    return 'ZC-${groups.join('-')}';
+    return 'SC-${groups.join('-')}';
   }
 
   /// Any identity key we're handed (directory, x3dh block, member list) must
   /// hash back to the ID it claims to be.
-  bool pubkeyMatchesId(String pubkeyB64, String zeonId) {
+  bool pubkeyMatchesId(String pubkeyB64, String stonechatId) {
     try {
-      return deriveZeonId(base64Decode(pubkeyB64)) == zeonId;
+      return deriveStonechatId(base64Decode(pubkeyB64)) == stonechatId;
     } catch (_) {
       return false;
     }
   }
 
   /// Proof of key possession for POST /v1/recover (identity restore): a
-  /// signature over "zeon-v1-recover" || the current unix time, so the hub
+  /// signature over "stonechat-v1-recover" || the current unix time, so the hub
   /// can re-issue an account token without ever having stored one.
   String signRecovery(int unixSeconds) =>
       base64Encode(sodium.crypto.sign.detached(
@@ -249,7 +249,7 @@ class CryptoService {
   /// Reports are judged by the hub hosting the *reported* account, which under
   /// cross-hub resolution is often not ours — and our account token means nothing there.
   /// A signature does cross that boundary: any hub can check that this key
-  /// hashes to the reporter's Zeon ID. The body is committed to by digest
+  /// hashes to the reporter's Stonechat ID. The body is committed to by digest
   /// rather than signed directly, because it has to survive a round trip
   /// through JSON, where field order and whitespace do not.
   String signReport({
@@ -384,7 +384,7 @@ class CryptoService {
   }
 
   /// SK = H(DH1 || DH2 || DH3 [|| DH4] || KEM_SS,
-  ///        key="zeon-v1-pqxdh-kdf", 32)
+  ///        key="stonechat-v1-pqxdh-kdf", 32)
   ///
   /// PQXDH: the classical X3DH transcript plus the ML-KEM shared secret.
   /// A PQ-secure SK makes the whole ratchet chain harvest-proof — every

@@ -40,17 +40,17 @@ class PqCore {
 
   PqCore._(DynamicLibrary lib)
       : _mlkemPk =
-            lib.lookupFunction<_Fn2Native, _Fn2>('zeon_mlkem_pk_from_seed'),
+            lib.lookupFunction<_Fn2Native, _Fn2>('stonechat_mlkem_pk_from_seed'),
         _mlkemEncaps =
-            lib.lookupFunction<_Fn4Native, _Fn4>('zeon_mlkem_encaps'),
+            lib.lookupFunction<_Fn4Native, _Fn4>('stonechat_mlkem_encaps'),
         _mlkemDecaps =
-            lib.lookupFunction<_Fn3Native, _Fn3>('zeon_mlkem_decaps'),
+            lib.lookupFunction<_Fn3Native, _Fn3>('stonechat_mlkem_decaps'),
         _xwingPk =
-            lib.lookupFunction<_Fn2Native, _Fn2>('zeon_xwing_pk_from_seed'),
+            lib.lookupFunction<_Fn2Native, _Fn2>('stonechat_xwing_pk_from_seed'),
         _xwingEncaps =
-            lib.lookupFunction<_Fn4Native, _Fn4>('zeon_xwing_encaps'),
+            lib.lookupFunction<_Fn4Native, _Fn4>('stonechat_xwing_encaps'),
         _xwingDecaps =
-            lib.lookupFunction<_Fn3Native, _Fn3>('zeon_xwing_decaps');
+            lib.lookupFunction<_Fn3Native, _Fn3>('stonechat_xwing_decaps');
 
   static PqCore? _instance;
 
@@ -59,7 +59,7 @@ class PqCore {
   static DynamicLibrary _open() {
     // Host runs (flutter test, integration tooling) point this at a
     // `cargo build` output; scripts/build_pqcore.sh produces all of them.
-    final override = Platform.environment['ZEON_PQCORE_LIB'];
+    final override = Platform.environment['STONECHAT_PQCORE_LIB'];
     if (override != null) return DynamicLibrary.open(override);
     if (Platform.isAndroid) return DynamicLibrary.open('libpqcore.so');
     if (Platform.isIOS) return DynamicLibrary.process(); // static-linked

@@ -1,6 +1,6 @@
 /// Encrypted identity export: the Ed25519 identity keypair (and display
 /// name) as a single passphrase-protected string, small enough for a QR
-/// code. This is the one artifact that makes a Zeon ID survive the phone —
+/// code. This is the one artifact that makes a Stonechat ID survive the phone —
 /// PROTOCOL.md's "identity dies with the app" holds unless the user
 /// explicitly creates one of these.
 ///
@@ -51,9 +51,9 @@ class IdentityCodec {
   static const payloadVersion = 1;
   static const minPassphraseChars = 8; // matches BackupService
 
-  static const _notAnExport = 'Not a Zeon identity export.';
+  static const _notAnExport = 'Not a Stonechat identity export.';
   static const _newerVersion =
-      'This export was created by a newer version of Zeon — update the app '
+      'This export was created by a newer version of Stonechat — update the app '
       'first.';
   static const _wrongPassphrase = 'Wrong passphrase, or the code is damaged.';
 

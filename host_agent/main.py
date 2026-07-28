@@ -1,4 +1,4 @@
-"""Zeon host agent — "host your circle."
+"""Stonechat host agent — "host your circle."
 
 Runs on a VM the host-owner owns. Lets them host their OWN mailbox plus
 *invited* friends' mailboxes on the one box — a shared host, but only with
@@ -6,8 +6,8 @@ people they choose (PROTOCOL.md "Invite-hosted mailboxes", TODO.md design
 sketch).
 
 It is the ONLY thing with Docker access to the host — the hub and
-Zeon-the-company never touch this machine. Each guest gets their own
-`zeon-server` container: own port, own token, own volume, own TLS cert,
+Stonechat-the-company never touch this machine. Each guest gets their own
+`stonechat-server` container: own port, own token, own volume, own TLS cert,
 cgroup/pids caps. From the directory's point of view a guest's mailbox is just
 an ordinary self-hosted ("external") relay that happens to live on a friend's box.
 
@@ -20,18 +20,18 @@ The agent serves pinned TLS just like a mailbox: the invite carries the agent's
 certificate fingerprint, so the guest's redeem call can't be MITM'd.
 
 Config (env):
-    ZEON_HOST_AGENT_ADMIN_TOKEN   admin secret the host-owner holds (required)
-    ZEON_HOST_AGENT_ADVERTISE_HOST public host/IP guests connect to (required)
-    ZEON_HOST_AGENT_DB            sqlite path (default host_agent.db)
-    ZEON_HOST_AGENT_TLS_DIR       cert/key dir (default: the DB's directory)
-    ZEON_HOST_AGENT_CAPACITY      max guest mailboxes (default 25)
-    ZEON_HOST_AGENT_PORT_BASE     first guest mailbox port; guests are published
+    STONECHAT_HOST_AGENT_ADMIN_TOKEN   admin secret the host-owner holds (required)
+    STONECHAT_HOST_AGENT_ADVERTISE_HOST public host/IP guests connect to (required)
+    STONECHAT_HOST_AGENT_DB            sqlite path (default host_agent.db)
+    STONECHAT_HOST_AGENT_TLS_DIR       cert/key dir (default: the DB's directory)
+    STONECHAT_HOST_AGENT_CAPACITY      max guest mailboxes (default 25)
+    STONECHAT_HOST_AGENT_PORT_BASE     first guest mailbox port; guests are published
                                   on base..base+capacity-1 (default 42000)
-    ZEON_HOST_AGENT_IMAGE         mailbox image (default zeon-server:dev)
-    ZEON_HOST_AGENT_SERVER_DIR    build context if the image is missing (default ../relay)
-    ZEON_HOST_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
-    ZEON_PUSH_GATEWAY        passed through to guest mailboxes (optional)
-    ZEON_HOST_AGENT_PORT          listen port (default 8200)
+    STONECHAT_HOST_AGENT_IMAGE         mailbox image (default stonechat-server:dev)
+    STONECHAT_HOST_AGENT_SERVER_DIR    build context if the image is missing (default ../relay)
+    STONECHAT_HOST_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
+    STONECHAT_PUSH_GATEWAY        passed through to guest mailboxes (optional)
+    STONECHAT_HOST_AGENT_PORT          listen port (default 8200)
 """
 
 import base64
@@ -51,29 +51,29 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-ADMIN_TOKEN = os.environ["ZEON_HOST_AGENT_ADMIN_TOKEN"]
-ADVERTISE_HOST = os.environ["ZEON_HOST_AGENT_ADVERTISE_HOST"]
-DB_PATH = os.environ.get("ZEON_HOST_AGENT_DB", "host_agent.db")
-TLS_DIR = Path(os.environ.get("ZEON_HOST_AGENT_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
-CAPACITY = int(os.environ.get("ZEON_HOST_AGENT_CAPACITY", "25"))
-PORT_BASE = int(os.environ.get("ZEON_HOST_AGENT_PORT_BASE", "42000"))
-IMAGE = os.environ.get("ZEON_HOST_AGENT_IMAGE", "zeon-server:dev")
-SERVER_DIR = Path(os.environ.get("ZEON_HOST_AGENT_SERVER_DIR",
+ADMIN_TOKEN = os.environ["STONECHAT_HOST_AGENT_ADMIN_TOKEN"]
+ADVERTISE_HOST = os.environ["STONECHAT_HOST_AGENT_ADVERTISE_HOST"]
+DB_PATH = os.environ.get("STONECHAT_HOST_AGENT_DB", "host_agent.db")
+TLS_DIR = Path(os.environ.get("STONECHAT_HOST_AGENT_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
+CAPACITY = int(os.environ.get("STONECHAT_HOST_AGENT_CAPACITY", "25"))
+PORT_BASE = int(os.environ.get("STONECHAT_HOST_AGENT_PORT_BASE", "42000"))
+IMAGE = os.environ.get("STONECHAT_HOST_AGENT_IMAGE", "stonechat-server:dev")
+SERVER_DIR = Path(os.environ.get("STONECHAT_HOST_AGENT_SERVER_DIR",
                                  str(Path(__file__).resolve().parents[1] / "relay")))
-RUNTIME = os.environ.get("ZEON_HOST_AGENT_RUNTIME", "")
-PUSH_GATEWAY = os.environ.get("ZEON_PUSH_GATEWAY", "")
+RUNTIME = os.environ.get("STONECHAT_HOST_AGENT_RUNTIME", "")
+PUSH_GATEWAY = os.environ.get("STONECHAT_PUSH_GATEWAY", "")
 SERVER_PORT = 8080
 # Wire protocol version (PROTOCOL.md "Versioning"), reported in /health so a
 # prober can see what this host agent speaks.
 WIRE_VERSION = 1
 
-FLEET_LABEL = "zeon.hosted=1"
+FLEET_LABEL = "stonechat.hosted=1"
 MEMORY_LIMIT = "192m"
 CPU_LIMIT = "0.5"
 PIDS_LIMIT = "128"
 HEALTH_TIMEOUT_S = 60
 
-ZEON_ID_RE = __import__("re").compile(r"^ZC-[A-Z2-7-]{36,}$")
+STONECHAT_ID_RE = __import__("re").compile(r"^SC-[A-Z2-7-]{36,}$")
 
 
 # -- pinned TLS (same scheme as the mailbox: self-signed, fingerprint pinned) --
@@ -88,7 +88,7 @@ class Tls:
                 ["openssl", "req", "-x509", "-newkey", "ec",
                  "-pkeyopt", "ec_paramgen_curve:prime256v1",
                  "-keyout", str(self.key_file), "-out", str(self.cert_file),
-                 "-days", "36500", "-nodes", "-subj", "/CN=zeon-host-agent"],
+                 "-days", "36500", "-nodes", "-subj", "/CN=stonechat-host-agent"],
                 check=True, capture_output=True,
             )
             self.key_file.chmod(0o600)
@@ -233,15 +233,15 @@ def _ensure_image() -> None:
 
 def _launch_container(owner_id: str, owner_token: str, port: int) -> str:
     _ensure_image()
-    name = f"zeon-hosted-{owner_id[3:11].lower().replace('-', '')}"
+    name = f"stonechat-hosted-{owner_id[3:11].lower().replace('-', '')}"
     args = [
         "run", "-d",
         "--name", name,
         "--restart", "unless-stopped",
         "-p", f"{port}:{SERVER_PORT}",
-        "-e", f"ZEON_OWNER_ID={owner_id}",
-        "-e", f"ZEON_OWNER_TOKEN={owner_token}",
-        "-e", f"ZEON_PUSH_GATEWAY={PUSH_GATEWAY}",
+        "-e", f"STONECHAT_OWNER_ID={owner_id}",
+        "-e", f"STONECHAT_OWNER_TOKEN={owner_token}",
+        "-e", f"STONECHAT_PUSH_GATEWAY={PUSH_GATEWAY}",
         "--label", FLEET_LABEL,
         "--memory", MEMORY_LIMIT,
         "--cpus", CPU_LIMIT,
@@ -273,7 +273,7 @@ def _wait_health(address: str) -> str:
 
 store = Store(DB_PATH)
 tls = Tls(TLS_DIR)
-app = FastAPI(title="zeon-host-agent")
+app = FastAPI(title="stonechat-host-agent")
 
 # Guests get fixed host ports from [PORT_BASE, PORT_BASE + CAPACITY) rather
 # than Docker-ephemeral ones: the range is known before any guest exists (so
@@ -334,11 +334,11 @@ async def health():
 def _encode_invite(token: str) -> str:
     """The shareable string: this agent's address + pinned fingerprint + token."""
     blob = {
-        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('ZEON_HOST_AGENT_PORT', '8200')}",
+        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('STONECHAT_HOST_AGENT_PORT', '8200')}",
         "f": tls.fingerprint_b64,
         "t": token,
     }
-    return "zeon-host:" + base64.urlsafe_b64encode(
+    return "stonechat-host:" + base64.urlsafe_b64encode(
         json.dumps(blob, separators=(",", ":")).encode()
     ).decode().rstrip("=")
 
@@ -380,14 +380,14 @@ async def redeem(body: RedeemIn):
     address + token (kept on the guest's device) + TLS fingerprint. Idempotent:
     re-redeeming for an existing guest returns the same mailbox without spending
     another invite use."""
-    if not ZEON_ID_RE.match(body.owner_id):
+    if not STONECHAT_ID_RE.match(body.owner_id):
         raise HTTPException(400, "bad owner_id")
 
     existing = store.guest(body.owner_id)
     if existing:
         # already hosted here — reconnect, don't consume an invite or relaunch
         raise HTTPException(
-            409, "this Zeon ID already has a mailbox on this host; ask the host "
+            409, "this Stonechat ID already has a mailbox on this host; ask the host "
                  "owner to evict it first if you want a fresh one")
 
     token = body.invite.strip()
@@ -404,7 +404,7 @@ async def redeem(body: RedeemIn):
 @app.post("/v1/guest", dependencies=[Depends(require_admin)])
 async def provision_direct(body: ProvisionIn):
     """Host-owner provisions a mailbox directly (e.g. their OWN), no invite."""
-    if not ZEON_ID_RE.match(body.owner_id):
+    if not STONECHAT_ID_RE.match(body.owner_id):
         raise HTTPException(400, "bad owner_id")
     if store.guest(body.owner_id):
         raise HTTPException(409, "already hosted here")
@@ -451,6 +451,6 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        app, host="0.0.0.0", port=int(os.environ.get("ZEON_HOST_AGENT_PORT", "8200")),
+        app, host="0.0.0.0", port=int(os.environ.get("STONECHAT_HOST_AGENT_PORT", "8200")),
         ssl_certfile=str(tls.cert_file), ssl_keyfile=str(tls.key_file),
     )

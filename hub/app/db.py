@@ -4,8 +4,8 @@ current server record, and (since billing) a subscription row. No names, no
 emails, no contact graph, no messages.
 
 Billing expands the budget deliberately: after a code is redeemed the hub
-links zeon_id ↔ stripe_customer_id (Stripe knows who paid; we know which
-Zeon ID they paid for). The activation code itself is stored in plaintext
+links stonechat_id ↔ stripe_customer_id (Stripe knows who paid; we know which
+Stonechat ID they paid for). The activation code itself is stored in plaintext
 only until it's claimed — the success page must be able to re-display it —
 then nulled, leaving just the hash.
 """
@@ -39,17 +39,17 @@ class Store:
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
-                zeon_id    TEXT PRIMARY KEY,
+                stonechat_id    TEXT PRIMARY KEY,
                 pubkey     TEXT NOT NULL,          -- base64
                 pq_pk      TEXT,                   -- base64 X-Wing identity key
-                pq_sig     TEXT,                   -- Ed25519 sig over "zeon-v1-pqpk"||pq_pk
+                pq_sig     TEXT,                   -- Ed25519 sig over "stonechat-v1-pqpk"||pq_pk
                 token_hash TEXT NOT NULL UNIQUE,
                 created_at TEXT NOT NULL,
                 banned_at  TEXT,                   -- abuse: no more provisioning
                 ban_reason TEXT
             );
             CREATE TABLE IF NOT EXISTS servers (
-                zeon_id      TEXT PRIMARY KEY REFERENCES users(zeon_id),
+                stonechat_id      TEXT PRIMARY KEY REFERENCES users(stonechat_id),
                 provider     TEXT NOT NULL,
                 status       TEXT NOT NULL,        -- provisioning | running | error
                 machine      TEXT NOT NULL,        -- MachineSpec as JSON
@@ -73,7 +73,7 @@ class Store:
                 checkout_session_id    TEXT UNIQUE,
                 code_hash              TEXT NOT NULL UNIQUE,
                 code_plain             TEXT,              -- NULLed on redeem
-                zeon_id                TEXT REFERENCES users(zeon_id),
+                stonechat_id                TEXT REFERENCES users(stonechat_id),
                 current_period_end     TEXT,
                 grace_since            TEXT,
                 lapsed_at              TEXT,
@@ -81,8 +81,8 @@ class Store:
                 created_at             TEXT NOT NULL,
                 updated_at             TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_subscriptions_zeon
-                ON subscriptions(zeon_id);
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_stonechat
+                ON subscriptions(stonechat_id);
             CREATE TABLE IF NOT EXISTS stripe_events (    -- webhook idempotency
                 event_id    TEXT PRIMARY KEY,
                 type        TEXT NOT NULL,
@@ -98,7 +98,7 @@ class Store:
             -- first one was written down.
             CREATE TABLE IF NOT EXISTS server_tombstones (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                zeon_id      TEXT NOT NULL,
+                stonechat_id      TEXT NOT NULL,
                 provider     TEXT NOT NULL,
                 resource_id  TEXT,
                 address      TEXT,
@@ -107,8 +107,8 @@ class Store:
                 created_at   TEXT NOT NULL,        -- when the machine was made
                 destroyed_at TEXT NOT NULL
             );
-            CREATE INDEX IF NOT EXISTS idx_tombstones_zeon
-                ON server_tombstones(zeon_id);
+            CREATE INDEX IF NOT EXISTS idx_tombstones_stonechat
+                ON server_tombstones(stonechat_id);
             -- Abuse reports raised by users against other users (report.py).
             --
             -- This table is the largest deliberate expansion of the privacy
@@ -118,7 +118,7 @@ class Store:
             -- never holds. Storing a hash of the reporter instead would be
             -- theatre — the hub owns the `users` table, so any candidate ID
             -- is one cheap brute-force away. Retention is the real mitigation
-            -- (ZEON_REPORT_RETENTION_DAYS, purged by the reaper), and the
+            -- (STONECHAT_REPORT_RETENTION_DAYS, purged by the reaper), and the
             -- outcome of an actioned report outlives its row in
             -- `server_tombstones` and `users.ban_reason` anyway.
             --
@@ -187,7 +187,7 @@ class Store:
 
     def create_user(
         self,
-        zeon_id: str,
+        stonechat_id: str,
         pubkey_b64: str,
         pq_pk_b64: str,
         pq_sig_b64: str,
@@ -196,20 +196,20 @@ class Store:
         """True on success, False if the key is already registered."""
         try:
             self._db.execute(
-                "INSERT INTO users (zeon_id, pubkey, pq_pk, pq_sig, token_hash,"
+                "INSERT INTO users (stonechat_id, pubkey, pq_pk, pq_sig, token_hash,"
                 " created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (zeon_id, pubkey_b64, pq_pk_b64, pq_sig_b64, hash_token(token), _now()),
+                (stonechat_id, pubkey_b64, pq_pk_b64, pq_sig_b64, hash_token(token), _now()),
             )
             return True
         except sqlite3.IntegrityError:
             return False
 
-    def rotate_token(self, zeon_id: str, token: str) -> None:
+    def rotate_token(self, stonechat_id: str, token: str) -> None:
         """Identity recovery: the recovering device becomes the account —
         whatever held the previous token (an old phone, a thief) is out."""
         self._db.execute(
-            "UPDATE users SET token_hash = ? WHERE zeon_id = ?",
-            (hash_token(token), zeon_id),
+            "UPDATE users SET token_hash = ? WHERE stonechat_id = ?",
+            (hash_token(token), stonechat_id),
         )
 
     def user_by_token(self, token: str) -> dict | None:
@@ -218,13 +218,13 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
-    def user_by_id(self, zeon_id: str) -> dict | None:
+    def user_by_id(self, stonechat_id: str) -> dict | None:
         row = self._db.execute(
-            "SELECT * FROM users WHERE zeon_id = ?", (zeon_id,)
+            "SELECT * FROM users WHERE stonechat_id = ?", (stonechat_id,)
         ).fetchone()
         return dict(row) if row else None
 
-    def set_ban(self, zeon_id: str, reason: str | None) -> bool:
+    def set_ban(self, stonechat_id: str, reason: str | None) -> bool:
         """Ban (reason set) or unban (reason None). False if no such user.
 
         A ban only refuses future infrastructure — it does not delete the
@@ -234,44 +234,44 @@ class Store:
         have, and identities are cheap to regenerate anyway: this is a cost on
         paying abusers, a speed bump on everyone else (docs/ABUSE.md)."""
         cur = self._db.execute(
-            "UPDATE users SET banned_at = ?, ban_reason = ? WHERE zeon_id = ?",
-            (_now() if reason else None, reason, zeon_id),
+            "UPDATE users SET banned_at = ?, ban_reason = ? WHERE stonechat_id = ?",
+            (_now() if reason else None, reason, stonechat_id),
         )
         return cur.rowcount > 0
 
     # -- servers -------------------------------------------------------------
 
-    def create_server(self, zeon_id: str, provider: str, machine: dict, server_token: str,
+    def create_server(self, stonechat_id: str, provider: str, machine: dict, server_token: str,
                       host_agent_token: str | None = None) -> bool:
         """Atomically claim the one-server-per-user slot. False if occupied."""
         try:
             self._db.execute(
-                "INSERT INTO servers (zeon_id, provider, status, machine, server_token,"
+                "INSERT INTO servers (stonechat_id, provider, status, machine, server_token,"
                 " host_agent_token, created_at)"
                 " VALUES (?, ?, 'provisioning', ?, ?, ?, ?)",
-                (zeon_id, provider, json.dumps(machine), server_token,
+                (stonechat_id, provider, json.dumps(machine), server_token,
                  host_agent_token, _now()),
             )
             return True
         except sqlite3.IntegrityError:
             return False
 
-    def create_external_server(self, zeon_id: str, address: str, tls_fp: str | None) -> bool:
+    def create_external_server(self, stonechat_id: str, address: str, tls_fp: str | None) -> bool:
         """User provisioned their own relay; we only list its address.
         No server_token stored — it never leaves the user's device."""
         try:
             self._db.execute(
-                "INSERT INTO servers (zeon_id, provider, status, machine, address, tls_fp, created_at)"
+                "INSERT INTO servers (stonechat_id, provider, status, machine, address, tls_fp, created_at)"
                 " VALUES (?, 'external', 'running', '{}', ?, ?, ?)",
-                (zeon_id, address, tls_fp, _now()),
+                (stonechat_id, address, tls_fp, _now()),
             )
             return True
         except sqlite3.IntegrityError:
             return False
 
-    def server_for(self, zeon_id: str) -> dict | None:
+    def server_for(self, stonechat_id: str) -> dict | None:
         row = self._db.execute(
-            "SELECT * FROM servers WHERE zeon_id = ?", (zeon_id,)
+            "SELECT * FROM servers WHERE stonechat_id = ?", (stonechat_id,)
         ).fetchone()
         if not row:
             return None
@@ -289,24 +289,24 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
-    def mark_running(self, zeon_id: str, resource_id: str, address: str, meta: dict,
+    def mark_running(self, stonechat_id: str, resource_id: str, address: str, meta: dict,
                      tls_fp: str | None) -> None:
         self._db.execute(
             "UPDATE servers SET status='running', resource_id=?, address=?, meta=?,"
             " tls_fp=?, tls_sig=NULL, error=NULL"  # new box, new cert — old sig is void
-            " WHERE zeon_id=?",
-            (resource_id, address, json.dumps(meta), tls_fp, zeon_id),
+            " WHERE stonechat_id=?",
+            (resource_id, address, json.dumps(meta), tls_fp, stonechat_id),
         )
 
-    def set_tls_sig(self, zeon_id: str, tls_sig: str) -> None:
+    def set_tls_sig(self, stonechat_id: str, tls_sig: str) -> None:
         self._db.execute(
-            "UPDATE servers SET tls_sig=? WHERE zeon_id=?", (tls_sig, zeon_id)
+            "UPDATE servers SET tls_sig=? WHERE stonechat_id=?", (tls_sig, stonechat_id)
         )
 
-    def mark_error(self, zeon_id: str, error: str) -> None:
+    def mark_error(self, stonechat_id: str, error: str) -> None:
         self._db.execute(
-            "UPDATE servers SET status='error', error=? WHERE zeon_id=?",
-            (error[:1000], zeon_id),
+            "UPDATE servers SET status='error', error=? WHERE stonechat_id=?",
+            (error[:1000], stonechat_id),
         )
 
     def reapable_servers(self, providers: tuple[str, ...], lapsed_before: str) -> list[dict]:
@@ -321,9 +321,9 @@ class Store:
             f"SELECT s.* FROM servers s"
             f" WHERE s.provider IN ({marks})"
             "  AND NOT EXISTS (SELECT 1 FROM subscriptions"
-            "    WHERE zeon_id = s.zeon_id AND status IN ('active', 'grace'))"
+            "    WHERE stonechat_id = s.stonechat_id AND status IN ('active', 'grace'))"
             "  AND (SELECT MAX(lapsed_at) FROM subscriptions"
-            "    WHERE zeon_id = s.zeon_id AND status = 'lapsed') <= ?",
+            "    WHERE stonechat_id = s.stonechat_id AND status = 'lapsed') <= ?",
             (*providers, lapsed_before),
         ).fetchall()
         servers = []
@@ -334,8 +334,8 @@ class Store:
             servers.append(server)
         return servers
 
-    def delete_server(self, zeon_id: str) -> None:
-        self._db.execute("DELETE FROM servers WHERE zeon_id = ?", (zeon_id,))
+    def delete_server(self, stonechat_id: str) -> None:
+        self._db.execute("DELETE FROM servers WHERE stonechat_id = ?", (stonechat_id,))
 
     def servers_by_host(self, host: str) -> list[dict]:
         """Abuse triage: an abuse report carries an IP and nothing else, so
@@ -361,18 +361,18 @@ class Store:
         """Write the abuse record *before* the machine goes away — a destroy
         that half-fails must not also lose the evidence of what was there."""
         self._db.execute(
-            "INSERT INTO server_tombstones (zeon_id, provider, resource_id, address,"
+            "INSERT INTO server_tombstones (stonechat_id, provider, resource_id, address,"
             " meta, reason, created_at, destroyed_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (server["zeon_id"], server["provider"], server["resource_id"],
+            (server["stonechat_id"], server["provider"], server["resource_id"],
              server["address"], json.dumps(server.get("meta") or {}), reason,
              server["created_at"], _now()),
         )
 
-    def tombstones_for(self, zeon_id: str) -> list[dict]:
+    def tombstones_for(self, stonechat_id: str) -> list[dict]:
         return [dict(r) for r in self._db.execute(
-            "SELECT * FROM server_tombstones WHERE zeon_id = ? ORDER BY id DESC",
-            (zeon_id,),
+            "SELECT * FROM server_tombstones WHERE stonechat_id = ? ORDER BY id DESC",
+            (stonechat_id,),
         )]
 
     # -- reports ---------------------------------------------------------------
@@ -505,14 +505,14 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
-    def claim_subscription(self, code_hash: str, zeon_id: str) -> dict | None:
+    def claim_subscription(self, code_hash: str, stonechat_id: str) -> dict | None:
         """Atomically bind an unclaimed, non-lapsed code to an account and
         drop the plaintext code. None if the code is unknown, spent, or dead."""
         cur = self._db.execute(
-            "UPDATE subscriptions SET zeon_id = ?, code_plain = NULL,"
+            "UPDATE subscriptions SET stonechat_id = ?, code_plain = NULL,"
             " updated_at = ?"
-            " WHERE code_hash = ? AND zeon_id IS NULL AND status != 'lapsed'",
-            (zeon_id, _now(), code_hash),
+            " WHERE code_hash = ? AND stonechat_id IS NULL AND status != 'lapsed'",
+            (stonechat_id, _now(), code_hash),
         )
         if cur.rowcount != 1:
             return None
@@ -521,15 +521,15 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
-    def entitlement_for(self, zeon_id: str) -> dict | None:
+    def entitlement_for(self, stonechat_id: str) -> dict | None:
         """The account's best live subscription (sovereign beats private).
         `grace` still counts — payment trouble shouldn't cut service instantly."""
         row = self._db.execute(
             "SELECT * FROM subscriptions"
-            " WHERE zeon_id = ? AND status IN ('active', 'grace')"
+            " WHERE stonechat_id = ? AND status IN ('active', 'grace')"
             " ORDER BY CASE plan WHEN 'sovereign' THEN 0 ELSE 1 END, created_at"
             " LIMIT 1",
-            (zeon_id,),
+            (stonechat_id,),
         ).fetchone()
         return dict(row) if row else None
 

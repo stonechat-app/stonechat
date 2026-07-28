@@ -61,7 +61,7 @@ class _LockGateState extends State<LockGate> with WidgetsBindingObserver {
     _authInFlight = true;
     try {
       final ok = await _auth.authenticate(
-        localizedReason: 'Unlock Zeon',
+        localizedReason: 'Unlock Stonechat',
         persistAcrossBackgrounding: true,
       );
       if (ok && mounted) setState(() => _locked = false);
@@ -86,7 +86,7 @@ class _LockGateState extends State<LockGate> with WidgetsBindingObserver {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('ZEON',
+                    Text('STONECHAT',
                         style: Zn.mono(
                             size: 24,
                             color: Zn.orange,

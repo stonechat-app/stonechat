@@ -1,4 +1,4 @@
-# Zeon Chat
+# Stonechat
 
 Privacy-first messaging where **every user runs their own server**.
 
@@ -13,11 +13,11 @@ Privacy-first messaging where **every user runs their own server**.
   (docs/POST_QUANTUM.md).
 - **Pinned TLS, no CAs**: relays self-sign their certificates; clients pin a
   fingerprint the owner signs with their identity key and publishes in the
-  directory. Trust chains to the Zeon ID, not to any authority — same as
+  directory. Trust chains to the Stonechat ID, not to any authority — same as
   everything else in the protocol.
 - Message history lives on your phone only. Uninstall the app and it's gone.
 - No phone number, no email. Your identity is an Ed25519 keypair generated on
-  device; your **Zeon ID** (`ZC-XXXX-…`) is a hash commitment to the public key.
+  device; your **Stonechat ID** (`SC-XXXX-…`) is a hash commitment to the public key.
   Share it by QR or text — it reveals nothing about you.
 
 See [PROTOCOL.md](docs/PROTOCOL.md) for the full wire protocol and threat notes.
@@ -28,7 +28,7 @@ See [PROTOCOL.md](docs/PROTOCOL.md) for the full wire protocol and threat notes.
 |---|---|
 | `app/` | Flutter app (iOS/Android). Keys, history, encryption — all client-side. |
 | `relay/` | Routing server ("relay", "mailbox"). Rust + SQLite; a static binary that runs on the user's VM. Stores ciphertext only, deletes on ack. |
-| `hub/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Zeon IDs → pubkeys + current relay address. Never sees message content. |
+| `hub/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Stonechat IDs → pubkeys + current relay address. Never sees message content. |
 | `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
 |  `host_agent/` | Host agent ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
 | `landing/` | Marketing site (Astro). Static landing + pricing pages; `cd landing && npm install && npm run dev` (Node 22+). |
@@ -51,10 +51,10 @@ flutter run
 In the app: **Forge identity** → open the relay screen → pick **LOCAL** →
 **Ignite**. The hub builds the relay Docker image from `relay/` and
 runs it as a container. Run a second simulator, forge a second identity,
-exchange Zeon IDs, and chat.
+exchange Stonechat IDs, and chat.
 
 Testing from a real phone: start the hub with
-`ZEON_LOCAL_HOST=<your-mac-LAN-IP>` and point the app's "hub" field
+`STONECHAT_LOCAL_HOST=<your-mac-LAN-IP>` and point the app's "hub" field
 (onboarding → advanced) at `http://<your-mac-LAN-IP>:8000`.
 
 ## Self-hosting your mailbox (free tier)
@@ -64,14 +64,14 @@ you can message everyone, and the mailbox token never leaves your phone:
 
 ```bash
 docker run -d --restart unless-stopped -p 8080:8080 \
-  -e ZEON_OWNER_ID=<your ZC- id> \
-  -e ZEON_OWNER_TOKEN=<any long random secret you keep> \
-  zeon-server   # image built from relay/ (see relay/README.md)
+  -e STONECHAT_OWNER_ID=<your SC- id> \
+  -e STONECHAT_OWNER_TOKEN=<any long random secret you keep> \
+  stonechat-server   # image built from relay/ (see relay/README.md)
 ```
 
 In the app: Mailbox → **I already run a mailbox** → enter
 `http://<your-host>:8080` + your token → Connect. Registration only succeeds
-if the mailbox at that address reports *your* Zeon ID as its owner.
+if the mailbox at that address reports *your* Stonechat ID as its owner.
 
 ### Host your circle (one box, invited friends)
 
@@ -85,17 +85,17 @@ Docker access; the hub never touches this machine.
 cd host_agent
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-ZEON_HOST_AGENT_ADMIN_TOKEN=$(openssl rand -hex 24) \
-ZEON_HOST_AGENT_ADVERTISE_HOST=<your-public-ip> \
+STONECHAT_HOST_AGENT_ADMIN_TOKEN=$(openssl rand -hex 24) \
+STONECHAT_HOST_AGENT_ADVERTISE_HOST=<your-public-ip> \
   .venv/bin/python main.py            # pinned TLS on :8200
 ```
 
 Open ports **8200** (the agent) and **42000–42024** (guest mailboxes) in your
 firewall or home router. In the app: Mailbox → **Host friends on my server** →
 enter the agent's address + admin token → **Create an invite** → share the
-`zeon-host:…` string. Friends install the app, forge an identity, and paste it
+`stonechat-host:…` string. Friends install the app, forge an identity, and paste it
 under **Join a friend's host** — their mailbox appears in the directory as an
-ordinary self-hosted relay, and its token stays on their phone. Exchange Zeon
+ordinary self-hosted relay, and its token stays on their phone. Exchange Stonechat
 IDs and chat.
 
 Message content stays end-to-end encrypted — unreadable even to the
@@ -125,10 +125,10 @@ SHA-256, so an adapter is only "create VM, pass script, return IP".
 
 | Provider | Setup |
 |---|---|
-| `gcp` | `pip install google-cloud-compute`, set `ZEON_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier). |
+| `gcp` | `pip install google-cloud-compute`, set `STONECHAT_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier). |
 | `aws` | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`. |
 | `local` | Docker only. For development. |
-| `fleet` | Container-per-user across a pool of shared Docker hosts (`ZEON_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `ZEON_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Private-plan workhorse — see BUSINESS.md. |
+| `fleet` | Container-per-user across a pool of shared Docker hosts (`STONECHAT_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `STONECHAT_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Private-plan workhorse — see BUSINESS.md. |
 
 Adding one: subclass `CloudProvider` (two methods: `provision`, `destroy`) and
 register it in `providers/__init__.py`.
@@ -141,14 +141,14 @@ register it in `providers/__init__.py`.
 ./scripts/build_pqcore.sh host
 
 # end-to-end: register → provision (docker) → handshake → message → ack → destroy
-# (ZEON_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only;
-#  ZEON_ADMIN_TOKEN lets the test mint the comp entitlement the fleet gate needs)
+# (STONECHAT_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only;
+#  STONECHAT_ADMIN_TOKEN lets the test mint the comp entitlement the fleet gate needs)
 cd hub && .venv/bin/pip install pynacl websockets
-ZEON_FLEET_HOSTS="local=|127.0.0.1" ZEON_ADMIN_TOKEN=test-admin ZEON_TEST_CODE=ZEON-TEST-TEST .venv/bin/uvicorn app.main:app --port 8477 &
+STONECHAT_FLEET_HOSTS="local=|127.0.0.1" STONECHAT_ADMIN_TOKEN=test-admin STONECHAT_TEST_CODE=STONECHAT-TEST-TEST .venv/bin/uvicorn app.main:app --port 8477 &
 .venv/bin/python ../scripts/e2e.py
 
 # app unit tests + static analysis (pqcore lib enables the FFI vector tests)
-cd app && ZEON_PQCORE_LIB=$PWD/../pqcore/target/release/libpqcore.dylib flutter test && flutter analyze
+cd app && STONECHAT_PQCORE_LIB=$PWD/../pqcore/target/release/libpqcore.dylib flutter test && flutter analyze
 ```
 
 ## Honest limitations (v1)

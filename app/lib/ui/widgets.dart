@@ -1,4 +1,4 @@
-/// Shared Zeon UI pieces: the relay status strip and ID-derived avatars.
+/// Shared Stonechat UI pieces: the relay status strip and ID-derived avatars.
 library;
 
 import 'dart:typed_data';
@@ -54,15 +54,15 @@ class RelayStrip extends StatelessWidget {
 
 /// Square avatar: the contact's profile photo when we hold one (E2EE-shared,
 /// PROTOCOL.md "Profiles"), else initials on a color derived from their ID.
-class ZeonAvatar extends StatelessWidget {
-  final String zeonId;
+class StonechatAvatar extends StatelessWidget {
+  final String stonechatId;
   final String name;
   final double size;
   final Uint8List? image; // profile photo bytes, straight from the DB
 
-  const ZeonAvatar({
+  const StonechatAvatar({
     super.key,
-    required this.zeonId,
+    required this.stonechatId,
     required this.name,
     this.size = 42,
     this.image,
@@ -70,7 +70,7 @@ class ZeonAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = Zn.idColor(zeonId);
+    final color = Zn.idColor(stonechatId);
     final photo = image;
     if (photo != null) {
       return Container(

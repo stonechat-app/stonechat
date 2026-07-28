@@ -23,7 +23,7 @@ class AppState extends ChangeNotifier {
   late final ChatDb db;
   late final HubApi api;
   CryptoService? _crypto;
-  String? zeonId;
+  String? stonechatId;
   String? displayName;
   // Whether the notification soft-ask has been shown (once, on the first
   // contact request). Persisted so it never nags across launches.
@@ -49,7 +49,7 @@ class AppState extends ChangeNotifier {
   String? hostAgentAdminToken;
   String? hostAgentTlsFp;
 
-  bool get hasIdentity => _crypto != null && zeonId != null;
+  bool get hasIdentity => _crypto != null && stonechatId != null;
   CryptoService get crypto => _crypto!;
 
   // Preferences. Stored beside the keys — small values, no extra dependency.
@@ -79,11 +79,11 @@ class AppState extends ChangeNotifier {
         _ => fallback,
       };
 
-  /// Two modes: by default the app uses the hosted Zeon hub;
+  /// Two modes: by default the app uses the hosted Stonechat hub;
   /// advanced users can point it anywhere (onboarding → advanced, or
-  /// --dart-define=ZEON_HUB=… for development).
-  static const hostedHubUrl = 'https://hub.zeonchat.com';
-  static const _envUrl = String.fromEnvironment('ZEON_HUB');
+  /// --dart-define=STONECHAT_HUB=… for development).
+  static const hostedHubUrl = 'https://hub.stonechat.app';
+  static const _envUrl = String.fromEnvironment('STONECHAT_HUB');
 
   static String get defaultHubUrl {
     if (_envUrl.isNotEmpty) return _envUrl;
@@ -124,7 +124,7 @@ class AppState extends ChangeNotifier {
         publicKey: base64Decode(public),
         secretKey: base64Decode(secret),
       );
-      zeonId = await _storage.read(key: 'zn_id');
+      stonechatId = await _storage.read(key: 'zn_id');
       displayName = await _storage.read(key: 'zn_name');
       pushPrompted = (await _storage.read(key: 'zn_push_prompted')) == '1';
       externalMailboxToken = await _storage.read(key: 'zn_ext_token');
@@ -149,7 +149,7 @@ class AppState extends ChangeNotifier {
   Future<void> _clearKeychainOnFreshInstall() async {
     try {
       final dir = await getApplicationSupportDirectory();
-      final marker = File(p.join(dir.path, '.zeon_installed'));
+      final marker = File(p.join(dir.path, '.stonechat_installed'));
       if (await marker.exists()) return;
       await _storage.deleteAll();
       // An in-place update keeps the sandbox: drop the DB too, since its
@@ -181,7 +181,7 @@ class AppState extends ChangeNotifier {
     if (dbKey != null) await _storage.write(key: 'zn_db_key', value: dbKey);
     await db.wipe();
     _crypto = null;
-    zeonId = null;
+    stonechatId = null;
     displayName = null;
     pushPrompted = false;
     avatar = null; // db.wipe() dropped the kv row
@@ -276,13 +276,13 @@ class AppState extends ChangeNotifier {
     await _storage.write(
         key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
-    await _storage.write(key: 'zn_id', value: result.zeonId);
+    await _storage.write(key: 'zn_id', value: result.stonechatId);
     await _storage.write(key: 'zn_token', value: result.accountToken);
     await _storage.write(key: 'zn_name', value: name);
     await _storage.write(key: 'zn_hub_url', value: hubUrl);
 
     _crypto = crypto;
-    zeonId = result.zeonId;
+    stonechatId = result.stonechatId;
     displayName = name;
     notifyListeners();
   }
@@ -301,7 +301,7 @@ class AppState extends ChangeNotifier {
   /// to the hub (/v1/recover) and persist exactly as createIdentity would.
   /// A hub that has never seen the key (directory reset, different hub)
   /// answers 404 — fall back to plain registration, which yields the same
-  /// Zeon ID because the ID is derived from the key.
+  /// Stonechat ID because the ID is derived from the key.
   Future<void> restoreIdentity({
     required String export,
     required String passphrase,
@@ -317,7 +317,7 @@ class AppState extends ChangeNotifier {
     );
     api.baseUrl = hubUrl;
 
-    ({String zeonId, String accountToken}) result;
+    ({String stonechatId, String accountToken}) result;
     final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     try {
       result = await api.recover(
@@ -338,13 +338,13 @@ class AppState extends ChangeNotifier {
     await _storage.write(
         key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
-    await _storage.write(key: 'zn_id', value: result.zeonId);
+    await _storage.write(key: 'zn_id', value: result.stonechatId);
     await _storage.write(key: 'zn_token', value: result.accountToken);
     await _storage.write(key: 'zn_name', value: name);
     await _storage.write(key: 'zn_hub_url', value: hubUrl);
 
     _crypto = crypto;
-    zeonId = result.zeonId;
+    stonechatId = result.stonechatId;
     displayName = name;
     notifyListeners();
   }

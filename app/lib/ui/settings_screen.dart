@@ -4,6 +4,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
 import '../core/push.dart';
@@ -53,7 +54,7 @@ class SettingsScreen extends StatelessWidget {
             activeThumbColor: Zn.orange,
             title: const Text('App lock'),
             subtitle: const Text(
-                'Require Face ID, fingerprint or the device passcode to open Zeon.',
+                'Require Face ID, fingerprint or the device passcode to open Stonechat.',
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
           ),
           ListTile(
@@ -79,7 +80,7 @@ class SettingsScreen extends StatelessWidget {
             title: const Text('Identity export'),
             subtitle: const Text(
                 'Save an encrypted QR of your identity key — the only way '
-                'to keep your Zeon ID if this phone is lost.',
+                'to keep your Stonechat ID if this phone is lost.',
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
             leading: const Icon(Icons.qr_code_2, color: Zn.muted, size: 20),
             onTap: () => Navigator.pushNamed(context, '/identity-export'),
@@ -97,6 +98,7 @@ class SettingsScreen extends StatelessWidget {
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
             onTap: () => _resetIdentity(context, app),
           ),
+          const _VersionFooter(),
         ],
       ),
     );
@@ -113,7 +115,7 @@ class SettingsScreen extends StatelessWidget {
         backgroundColor: Zn.surface,
         title: const Text('Reset identity?'),
         content: const Text(
-            'Your Zeon ID, mailbox and entire message history on this phone '
+            'Your Stonechat ID, mailbox and entire message history on this phone '
             'are erased. Contacts keep only what they already received. '
             'There is no way back unless you saved an identity export.'),
         actions: [
@@ -219,7 +221,7 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
               _ => (
                   'No plan',
                   Zn.muted,
-                  'Plans unlock a managed mailbox — see zeonchat.com/pricing',
+                  'Plans unlock a managed mailbox — see stonechat.app/pricing',
                 ),
             };
             return ListTile(
@@ -235,7 +237,7 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
           leading: const Icon(Icons.confirmation_number_outlined,
               color: Zn.orange, size: 20),
           title: const Text('Redeem activation code'),
-          subtitle: const Text('From a purchase on zeonchat.com',
+          subtitle: const Text('From a purchase on stonechat.app',
               style: TextStyle(color: Zn.muted, fontSize: 12)),
           onTap: () async {
             final activated = await showRedeemSheet(context);
@@ -305,7 +307,7 @@ class _NotificationsSectionState extends State<_NotificationsSection> {
           NotificationPermission.granted =>
             'On. Content-free wake-ups when messages arrive or a request is accepted.',
           NotificationPermission.denied =>
-            "Blocked. Turn them on in your phone's Settings › Zeon.",
+            "Blocked. Turn them on in your phone's Settings › Stonechat.",
           _ => 'Get notified when messages arrive or a request is accepted.',
         };
         return Column(
@@ -335,9 +337,9 @@ void _guideToSettings(BuildContext context, {required bool blocked}) {
       backgroundColor: Zn.surface,
       title: const Text('Manage in Settings'),
       content: Text(blocked
-          ? 'Notifications are turned off for Zeon at the system level. Open '
-              "your phone's Settings › Zeon › Notifications to turn them on."
-          : "To turn notifications off, open your phone's Settings › Zeon › "
+          ? 'Notifications are turned off for Stonechat at the system level. Open '
+              "your phone's Settings › Stonechat › Notifications to turn them on."
+          : "To turn notifications off, open your phone's Settings › Stonechat › "
               'Notifications.'),
       actions: [
         TextButton(
@@ -358,5 +360,30 @@ class _SectionLabel extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
         child: Text(text.toUpperCase(),
             style: Zn.mono(size: 10, letterSpacing: 2)),
+      );
+}
+
+/// Which build is on this phone — pubspec `version` (version+build) as the
+/// list footer, so testers can name what they are running.
+class _VersionFooter extends StatelessWidget {
+  const _VersionFooter();
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<PackageInfo>(
+        future: PackageInfo.fromPlatform(),
+        builder: (context, snap) {
+          final info = snap.data;
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 28, 16, 24),
+            child: Center(
+              child: Text(
+                info == null
+                    ? ''
+                    : 'Stonechat ${info.version} (${info.buildNumber})',
+                style: Zn.mono(size: 11, letterSpacing: 1),
+              ),
+            ),
+          );
+        },
       );
 }

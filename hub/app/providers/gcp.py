@@ -2,7 +2,7 @@
 
 Auth: Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS or
 `gcloud auth application-default login`).
-Config: ZEON_GCP_PROJECT env var.
+Config: STONECHAT_GCP_PROJECT env var.
 
 MachineSpec mapping: machine_type = GCP machine type ("e2-micro"),
 region = GCP *zone* ("us-central1-a").
@@ -20,8 +20,8 @@ from .bootstrap import (
     build_startup_script,
 )
 
-FIREWALL_NAME = "zeon-allow-server"
-NETWORK_TAG = "zeon-server"
+FIREWALL_NAME = "stonechat-allow-server"
+NETWORK_TAG = "stonechat-server"
 SOURCE_IMAGE = "projects/debian-cloud/global/images/family/debian-12"
 
 
@@ -36,15 +36,15 @@ class GCPProvider(CloudProvider):
                 "google-cloud-compute is not installed; "
                 "pip install google-cloud-compute"
             ) from e
-        self.project = os.environ.get("ZEON_GCP_PROJECT")
+        self.project = os.environ.get("STONECHAT_GCP_PROJECT")
         if not self.project:
-            raise ProviderError("ZEON_GCP_PROJECT env var is not set")
+            raise ProviderError("STONECHAT_GCP_PROJECT env var is not set")
 
     def provision(self, req: ProvisionRequest) -> ProvisionResult:
         from google.cloud import compute_v1
 
         zone = req.spec.region
-        instance_name = f"zeon-{req.owner_id[3:11].lower().replace('-', '')}"
+        instance_name = f"stonechat-{req.owner_id[3:11].lower().replace('-', '')}"
 
         self._ensure_firewall()
 

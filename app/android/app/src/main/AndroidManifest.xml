@@ -12,7 +12,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:usesCleartextTraffic="true"
-        android:label="Zeon"
+        android:label="Stonechat"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -36,14 +36,14 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- Universal/App Links: contact invites at https://zeonchat.com/add.
+            <!-- Universal/App Links: contact invites at https://stonechat.app/add.
                  autoVerify checks /.well-known/assetlinks.json on the domain. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="https"
-                      android:host="zeonchat.com"
+                      android:host="stonechat.app"
                       android:pathPrefix="/add"/>
             </intent-filter>
         </activity>

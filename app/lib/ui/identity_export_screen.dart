@@ -69,10 +69,10 @@ class _IdentityExportScreenState extends State<IdentityExportScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'Your Zeon ID is an encryption key that normally lives and dies '
+          'Your Stonechat ID is an encryption key that normally lives and dies '
           'with this phone. An identity export is the one way to outlive it: '
           'an encrypted code you can print or store somewhere safe, and use '
-          'to restore this same Zeon ID on a new phone.\n\n'
+          'to restore this same Stonechat ID on a new phone.\n\n'
           'It contains your identity key — not your messages. For those, '
           'use Chat backup.',
           style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.5),
@@ -111,7 +111,7 @@ class _IdentityExportScreenState extends State<IdentityExportScreen> {
         const SizedBox(height: 12),
         const Text(
           'Anyone who has this code and its passphrase is you: they can '
-          'restore your Zeon ID and receive messages meant for you. Treat '
+          'restore your Stonechat ID and receive messages meant for you. Treat '
           'the printed code like a house key, and the passphrase like the '
           'alarm code — keep them apart.',
           style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
@@ -149,9 +149,9 @@ class _IdentityExportScreenState extends State<IdentityExportScreen> {
         const Text(
           'Print this QR or write the text copy down, and store it offline. '
           'Avoid screenshots — your photo library is usually synced to a '
-          'cloud you don\'t control. To use it: reinstall Zeon, choose '
+          'cloud you don\'t control. To use it: reinstall Stonechat, choose '
           '"Restore identity" and scan this code.\n\n'
-          'Restoring keeps your Zeon ID and contactability. Messages are '
+          'Restoring keeps your Stonechat ID and contactability. Messages are '
           'not included — restore a chat backup for those.',
           textAlign: TextAlign.center,
           style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
@@ -162,7 +162,7 @@ class _IdentityExportScreenState extends State<IdentityExportScreen> {
 }
 
 /// Onboarding → Restore identity: scan or paste an export code, decrypt it
-/// and take over the Zeon ID it holds.
+/// and take over the Stonechat ID it holds.
 class IdentityRestoreScreen extends StatefulWidget {
   final String hubUrl;
   const IdentityRestoreScreen({super.key, required this.hubUrl});
@@ -301,7 +301,7 @@ class _IdentityRestoreScreenState extends State<IdentityRestoreScreen> {
           ),
           const SizedBox(height: 12),
           const Text(
-            'This brings back your Zeon ID and mailbox, so contacts can '
+            'This brings back your Stonechat ID and mailbox, so contacts can '
             'reach you as before. Message history is separate — restore a '
             'chat backup from Settings afterwards.',
             style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),

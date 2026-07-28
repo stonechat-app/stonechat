@@ -1,13 +1,13 @@
 // The pqcore FFI boundary (ML-KEM-768 + X-Wing, docs/POST_QUANTUM.md).
 // Needs the host library: `scripts/build_pqcore.sh host`, then
-// `ZEON_PQCORE_LIB=$PWD/../pqcore/target/release/libpqcore.dylib flutter test`
+// `STONECHAT_PQCORE_LIB=$PWD/../pqcore/target/release/libpqcore.dylib flutter test`
 // (auto-skips when the library isn't available). The seed→pk vectors were
 // generated with scripts/pqcore.py — the same C ABI over ctypes — so a
 // mismatch means the Dart marshalling is wrong, not the crypto.
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:zeon_chat/core/pqcore.dart';
+import 'package:stonechat/core/pqcore.dart';
 
 void main() {
   late final PqCore pq;

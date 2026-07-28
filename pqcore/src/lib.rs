@@ -1,4 +1,4 @@
-//! Post-quantum KEM core shared by every Zeon client (C ABI for the Flutter
+//! Post-quantum KEM core shared by every Stonechat client (C ABI for the Flutter
 //! app, plain Rust for the relay and a future wasm web client).
 //!
 //! Wraps RustCrypto `ml-kem` (FIPS 203, ML-KEM-768 — PQXDH prekeys, see
@@ -106,7 +106,7 @@ macro_rules! ffi_guard {
 /// # Safety
 /// `seed` must point to 64 readable bytes, `pk_out` to 1184 writable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zeon_mlkem_pk_from_seed(seed: *const u8, pk_out: *mut u8) -> i32 {
+pub unsafe extern "C" fn stonechat_mlkem_pk_from_seed(seed: *const u8, pk_out: *mut u8) -> i32 {
     ffi_guard!({
         let seed = unsafe { &*seed.cast::<[u8; MLKEM_SEED_BYTES]>() };
         let pk = mlkem_pk_from_seed(seed);
@@ -119,7 +119,7 @@ pub unsafe extern "C" fn zeon_mlkem_pk_from_seed(seed: *const u8, pk_out: *mut u
 /// `pk`: 1184 readable; `random`: 32 readable; `ct_out`: 1088 writable;
 /// `ss_out`: 32 writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zeon_mlkem_encaps(
+pub unsafe extern "C" fn stonechat_mlkem_encaps(
     pk: *const u8,
     random: *const u8,
     ct_out: *mut u8,
@@ -142,7 +142,7 @@ pub unsafe extern "C" fn zeon_mlkem_encaps(
 /// # Safety
 /// `seed`: 64 readable; `ct`: 1088 readable; `ss_out`: 32 writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zeon_mlkem_decaps(seed: *const u8, ct: *const u8, ss_out: *mut u8) -> i32 {
+pub unsafe extern "C" fn stonechat_mlkem_decaps(seed: *const u8, ct: *const u8, ss_out: *mut u8) -> i32 {
     ffi_guard!({
         let seed = unsafe { &*seed.cast::<[u8; MLKEM_SEED_BYTES]>() };
         let ct = unsafe { &*ct.cast::<[u8; MLKEM_CIPHERTEXT_BYTES]>() };
@@ -155,7 +155,7 @@ pub unsafe extern "C" fn zeon_mlkem_decaps(seed: *const u8, ct: *const u8, ss_ou
 /// # Safety
 /// `seed`: 32 readable; `pk_out`: 1216 writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zeon_xwing_pk_from_seed(seed: *const u8, pk_out: *mut u8) -> i32 {
+pub unsafe extern "C" fn stonechat_xwing_pk_from_seed(seed: *const u8, pk_out: *mut u8) -> i32 {
     ffi_guard!({
         let seed = unsafe { &*seed.cast::<[u8; XWING_SEED_BYTES]>() };
         let pk = xwing_pk_from_seed(seed);
@@ -168,7 +168,7 @@ pub unsafe extern "C" fn zeon_xwing_pk_from_seed(seed: *const u8, pk_out: *mut u
 /// `pk`: 1216 readable; `random`: 64 readable; `ct_out`: 1120 writable;
 /// `ss_out`: 32 writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zeon_xwing_encaps(
+pub unsafe extern "C" fn stonechat_xwing_encaps(
     pk: *const u8,
     random: *const u8,
     ct_out: *mut u8,
@@ -191,7 +191,7 @@ pub unsafe extern "C" fn zeon_xwing_encaps(
 /// # Safety
 /// `seed`: 32 readable; `ct`: 1120 readable; `ss_out`: 32 writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zeon_xwing_decaps(seed: *const u8, ct: *const u8, ss_out: *mut u8) -> i32 {
+pub unsafe extern "C" fn stonechat_xwing_decaps(seed: *const u8, ct: *const u8, ss_out: *mut u8) -> i32 {
     ffi_guard!({
         let seed = unsafe { &*seed.cast::<[u8; XWING_SEED_BYTES]>() };
         let ct = unsafe { &*ct.cast::<[u8; XWING_CIPHERTEXT_BYTES]>() };
@@ -262,9 +262,9 @@ mod tests {
         let mut ct = [0u8; XWING_CIPHERTEXT_BYTES];
         let (mut ss1, mut ss2) = ([0u8; 32], [0u8; 32]);
         unsafe {
-            assert_eq!(zeon_xwing_pk_from_seed(seed.as_ptr(), pk.as_mut_ptr()), 0);
+            assert_eq!(stonechat_xwing_pk_from_seed(seed.as_ptr(), pk.as_mut_ptr()), 0);
             assert_eq!(
-                zeon_xwing_encaps(
+                stonechat_xwing_encaps(
                     pk.as_ptr(),
                     [23u8; 64].as_ptr(),
                     ct.as_mut_ptr(),
@@ -272,7 +272,7 @@ mod tests {
                 ),
                 0
             );
-            assert_eq!(zeon_xwing_decaps(seed.as_ptr(), ct.as_ptr(), ss2.as_mut_ptr()), 0);
+            assert_eq!(stonechat_xwing_decaps(seed.as_ptr(), ct.as_ptr(), ss2.as_mut_ptr()), 0);
         }
         assert_eq!(ss1, ss2);
     }

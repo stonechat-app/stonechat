@@ -1,4 +1,4 @@
-// The .zeonbackup container format. Restore must parse headers written by
+// The .stonechatbackup container format. Restore must parse headers written by
 // any past build, so the layout is pinned here byte-by-byte — a failing
 // round-trip means old backups can no longer be opened, not just that a
 // constant moved. Crypto itself (pwhash/secretstream) is FFI and exercised
@@ -6,7 +6,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:zeon_chat/core/backup.dart';
+import 'package:stonechat/core/backup.dart';
 
 void main() {
   final salt = Uint8List.fromList(List.generate(16, (i) => i + 1));
@@ -15,7 +15,7 @@ void main() {
     test('lays out all fields at their pinned offsets', () {
       final h = BackupService.encodeHeader(salt, 3, 268435456);
       expect(h.length, BackupService.headerLength);
-      expect(String.fromCharCodes(h.sublist(0, 8)), 'ZEONBAK1');
+      expect(String.fromCharCodes(h.sublist(0, 8)), 'SC-BAK-1');
       expect(h[8], 1); // format version
       expect(h[9], 1); // kdf id
       expect(h[10], 0); // reserved
@@ -44,11 +44,11 @@ void main() {
     test('rejects wrong magic as not-a-backup', () {
       final h = withBody(BackupService.encodeHeader(salt, 2, 1 << 28));
       h[0] = 0x5A; // 'Z' stays, but
-      h[7] = 0x32; // "ZEONBAK2" in the magic slot
+      h[7] = 0x32; // "SC-BAK-2" in the magic slot
       expect(
         () => BackupService.decodeHeader(h),
         throwsA(predicate((e) =>
-            e is BackupException && e.message.contains('Not a Zeon backup'))),
+            e is BackupException && e.message.contains('Not a Stonechat backup'))),
       );
     });
 
@@ -80,7 +80,7 @@ void main() {
       expect(
         () => BackupService.decodeHeader(h),
         throwsA(predicate((e) =>
-            e is BackupException && e.message.contains('Not a Zeon backup'))),
+            e is BackupException && e.message.contains('Not a Stonechat backup'))),
       );
     });
 
@@ -107,7 +107,7 @@ void main() {
 
   group('buildPayload', () {
     test('carries counts, version and detached copies of the rows', () {
-      final contactRow = {'zeon_id': 'z1', 'display_name': 'A'};
+      final contactRow = {'stonechat_id': 'z1', 'display_name': 'A'};
       final payload = BackupService.buildPayload(
         contacts: [contactRow],
         groups: [],
@@ -121,7 +121,7 @@ void main() {
         ],
         nowMs: 1234,
       );
-      expect(payload['format'], 'zeon-backup');
+      expect(payload['format'], 'stonechat-backup');
       expect(payload['version'], BackupService.payloadVersion);
       expect(payload['created_at'], 1234);
       expect(payload['counts'],

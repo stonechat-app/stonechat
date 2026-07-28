@@ -1,22 +1,22 @@
-"""Zeon hub — provisioner + directory.
+"""Stonechat hub — provisioner + directory.
 
 Run: uvicorn app.main:app --port 8000
 Config (env):
-    ZEON_HUB_DB                  sqlite path (default hub.db)
-    ZEON_GCP_PROJECT            required for provider=gcp
-    ZEON_LOCAL_HOST             advertised host for provider=local (default 127.0.0.1)
-    ZEON_BILLING                "off" disables the billing plane entirely: no
+    STONECHAT_HUB_DB                  sqlite path (default hub.db)
+    STONECHAT_GCP_PROJECT            required for provider=gcp
+    STONECHAT_LOCAL_HOST             advertised host for provider=local (default 127.0.0.1)
+    STONECHAT_BILLING                "off" disables the billing plane entirely: no
                                 billing endpoints, no plan gates (every
                                 provider is free to use), no reaper (default on)
-    ZEON_STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (billing.py)
-    ZEON_ADMIN_TOKEN            enables comp grants (billing.py) and the
+    STONECHAT_STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (billing.py)
+    STONECHAT_ADMIN_TOKEN            enables comp grants (billing.py) and the
                                 abuse routes under /v1/admin (admin.py)
-    ZEON_TEST_CODE              reusable tester activation code (billing.py)
-    ZEON_CORS_EXTRA             comma-separated extra CORS origins (dev)
-    ZEON_REAP_RETENTION_DAYS    destroy servers this many days after their
+    STONECHAT_TEST_CODE              reusable tester activation code (billing.py)
+    STONECHAT_CORS_EXTRA             comma-separated extra CORS origins (dev)
+    STONECHAT_REAP_RETENTION_DAYS    destroy servers this many days after their
                                 subscription lapses (default 14; -1 disables)
-    ZEON_REAP_INTERVAL_S        seconds between reap passes (default 3600)
-    ZEON_REPORT_RETENTION_DAYS  delete user-filed abuse reports this many days
+    STONECHAT_REAP_INTERVAL_S        seconds between reap passes (default 3600)
+    STONECHAT_REPORT_RETENTION_DAYS  delete user-filed abuse reports this many days
                                 after they are filed (default 180; -1 disables
                                 the purge, which also discards the retention
                                 promise the privacy policy makes — report.py)
@@ -41,7 +41,7 @@ import os
 from .admin import router as admin_router
 from .billing import router as billing_router
 from .deps import UnbannedUser, User, store
-from .identity import PQ_PK_LEN, PUBKEY_LEN, normalize_zeon_id, zeon_id_from_pubkey
+from .identity import PQ_PK_LEN, PUBKEY_LEN, normalize_stonechat_id, stonechat_id_from_pubkey
 from .ratelimit import RateLimiter
 from .report import RETENTION_DAYS as REPORT_RETENTION_DAYS
 from .report import router as report_router
@@ -54,28 +54,28 @@ from .providers import (
 )
 from .providers.bootstrap import HOST_AGENT_PORT, relay_binary_path
 
-log = logging.getLogger("zeon.hub")
+log = logging.getLogger("stonechat.hub")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-REAP_RETENTION_DAYS = int(os.environ.get("ZEON_REAP_RETENTION_DAYS", "14"))
-REAP_INTERVAL_S = int(os.environ.get("ZEON_REAP_INTERVAL_S", "3600"))
+REAP_RETENTION_DAYS = int(os.environ.get("STONECHAT_REAP_RETENTION_DAYS", "14"))
+REAP_INTERVAL_S = int(os.environ.get("STONECHAT_REAP_INTERVAL_S", "3600"))
 
 # Billing exists for the hosted service; a private hub doesn't need it.
-# ZEON_BILLING=off removes the whole plane: the /v1/billing/* endpoints are
+# STONECHAT_BILLING=off removes the whole plane: the /v1/billing/* endpoints are
 # not mounted, no provider requires a plan, and mailboxes are never reaped —
 # lifecycle is billing-driven, so without billing nothing lapses.
-BILLING = os.environ.get("ZEON_BILLING", "on").strip().lower() != "off"
+BILLING = os.environ.get("STONECHAT_BILLING", "on").strip().lower() != "off"
 
-# Wire protocol version served by hub.zeonchat.com (PROTOCOL.md "Versioning").
-# Clients send theirs in X-Zeon-Version; anything below the minimum is told to
+# Wire protocol version served by hub.stonechat.app (PROTOCOL.md "Versioning").
+# Clients send theirs in X-Stonechat-Version; anything below the minimum is told to
 # upgrade rather than served a contract it can't speak. An absent header is a
 # legacy (pre-versioning) client and is allowed through.
 WIRE_VERSION = 1
 MIN_WIRE_VERSION = 1
 
 
-async def require_wire_version(x_zeon_version: int | None = Header(default=None)):
-    if x_zeon_version is not None and x_zeon_version < MIN_WIRE_VERSION:
+async def require_wire_version(x_stonechat_version: int | None = Header(default=None)):
+    if x_stonechat_version is not None and x_stonechat_version < MIN_WIRE_VERSION:
         raise HTTPException(
             426,
             {"code": "upgrade_required", "min_version": MIN_WIRE_VERSION,
@@ -98,21 +98,21 @@ async def _lifespan(app: FastAPI):
         task.cancel()
 
 
-app = FastAPI(title="zeon-hub", lifespan=_lifespan,
+app = FastAPI(title="stonechat-hub", lifespan=_lifespan,
               dependencies=[Depends(require_wire_version)])
 if BILLING:
     app.include_router(billing_router)
 else:
-    log.info("billing disabled (ZEON_BILLING=off) — all providers ungated")
+    log.info("billing disabled (STONECHAT_BILLING=off) — all providers ungated")
 
 # Abuse handling is not part of the billing plane — a hub with billing off
 # still hosts machines someone can complain about. Every route inside is dead
-# unless ZEON_ADMIN_TOKEN is set.
+# unless STONECHAT_ADMIN_TOKEN is set.
 app.include_router(admin_router)
 
 # Filing a report, unlike reading one, is open to any client that can sign as
-# a Zeon ID — including one belonging to another hub (report.py). It stays
-# mounted even with no ZEON_ADMIN_TOKEN: refusing to *record* a complaint
+# a Stonechat ID — including one belonging to another hub (report.py). It stays
+# mounted even with no STONECHAT_ADMIN_TOKEN: refusing to *record* a complaint
 # because nobody has configured a way to read it is the wrong failure.
 app.include_router(report_router)
 
@@ -121,9 +121,9 @@ app.include_router(report_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://zeonchat.com",
-        "https://www.zeonchat.com",
-        *[o for o in os.environ.get("ZEON_CORS_EXTRA", "").split(",") if o],
+        "https://stonechat.app",
+        "https://www.stonechat.app",
+        *[o for o in os.environ.get("STONECHAT_CORS_EXTRA", "").split(",") if o],
     ],
     allow_methods=["GET"],
     allow_headers=["*"],
@@ -151,7 +151,7 @@ DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean"}
 class RegisterIn(BaseModel):
     pubkey: str  # base64-encoded Ed25519 identity public key
     # X-Wing identity encryption key (1216 bytes → 1622 base64 chars) and the
-    # Ed25519 signature over "zeon-v1-pqpk" || pq_pk that lets every resolver
+    # Ed25519 signature over "stonechat-v1-pqpk" || pq_pk that lets every resolver
     # trust it (docs/POST_QUANTUM.md — hybrid envelope seal).
     pq_pk: str = Field(max_length=1700)
     pq_sig: str = Field(max_length=128)
@@ -160,7 +160,7 @@ class RegisterIn(BaseModel):
 class RecoverIn(BaseModel):
     pubkey: str = Field(max_length=64)  # base64 Ed25519 identity public key
     timestamp: int  # unix seconds, signed by the client
-    signature: str = Field(max_length=128)  # sig over "zeon-v1-recover"||str(timestamp)
+    signature: str = Field(max_length=128)  # sig over "stonechat-v1-recover"||str(timestamp)
 
 
 class MachineIn(BaseModel):
@@ -180,7 +180,7 @@ class ExternalServerIn(BaseModel):
 
 class TlsSigIn(BaseModel):
     tls_fp: str = Field(max_length=64)  # base64 BLAKE2b-256 of the relay's DER cert
-    tls_sig: str = Field(max_length=128)  # owner's Ed25519 sig over "zeon-v1-tls"||fp
+    tls_sig: str = Field(max_length=128)  # owner's Ed25519 sig over "stonechat-v1-tls"||fp
 
 
 # -- routes ---------------------------------------------------------------------
@@ -197,7 +197,7 @@ def relay_binary(authorization: str | None = Header(default=None)):
     Auth is the fetching VM's server_token, which the startup script already
     carries; it gates egress cost only — integrity comes from the pin, and
     the binary itself is not secret. 404 until the operator sets
-    ZEON_RELAY_BINARY."""
+    STONECHAT_RELAY_BINARY."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "missing bearer token")
     if not store.server_by_token(authorization.removeprefix("Bearer ").strip()):
@@ -206,7 +206,7 @@ def relay_binary(authorization: str | None = Header(default=None)):
     if path is None or not path.is_file():
         raise HTTPException(404, "no relay binary configured on this hub")
     return FileResponse(path, media_type="application/octet-stream",
-                        filename="zeon-relay")
+                        filename="stonechat-relay")
 
 
 # Registration is once per install, so 10/min/IP is roomy even for a NAT'd
@@ -219,7 +219,7 @@ _register_limiter = RateLimiter(limit=10, window_s=60.0)
 def register(body: RegisterIn, request: Request):
     """Create an identity: deliberately open, no auth.
 
-    The Zeon ID is derived (identity.py) from the submitted Ed25519 pubkey,
+    The Stonechat ID is derived (identity.py) from the submitted Ed25519 pubkey,
     so there is nothing to squat or hijack — "registering as someone else"
     requires their pubkey and just yields the ID they'd get anyway (409 if
     taken). Returns the account_token that authenticates every account-scoped
@@ -247,17 +247,17 @@ def register(body: RegisterIn, request: Request):
         from nacl.signing import VerifyKey
 
         VerifyKey(pubkey).verify(
-            b"zeon-v1-pqpk" + pq_pk, base64.b64decode(body.pq_sig)
+            b"stonechat-v1-pqpk" + pq_pk, base64.b64decode(body.pq_sig)
         )
     except Exception:
         raise HTTPException(400, "bad pq_sig")
 
-    zeon_id = zeon_id_from_pubkey(pubkey)
+    stonechat_id = stonechat_id_from_pubkey(pubkey)
     token = secrets.token_urlsafe(32)
-    if not store.create_user(zeon_id, body.pubkey, body.pq_pk, body.pq_sig, token):
+    if not store.create_user(stonechat_id, body.pubkey, body.pq_pk, body.pq_sig, token):
         raise HTTPException(409, "this key is already registered")
-    log.info("registered %s", zeon_id[:12])
-    return {"zeon_id": zeon_id, "account_token": token}
+    log.info("registered %s", stonechat_id[:12])
+    return {"stonechat_id": stonechat_id, "account_token": token}
 
 
 # Same budget as registration: recovery is a rare, human-paced event, and a
@@ -271,9 +271,9 @@ def recover(body: RecoverIn, request: Request):
     """Re-issue an account token to whoever holds the identity secret key.
 
     Restore path for an identity export (the app's Settings → Identity
-    export): the same key always derives the same Zeon ID, but /v1/register
+    export): the same key always derives the same Stonechat ID, but /v1/register
     409s once the key exists, and the old token is gone with the old phone.
-    Possession is proven with a signature over "zeon-v1-recover" || the
+    Possession is proven with a signature over "stonechat-v1-recover" || the
     current unix time; the ±5-minute freshness window bounds replay to the
     TLS channel it was heard on. Success rotates the account token, so the
     recovering device becomes the account and any previous token dies —
@@ -293,19 +293,19 @@ def recover(body: RecoverIn, request: Request):
         from nacl.signing import VerifyKey
 
         VerifyKey(pubkey).verify(
-            b"zeon-v1-recover" + str(body.timestamp).encode(),
+            b"stonechat-v1-recover" + str(body.timestamp).encode(),
             base64.b64decode(body.signature),
         )
     except Exception:
         raise HTTPException(401, "bad signature")
 
-    user = store.user_by_id(zeon_id_from_pubkey(pubkey))
+    user = store.user_by_id(stonechat_id_from_pubkey(pubkey))
     if not user:
         raise HTTPException(404, "unknown identity")
     token = secrets.token_urlsafe(32)
-    store.rotate_token(user["zeon_id"], token)
-    log.info("recovered %s", user["zeon_id"][:12])
-    return {"zeon_id": user["zeon_id"], "account_token": token}
+    store.rotate_token(user["stonechat_id"], token)
+    log.info("recovered %s", user["stonechat_id"][:12])
+    return {"stonechat_id": user["stonechat_id"], "account_token": token}
 
 
 # Deliberately generous: a cold-cache group send resolves every member at
@@ -314,26 +314,26 @@ def recover(body: RecoverIn, request: Request):
 _directory_limiter = RateLimiter(limit=120, window_s=60.0)
 
 
-@app.get("/v1/directory/{zeon_id}")
-def directory(zeon_id: str, request: Request):
-    """Resolve a ZC- cryptographic ID to its record. Lookup is by full ID
-    only — there is no enumerable handle namespace (a Zeon ID is a 160-bit
+@app.get("/v1/directory/{stonechat_id}")
+def directory(stonechat_id: str, request: Request):
+    """Resolve a SC- cryptographic ID to its record. Lookup is by full ID
+    only — there is no enumerable handle namespace (a Stonechat ID is a 160-bit
     commitment, not walkable). Clients MUST still verify the returned pubkey
-    hashes to the returned zeon_id; the directory is untrusted — and open:
+    hashes to the returned stonechat_id; the directory is untrusted — and open:
     senders on other hubs resolve through here with no account
     on this hub, and auth would add nothing when accounts are free."""
     _directory_limiter.check(request.client.host if request.client else "unknown")
     try:
-        canonical = normalize_zeon_id(zeon_id)
+        canonical = normalize_stonechat_id(stonechat_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
     user = store.user_by_id(canonical)
     if not user:
-        raise HTTPException(404, "unknown Zeon ID")
+        raise HTTPException(404, "unknown Stonechat ID")
 
-    server = store.server_for(user["zeon_id"])
+    server = store.server_for(user["stonechat_id"])
     return {
-        "zeon_id": user["zeon_id"],
+        "stonechat_id": user["stonechat_id"],
         "pubkey": user["pubkey"],
         "pq_pk": user["pq_pk"],
         "pq_sig": user["pq_sig"],
@@ -358,7 +358,7 @@ def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTask
         )
     required = GATED_PROVIDERS.get(body.provider)
     if required is not None:
-        entitlement = store.entitlement_for(user["zeon_id"])
+        entitlement = store.entitlement_for(user["stonechat_id"])
         if entitlement is None or (
             PLAN_RANK.get(entitlement["plan"], 0) < PLAN_RANK[required]
         ):
@@ -376,13 +376,13 @@ def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTask
         secrets.token_urlsafe(32) if body.provider in DEDICATED_PROVIDERS else None
     )
     if not store.create_server(
-        user["zeon_id"], body.provider, body.machine.model_dump(), server_token,
+        user["stonechat_id"], body.provider, body.machine.model_dump(), server_token,
         host_agent_token,
     ):
         raise HTTPException(409, "you already have a server (one per user)")
 
     background.add_task(
-        _provision, user["zeon_id"], body.provider, body.machine, server_token,
+        _provision, user["stonechat_id"], body.provider, body.machine, server_token,
         host_agent_token,
     )
     return {"status": "provisioning"}
@@ -392,7 +392,7 @@ def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTask
 def register_external_server(body: ExternalServerIn, user: UnbannedUser):
     """The free tier: the user runs their own relay anywhere and we list it in
     the directory. Ownership is proven, not claimed: the relay confirms this
-    user's Zeon ID via /owner (it never exposes its owner to anonymous callers,
+    user's Stonechat ID via /owner (it never exposes its owner to anonymous callers,
     so this probe leaks nothing). We never see their token.
 
     Banned accounts are refused here too, not just on /v1/server: this is the
@@ -412,30 +412,30 @@ def register_external_server(body: ExternalServerIn, user: UnbannedUser):
             # ID — it answers 200/404, never handing back an identity.
             owner_ok = (client.get(
                 f"{address}/owner",
-                params={"zeon_id": user["zeon_id"]})).status_code == 200
+                params={"stonechat_id": user["stonechat_id"]})).status_code == 200
     except Exception:
         raise HTTPException(
             400,
-            "couldn't reach a Zeon mailbox at that address — it must be "
+            "couldn't reach a Stonechat mailbox at that address — it must be "
             "reachable from the internet",
         )
     if not owner_ok:
-        raise HTTPException(400, "that mailbox belongs to a different Zeon ID")
+        raise HTTPException(400, "that mailbox belongs to a different Stonechat ID")
 
     tls_fp = health.get("tls_fp")
-    if not store.create_external_server(user["zeon_id"], address, tls_fp):
+    if not store.create_external_server(user["stonechat_id"], address, tls_fp):
         raise HTTPException(409, "you already have a server (one per user)")
-    log.info("external relay registered for %s", user["zeon_id"][:12])
+    log.info("external relay registered for %s", user["stonechat_id"][:12])
     return {"status": "running", "address": address, "tls_fp": tls_fp}
 
 
 @app.post("/v1/server/tls")
 def publish_tls_sig(body: TlsSigIn, user: User):
     """The owner vouches for their mailbox's TLS key: an Ed25519 signature
-    over "zeon-v1-tls" || fingerprint, verifiable by anyone against the
-    identity key their Zeon ID commits to. We check it so the directory never
+    over "stonechat-v1-tls" || fingerprint, verifiable by anyone against the
+    identity key their Stonechat ID commits to. We check it so the directory never
     serves garbage, but clients re-verify — our word doesn't count."""
-    server = store.server_for(user["zeon_id"])
+    server = store.server_for(user["stonechat_id"])
     if not server or server["status"] != "running":
         raise HTTPException(404, "no running server")
     if server["tls_fp"] is not None and server["tls_fp"] != body.tls_fp:
@@ -444,12 +444,12 @@ def publish_tls_sig(body: TlsSigIn, user: User):
         from nacl.signing import VerifyKey
 
         VerifyKey(base64.b64decode(user["pubkey"])).verify(
-            b"zeon-v1-tls" + base64.b64decode(body.tls_fp),
+            b"stonechat-v1-tls" + base64.b64decode(body.tls_fp),
             base64.b64decode(body.tls_sig),
         )
     except Exception:
         raise HTTPException(400, "signature does not verify against your identity key")
-    store.set_tls_sig(user["zeon_id"], body.tls_sig)
+    store.set_tls_sig(user["stonechat_id"], body.tls_sig)
     return {"status": "ok"}
 
 
@@ -462,7 +462,7 @@ def _host_agent_address(server_address: str) -> str:
 
 @app.get("/v1/server")
 def get_server(user: User):
-    server = store.server_for(user["zeon_id"])
+    server = store.server_for(user["stonechat_id"])
     if not server:
         return {"status": "none"}
     return {
@@ -489,7 +489,7 @@ def get_server(user: User):
 
 @app.delete("/v1/server")
 def delete_server(user: User):
-    server = store.server_for(user["zeon_id"])
+    server = store.server_for(user["stonechat_id"])
     if not server:
         raise HTTPException(404, "no server")
     if server["resource_id"]:
@@ -498,31 +498,31 @@ def delete_server(user: User):
             provider.destroy(server["resource_id"], server["meta"])
         except ProviderError as e:
             raise HTTPException(502, f"failed to destroy: {e}")
-    store.delete_server(user["zeon_id"])
+    store.delete_server(user["stonechat_id"])
     return {"status": "deleted"}
 
 
 # -- provisioning (background) ---------------------------------------------------
 
-def _provision(zeon_id: str, provider_name: str, machine: MachineIn, server_token: str,
+def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, server_token: str,
                host_agent_token: str | None = None):
     """Runs in a worker thread (sync BackgroundTask). Updates the row when done."""
     try:
         provider = get_provider(provider_name)
         result = provider.provision(
             ProvisionRequest(
-                owner_id=zeon_id,
+                owner_id=stonechat_id,
                 owner_token=server_token,
                 spec=MachineSpec(**machine.model_dump()),
                 host_agent_token=host_agent_token,
             )
         )
         tls_fp = _wait_healthy(result.address)
-        store.mark_running(zeon_id, result.resource_id, result.address, result.meta, tls_fp)
-        log.info("server for %s running at %s", zeon_id[:12], result.address)
+        store.mark_running(stonechat_id, result.resource_id, result.address, result.meta, tls_fp)
+        log.info("server for %s running at %s", stonechat_id[:12], result.address)
     except Exception as e:
-        log.exception("provisioning failed for %s", zeon_id[:12])
-        store.mark_error(zeon_id, str(e))
+        log.exception("provisioning failed for %s", stonechat_id[:12])
+        store.mark_error(stonechat_id, str(e))
 
 
 # -- reaping (background) ---------------------------------------------------------
@@ -562,22 +562,22 @@ async def _purge_reports_loop():
 def _reap_once() -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=REAP_RETENTION_DAYS)
     for server in store.reapable_servers(tuple(GATED_PROVIDERS), cutoff.isoformat()):
-        zeon_id = server["zeon_id"]
+        stonechat_id = server["stonechat_id"]
         try:
             if server["resource_id"]:
                 provider = get_provider(server["provider"])
                 provider.destroy(server["resource_id"], server["meta"])
-            store.delete_server(zeon_id)
+            store.delete_server(stonechat_id)
             # The one place user data dies without the user asking — keep an
             # audit trail for the support inbox.
             log.info(
                 "reaped %s server %s of %s: subscription lapsed > %d days",
-                server["provider"], server["resource_id"], zeon_id[:12],
+                server["provider"], server["resource_id"], stonechat_id[:12],
                 REAP_RETENTION_DAYS,
             )
         except Exception:
             log.exception("failed to reap server of %s — retrying next pass",
-                          zeon_id[:12])
+                          stonechat_id[:12])
 
 
 def _wait_healthy(address: str) -> str | None:

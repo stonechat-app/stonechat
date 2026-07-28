@@ -1,7 +1,7 @@
 /// The call surface: incoming ring, dialing, and the live call.
 /// Video calls render the peer full-bleed with a local picture-in-picture;
 /// voice calls get the ledger aesthetic — avatar, mono status line, rail
-/// colors. Pushed over everything by ZeonApp whenever CallState leaves idle.
+/// colors. Pushed over everything by StonechatApp whenever CallState leaves idle.
 library;
 
 import 'dart:async';
@@ -65,7 +65,7 @@ class _CallScreenState extends State<CallScreen> {
     final showVideo = call.withVideo &&
         (call.phase == CallPhase.active || call.phase == CallPhase.connecting);
 
-    // The route is pushed/popped by ZeonApp in lockstep with CallState —
+    // The route is pushed/popped by StonechatApp in lockstep with CallState —
     // a back gesture would desync them, so it's disabled.
     return PopScope(
       canPop: false,
@@ -103,8 +103,8 @@ class _CallScreenState extends State<CallScreen> {
               children: [
                 const Spacer(flex: 2),
                 if (!showVideo) ...[
-                  ZeonAvatar(
-                      zeonId: peer.zeonId,
+                  StonechatAvatar(
+                      stonechatId: peer.stonechatId,
                       name: peer.displayName,
                       size: 96,
                       image: peer.avatar),

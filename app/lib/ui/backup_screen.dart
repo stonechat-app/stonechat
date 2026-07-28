@@ -130,7 +130,7 @@ class _BackupScreenState extends State<BackupScreen> {
       final box = context.findRenderObject() as RenderBox?;
       await SharePlus.instance.share(ShareParams(
         files: [XFile(file.path, mimeType: 'application/octet-stream')],
-        subject: 'Zeon chat backup',
+        subject: 'Stonechat backup',
         sharePositionOrigin:
             box == null ? null : box.localToGlobal(Offset.zero) & box.size,
       ));

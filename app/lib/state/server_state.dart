@@ -89,7 +89,7 @@ class ServerState extends ChangeNotifier {
 
   /// The owner's half of pinned TLS (PROTOCOL.md "Transport"): sign the
   /// mailbox's certificate fingerprint with the identity key and publish it,
-  /// so peers can verify the pin against our Zeon ID. Idempotent per fp;
+  /// so peers can verify the pin against our Stonechat ID. Idempotent per fp;
   /// re-runs automatically when a recreated mailbox shows a new certificate.
   Future<void> _vouchForTls(String tlsFp) async {
     if (_vouchedTlsFp == tlsFp) return;
@@ -119,12 +119,12 @@ class ServerState extends ChangeNotifier {
     busy = true;
     notifyListeners();
     try {
-      final probe = await observeMailbox(address, app.zeonId!);
+      final probe = await observeMailbox(address, app.stonechatId!);
       if (probe == null) {
-        throw ApiException("Couldn't reach a Zeon mailbox at that address");
+        throw ApiException("Couldn't reach a Stonechat mailbox at that address");
       }
       if (!probe.ownerMatches) {
-        throw ApiException('That mailbox belongs to a different Zeon ID');
+        throw ApiException('That mailbox belongs to a different Stonechat ID');
       }
       await app.api.registerExternalServer(address);
       await app.setExternalMailbox(token.trim(), probe.tlsFp,
@@ -145,7 +145,7 @@ class ServerState extends ChangeNotifier {
     notifyListeners();
     ({String address, String serverToken, String tlsFp}) mailbox;
     try {
-      mailbox = await redeemHostInvite(invite, app.zeonId!);
+      mailbox = await redeemHostInvite(invite, app.stonechatId!);
     } finally {
       busy = false;
       notifyListeners();

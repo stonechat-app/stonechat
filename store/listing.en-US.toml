@@ -12,18 +12,18 @@ locale = "en-US"
 
 [app_info]
 # Shown on the product page regardless of which version is live.
-name     = "ZeonChat - private messenger"   # <= 30
+name     = "Stonechat - private messenger"   # <= 30
 subtitle = "Your server. Your messages."    # <= 30
 
-privacy_policy_url = "https://zeonchat.com/privacy"
+privacy_policy_url = "https://stonechat.app/privacy"
 
 primary_category   = "SOCIAL_NETWORKING"
 secondary_category = "UTILITIES"
 
 [version]
 # Per-version copy, attached to whichever version is editable.
-support_url   = "https://zeonchat.com/support"
-marketing_url = "https://zeonchat.com"
+support_url   = "https://stonechat.app/support"
+marketing_url = "https://stonechat.app"
 
 # <= 170. Changeable without submitting a build — the one field you can edit
 # to react to press or a launch moment.
@@ -37,12 +37,12 @@ keywords = "encrypted,e2ee,secure,self-hosted,sovereign,privacy,no phone number,
 
 # <= 4000.
 description = """
-Zeon Chat is a messenger where every user runs their own server.
+Stonechat is a messenger where every user runs their own server.
 
 There is no central message store to subpoena, breach, or mine. Your "relay" is a small machine that belongs to you — rented in the country you choose, or self-hosted on your own hardware for free. Its only job is to hold end-to-end encrypted envelopes until your phone picks them up. Then they are deleted.
 
 NO PHONE NUMBER. NO EMAIL.
-Your identity is a cryptographic keypair generated on your device the first time you open the app. Your Zeon ID reveals nothing about you — share it by QR code or as plain text. There is no directory of users to search, and no way for strangers to find you.
+Your identity is a cryptographic keypair generated on your device the first time you open the app. Your Stonechat ID reveals nothing about you — share it by QR code or as plain text. There is no directory of users to search, and no way for strangers to find you.
 
 ENCRYPTION THAT DOESN'T ASK FOR TRUST
 X3DH key agreement and a double ratchet — the same primitives Signal uses — with prekeys served by your own relay instead of a company's. Every message gets a fresh key. Keys stolen today cannot decrypt traffic recorded yesterday.

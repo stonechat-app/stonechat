@@ -10,7 +10,7 @@ class ContactStatus {
 }
 
 class Contact {
-  final String zeonId;
+  final String stonechatId;
   String displayName;
   final String pubkeyB64;
   String? pqPkB64; // X-Wing identity key (envelope seal), sig-verified on resolve
@@ -29,7 +29,7 @@ class Contact {
   int profileAt; // sent_at ms of the last applied profile (last-writer-wins)
 
   Contact({
-    required this.zeonId,
+    required this.stonechatId,
     required this.displayName,
     required this.pubkeyB64,
     this.pqPkB64,
@@ -56,7 +56,7 @@ class Contact {
   bool get isArchived => archivedAt != null;
 
   Map<String, Object?> toRow() => {
-        'zeon_id': zeonId,
+        'stonechat_id': stonechatId,
         'display_name': displayName,
         'pubkey': pubkeyB64,
         'pq_pk': pqPkB64,
@@ -76,7 +76,7 @@ class Contact {
       };
 
   factory Contact.fromRow(Map<String, Object?> r) => Contact(
-        zeonId: r['zeon_id'] as String,
+        stonechatId: r['stonechat_id'] as String,
         displayName: r['display_name'] as String,
         pubkeyB64: r['pubkey'] as String,
         pqPkB64: r['pq_pk'] as String?,
@@ -161,7 +161,7 @@ class ExpireTimer {
 
 class Message {
   final String id;
-  final String contactId; // conversation id: a peer's Zeon ID, or a group id
+  final String contactId; // conversation id: a peer's Stonechat ID, or a group id
   final String? senderId; // group messages: which member sent it (null = DM/own)
   final bool outgoing;
   String text;
@@ -176,7 +176,7 @@ class Message {
   final int? expiresAt; // ms epoch when this copy self-deletes (null = never)
   // Reply/quote snapshot (PROTOCOL.md "reply_to"): rendered from these fields,
   // never from the referenced message — the original may be gone (expired,
-  // deleted, or never held). replyToSender is the quoted author's Zeon ID.
+  // deleted, or never held). replyToSender is the quoted author's Stonechat ID.
   final String? replyToId;
   final String? replyToSender;
   final String? replyToPreview;
@@ -344,7 +344,7 @@ class Group {
 
 class GroupMember {
   final String groupId;
-  final String zeonId;
+  final String stonechatId;
   final String pubkeyB64;
   String? pqPkB64; // X-Wing identity key (envelope seal), sig-verified on resolve
   String displayName;
@@ -353,7 +353,7 @@ class GroupMember {
 
   GroupMember({
     required this.groupId,
-    required this.zeonId,
+    required this.stonechatId,
     required this.pubkeyB64,
     this.pqPkB64,
     required this.displayName,
@@ -363,7 +363,7 @@ class GroupMember {
 
   Map<String, Object?> toRow() => {
         'group_id': groupId,
-        'zeon_id': zeonId,
+        'stonechat_id': stonechatId,
         'pubkey': pubkeyB64,
         'pq_pk': pqPkB64,
         'display_name': displayName,
@@ -373,7 +373,7 @@ class GroupMember {
 
   factory GroupMember.fromRow(Map<String, Object?> r) => GroupMember(
         groupId: r['group_id'] as String,
-        zeonId: r['zeon_id'] as String,
+        stonechatId: r['stonechat_id'] as String,
         pubkeyB64: r['pubkey'] as String,
         pqPkB64: r['pq_pk'] as String?,
         displayName: r['display_name'] as String,

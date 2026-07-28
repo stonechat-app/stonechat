@@ -31,7 +31,7 @@ class ReportOutcome {
   const ReportOutcome({required this.filed, this.alsoBlock = false});
 }
 
-/// Report [zeonId]. [hub] is their home hub (Contact.hub — null means ours);
+/// Report [stonechatId]. [hub] is their home hub (Contact.hub — null means ours);
 /// [conversation] is the local history with them, from which the reporter may
 /// attach received messages. Pass an empty list where there is no history
 /// (a contact request from a stranger) and the attach control disappears.
@@ -43,7 +43,7 @@ class ReportOutcome {
 /// caller cannot block (a group member who is not a contact).
 Future<ReportOutcome> showReportSheet(
   BuildContext context, {
-  required String zeonId,
+  required String stonechatId,
   required String displayName,
   String? hub,
   List<Message> conversation = const [],
@@ -57,7 +57,7 @@ Future<ReportOutcome> showReportSheet(
       borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
     ),
     builder: (_) => _ReportSheet(
-      zeonId: zeonId,
+      stonechatId: stonechatId,
       displayName: displayName,
       hub: hub,
       conversation: conversation,
@@ -68,14 +68,14 @@ Future<ReportOutcome> showReportSheet(
 }
 
 class _ReportSheet extends StatefulWidget {
-  final String zeonId;
+  final String stonechatId;
   final String displayName;
   final String? hub;
   final List<Message> conversation;
   final bool canBlock;
 
   const _ReportSheet({
-    required this.zeonId,
+    required this.stonechatId,
     required this.displayName,
     required this.hub,
     required this.conversation,
@@ -114,7 +114,7 @@ class _ReportSheetState extends State<_ReportSheet> {
         crypto: app.crypto,
         // Their hub, not ours — see core/report.dart.
         hubUrl: widget.hub ?? app.api.baseUrl,
-        reportedId: widget.zeonId,
+        reportedId: widget.stonechatId,
         category: _category!,
         note: _note.text.trim(),
         evidence: _attach && _attachable.isNotEmpty
@@ -134,7 +134,7 @@ class _ReportSheetState extends State<_ReportSheet> {
         // version: we did not file this anywhere.
         _error = e.code == 'not_our_account'
             ? "This person isn't hosted by your hub, so it can't act on a "
-                "report about them. Write to abuse@zeonchat.com instead."
+                "report about them. Write to abuse@stonechat.app instead."
             : e.message;
       });
     } catch (_) {

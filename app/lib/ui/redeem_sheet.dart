@@ -1,5 +1,5 @@
-/// Bottom sheet for redeeming a ZEON-XXXX-XXXX activation code — the moment
-/// a landing-page purchase (or a comp grant) gets bound to this Zeon ID.
+/// Bottom sheet for redeeming a STONECHAT-XXXX-XXXX activation code — the moment
+/// a landing-page purchase (or a comp grant) gets bound to this Stonechat ID.
 library;
 
 import 'package:flutter/material.dart';
@@ -87,7 +87,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
               style: Zn.mono(size: 10, letterSpacing: 2)),
           const SizedBox(height: 12),
           const Text(
-            'Bought a plan on zeonchat.com? Enter the code from the '
+            'Bought a plan on stonechat.app? Enter the code from the '
             'success page or your receipt.',
             style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.4),
           ),
@@ -103,7 +103,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
             ],
             style: Zn.mono(size: 16, color: Zn.text, letterSpacing: 2),
             decoration: InputDecoration(
-              hintText: 'ZEON-XXXX-XXXX',
+              hintText: 'STONECHAT-XXXX-XXXX',
               hintStyle: Zn.mono(size: 16, letterSpacing: 2),
               errorText: _error,
             ),

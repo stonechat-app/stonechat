@@ -15,7 +15,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Zeon Chat</string>
+	<string>Stonechat</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -23,7 +23,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>zeon_chat</string>
+	<string>stonechat</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -80,9 +80,9 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan a contact's Zeon ID QR code and show yourself in video calls.</string>
+	<string>Scan a contact's Stonechat ID QR code and show yourself in video calls.</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Unlock Zeon with Face ID when app lock is on.</string>
+	<string>Unlock Stonechat with Face ID when app lock is on.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Record voice notes to send to your contacts.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

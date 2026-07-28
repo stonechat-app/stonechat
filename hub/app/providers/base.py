@@ -1,6 +1,6 @@
 """Provider abstraction.
 
-A provider knows how to do exactly three things: boot a VM that runs the Zeon
+A provider knows how to do exactly three things: boot a VM that runs the Stonechat
 routing server, destroy it, and nothing else. Every provider receives the same
 bootstrap script (see bootstrap.py), so the routing server is byte-identical
 regardless of cloud — an adapter is only "create machine, pass script, return
@@ -29,7 +29,7 @@ class MachineSpec:
 
 @dataclass
 class ProvisionRequest:
-    owner_id: str          # Zeon ID of the user this mailbox belongs to
+    owner_id: str          # Stonechat ID of the user this mailbox belongs to
     owner_token: str       # secret the owner's device presents on /ws
     spec: MachineSpec
     # Dedicated VMs only: pre-install the host agent with this admin token

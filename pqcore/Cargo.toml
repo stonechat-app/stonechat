@@ -2,7 +2,7 @@
 name = "pqcore"
 version = "0.1.0"
 edition = "2024"
-description = "Zeon post-quantum KEM core: ML-KEM-768 + X-Wing behind a C ABI (Flutter FFI) and a Rust API (wasm later)."
+description = "Stonechat post-quantum KEM core: ML-KEM-768 + X-Wing behind a C ABI (Flutter FFI) and a Rust API (wasm later)."
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]

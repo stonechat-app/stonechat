@@ -53,7 +53,7 @@ class ChatState extends ChangeNotifier {
       Contact contact, Envelope envelope, Map<String, dynamic> payload)?
       onCallSignal;
 
-  // Emoji reactions: message id → (reactor Zeon ID → emoji). Loaded per
+  // Emoji reactions: message id → (reactor Stonechat ID → emoji). Loaded per
   // conversation on open, updated live.
   final Map<String, Map<String, String>> reactionsByMessage = {};
 
@@ -138,7 +138,7 @@ class ChatState extends ChangeNotifier {
 
   Future<void> togglePinContact(Contact c) async {
     c.pinnedAt = c.isPinned ? null : DateTime.now().millisecondsSinceEpoch;
-    await app.db.setContactPinned(c.zeonId, c.pinnedAt);
+    await app.db.setContactPinned(c.stonechatId, c.pinnedAt);
     notifyListeners();
   }
 
@@ -195,7 +195,7 @@ class ChatState extends ChangeNotifier {
     contacts = await app.db.contacts();
     groups = await app.db.groups();
     for (final c in contacts) {
-      lastMessage[c.zeonId] = await app.db.lastMessageFor(c.zeonId);
+      lastMessage[c.stonechatId] = await app.db.lastMessageFor(c.stonechatId);
     }
     for (final g in groups) {
       groupMembers[g.id] = await app.db.membersOf(g.id);
@@ -253,9 +253,9 @@ class ChatState extends ChangeNotifier {
     return null;
   }
 
-  GroupMember? memberOf(String groupId, String zeonId) {
+  GroupMember? memberOf(String groupId, String stonechatId) {
     for (final m in groupMembers[groupId] ?? const <GroupMember>[]) {
-      if (m.zeonId == zeonId) return m;
+      if (m.stonechatId == stonechatId) return m;
     }
     return null;
   }
@@ -297,9 +297,9 @@ class ChatState extends ChangeNotifier {
     }
   }
 
-  Contact? contactById(String zeonId) {
+  Contact? contactById(String stonechatId) {
     for (final c in contacts) {
-      if (c.zeonId == zeonId) return c;
+      if (c.stonechatId == stonechatId) return c;
     }
     return null;
   }
@@ -315,10 +315,10 @@ class ChatState extends ChangeNotifier {
   /// [hub] when the caller has it (fresh invite, request payload), else the
   /// contact's stored home hub. The verification below is what makes asking a
   /// foreign hub safe: it can lie only into a failed lookup.
-  Future<DirectoryEntry> _resolve(String zeonId, {String? hub}) async {
+  Future<DirectoryEntry> _resolve(String stonechatId, {String? hub}) async {
     final entry = await app.api
-        .directory(zeonId, hubUrl: hub ?? contactById(zeonId)?.hub);
-    if (!app.crypto.pubkeyMatchesId(entry.pubkeyB64, entry.zeonId)) {
+        .directory(stonechatId, hubUrl: hub ?? contactById(stonechatId)?.hub);
+    if (!app.crypto.pubkeyMatchesId(entry.pubkeyB64, entry.stonechatId)) {
       throw ApiException(
           'Directory returned a key that does not match this ID — refusing.');
     }
@@ -344,7 +344,7 @@ class ChatState extends ChangeNotifier {
               fp, sig, Uint8List.fromList(base64Decode(entry.pubkeyB64)));
       if (!vouched) {
         return DirectoryEntry(
-          zeonId: entry.zeonId,
+          stonechatId: entry.stonechatId,
           pubkeyB64: entry.pubkeyB64,
           // no owner-signed transport key yet → unreachable, not unpinned
         );
@@ -360,7 +360,7 @@ class ChatState extends ChangeNotifier {
         contact.pqPkB64 != null) {
       return contact.serverAddress!;
     }
-    final entry = await _resolve(contact.zeonId);
+    final entry = await _resolve(contact.stonechatId);
     if (entry.serverAddress == null) {
       throw ApiException(
           "${contact.displayName}'s mailbox is off right now — they'll get it when it's back");
@@ -472,12 +472,12 @@ class ChatState extends ChangeNotifier {
 
   Future<Envelope> _seal(
           String type, Contact contact, Map<String, Object?> payload) =>
-      _sealFor(type, contact.zeonId, contact.pubkeyB64, payload,
+      _sealFor(type, contact.stonechatId, contact.pubkeyB64, payload,
           serverAddress: contact.serverAddress, serverTlsFp: contact.tlsFp);
 
   Future<Envelope> _sealFor(
     String type,
-    String toZeonId,
+    String toStonechatId,
     String toPubkeyB64,
     Map<String, Object?> payload, {
     String? envelopeId,
@@ -485,9 +485,9 @@ class ChatState extends ChangeNotifier {
     String? serverTlsFp,
     String? blobId,
   }) async {
-    final session = await _sessionFor(toZeonId, toPubkeyB64,
+    final session = await _sessionFor(toStonechatId, toPubkeyB64,
         serverAddress: serverAddress, serverTlsFp: serverTlsFp);
-    final adPrefix = 'zeon/v1|${app.zeonId}|$toZeonId|$type';
+    final adPrefix = 'stonechat/v1|${app.stonechatId}|$toStonechatId|$type';
     final sealed = session.encrypt(jsonEncode(payload), adPrefix);
     final x3dh = session.pendingX3dh?.toJson();
     // Persist the advanced chain before the envelope can leave: a crash after
@@ -496,8 +496,8 @@ class ChatState extends ChangeNotifier {
     return Envelope(
       id: envelopeId ?? _uuid.v4(),
       type: type,
-      from: app.zeonId!,
-      to: toZeonId,
+      from: app.stonechatId!,
+      to: toStonechatId,
       sentAt: DateTime.now().toUtc().toIso8601String(),
       ratchet: sealed.ratchet,
       x3dh: x3dh,
@@ -512,7 +512,7 @@ class ChatState extends ChangeNotifier {
   /// null (drop silently) for anything that doesn't verify.
   Future<String?> _openEnvelope(Envelope envelope) async {
     final adPrefix =
-        'zeon/v1|${envelope.from}|${envelope.to}|${envelope.type}';
+        'stonechat/v1|${envelope.from}|${envelope.to}|${envelope.type}';
     final header = envelope.ratchet.cast<String, dynamic>();
     final nonce = Uint8List.fromList(base64Decode(envelope.nonceB64));
     final ciphertext =
@@ -522,12 +522,12 @@ class ChatState extends ChangeNotifier {
     final session = await _loadSession(envelope.from);
 
     if (session != null) {
-      // Simultaneous add: both sides initiated. The lower Zeon ID's session
+      // Simultaneous add: both sides initiated. The lower Stonechat ID's session
       // wins deterministically; if theirs wins, skip ours and adopt below.
       final theirsWins = block != null &&
           !session.confirmed &&
           session.initiatedByUs &&
-          envelope.from.compareTo(app.zeonId!) < 0;
+          envelope.from.compareTo(app.stonechatId!) < 0;
       if (!theirsWins) {
         final plain = session.decrypt(header, nonce, ciphertext, adPrefix);
         if (plain != null) {
@@ -601,7 +601,7 @@ class ChatState extends ChangeNotifier {
   /// Dropped envelopes are invisible by design (they're acked and deleted);
   /// leave a trace so "message never arrived" is diagnosable from logs.
   static void _dropLog(Envelope envelope, String reason) {
-    debugPrint('zeon: dropped ${envelope.type} from '
+    debugPrint('stonechat: dropped ${envelope.type} from '
         '${envelope.from.substring(0, 12)}…: $reason');
   }
 
@@ -698,7 +698,7 @@ class ChatState extends ChangeNotifier {
   Future<void> _deliverToMember(GroupMember member, Envelope envelope,
       {bool transient = false, bool noPush = false}) async {
     Future<String> resolve() async {
-      final entry = await _resolve(member.zeonId);
+      final entry = await _resolve(member.stonechatId);
       if (entry.serverAddress == null) {
         throw ApiException('${member.displayName} is unreachable right now');
       }
@@ -737,7 +737,7 @@ class ChatState extends ChangeNotifier {
         'avatar': app.avatar == null
             ? null
             : {'data': base64Encode(app.avatar!), 'mime': 'image/jpeg'},
-        if (zeonCrossHub) 'hub': app.api.baseUrl,
+        if (stonechatCrossHub) 'hub': app.api.baseUrl,
       };
 
   /// A peer's home hub from a contact_request/accept payload: only under the
@@ -745,7 +745,7 @@ class ChatState extends ChangeNotifier {
   /// URL is routing data from an E2EE-authenticated sender — a wrong one can
   /// only make lookups fail, never redirect trust (_resolve verifies).
   String? _peerHubFrom(Map<String, dynamic> payload) {
-    if (!zeonCrossHub) return null;
+    if (!stonechatCrossHub) return null;
     var hub = payload['hub'];
     if (hub is! String) return null;
     while (hub.endsWith('/')) {
@@ -798,34 +798,34 @@ class ChatState extends ChangeNotifier {
 
   // -- contact lifecycle ---------------------------------------------------------
 
-  /// Add by full ZC- ID, hub-tagged `ZC-…@host` code, or invite URL: resolve,
+  /// Add by full SC- ID, hub-tagged `SC-…@host` code, or invite URL: resolve,
   /// verify, store, send an encrypted contact request.
   Future<Contact> addContact(String raw) async {
     final input = raw.trim();
     if (input.isEmpty) {
-      throw const FormatException('Enter a Zeon code');
+      throw const FormatException('Enter a Stonechat code');
     }
-    // Lookup is by full ZC- ID only (there are no handles). normalizeZeonId
+    // Lookup is by full SC- ID only (there are no handles). normalizeStonechatId
     // validates the checksum locally and throws FormatException on garbage.
-    final invite = zeonInviteFromInput(input) ?? (zeonId: input, hub: null);
-    final query = app.crypto.normalizeZeonId(invite.zeonId);
+    final invite = stonechatInviteFromInput(input) ?? (stonechatId: input, hub: null);
+    final query = app.crypto.normalizeStonechatId(invite.stonechatId);
     final hub = invite.hub == app.api.baseUrl ? null : invite.hub;
-    if (hub != null && !zeonCrossHub) {
+    if (hub != null && !stonechatCrossHub) {
       throw const FormatException(
-          'This invite lives on a different Zeon hub — this build only '
+          'This invite lives on a different Stonechat hub — this build only '
           'reaches people on yours');
     }
 
     final entry = await _resolve(query, hub: hub);
-    if (entry.zeonId == app.zeonId) {
+    if (entry.stonechatId == app.stonechatId) {
       throw ApiException("That's your own code");
     }
-    if (contactById(entry.zeonId) != null) {
+    if (contactById(entry.stonechatId) != null) {
       throw ApiException('Already in your contacts');
     }
     final contact = Contact(
-      zeonId: entry.zeonId,
-      displayName: entry.zeonId.substring(3, 12),
+      stonechatId: entry.stonechatId,
+      displayName: entry.stonechatId.substring(3, 12),
       pubkeyB64: entry.pubkeyB64,
       pqPkB64: entry.pqPkB64, // sig-verified in _resolve
       status: ContactStatus.pendingOut,
@@ -865,14 +865,14 @@ class ChatState extends ChangeNotifier {
   }
 
   Future<void> declineContact(Contact contact) async {
-    await app.db.deleteContact(contact.zeonId);
+    await app.db.deleteContact(contact.stonechatId);
     // Drop the ratchet too: a kept session would be silently reused if this
     // peer is ever re-added, and it may be pinned to prekeys the other side
     // no longer holds (the re-add does a fresh X3DH instead).
-    await app.db.deleteSession(contact.zeonId);
-    _sessions.remove(contact.zeonId);
-    contacts.removeWhere((c) => c.zeonId == contact.zeonId);
-    _messages.remove(contact.zeonId);
+    await app.db.deleteSession(contact.stonechatId);
+    _sessions.remove(contact.stonechatId);
+    contacts.removeWhere((c) => c.stonechatId == contact.stonechatId);
+    _messages.remove(contact.stonechatId);
     notifyListeners();
   }
 
@@ -886,7 +886,7 @@ class ChatState extends ChangeNotifier {
         'members': [
           for (final m in members)
             {
-              'zeon_id': m.zeonId,
+              'stonechat_id': m.stonechatId,
               'pubkey': m.pubkeyB64,
               'display_name': m.displayName,
             }
@@ -901,21 +901,21 @@ class ChatState extends ChangeNotifier {
     final group = Group(
       id: _uuid.v4(),
       name: name,
-      adminId: app.zeonId!,
+      adminId: app.stonechatId!,
       version: 1,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
     final members = <GroupMember>[
       GroupMember(
         groupId: group.id,
-        zeonId: app.zeonId!,
+        stonechatId: app.stonechatId!,
         pubkeyB64: app.crypto.publicKeyB64,
         displayName: app.displayName ?? 'me',
       ),
       for (final c in selected)
         GroupMember(
           groupId: group.id,
-          zeonId: c.zeonId,
+          stonechatId: c.stonechatId,
           pubkeyB64: c.pubkeyB64,
           displayName: c.displayName,
           serverAddress: c.serverAddress,
@@ -929,11 +929,11 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
 
     final payload = _membershipPayload(group, members);
-    for (final m in members.where((m) => m.zeonId != app.zeonId)) {
+    for (final m in members.where((m) => m.stonechatId != app.stonechatId)) {
       try {
         await _deliverToMember(
             m,
-            await _sealFor(EnvelopeType.groupCreate, m.zeonId, m.pubkeyB64,
+            await _sealFor(EnvelopeType.groupCreate, m.stonechatId, m.pubkeyB64,
                 payload,
                 serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
       } catch (_) {
@@ -944,10 +944,10 @@ class ChatState extends ChangeNotifier {
     return group;
   }
 
-  /// The quoted author's Zeon ID: us for our own messages, the group sender
+  /// The quoted author's Stonechat ID: us for our own messages, the group sender
   /// for group messages, the DM peer otherwise.
   String _quotedSenderOf(Message quoted) => quoted.outgoing
-      ? app.zeonId!
+      ? app.stonechatId!
       : (quoted.senderId ?? quoted.contactId);
 
   static String _clipPreview(String s) =>
@@ -992,14 +992,14 @@ class ChatState extends ChangeNotifier {
     List<Contact> addContacts = const [],
     Set<String> removeIds = const {},
   }) async {
-    if (group.adminId != app.zeonId) return;
+    if (group.adminId != app.stonechatId) return;
     final current = groupMembers[group.id] ?? const <GroupMember>[];
     final added = [
       for (final c in addContacts)
-        if (!current.any((m) => m.zeonId == c.zeonId)) c
+        if (!current.any((m) => m.stonechatId == c.stonechatId)) c
     ];
     final removed =
-        current.where((m) => removeIds.contains(m.zeonId)).toList();
+        current.where((m) => removeIds.contains(m.stonechatId)).toList();
     final newName = name?.trim();
     final renamed =
         newName != null && newName.isNotEmpty && newName != group.name;
@@ -1007,11 +1007,11 @@ class ChatState extends ChangeNotifier {
 
     final members = <GroupMember>[
       for (final m in current)
-        if (!removeIds.contains(m.zeonId)) m,
+        if (!removeIds.contains(m.stonechatId)) m,
       for (final c in added)
         GroupMember(
           groupId: group.id,
-          zeonId: c.zeonId,
+          stonechatId: c.stonechatId,
           pubkeyB64: c.pubkeyB64,
           displayName: c.displayName,
           serverAddress: c.serverAddress,
@@ -1038,14 +1038,14 @@ class ChatState extends ChangeNotifier {
 
     final payload = _membershipPayload(group, members);
     final recipients = [
-      ...members.where((m) => m.zeonId != app.zeonId),
+      ...members.where((m) => m.stonechatId != app.stonechatId),
       ...removed,
     ];
     for (final m in recipients) {
       try {
         await _deliverToMember(
             m,
-            await _sealFor(EnvelopeType.groupUpdate, m.zeonId, m.pubkeyB64,
+            await _sealFor(EnvelopeType.groupUpdate, m.stonechatId, m.pubkeyB64,
                 payload,
                 serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
       } catch (_) {
@@ -1058,7 +1058,7 @@ class ChatState extends ChangeNotifier {
       {Message? replyTo}) async {
     _typingSentAt.remove(group.id); // the message itself says "stopped typing"
     final members = (groupMembers[group.id] ?? [])
-        .where((m) => m.zeonId != app.zeonId)
+        .where((m) => m.stonechatId != app.stonechatId)
         .toList();
     final sentAt = DateTime.now().millisecondsSinceEpoch;
     final message = Message(
@@ -1075,7 +1075,7 @@ class ChatState extends ChangeNotifier {
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
     );
     await app.db.insertMessage(message);
-    await app.db.addOutbox(message.id, group.id, [for (final m in members) m.zeonId]);
+    await app.db.addOutbox(message.id, group.id, [for (final m in members) m.stonechatId]);
     (_messages[group.id] ??= []).add(message);
     lastMessage[group.id] = message;
     if (message.expiresAt != null) _scheduleExpirySweep();
@@ -1100,13 +1100,13 @@ class ChatState extends ChangeNotifier {
         // so ids never collide, and both mailbox and receiver dedupe retries.
         await _deliverToMember(
           member,
-          await _sealFor(EnvelopeType.groupMsg, member.zeonId,
+          await _sealFor(EnvelopeType.groupMsg, member.stonechatId,
               member.pubkeyB64, payload,
               envelopeId: message.id,
               serverAddress: member.serverAddress,
               serverTlsFp: member.tlsFp),
         );
-        await app.db.clearOutbox(message.id, member.zeonId);
+        await app.db.clearOutbox(message.id, member.stonechatId);
       } catch (_) {
         // stays in outbox; retryPending will re-attempt this member
       }
@@ -1121,13 +1121,13 @@ class ChatState extends ChangeNotifier {
   /// Leave: announce to everyone, then delete locally.
   Future<void> leaveGroup(Group group) async {
     final members = (groupMembers[group.id] ?? [])
-        .where((m) => m.zeonId != app.zeonId)
+        .where((m) => m.stonechatId != app.stonechatId)
         .toList();
     for (final m in members) {
       try {
         await _deliverToMember(
             m,
-            await _sealFor(EnvelopeType.groupLeave, m.zeonId, m.pubkeyB64,
+            await _sealFor(EnvelopeType.groupLeave, m.stonechatId, m.pubkeyB64,
                 {'group_id': group.id},
                 serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
       } catch (_) {}
@@ -1144,11 +1144,11 @@ class ChatState extends ChangeNotifier {
 
   Future<void> sendMessage(Contact contact, String text,
       {Message? replyTo}) async {
-    _typingSentAt.remove(contact.zeonId); // the message itself says "stopped"
+    _typingSentAt.remove(contact.stonechatId); // the message itself says "stopped"
     final sentAt = DateTime.now().millisecondsSinceEpoch;
     final message = Message(
       id: _uuid.v4(),
-      contactId: contact.zeonId,
+      contactId: contact.stonechatId,
       outgoing: true,
       text: text,
       sentAt: sentAt,
@@ -1160,8 +1160,8 @@ class ChatState extends ChangeNotifier {
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
     );
     await app.db.insertMessage(message);
-    (_messages[contact.zeonId] ??= []).add(message);
-    lastMessage[contact.zeonId] = message;
+    (_messages[contact.stonechatId] ??= []).add(message);
+    lastMessage[contact.stonechatId] = message;
     if (message.expiresAt != null) _scheduleExpirySweep();
     notifyListeners();
 
@@ -1207,7 +1207,7 @@ class ChatState extends ChangeNotifier {
     final sentAt = DateTime.now().millisecondsSinceEpoch;
     final message = Message(
       id: id,
-      contactId: contact.zeonId,
+      contactId: contact.stonechatId,
       outgoing: true,
       text: '',
       kind: kind,
@@ -1223,8 +1223,8 @@ class ChatState extends ChangeNotifier {
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
     );
     await app.db.insertMessage(message);
-    (_messages[contact.zeonId] ??= []).add(message);
-    lastMessage[contact.zeonId] = message;
+    (_messages[contact.stonechatId] ??= []).add(message);
+    lastMessage[contact.stonechatId] = message;
     if (message.expiresAt != null) _scheduleExpirySweep();
     notifyListeners();
 
@@ -1268,7 +1268,7 @@ class ChatState extends ChangeNotifier {
         'expire_after_ms': message.expiresAt! - message.sentAt,
       if (_replyPayloadOf(message) != null) 'reply_to': _replyPayloadOf(message),
     };
-    return _sealFor(EnvelopeType.media, contact.zeonId, contact.pubkeyB64,
+    return _sealFor(EnvelopeType.media, contact.stonechatId, contact.pubkeyB64,
         payload,
         envelopeId: message.id,
         serverAddress: address,
@@ -1304,7 +1304,7 @@ class ChatState extends ChangeNotifier {
   Future<Envelope> _sealMessage(Contact contact, Message message) =>
       _sealFor(
           EnvelopeType.msg,
-          contact.zeonId,
+          contact.stonechatId,
           contact.pubkeyB64,
           {
             'text': message.text,
@@ -1357,7 +1357,7 @@ class ChatState extends ChangeNotifier {
       final group = groupById(message.contactId);
       if (group == null) continue;
       final owed = (groupMembers[group.id] ?? [])
-          .where((m) => entry.value.contains(m.zeonId))
+          .where((m) => entry.value.contains(m.stonechatId))
           .toList();
       if (owed.isNotEmpty) {
         await _fanOut(group, message, owed);
@@ -1401,9 +1401,9 @@ class ChatState extends ChangeNotifier {
   /// member (receipts for group messages go pairwise to the sender, who need
   /// not be a direct contact).
   Future<void> _sendToPeer(
-      String zeonId, String type, Map<String, Object?> payload,
+      String stonechatId, String type, Map<String, Object?> payload,
       {bool transient = false, bool noPush = false}) async {
-    final contact = contactById(zeonId);
+    final contact = contactById(stonechatId);
     if (contact != null) {
       await _deliver(contact, await _seal(type, contact, payload),
           transient: transient, noPush: noPush);
@@ -1411,10 +1411,10 @@ class ChatState extends ChangeNotifier {
     }
     for (final members in groupMembers.values) {
       for (final m in members) {
-        if (m.zeonId != zeonId) continue;
+        if (m.stonechatId != stonechatId) continue;
         await _deliverToMember(
             m,
-            await _sealFor(type, m.zeonId, m.pubkeyB64, payload,
+            await _sealFor(type, m.stonechatId, m.pubkeyB64, payload,
                 serverAddress: m.serverAddress, serverTlsFp: m.tlsFp),
             transient: transient,
             noPush: noPush);
@@ -1446,7 +1446,7 @@ class ChatState extends ChangeNotifier {
         if (memberOf(group.id, envelope.from) == null) continue;
         await app.db.upsertReceipt(id, envelope.from, kind!, now);
         final others = (groupMembers[group.id] ?? [])
-            .where((m) => m.zeonId != app.zeonId)
+            .where((m) => m.stonechatId != app.stonechatId)
             .length;
         if (others == 0) continue;
         final counts = await app.db.receiptCounts(id);
@@ -1481,7 +1481,7 @@ class ChatState extends ChangeNotifier {
 
   // -- typing indicators (PROTOCOL.md "typing") ---------------------------------------
 
-  /// Peers currently typing in a conversation (Zeon IDs), expired on read.
+  /// Peers currently typing in a conversation (Stonechat IDs), expired on read.
   List<String> typersIn(String conversationId) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final peers = _typing[conversationId];
@@ -1513,19 +1513,19 @@ class ChatState extends ChangeNotifier {
         if (contact == null || !contact.isAccepted || contact.isBlocked) {
           return;
         }
-        if (!((await _loadSession(contact.zeonId))?.canSend ?? false)) return;
+        if (!((await _loadSession(contact.stonechatId))?.canSend ?? false)) return;
         await _deliver(
             contact, await _seal(EnvelopeType.typing, contact, {'state': state}),
             transient: true);
       } else {
         final payload = {'group_id': group.id, 'state': state};
         for (final m in (groupMembers[group.id] ?? [])
-            .where((m) => m.zeonId != app.zeonId)) {
-          if (!((await _loadSession(m.zeonId))?.canSend ?? false)) continue;
+            .where((m) => m.stonechatId != app.stonechatId)) {
+          if (!((await _loadSession(m.stonechatId))?.canSend ?? false)) continue;
           try {
             await _deliverToMember(
                 m,
-                await _sealFor(EnvelopeType.typing, m.zeonId, m.pubkeyB64,
+                await _sealFor(EnvelopeType.typing, m.stonechatId, m.pubkeyB64,
                     payload,
                     serverAddress: m.serverAddress, serverTlsFp: m.tlsFp),
                 transient: true);
@@ -1627,11 +1627,11 @@ class ChatState extends ChangeNotifier {
     } else {
       final payload = {'group_id': group.id, 'id': message.id, 'text': text};
       for (final m in (groupMembers[group.id] ?? [])
-          .where((m) => m.zeonId != app.zeonId)) {
+          .where((m) => m.stonechatId != app.stonechatId)) {
         try {
           await _deliverToMember(
               m,
-              await _sealFor(EnvelopeType.groupMsgEdit, m.zeonId, m.pubkeyB64,
+              await _sealFor(EnvelopeType.groupMsgEdit, m.stonechatId, m.pubkeyB64,
                   payload,
                   serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
         } catch (_) {
@@ -1667,11 +1667,11 @@ class ChatState extends ChangeNotifier {
     } else {
       final payload = {'group_id': group.id, 'id': message.id};
       for (final m in (groupMembers[group.id] ?? [])
-          .where((m) => m.zeonId != app.zeonId)) {
+          .where((m) => m.stonechatId != app.stonechatId)) {
         try {
           await _deliverToMember(
               m,
-              await _sealFor(EnvelopeType.groupMsgDelete, m.zeonId,
+              await _sealFor(EnvelopeType.groupMsgDelete, m.stonechatId,
                   m.pubkeyB64, payload,
                   serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
         } catch (_) {
@@ -1750,11 +1750,11 @@ class ChatState extends ChangeNotifier {
     if (group != null) {
       final payload = {'group_id': group.id, 'expire_ms': expireMs};
       for (final m in (groupMembers[group.id] ?? [])
-          .where((m) => m.zeonId != app.zeonId)) {
+          .where((m) => m.stonechatId != app.stonechatId)) {
         try {
           await _deliverToMember(
               m,
-              await _sealFor(EnvelopeType.groupTimerUpdate, m.zeonId,
+              await _sealFor(EnvelopeType.groupTimerUpdate, m.stonechatId,
                   m.pubkeyB64, payload,
                   serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
         } catch (_) {}
@@ -1888,7 +1888,7 @@ class ChatState extends ChangeNotifier {
   // -- reactions (PROTOCOL.md "reaction") ---------------------------------------------
 
   String? myReactionTo(Message message) =>
-      reactionsByMessage[message.id]?[app.zeonId];
+      reactionsByMessage[message.id]?[app.stonechatId];
 
   /// Set (or, when tapping the same emoji again, clear) our reaction on a
   /// message. One reaction per person per message; a new one replaces the old.
@@ -1901,8 +1901,8 @@ class ChatState extends ChangeNotifier {
     }
     final applied = myReactionTo(message) == emoji ? '' : emoji;
     final now = DateTime.now().millisecondsSinceEpoch;
-    await app.db.setReaction(message.id, app.zeonId!, applied, now);
-    _recordReaction(message.id, app.zeonId!, applied);
+    await app.db.setReaction(message.id, app.stonechatId!, applied, now);
+    _recordReaction(message.id, app.stonechatId!, applied);
     notifyListeners();
 
     final payload = {'id': message.id, 'emoji': applied};
@@ -1916,11 +1916,11 @@ class ChatState extends ChangeNotifier {
       } else {
         final groupPayload = {...payload, 'group_id': group.id};
         for (final m in (groupMembers[group.id] ?? [])
-            .where((m) => m.zeonId != app.zeonId)) {
+            .where((m) => m.stonechatId != app.stonechatId)) {
           try {
             await _deliverToMember(
                 m,
-                await _sealFor(EnvelopeType.groupReaction, m.zeonId,
+                await _sealFor(EnvelopeType.groupReaction, m.stonechatId,
                     m.pubkeyB64, groupPayload,
                     serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
           } catch (_) {} // best-effort, like receipts
@@ -1984,7 +1984,7 @@ class ChatState extends ChangeNotifier {
       {required bool outgoing}) async {
     final message = Message(
       id: _uuid.v4(),
-      contactId: contact.zeonId,
+      contactId: contact.stonechatId,
       outgoing: outgoing,
       text: label,
       kind: MessageKind.call,
@@ -1992,9 +1992,9 @@ class ChatState extends ChangeNotifier {
       status: MessageStatus.read,
     );
     await app.db.insertMessage(message);
-    final cache = _messages[contact.zeonId];
+    final cache = _messages[contact.stonechatId];
     if (cache != null) cache.add(message);
-    lastMessage[contact.zeonId] = message;
+    lastMessage[contact.stonechatId] = message;
     notifyListeners();
   }
 
@@ -2003,7 +2003,7 @@ class ChatState extends ChangeNotifier {
   /// Called by the mailbox socket for every envelope. Returning normally acks
   /// (and thus deletes) it server-side, so persist before returning.
   Future<void> handleIncoming(SealedEnvelope wire) async {
-    if (wire.to != app.zeonId) return;
+    if (wire.to != app.stonechatId) return;
 
     // Unwrap the transport seal; anything not sealed to this identity is
     // dropped (and acked — same silent-drop rule as a failed session).
@@ -2012,16 +2012,16 @@ class ChatState extends ChangeNotifier {
       final inner = app.crypto
           .unseal(Uint8List.fromList(base64Decode(wire.sealedB64)));
       if (inner == null) {
-        debugPrint('zeon: dropped envelope ${wire.id}: not sealed to us');
+        debugPrint('stonechat: dropped envelope ${wire.id}: not sealed to us');
         return;
       }
       envelope = Envelope.fromJson(
           jsonDecode(utf8.decode(inner)) as Map<String, dynamic>);
     } catch (_) {
-      debugPrint('zeon: dropped envelope ${wire.id}: malformed seal');
+      debugPrint('stonechat: dropped envelope ${wire.id}: malformed seal');
       return;
     }
-    if (envelope.to != app.zeonId) return;
+    if (envelope.to != app.stonechatId) return;
 
     var contact = contactById(envelope.from);
 
@@ -2093,7 +2093,7 @@ class ChatState extends ChangeNotifier {
             (envelope.x3dh?['ik'] as String?) ?? senderEntry?.pubkeyB64;
         if (pubkeyB64 == null) return; // unresolvable sender — drop
         contact = Contact(
-          zeonId: envelope.from,
+          stonechatId: envelope.from,
           displayName: (payload['display_name'] as String?) ??
               envelope.from.substring(3, 12),
           pubkeyB64: pubkeyB64,
@@ -2160,7 +2160,7 @@ class ChatState extends ChangeNotifier {
           contact,
           Message(
             id: envelope.id,
-            contactId: contact.zeonId,
+            contactId: contact.stonechatId,
             outgoing: false,
             text: (payload['text'] as String?) ?? '',
             sentAt: _sentAtMs(envelope),
@@ -2210,7 +2210,7 @@ class ChatState extends ChangeNotifier {
           contact,
           Message(
             id: envelope.id,
-            contactId: contact.zeonId,
+            contactId: contact.stonechatId,
             outgoing: false,
             text: '',
             kind: kind,
@@ -2256,7 +2256,7 @@ class ChatState extends ChangeNotifier {
         if (group == null) return;
         final member = memberOf(group.id, envelope.from);
         if (member == null) return; // only a member can announce their own leave
-        groupMembers[group.id]?.removeWhere((m) => m.zeonId == envelope.from);
+        groupMembers[group.id]?.removeWhere((m) => m.stonechatId == envelope.from);
         await app.db
             .replaceMembers(group.id, groupMembers[group.id] ?? const []);
         await _insertNotice(group.id, '${member.displayName} left',
@@ -2300,7 +2300,7 @@ class ChatState extends ChangeNotifier {
         contact.expireTimerAt = _sentAtMs(envelope);
         await app.db.upsertContact(contact);
         await _insertNotice(
-            contact.zeonId, _timerNoticeText(contact.displayName, ms),
+            contact.stonechatId, _timerNoticeText(contact.displayName, ms),
             id: envelope.id);
 
       case EnvelopeType.groupTimerUpdate:
@@ -2353,16 +2353,16 @@ class ChatState extends ChangeNotifier {
     var includesUs = false;
     for (final raw in rawMembers) {
       if (raw is! Map) return;
-      final zeonId = raw['zeon_id'] as String?;
+      final stonechatId = raw['stonechat_id'] as String?;
       final pubkey = raw['pubkey'] as String?;
-      if (zeonId == null || pubkey == null) return;
-      if (!app.crypto.pubkeyMatchesId(pubkey, zeonId)) return; // forged key
-      if (zeonId == app.zeonId) includesUs = true;
+      if (stonechatId == null || pubkey == null) return;
+      if (!app.crypto.pubkeyMatchesId(pubkey, stonechatId)) return; // forged key
+      if (stonechatId == app.stonechatId) includesUs = true;
       members.add(GroupMember(
         groupId: groupId,
-        zeonId: zeonId,
+        stonechatId: stonechatId,
         pubkeyB64: pubkey,
-        displayName: (raw['display_name'] as String?) ?? zeonId.substring(3, 12),
+        displayName: (raw['display_name'] as String?) ?? stonechatId.substring(3, 12),
       ));
     }
     if (!includesUs) {
@@ -2416,17 +2416,17 @@ class ChatState extends ChangeNotifier {
             id: '${envelope.id}-rename');
       }
       for (final m in members) {
-        if (m.zeonId != app.zeonId &&
-            !before.any((b) => b.zeonId == m.zeonId)) {
+        if (m.stonechatId != app.stonechatId &&
+            !before.any((b) => b.stonechatId == m.stonechatId)) {
           await _insertNotice(groupId, '${m.displayName} was added',
-              id: '${envelope.id}-add-${m.zeonId}');
+              id: '${envelope.id}-add-${m.stonechatId}');
         }
       }
       for (final b in before) {
-        if (b.zeonId != app.zeonId &&
-            !members.any((m) => m.zeonId == b.zeonId)) {
+        if (b.stonechatId != app.stonechatId &&
+            !members.any((m) => m.stonechatId == b.stonechatId)) {
           await _insertNotice(groupId, '${b.displayName} was removed',
-              id: '${envelope.id}-rm-${b.zeonId}');
+              id: '${envelope.id}-rm-${b.stonechatId}');
         }
       }
     }
@@ -2470,11 +2470,11 @@ class ChatState extends ChangeNotifier {
   }
 
   Future<void> _storeIncoming(Contact contact, Message message) =>
-      _storeIncomingConversation(contact.zeonId, message);
+      _storeIncomingConversation(contact.stonechatId, message);
 
-  Future<DirectoryEntry?> _resolveOrNull(String zeonId, {String? hub}) async {
+  Future<DirectoryEntry?> _resolveOrNull(String stonechatId, {String? hub}) async {
     try {
-      return await _resolve(zeonId, hub: hub);
+      return await _resolve(stonechatId, hub: hub);
     } catch (_) {
       return null;
     }

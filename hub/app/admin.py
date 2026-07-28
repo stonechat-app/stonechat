@@ -5,7 +5,7 @@ about one customer's machine is a threat to every customer's machine
 (docs/ABUSE.md). These routes are what turn "we can act on a credible report"
 from a claim in an abuse-desk reply into something doable at 3am:
 
-    whois   — an abuse report carries an IP; this turns it into a Zeon ID
+    whois   — an abuse report carries an IP; this turns it into a Stonechat ID
     destroy — the machine is gone, the record of it is kept
     ban     — this account gets no more machines from us
     reports — the queue of complaints raised by users against other users
@@ -22,7 +22,7 @@ an urgent one.
 
 Runbook and the reply templates these routes back up: docs/abuse_reply_template.md.
 
-Disabled entirely unless ZEON_ADMIN_TOKEN is set.
+Disabled entirely unless STONECHAT_ADMIN_TOKEN is set.
 """
 
 import logging
@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 from .deps import Admin, store
 from .providers import ProviderError, get_provider
 
-log = logging.getLogger("zeon.hub.admin")
+log = logging.getLogger("stonechat.hub.admin")
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -46,7 +46,7 @@ def _public(server: dict) -> dict:
     """Never hand back server_token / host_agent_token — this is a report, not
     a credential dump, and abuse triage never needs them."""
     return {
-        "zeon_id": server["zeon_id"],
+        "stonechat_id": server["stonechat_id"],
         "provider": server["provider"],
         "status": server["status"],
         "resource_id": server["resource_id"],
@@ -67,18 +67,18 @@ def whois(host: str, _: Admin):
     servers = store.servers_by_host(host)
     out = []
     for server in servers:
-        user = store.user_by_id(server["zeon_id"]) or {}
+        user = store.user_by_id(server["stonechat_id"]) or {}
         out.append({
             **_public(server),
             "banned_at": user.get("banned_at"),
             "ban_reason": user.get("ban_reason"),
-            "prior_destroys": len(store.tombstones_for(server["zeon_id"])),
+            "prior_destroys": len(store.tombstones_for(server["stonechat_id"])),
         })
     return {"host": host, "servers": out}
 
 
-@router.post("/servers/{zeon_id}/destroy")
-def destroy(zeon_id: str, body: ReasonIn, _: Admin):
+@router.post("/servers/{stonechat_id}/destroy")
+def destroy(stonechat_id: str, body: ReasonIn, _: Admin):
     """Destroy one customer's machine. Does not touch their account, their
     subscription or their identity — only the machine.
 
@@ -88,9 +88,9 @@ def destroy(zeon_id: str, body: ReasonIn, _: Admin):
     left alone — deleting them would make the machine invisible to
     `reapable_servers`, which skips owners with no subscription, and an
     un-reapable VM bills forever."""
-    server = store.server_for(zeon_id)
+    server = store.server_for(stonechat_id)
     if not server:
-        raise HTTPException(404, "no server for that Zeon ID")
+        raise HTTPException(404, "no server for that Stonechat ID")
 
     store.record_tombstone(server, body.reason)
 
@@ -101,18 +101,18 @@ def destroy(zeon_id: str, body: ReasonIn, _: Admin):
         except ProviderError as e:
             # The tombstone survives — the machine is still out there and
             # someone has to go and kill it by hand.
-            log.error("abuse destroy failed for %s: %s", zeon_id[:12], e)
+            log.error("abuse destroy failed for %s: %s", stonechat_id[:12], e)
             raise HTTPException(502, f"failed to destroy: {e}")
 
-    store.delete_server(zeon_id)
+    store.delete_server(stonechat_id)
     log.warning("abuse destroy: %s (%s) — %s",
-                zeon_id[:12], server["provider"], body.reason)
-    return {"status": "destroyed", "zeon_id": zeon_id,
+                stonechat_id[:12], server["provider"], body.reason)
+    return {"status": "destroyed", "stonechat_id": stonechat_id,
             "provider": server["provider"], "address": server["address"]}
 
 
-@router.post("/users/{zeon_id}/ban")
-def ban(zeon_id: str, body: ReasonIn, _: Admin):
+@router.post("/users/{stonechat_id}/ban")
+def ban(stonechat_id: str, body: ReasonIn, _: Admin):
     """Refuse this account further infrastructure. Blocks POST /v1/server and
     POST /v1/server/external — the second one matters most, because without it
     a banned user re-enters the directory in one call by pointing it at a
@@ -121,23 +121,23 @@ def ban(zeon_id: str, body: ReasonIn, _: Admin):
     Does not destroy anything: ban then destroy, or the machine keeps running
     while its owner is banned from replacing it.
 
-    Worth being honest about the ceiling. A Zeon ID is a hash of a freshly
+    Worth being honest about the ceiling. A Stonechat ID is a hash of a freshly
     generated keypair, so anyone can mint a new identity in seconds and this
     is a speed bump, not a wall. It bites where re-entry has a cost: once
     provisioning is entitlement-gated, coming back means a new payment
     method."""
-    if not store.set_ban(zeon_id, body.reason):
-        raise HTTPException(404, "unknown Zeon ID")
-    log.warning("banned %s — %s", zeon_id[:12], body.reason)
-    return {"status": "banned", "zeon_id": zeon_id}
+    if not store.set_ban(stonechat_id, body.reason):
+        raise HTTPException(404, "unknown Stonechat ID")
+    log.warning("banned %s — %s", stonechat_id[:12], body.reason)
+    return {"status": "banned", "stonechat_id": stonechat_id}
 
 
-@router.post("/users/{zeon_id}/unban")
-def unban(zeon_id: str, _: Admin):
-    if not store.set_ban(zeon_id, None):
-        raise HTTPException(404, "unknown Zeon ID")
-    log.warning("unbanned %s", zeon_id[:12])
-    return {"status": "active", "zeon_id": zeon_id}
+@router.post("/users/{stonechat_id}/unban")
+def unban(stonechat_id: str, _: Admin):
+    if not store.set_ban(stonechat_id, None):
+        raise HTTPException(404, "unknown Stonechat ID")
+    log.warning("unbanned %s", stonechat_id[:12])
+    return {"status": "active", "stonechat_id": stonechat_id}
 
 
 # -- reports from users ---------------------------------------------------------
@@ -178,7 +178,7 @@ def get_report(report_id: str, _: Admin):
     return {
         "report": report,
         "reported": {
-            "zeon_id": report["reported_id"],
+            "stonechat_id": report["reported_id"],
             "banned_at": user.get("banned_at"),
             "ban_reason": user.get("ban_reason"),
             "prior_destroys": len(store.tombstones_for(report["reported_id"])),

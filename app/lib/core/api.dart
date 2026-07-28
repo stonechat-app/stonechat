@@ -32,12 +32,12 @@ http.Client pinnedClient(String tlsFpB64) =>
 
 /// Trust-on-first-use probe for a relay the caller themself provisioned:
 /// observe the certificate for pinning, and confirm the box serves the
-/// expected owner by asking it to agree to our own Zeon ID (the mailbox never
+/// expected owner by asking it to agree to our own Stonechat ID (the mailbox never
 /// hands an identity back — /owner answers yes/no). Used only to bootstrap
 /// self-hosted mailboxes — never for peers.
 /// Returns `(tlsFp, ownerMatches)`, or null when the box is unreachable.
 Future<({String tlsFp, bool ownerMatches})?> observeMailbox(
-    String address, String expectedZeonId) async {
+    String address, String expectedStonechatId) async {
   String? seenFp;
   final client = HttpClient()
     ..badCertificateCallback = (cert, _, _) {
@@ -52,7 +52,7 @@ Future<({String tlsFp, bool ownerMatches})?> observeMailbox(
     if (health.statusCode != 200 || seenFp == null) return null;
     final owner = await io
         .get(Uri.parse('$address/owner')
-            .replace(queryParameters: {'zeon_id': expectedZeonId}))
+            .replace(queryParameters: {'stonechat_id': expectedStonechatId}))
         .timeout(const Duration(seconds: 8));
     return (tlsFp: seenFp!, ownerMatches: owner.statusCode == 200);
   } catch (_) {
@@ -79,7 +79,7 @@ class ApiException implements Exception {
 }
 
 class DirectoryEntry {
-  final String zeonId;
+  final String stonechatId;
   final String pubkeyB64;
   final String? pqPkB64; // X-Wing identity key (hybrid envelope seal)…
   final String? pqSigB64; // …signed by the Ed25519 identity key
@@ -88,7 +88,7 @@ class DirectoryEntry {
   final String? serverTlsSig; // …vouched for by the owner's identity key
 
   DirectoryEntry(
-      {required this.zeonId,
+      {required this.stonechatId,
       required this.pubkeyB64,
       this.pqPkB64,
       this.pqSigB64,
@@ -147,14 +147,14 @@ class HubApi {
 
   /// [pqPkB64]/[pqSigB64]: the X-Wing identity key and its Ed25519
   /// signature, published in the directory for the hybrid envelope seal.
-  Future<({String zeonId, String accountToken})> register(
+  Future<({String stonechatId, String accountToken})> register(
       String pubkeyB64, String pqPkB64, String pqSigB64) async {
     final r = await http.post(Uri.parse('$baseUrl/v1/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode(
             {'pubkey': pubkeyB64, 'pq_pk': pqPkB64, 'pq_sig': pqSigB64}));
     return _check(r, (j) => (
-          zeonId: j['zeon_id'] as String,
+          stonechatId: j['stonechat_id'] as String,
           accountToken: j['account_token'] as String,
         ));
   }
@@ -162,7 +162,7 @@ class HubApi {
   /// Identity restore: trade a proof of key possession (CryptoService
   /// .signRecovery) for a fresh account token. 404 means the hub has never
   /// seen this key — the caller falls back to register().
-  Future<({String zeonId, String accountToken})> recover({
+  Future<({String stonechatId, String accountToken})> recover({
     required String pubkeyB64,
     required int timestamp,
     required String signatureB64,
@@ -175,22 +175,22 @@ class HubApi {
           'signature': signatureB64,
         }));
     return _check(r, (j) => (
-          zeonId: j['zeon_id'] as String,
+          stonechatId: j['stonechat_id'] as String,
           accountToken: j['account_token'] as String,
         ));
   }
 
-  /// Resolves a full ZC- Zeon ID to its directory record. Lookup is by ID
+  /// Resolves a full SC- Stonechat ID to its directory record. Lookup is by ID
   /// only — there are no handles. [hubUrl] asks a different hub's directory
   /// (cross-hub): the answer is verified by the caller exactly like one from
   /// our own hub, so the foreign hub is trusted for availability only.
-  Future<DirectoryEntry> directory(String zeonId, {String? hubUrl}) async {
+  Future<DirectoryEntry> directory(String stonechatId, {String? hubUrl}) async {
     final r =
-        await http.get(Uri.parse('${hubUrl ?? baseUrl}/v1/directory/$zeonId'));
+        await http.get(Uri.parse('${hubUrl ?? baseUrl}/v1/directory/$stonechatId'));
     return _check(r, (j) {
       final server = j['server'] as Map<String, dynamic>?;
       return DirectoryEntry(
-        zeonId: j['zeon_id'] as String,
+        stonechatId: j['stonechat_id'] as String,
         pubkeyB64: j['pubkey'] as String,
         pqPkB64: j['pq_pk'] as String?,
         pqSigB64: j['pq_sig'] as String?,
@@ -408,7 +408,7 @@ Future<({bool spk, int opks, bool kspk, int kopks})?> mailboxPrekeyStatus(
 // -- invite-hosted mailboxes ("host your circle") -----------------------------
 
 /// A parsed host invite: where the host agent is, its pinned fingerprint, and the
-/// one-time token. Encoded as "zeon-host:" + urlsafe-base64(JSON{u,f,t}).
+/// one-time token. Encoded as "stonechat-host:" + urlsafe-base64(JSON{u,f,t}).
 class HostInvite {
   final String url; // host agent base URL (https)
   final String fp; // host agent TLS fingerprint to pin
@@ -418,9 +418,9 @@ class HostInvite {
 
   static HostInvite parse(String raw) {
     final s = raw.trim();
-    const prefix = 'zeon-host:';
+    const prefix = 'stonechat-host:';
     if (!s.startsWith(prefix)) {
-      throw const FormatException('That is not a Zeon host invite');
+      throw const FormatException('That is not a Stonechat host invite');
     }
     var b64 = s.substring(prefix.length);
     b64 += '=' * ((4 - b64.length % 4) % 4);
@@ -505,12 +505,12 @@ Future<String> createHostInvite(
 /// One minted invite as the host agent reports it: the shareable string plus
 /// enough to show status (waiting / accepted / expired) in the app.
 class HostInviteStatus {
-  final String invite; // full "zeon-host:..." string, re-shareable
+  final String invite; // full "stonechat-host:..." string, re-shareable
   final int uses;
   final int usesLeft;
   final DateTime expiresAt;
   final DateTime createdAt;
-  final List<String> redeemedBy; // guest Zeon IDs, in redemption order
+  final List<String> redeemedBy; // guest Stonechat IDs, in redemption order
 
   HostInviteStatus({
     required this.invite,

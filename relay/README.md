@@ -1,4 +1,4 @@
-# zeon-relay — the routing server
+# stonechat-relay — the routing server
 
 The per-user mailbox. Wire contract: PROTOCOL.md "Routing server API";
 behavioral contract: the golden corpus in `tests/` (recorded at the 2026-07
@@ -16,23 +16,23 @@ the `scratch` container). Full economics: docs/COSTS.md.
 
 ```bash
 cargo build --release
-ZEON_OWNER_ID=ZC-… ZEON_OWNER_TOKEN=secret ./target/release/zeon-relay
+STONECHAT_OWNER_ID=SC-… STONECHAT_OWNER_TOKEN=secret ./target/release/stonechat-relay
 ```
 
-Env contract: `ZEON_PORT` (8080), `ZEON_DB`
-(`mailbox.db`), `ZEON_BLOBS` (`blobs`), `ZEON_TLS_DIR` (DB's directory),
-`ZEON_TURN_SECRET`/`ZEON_TURN_PORT`, `ZEON_PUSH_GATEWAY`/`ZEON_PUSH_KEY`.
+Env contract: `STONECHAT_PORT` (8080), `STONECHAT_DB`
+(`mailbox.db`), `STONECHAT_BLOBS` (`blobs`), `STONECHAT_TLS_DIR` (DB's directory),
+`STONECHAT_TURN_SECRET`/`STONECHAT_TURN_PORT`, `STONECHAT_PUSH_GATEWAY`/`STONECHAT_PUSH_KEY`.
 
-Docker: `docker build -t zeon-server:rust .` (self-building dev image;
+Docker: `docker build -t stonechat-server:rust .` (self-building dev image;
 production ships a prebuilt binary — RUST_PORT.md "Packaging").
 
 ## How deployments consume this crate
 
 All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
 
-- **local / fleet providers** build the image tagged `zeon-server:dev` from
-  this directory. With `ZEON_RELAY_BINARY` set on the hub (path to a static
-  **x86_64-musl** `zeon-relay`), the build context becomes binary + two-line
+- **local / fleet providers** build the image tagged `stonechat-server:dev` from
+  this directory. With `STONECHAT_RELAY_BINARY` set on the hub (path to a static
+  **x86_64-musl** `stonechat-relay`), the build context becomes binary + two-line
   Dockerfile — instant, no compile on the host. Unset, hosts compile the
   crate via this Dockerfile (dev fallback; also what produces the right
   architecture on ARM laptops).
@@ -41,19 +41,19 @@ All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
   SHA-256 pinned in the script. The hub serves the artifact at
   `GET /v1/relay-binary`, authenticated with the per-server token the
   script already carries — an egress-cost gate, not an integrity measure
-  (that's the pin). Set `ZEON_HUB_URL` for the default URL, or
-  `ZEON_RELAY_BINARY_URL` to host it on GCS/GitHub instead (fetched
+  (that's the pin). Set `STONECHAT_HUB_URL` for the default URL, or
+  `STONECHAT_RELAY_BINARY_URL` to host it on GCS/GitHub instead (fetched
   anonymously).
 - **Host agent** guest mailboxes build from the same binary; the sovereign
-  startup script writes `/opt/zeon/server/` (binary + Dockerfile) for it.
+  startup script writes `/opt/stonechat/server/` (binary + Dockerfile) for it.
 
 Producing the production artifact (on/for x86_64 Linux):
 
 ```bash
-docker build --platform linux/amd64 -t zeon-relay-build relay/
-id=$(docker create --platform linux/amd64 zeon-relay-build) && \
-  docker cp "$id":/zeon-relay ./zeon-relay && docker rm "$id"
-# → scp to the hub box, set ZEON_RELAY_BINARY=/path/to/zeon-relay
+docker build --platform linux/amd64 -t stonechat-relay-build relay/
+id=$(docker create --platform linux/amd64 stonechat-relay-build) && \
+  docker cp "$id":/stonechat-relay ./stonechat-relay && docker rm "$id"
+# → scp to the hub box, set STONECHAT_RELAY_BINARY=/path/to/stonechat-relay
 ```
 
 ## Tests
@@ -63,7 +63,7 @@ cargo test          # unit + parity vectors (TLS fingerprint, TURN HMAC)
 ```
 
 Conformance against the golden corpus (start a **fresh** relay —
-`ZEON_OWNER_ID=ZC-TEST-OWNER ZEON_OWNER_TOKEN=tok-secret`, empty data
+`STONECHAT_OWNER_ID=SC-TEST-OWNER STONECHAT_OWNER_TOKEN=tok-secret`, empty data
 dir — the corpus is stateful and order-dependent):
 
 ```bash

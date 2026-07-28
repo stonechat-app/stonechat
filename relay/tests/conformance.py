@@ -6,7 +6,7 @@ The corpus began life as a live diff between the Python relay and this Rust
 port; the Python relay is gone (cutover 2026-07, docs/RUST_PORT.md), so the
 recorded behavior IS the contract now. The corpus is stateful and
 order-dependent — always run it against a FRESH relay (empty DB/blob dir)
-started with OWNER_ID=ZC-TEST-OWNER, OWNER_TOKEN=tok-secret.
+started with OWNER_ID=SC-TEST-OWNER, OWNER_TOKEN=tok-secret.
 
 Usage:
     python conformance.py <base_url>            # check against golden.json
@@ -18,7 +18,7 @@ import ssl
 import sys
 import urllib.request
 
-OWNER = "ZC-TEST-OWNER"
+OWNER = "SC-TEST-OWNER"
 TOKEN = "tok-secret"
 GOLDEN = pathlib.Path(__file__).resolve().parent / "fixtures" / "golden.json"
 
@@ -50,8 +50,8 @@ CORPUS = [
     ("status-noauth", "GET", "/status", None, None),
     ("status", "GET", f"/status?token={TOKEN}", None, None),
     ("owner-missing", "GET", "/owner", None, None),
-    ("owner-wrong", "GET", "/owner?zeon_id=ZC-NOPE", None, None),
-    ("owner-right", "GET", f"/owner?zeon_id={OWNER}", None, None),
+    ("owner-wrong", "GET", "/owner?stonechat_id=SC-NOPE", None, None),
+    ("owner-right", "GET", f"/owner?stonechat_id={OWNER}", None, None),
     ("bundle-empty", "GET", "/prekeys/bundle", None, None),
     ("prekeys-noauth", "POST", "/prekeys", {"spk": {"id": 1, "pub": "p", "sig": "s"}}, None),
     ("prekeys-badshape", "POST", f"/prekeys?token={TOKEN}", {"spk": {"id": "x"}}, None),
@@ -83,7 +83,7 @@ CORPUS = [
     ("inbox-bad-sealed", "POST", "/inbox", {**ENV_OK, "sealed": ""}, None),
     ("inbox-bad-blobid", "POST", "/inbox", {**ENV_OK, "blob_id": "../x"}, None),
     ("inbox-bad-hint", "POST", "/inbox", {**ENV_OK, "transient": "yes"}, None),
-    ("inbox-wrong-owner", "POST", "/inbox", {**ENV_OK, "to": "ZC-SOMEONE-ELSE"}, None),
+    ("inbox-wrong-owner", "POST", "/inbox", {**ENV_OK, "to": "SC-SOMEONE-ELSE"}, None),
     ("inbox-ok", "POST", "/inbox", ENV_OK, None),
     ("inbox-dup", "POST", "/inbox", ENV_OK, None),
     ("inbox-push-false", "POST", "/inbox", {**ENV_OK, "id": "e-0002", "push": False}, None),

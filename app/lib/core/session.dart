@@ -140,7 +140,7 @@ class RatchetSession {
   });
 
   /// PQXDH as the initiator. [peerEdPub] must already be commitment-verified
-  /// against the peer's Zeon ID and [bundle]'s SPK + KSPK signatures checked.
+  /// against the peer's Stonechat ID and [bundle]'s SPK + KSPK signatures checked.
   factory RatchetSession.initiate(
       CryptoService crypto, String peerId, Uint8List peerEdPub, PrekeyBundle bundle) {
     final peerIkx = crypto.toX25519(peerEdPub);
@@ -238,7 +238,7 @@ class RatchetSession {
   String _ad(String adPrefix, String dhB64, int pn, int n) =>
       '$adPrefix|$dhB64|$pn|$n';
 
-  /// Encrypt one message. [adPrefix] is "zeon/v1|from|to|type" — the cleartext
+  /// Encrypt one message. [adPrefix] is "stonechat/v1|from|to|type" — the cleartext
   /// routing fields get bound into the AEAD. Mutates the session; persist it
   /// before handing the envelope to the network.
   ({Map<String, Object?> ratchet, Uint8List nonce, Uint8List ciphertext})

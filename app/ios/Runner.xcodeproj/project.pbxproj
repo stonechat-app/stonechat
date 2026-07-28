@@ -504,12 +504,12 @@
 					"$(inherited)",
 					"-force_load",
 					"$(PROJECT_DIR)/PqCore/libpqcore.a",
-					"-Wl,-u,_zeon_mlkem_pk_from_seed",
-					"-Wl,-u,_zeon_mlkem_encaps",
-					"-Wl,-u,_zeon_mlkem_decaps",
-					"-Wl,-u,_zeon_xwing_pk_from_seed",
-					"-Wl,-u,_zeon_xwing_encaps",
-					"-Wl,-u,_zeon_xwing_decaps",
+					"-Wl,-u,_stonechat_mlkem_pk_from_seed",
+					"-Wl,-u,_stonechat_mlkem_encaps",
+					"-Wl,-u,_stonechat_mlkem_decaps",
+					"-Wl,-u,_stonechat_xwing_pk_from_seed",
+					"-Wl,-u,_stonechat_xwing_encaps",
+					"-Wl,-u,_stonechat_xwing_decaps",
 				);
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -517,7 +517,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.zeonchat.mobileapp;
+				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -535,7 +535,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.zeonchat.mobileapp.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -553,7 +553,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.zeonchat.mobileapp.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Runner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Runner";
@@ -569,7 +569,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.zeonchat.mobileapp.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Runner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Runner";
@@ -702,12 +702,12 @@
 					"$(inherited)",
 					"-force_load",
 					"$(PROJECT_DIR)/PqCore/libpqcore.a",
-					"-Wl,-u,_zeon_mlkem_pk_from_seed",
-					"-Wl,-u,_zeon_mlkem_encaps",
-					"-Wl,-u,_zeon_mlkem_decaps",
-					"-Wl,-u,_zeon_xwing_pk_from_seed",
-					"-Wl,-u,_zeon_xwing_encaps",
-					"-Wl,-u,_zeon_xwing_decaps",
+					"-Wl,-u,_stonechat_mlkem_pk_from_seed",
+					"-Wl,-u,_stonechat_mlkem_encaps",
+					"-Wl,-u,_stonechat_mlkem_decaps",
+					"-Wl,-u,_stonechat_xwing_pk_from_seed",
+					"-Wl,-u,_stonechat_xwing_encaps",
+					"-Wl,-u,_stonechat_xwing_decaps",
 				);
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -715,7 +715,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.zeonchat.mobileapp;
+				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -740,12 +740,12 @@
 					"$(inherited)",
 					"-force_load",
 					"$(PROJECT_DIR)/PqCore/libpqcore.a",
-					"-Wl,-u,_zeon_mlkem_pk_from_seed",
-					"-Wl,-u,_zeon_mlkem_encaps",
-					"-Wl,-u,_zeon_mlkem_decaps",
-					"-Wl,-u,_zeon_xwing_pk_from_seed",
-					"-Wl,-u,_zeon_xwing_encaps",
-					"-Wl,-u,_zeon_xwing_decaps",
+					"-Wl,-u,_stonechat_mlkem_pk_from_seed",
+					"-Wl,-u,_stonechat_mlkem_encaps",
+					"-Wl,-u,_stonechat_mlkem_decaps",
+					"-Wl,-u,_stonechat_xwing_pk_from_seed",
+					"-Wl,-u,_stonechat_xwing_encaps",
+					"-Wl,-u,_stonechat_xwing_decaps",
 				);
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
@@ -753,7 +753,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.zeonchat.mobileapp;
+				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";

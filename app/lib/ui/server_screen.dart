@@ -20,9 +20,9 @@ const _providerDefaults = {
 };
 
 const _providerLabels = {
-  'gcp': 'Zeon Cloud · dedicated',
-  'aws': 'Zeon Cloud · dedicated',
-  'fleet': 'Zeon Cloud',
+  'gcp': 'Stonechat Cloud · dedicated',
+  'aws': 'Stonechat Cloud · dedicated',
+  'fleet': 'Stonechat Cloud',
   'local': 'This computer',
   'external': 'Self-hosted',
 };
@@ -117,7 +117,7 @@ class _ServerScreenState extends State<ServerScreen> {
             const SizedBox(height: 20),
           ],
           ZnOptionCard(
-            title: 'Zeon Cloud',
+            title: 'Stonechat Cloud',
             subtitle: 'We run it for you. Nothing to set up — '
                 'ready in about two minutes.',
             selected: !locked && _choice == _Choice.cloud,
@@ -212,7 +212,7 @@ class _ServerScreenState extends State<ServerScreen> {
                     : () => setState(() => _choice = _Choice.selfHost)),
             children: [
               const Text(
-                'Run the Zeon mailbox anywhere you like, then connect it '
+                'Run the Stonechat mailbox anywhere you like, then connect it '
                 'here. Its access token stays on this phone — we only list '
                 'the address so friends can find you.',
                 style:
@@ -308,8 +308,8 @@ class _ServerScreenState extends State<ServerScreen> {
   // In debug builds default to a local Docker mailbox so development never
   // needs a cloud account; release builds pick the provider the account's
   // plan entitles it to (PROTOCOL.md "Billing"): private → fleet,
-  // sovereign → gcp. --dart-define=ZEON_PROVIDER overrides everything.
-  static const _envProvider = String.fromEnvironment('ZEON_PROVIDER');
+  // sovereign → gcp. --dart-define=STONECHAT_PROVIDER overrides everything.
+  static const _envProvider = String.fromEnvironment('STONECHAT_PROVIDER');
 
   /// null → no plan on this account yet (caller offers the redeem sheet).
   Future<String?> _resolveProvider() async {

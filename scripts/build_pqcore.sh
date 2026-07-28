@@ -16,7 +16,7 @@ cd "$(dirname "$0")/../pqcore"
 host() {
   cargo build --release
   echo "host library: $(ls ../pqcore/target/release/libpqcore.* 2>/dev/null | tr '\n' ' ')"
-  echo "for flutter test: export ZEON_PQCORE_LIB=\$PWD/target/release/libpqcore.dylib"
+  echo "for flutter test: export STONECHAT_PQCORE_LIB=\$PWD/target/release/libpqcore.dylib"
 }
 
 android() {

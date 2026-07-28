@@ -1,4 +1,4 @@
-/// Zeon visual identity.
+/// Stonechat visual identity.
 ///
 /// Not another bubble app: warm near-black "console" surfaces, sharp 4px
 /// corners, a burnt-orange accent, and a monospace voice for anything
@@ -43,7 +43,7 @@ abstract final class Zn {
       );
 
   /// Deterministic accent for a contact, derived from their ID.
-  static Color idColor(String zeonId) {
+  static Color idColor(String stonechatId) {
     const palette = [
       amber,
       Color(0xFF5AD7E6),
@@ -53,14 +53,14 @@ abstract final class Zn {
       Color(0xFF7FA8F2),
     ];
     var h = 0;
-    for (final c in zeonId.codeUnits) {
+    for (final c in stonechatId.codeUnits) {
       h = (h * 31 + c) & 0x7FFFFFFF;
     }
     return palette[h % palette.length];
   }
 }
 
-ThemeData zeonTheme() {
+ThemeData stonechatTheme() {
   final base = ThemeData(
     brightness: Brightness.dark,
     useMaterial3: true,

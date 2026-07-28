@@ -7,7 +7,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:zeon_chat/core/identity_export.dart';
+import 'package:stonechat/core/identity_export.dart';
 
 void main() {
   final salt = Uint8List.fromList(List.generate(16, (i) => i + 1));
@@ -55,7 +55,7 @@ void main() {
         () => IdentityCodec.decodeContainer(s.substring(5)),
         throwsA(predicate((e) =>
             e is IdentityExportException &&
-            e.message.contains('Not a Zeon identity export'))),
+            e.message.contains('Not a Stonechat identity export'))),
       );
     });
 

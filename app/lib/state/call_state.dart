@@ -203,8 +203,8 @@ class CallState extends ChangeNotifier {
     }
     if (inCall) {
       final glare = phase == CallPhase.dialing &&
-          peer?.zeonId == contact.zeonId;
-      if (glare && contact.zeonId.compareTo(app.zeonId!) < 0) {
+          peer?.stonechatId == contact.stonechatId;
+      if (glare && contact.stonechatId.compareTo(app.stonechatId!) < 0) {
         // Simultaneous call, their (lower) ID wins: drop our attempt and
         // ring with theirs. They do the reciprocal and ignore ours.
         await _teardownRtc();
@@ -245,7 +245,7 @@ class CallState extends ChangeNotifier {
 
   Future<void> _onIce(
       Contact contact, Map<String, dynamic> payload, String id) async {
-    if (id != callId || contact.zeonId != peer?.zeonId) return;
+    if (id != callId || contact.stonechatId != peer?.stonechatId) return;
     for (final raw in (payload['candidates'] as List? ?? const [])) {
       if (raw is! Map) continue;
       final candidate = RTCIceCandidate(
@@ -263,7 +263,7 @@ class CallState extends ChangeNotifier {
 
   Future<void> _onEnd(
       Contact contact, Map<String, dynamic> payload, String id) async {
-    if (id != callId || contact.zeonId != peer?.zeonId) return;
+    if (id != callId || contact.stonechatId != peer?.stonechatId) return;
     final reason = payload['reason'] as String? ?? CallEndReason.hangup;
     final label = switch (reason) {
       CallEndReason.decline => _label('Declined'),

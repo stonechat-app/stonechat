@@ -1,4 +1,4 @@
-//! Zeon routing server — a single user's encrypted mailbox.
+//! Stonechat routing server — a single user's encrypted mailbox.
 //!
 //! The relay implementation (ported from the retired Python relay —
 //! docs/RUST_PORT.md is the port record; PROTOCOL.md "Routing server API"
@@ -11,12 +11,12 @@
 //! forward-secret sessions while the owner is offline.
 //!
 //! Config (env):
-//!     ZEON_OWNER_ID     Zeon ID of the owner (the only valid recipient)
-//!     ZEON_OWNER_TOKEN  shared secret the owner's device presents on /ws
-//!     ZEON_PORT         listen port (default 8080)
-//!     ZEON_DB           sqlite path (default ./mailbox.db)
-//!     ZEON_BLOBS        blob dir (default ./blobs)
-//!     ZEON_TLS_DIR      where the TLS key/cert live (default: the DB's directory)
+//!     STONECHAT_OWNER_ID     Stonechat ID of the owner (the only valid recipient)
+//!     STONECHAT_OWNER_TOKEN  shared secret the owner's device presents on /ws
+//!     STONECHAT_PORT         listen port (default 8080)
+//!     STONECHAT_DB           sqlite path (default ./mailbox.db)
+//!     STONECHAT_BLOBS        blob dir (default ./blobs)
+//!     STONECHAT_TLS_DIR      where the TLS key/cert live (default: the DB's directory)
 //!
 //! Transport: everything is served over TLS with a self-signed certificate
 //! generated on first boot (or reused from disk — the fingerprint clients pin
@@ -99,11 +99,11 @@ async fn main() {
         .install_default()
         .expect("install rustls crypto provider");
 
-    let owner_id = std::env::var("ZEON_OWNER_ID").expect("ZEON_OWNER_ID is required");
-    let owner_token = std::env::var("ZEON_OWNER_TOKEN").expect("ZEON_OWNER_TOKEN is required");
-    let db_path = env_or("ZEON_DB", "mailbox.db");
-    let blob_dir = PathBuf::from(env_or("ZEON_BLOBS", "blobs"));
-    let tls_dir = match std::env::var("ZEON_TLS_DIR") {
+    let owner_id = std::env::var("STONECHAT_OWNER_ID").expect("STONECHAT_OWNER_ID is required");
+    let owner_token = std::env::var("STONECHAT_OWNER_TOKEN").expect("STONECHAT_OWNER_TOKEN is required");
+    let db_path = env_or("STONECHAT_DB", "mailbox.db");
+    let blob_dir = PathBuf::from(env_or("STONECHAT_BLOBS", "blobs"));
+    let tls_dir = match std::env::var("STONECHAT_TLS_DIR") {
         Ok(d) => PathBuf::from(d),
         Err(_) => Path::new(&db_path)
             .canonicalize()
@@ -116,15 +116,15 @@ async fn main() {
                 p.parent().unwrap().to_path_buf()
             }),
     };
-    let port: u16 = env_or("ZEON_PORT", "8080").parse().expect("bad ZEON_PORT");
+    let port: u16 = env_or("STONECHAT_PORT", "8080").parse().expect("bad STONECHAT_PORT");
 
     let cfg = Config {
         owner_id,
         owner_token,
-        turn_secret: env_or("ZEON_TURN_SECRET", ""),
-        turn_port: env_or("ZEON_TURN_PORT", "3478").parse().expect("bad ZEON_TURN_PORT"),
-        push_gateway: env_or("ZEON_PUSH_GATEWAY", "").trim_end_matches('/').to_string(),
-        push_key: env_or("ZEON_PUSH_KEY", ""),
+        turn_secret: env_or("STONECHAT_TURN_SECRET", ""),
+        turn_port: env_or("STONECHAT_TURN_PORT", "3478").parse().expect("bad STONECHAT_TURN_PORT"),
+        push_gateway: env_or("STONECHAT_PUSH_GATEWAY", "").trim_end_matches('/').to_string(),
+        push_key: env_or("STONECHAT_PUSH_KEY", ""),
     };
 
     let tls = tls::Tls::load_or_generate(&tls_dir).expect("TLS setup failed");

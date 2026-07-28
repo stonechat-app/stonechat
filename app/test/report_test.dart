@@ -1,8 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:zeon_chat/core/report.dart';
-import 'package:zeon_chat/models.dart';
+import 'package:stonechat/core/report.dart';
+import 'package:stonechat/models.dart';
 
 Message _msg(String id, int sentAt,
         {bool outgoing = false,
@@ -12,7 +12,7 @@ Message _msg(String id, int sentAt,
         String? fileName}) =>
     Message(
       id: id,
-      contactId: 'ZC-PEER',
+      contactId: 'SC-PEER',
       outgoing: outgoing,
       text: text,
       kind: kind,

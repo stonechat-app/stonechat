@@ -1,13 +1,13 @@
 """Fleet provider — the shared-host tier.
 
 One mailbox container per customer, packed onto a pool of Docker hosts.
-Placement is least-loaded (fewest zeon containers). Each container gets its
+Placement is least-loaded (fewest stonechat containers). Each container gets its
 own port, cgroup memory/CPU caps and a pids limit; the advertised address is
 ``http://<host advertise addr>:<port>``.
 
 Host pool config (env, REQUIRED)::
 
-    ZEON_FLEET_HOSTS="berlin=ssh://zeon-fleet@10.0.0.5|203.0.113.5"
+    STONECHAT_FLEET_HOSTS="berlin=ssh://stonechat-fleet@10.0.0.5|203.0.113.5"
 
 Comma-separated ``name=docker_endpoint|advertise_host``. An empty endpoint
 means the local Docker daemon — that is for LAPTOP DEV ONLY (e.g. the e2e
@@ -16,7 +16,7 @@ hub machine, so there is deliberately no unset-fallback. SSH
 endpoints need key auth set up for the hub user (see
 deploy/fleet-host.sh).
 
-Optional hardening: ZEON_FLEET_RUNTIME=runsc runs every container under
+Optional hardening: STONECHAT_FLEET_RUNTIME=runsc runs every container under
 gVisor (host must have it installed).
 """
 
@@ -30,7 +30,7 @@ from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResul
 from .bootstrap import SERVER_PORT
 from .local import IMAGE, image_context
 
-FLEET_LABEL = "zeon.fleet=1"
+FLEET_LABEL = "stonechat.fleet=1"
 MEMORY_LIMIT = "192m"
 CPU_LIMIT = "0.5"
 PIDS_LIMIT = "128"
@@ -44,12 +44,12 @@ class FleetHost:
 
 
 def _parse_hosts() -> list[FleetHost]:
-    raw = os.environ.get("ZEON_FLEET_HOSTS", "").strip()
+    raw = os.environ.get("STONECHAT_FLEET_HOSTS", "").strip()
     if not raw:
         # No silent local fallback: mailboxes must never land on the
         # hub machine. Dev/e2e opts into localhost EXPLICITLY.
         raise ProviderError(
-            "ZEON_FLEET_HOSTS is not set; the fleet provider never uses the "
+            "STONECHAT_FLEET_HOSTS is not set; the fleet provider never uses the "
             "local daemon implicitly (mailboxes don't run on the "
             'hub box). For laptop dev use "local=|127.0.0.1".'
         )
@@ -60,7 +60,7 @@ def _parse_hosts() -> list[FleetHost]:
             endpoint, advertise = rest.split("|", 1)
         except ValueError:
             raise ProviderError(
-                f"bad ZEON_FLEET_HOSTS entry {part!r}; "
+                f"bad STONECHAT_FLEET_HOSTS entry {part!r}; "
                 "expected name=docker_endpoint|advertise_host"
             )
         hosts.append(FleetHost(name=name, endpoint=endpoint, advertise=advertise))
@@ -72,7 +72,7 @@ class FleetProvider(CloudProvider):
 
     def __init__(self):
         self.hosts = _parse_hosts()
-        self.runtime = os.environ.get("ZEON_FLEET_RUNTIME", "")
+        self.runtime = os.environ.get("STONECHAT_FLEET_RUNTIME", "")
         try:
             self._docker(self.hosts[0], "version", "--format", "{{.Server.Version}}")
         except (ProviderError, FileNotFoundError) as e:
@@ -112,7 +112,7 @@ class FleetProvider(CloudProvider):
         )
         if probe.returncode != 0:
             # docker build ships the local context to the remote daemon. With
-            # ZEON_RELAY_BINARY set this is a prebuilt-binary COPY (instant);
+            # STONECHAT_RELAY_BINARY set this is a prebuilt-binary COPY (instant);
             # without it the host compiles the crate — dev only, keep real
             # fleet hosts on the prebuilt path.
             with image_context() as ctx:
@@ -124,16 +124,16 @@ class FleetProvider(CloudProvider):
         host = min(self.hosts, key=self._tenant_count)
         self._ensure_image(host)
 
-        name = f"zeon-{req.owner_id[3:11].lower().replace('-', '')}"
+        name = f"stonechat-{req.owner_id[3:11].lower().replace('-', '')}"
         args = [
             "run", "-d",
             "--name", name,
             "--restart", "unless-stopped",
             "-p", f"0:{SERVER_PORT}",
-            "-e", f"ZEON_OWNER_ID={req.owner_id}",
-            "-e", f"ZEON_OWNER_TOKEN={req.owner_token}",
-            "-e", f"ZEON_PUSH_GATEWAY={os.environ.get('ZEON_PUSH_GATEWAY', '')}",
-            "-e", f"ZEON_PUSH_KEY={mint_push_key()}",
+            "-e", f"STONECHAT_OWNER_ID={req.owner_id}",
+            "-e", f"STONECHAT_OWNER_TOKEN={req.owner_token}",
+            "-e", f"STONECHAT_PUSH_GATEWAY={os.environ.get('STONECHAT_PUSH_GATEWAY', '')}",
+            "-e", f"STONECHAT_PUSH_KEY={mint_push_key()}",
             "--label", FLEET_LABEL,
             "--memory", MEMORY_LIMIT,
             "--cpus", CPU_LIMIT,

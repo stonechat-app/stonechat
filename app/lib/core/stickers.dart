@@ -111,7 +111,7 @@ class StickerStore extends ChangeNotifier {
     if (!ref.startsWith(_assetPrefix)) return File(ref);
     final asset = ref.substring(_assetPrefix.length);
     final dir = await getTemporaryDirectory();
-    final file = File(p.join(dir.path, 'zeon-sticker-${p.basename(asset)}'));
+    final file = File(p.join(dir.path, 'stonechat-sticker-${p.basename(asset)}'));
     if (!await file.exists()) {
       final data = await rootBundle.load(asset);
       await file.writeAsBytes(

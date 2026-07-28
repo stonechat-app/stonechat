@@ -1,6 +1,6 @@
 """DigitalOcean provider.
 
-Auth: ZEON_DO_TOKEN env var (a DO personal access token with write scope).
+Auth: STONECHAT_DO_TOKEN env var (a DO personal access token with write scope).
 Plain REST via httpx — DO's API is simple enough that an SDK would be more
 dependency than help.
 
@@ -38,9 +38,9 @@ class DOProvider(CloudProvider):
     name = "digitalocean"
 
     def __init__(self):
-        self.token = os.environ.get("ZEON_DO_TOKEN")
+        self.token = os.environ.get("STONECHAT_DO_TOKEN")
         if not self.token:
-            raise ProviderError("ZEON_DO_TOKEN env var is not set")
+            raise ProviderError("STONECHAT_DO_TOKEN env var is not set")
 
     def _client(self) -> httpx.Client:
         return httpx.Client(
@@ -59,7 +59,7 @@ class DOProvider(CloudProvider):
                 f"user_data at {USER_DATA_LIMIT} (see bootstrap.py)"
             )
 
-        name = f"zeon-{req.owner_id[3:11].lower().replace('-', '')}"
+        name = f"stonechat-{req.owner_id[3:11].lower().replace('-', '')}"
         with self._client() as client:
             resp = client.post(
                 "/droplets",
@@ -69,7 +69,7 @@ class DOProvider(CloudProvider):
                     "size": req.spec.machine_type,
                     "image": IMAGE,
                     "user_data": user_data,
-                    "tags": ["zeon-server"],
+                    "tags": ["stonechat-server"],
                 },
             )
             if resp.status_code >= 400:

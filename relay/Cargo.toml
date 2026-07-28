@@ -1,11 +1,11 @@
 [package]
-name = "zeon-relay"
+name = "stonechat-relay"
 version = "0.1.0"
 edition = "2021"
-description = "Zeon routing server — a single user's encrypted mailbox (Rust port of server/main.py)"
+description = "Stonechat routing server — a single user's encrypted mailbox (Rust port of server/main.py)"
 
 [[bin]]
-name = "zeon-relay"
+name = "stonechat-relay"
 path = "src/main.rs"
 
 [dependencies]

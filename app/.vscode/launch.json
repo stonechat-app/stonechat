@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      // No ZEON_HUB baked in: debug builds default to http://127.0.0.1:8000.
+      // No STONECHAT_HUB baked in: debug builds default to http://127.0.0.1:8000.
       "name": "app",
       "request": "launch",
       "type": "dart"
@@ -14,16 +14,16 @@
       // Local dev hub on 8477. Debug mode picks the `local` provider
       // automatically → the mailbox is a Docker container on this Mac.
       // Start the hub first (from hub/):
-      //   ZEON_FLEET_HOSTS="local=|127.0.0.1" ZEON_ADMIN_TOKEN=test-admin \
-      //   ZEON_TEST_CODE=ZEON-TEST-TEST \
+      //   STONECHAT_FLEET_HOSTS="local=|127.0.0.1" STONECHAT_ADMIN_TOKEN=test-admin \
+      //   STONECHAT_TEST_CODE=STONECHAT-TEST-TEST \
       //   .venv/bin/python -m uvicorn app.main:app --port 8477
       "name": "app — local hub (127.0.0.1:8477)",
       "request": "launch",
       "type": "dart",
-      "args": ["--dart-define=ZEON_HUB=http://127.0.0.1:8477"]
+      "args": ["--dart-define=STONECHAT_HUB=http://127.0.0.1:8477"]
     },
     {
-      // Debug against PRODUCTION. ZEON_PROVIDER=fleet matters: without it a
+      // Debug against PRODUCTION. STONECHAT_PROVIDER=fleet matters: without it a
       // debug build defaults to the `local` provider, which would ask the
       // hub to run the mailbox container on the hub VM itself — breaking the
       // "mailboxes never on the hub box" rule. Fleet needs an active plan
@@ -32,8 +32,8 @@
       "request": "launch",
       "type": "dart",
       "args": [
-        "--dart-define=ZEON_HUB=https://hub.zeonchat.com",
-        "--dart-define=ZEON_PROVIDER=fleet"
+        "--dart-define=STONECHAT_HUB=https://hub.stonechat.app",
+        "--dart-define=STONECHAT_PROVIDER=fleet"
       ]
     },
     {

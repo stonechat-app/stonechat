@@ -1,4 +1,4 @@
-# zeon_chat
+# stonechat
 
 A new Flutter project.
 

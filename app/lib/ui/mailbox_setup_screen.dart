@@ -1,6 +1,6 @@
 /// Step 2 of onboarding: get the user a mailbox without them ever hearing
 /// the words "VM", "provider", or "region". The three hosting choices are
-/// presented with the same cards as the mailbox screen; Zeon Cloud is
+/// presented with the same cards as the mailbox screen; Stonechat Cloud is
 /// pre-selected with sensible defaults.
 library;
 
@@ -38,9 +38,9 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
   // In debug builds default to a local Docker mailbox so development never
   // needs a cloud account; release builds pick the provider the account's
   // plan entitles it to (PROTOCOL.md "Billing"): private → fleet,
-  // sovereign → gcp. --dart-define=ZEON_PROVIDER overrides everything
+  // sovereign → gcp. --dart-define=STONECHAT_PROVIDER overrides everything
   // (e.g. testing the gcp provider from a debug build in the simulator).
-  static const _envProvider = String.fromEnvironment('ZEON_PROVIDER');
+  static const _envProvider = String.fromEnvironment('STONECHAT_PROVIDER');
   static const _defaults = {
     'gcp': (machineType: 'e2-micro', region: 'us-central1-a'),
     'aws': (machineType: 't3.micro', region: 'us-east-1'),
@@ -194,7 +194,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         ),
         const SizedBox(height: 16),
         ZnOptionCard(
-          title: 'Zeon Cloud',
+          title: 'Stonechat Cloud',
           subtitle: 'An isolated container on our servers that only you can '
               'use — destroy it and start fresh whenever you want.',
           selected: _choice == _Choice.cloud,
@@ -260,7 +260,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
           onTap: _select(_Choice.selfHost),
           children: [
             const Text(
-              'Run the Zeon mailbox anywhere you like, then connect it here. '
+              'Run the Stonechat mailbox anywhere you like, then connect it here. '
               'Its access token stays on this phone — we only list the '
               'address so friends can find you.',
               style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),

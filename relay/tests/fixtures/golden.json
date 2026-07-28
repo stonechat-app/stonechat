@@ -30,7 +30,7 @@
   "owner-missing": [
     400,
     {
-      "detail": "zeon_id query parameter required"
+      "detail": "stonechat_id query parameter required"
     }
   ],
   "owner-wrong": [

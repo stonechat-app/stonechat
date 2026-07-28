@@ -42,8 +42,8 @@ async def main():
     st, blob = http("POST", "/blob", b"cipherbytes")
     assert st == 200
     blob_id = blob["blob_id"]
-    http("POST", "/inbox", {"v": 1, "id": "w-1", "to": "ZC-TEST-OWNER", "sealed": "YQ=="})
-    http("POST", "/inbox", {"v": 1, "id": "w-2", "to": "ZC-TEST-OWNER",
+    http("POST", "/inbox", {"v": 1, "id": "w-1", "to": "SC-TEST-OWNER", "sealed": "YQ=="})
+    http("POST", "/inbox", {"v": 1, "id": "w-2", "to": "SC-TEST-OWNER",
                             "sealed": "Yg==", "blob_id": blob_id})
 
     async with websockets.connect(WS, ssl=CTX, open_timeout=5) as ws:
@@ -64,13 +64,13 @@ async def main():
         await ws.send(json.dumps({"ack": 42}))
 
         # live push while connected
-        http("POST", "/inbox", {"v": 1, "id": "w-3", "to": "ZC-TEST-OWNER", "sealed": "Yw=="})
+        http("POST", "/inbox", {"v": 1, "id": "w-3", "to": "SC-TEST-OWNER", "sealed": "Yw=="})
         env = json.loads(await asyncio.wait_for(ws.recv(), 5))
         print(f"  {'ok  ' if env['id'] == 'w-3' else 'FAIL'} live push: {env['id']}")
         ok = ok and env["id"] == "w-3"
 
         # transient while connected → delivered, not queued
-        st, r = http("POST", "/inbox", {"v": 1, "id": "w-4", "to": "ZC-TEST-OWNER",
+        st, r = http("POST", "/inbox", {"v": 1, "id": "w-4", "to": "SC-TEST-OWNER",
                                         "sealed": "ZA==", "transient": True})
         env = json.loads(await asyncio.wait_for(ws.recv(), 5))
         good = r == {"status": "delivered"} and env["id"] == "w-4"

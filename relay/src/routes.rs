@@ -64,11 +64,11 @@ pub async fn owner_check(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    let zeon_id = q.get("zeon_id").map(String::as_str).unwrap_or("");
-    if zeon_id.is_empty() {
-        return detail(StatusCode::BAD_REQUEST, "zeon_id query parameter required");
+    let stonechat_id = q.get("stonechat_id").map(String::as_str).unwrap_or("");
+    if stonechat_id.is_empty() {
+        return detail(StatusCode::BAD_REQUEST, "stonechat_id query parameter required");
     }
-    if zeon_id != state.cfg.owner_id {
+    if stonechat_id != state.cfg.owner_id {
         return detail(StatusCode::NOT_FOUND, "not this mailbox's owner");
     }
     Json(json!({"owner_matches": true})).into_response()
@@ -268,7 +268,7 @@ pub async fn turn_credentials(
         .unwrap()
         .as_secs()
         + TURN_TTL_S;
-    let username = format!("{expiry}:zeon");
+    let username = format!("{expiry}:stonechat");
     let mut mac = Hmac::<Sha1>::new_from_slice(state.cfg.turn_secret.as_bytes()).unwrap();
     mac.update(username.as_bytes());
     let credential = B64.encode(mac.finalize().into_bytes());
@@ -345,10 +345,10 @@ mod tests {
 
     #[test]
     fn envelope_validation_matrix() {
-        let ok = r#"{"v":1,"id":"x","to":"ZC-A","sealed":"aGk="}"#;
+        let ok = r#"{"v":1,"id":"x","to":"SC-A","sealed":"aGk="}"#;
         assert!(err_of(ok).is_none());
         // missing fields
-        assert_eq!(err_of(r#"{"v":1,"id":"x","to":"ZC-A"}"#), Some(StatusCode::BAD_REQUEST));
+        assert_eq!(err_of(r#"{"v":1,"id":"x","to":"SC-A"}"#), Some(StatusCode::BAD_REQUEST));
         assert_eq!(err_of(r#"[]"#), Some(StatusCode::BAD_REQUEST));
         // version
         assert_eq!(err_of(r#"{"v":2,"id":"x","to":"a","sealed":"s"}"#), Some(StatusCode::BAD_REQUEST));
@@ -400,13 +400,13 @@ mod tests {
         .is_none());
     }
 
-    /// Vector computed with the retired Python relay's exact recipe:
-    /// b64(HMAC-SHA1("test-turn-secret", "1760000000:zeon"))
+    /// Same recipe as the retired Python relay, recomputed for the
+    /// post-rebrand username: b64(HMAC-SHA1("test-turn-secret", "1760000000:stonechat"))
     #[test]
     fn turn_credential_vector() {
         let mut mac = Hmac::<Sha1>::new_from_slice(b"test-turn-secret").unwrap();
-        mac.update(b"1760000000:zeon");
-        assert_eq!(B64.encode(mac.finalize().into_bytes()), "M3XYZP5etG/12QU8aa/mLQ+Csyc=");
+        mac.update(b"1760000000:stonechat");
+        assert_eq!(B64.encode(mac.finalize().into_bytes()), "LMWqjiuziEnqliLGAALmWl1Ka+E=");
     }
 
     #[test]

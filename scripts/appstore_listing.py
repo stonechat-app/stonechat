@@ -255,7 +255,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--bundle-id",
-        default="com.zeonchat.mobileapp",
+        default="app.stonechat.mobile",
         help="fallback used when APP_ID is unset in .env.appstore",
     )
     args = parser.parse_args()

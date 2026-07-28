@@ -1,4 +1,4 @@
-"""End-to-end test of the Zeon stack, no Flutter needed.
+"""End-to-end test of the Stonechat stack, no Flutter needed.
 
 Simulates two phones (Alice, Bob) with PyNaCl (same libsodium primitives the
 app uses): register → provision local-Docker relays → contact handshake →
@@ -18,10 +18,10 @@ import websockets
 from nacl.public import Box, PrivateKey, PublicKey
 
 import os
-HUB = os.environ.get("ZEON_HUB", "http://127.0.0.1:8477")
+HUB = os.environ.get("STONECHAT_HUB", "http://127.0.0.1:8477")
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "hub"))
-from app.identity import zeon_id_from_pubkey  # noqa: E402
+from app.identity import stonechat_id_from_pubkey  # noqa: E402
 
 
 class Phone:
@@ -29,7 +29,7 @@ class Phone:
         self.name = name
         self.key = PrivateKey.generate()
         self.pubkey_b64 = base64.b64encode(bytes(self.key.public_key)).decode()
-        self.zeon_id = None
+        self.stonechat_id = None
         self.token = None
         self.server = None
 
@@ -37,10 +37,10 @@ class Phone:
         r = httpx.post(f"{HUB}/v1/register", json={"pubkey": self.pubkey_b64})
         r.raise_for_status()
         data = r.json()
-        self.zeon_id, self.token = data["zeon_id"], data["account_token"]
-        expected = zeon_id_from_pubkey(bytes(self.key.public_key))
-        assert self.zeon_id == expected, "server-derived ID != client-derived ID"
-        print(f"  {self.name}: {self.zeon_id}")
+        self.stonechat_id, self.token = data["stonechat_id"], data["account_token"]
+        expected = stonechat_id_from_pubkey(bytes(self.key.public_key))
+        assert self.stonechat_id == expected, "server-derived ID != client-derived ID"
+        print(f"  {self.name}: {self.stonechat_id}")
 
     @property
     def auth(self):
@@ -79,8 +79,8 @@ class Phone:
             "v": 1,
             "id": envelope_id or str(uuid.uuid4()),
             "type": type_,
-            "from": self.zeon_id,
-            "to": to.zeon_id,
+            "from": self.stonechat_id,
+            "to": to.stonechat_id,
             "sent_at": datetime.now(timezone.utc).isoformat(),
             "nonce": base64.b64encode(sealed.nonce).decode(),
             "ciphertext": base64.b64encode(sealed.ciphertext).decode(),
@@ -124,11 +124,11 @@ def main():
     bob.register()
 
     print("2) directory lookup + commitment check")
-    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
     assert entry["pubkey"] == bob.pubkey_b64
-    assert zeon_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.zeon_id
+    assert stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.stonechat_id
     assert entry["server"] is None
-    lower = bob.zeon_id.lower().replace("-", "")
+    lower = bob.stonechat_id.lower().replace("-", "")
     assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
     assert "handle" not in entry, "directory must not return a handle"
     assert httpx.get(f"{HUB}/v1/directory/zn-palm-dog-cherry").status_code == 400, \
@@ -183,7 +183,7 @@ def main():
     alice.destroy()
     bob.destroy()
     assert httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["status"] == "none"
-    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
     assert entry["server"] is None
 
     print("\nALL E2E CHECKS PASSED")

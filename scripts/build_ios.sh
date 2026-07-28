@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Zeon Chat - iOS Production Build Script
+# Stonechat - iOS Production Build Script
 # Increments the build number and builds the production IPA
 
 set -e
@@ -41,20 +41,20 @@ echo "Build number incremented to $NEW_BUILD_NUMBER"
 echo ""
 
 # Bake the backend coordinates into the build. The hosted hub is live at
-# https://hub.zeonchat.com (Caddy/Let's Encrypt in front of the hub VM);
-# override ZEON_HUB only to build against a different deployment.
-ZEON_HUB="${ZEON_HUB:-https://hub.zeonchat.com}"
+# https://hub.stonechat.app (Caddy/Let's Encrypt in front of the hub VM);
+# override STONECHAT_HUB only to build against a different deployment.
+STONECHAT_HUB="${STONECHAT_HUB:-https://hub.stonechat.app}"
 
 # No provider is baked by default: the app picks it from the account's plan
-# (private → fleet, sovereign → gcp). A baked ZEON_PROVIDER overrides the
+# (private → fleet, sovereign → gcp). A baked STONECHAT_PROVIDER overrides the
 # plan mapping in every install of the build — set it only for test builds.
-DEFINES=(--dart-define=ZEON_HUB="$ZEON_HUB")
-if [ -n "${ZEON_PROVIDER:-}" ]; then
-    DEFINES+=(--dart-define=ZEON_PROVIDER="$ZEON_PROVIDER")
+DEFINES=(--dart-define=STONECHAT_HUB="$STONECHAT_HUB")
+if [ -n "${STONECHAT_PROVIDER:-}" ]; then
+    DEFINES+=(--dart-define=STONECHAT_PROVIDER="$STONECHAT_PROVIDER")
 fi
 
 # Build the iOS app
-echo "Building iOS app (ZEON_HUB=$ZEON_HUB, ZEON_PROVIDER=${ZEON_PROVIDER:-<plan-driven>})..."
+echo "Building iOS app (STONECHAT_HUB=$STONECHAT_HUB, STONECHAT_PROVIDER=${STONECHAT_PROVIDER:-<plan-driven>})..."
 flutter build ipa "${DEFINES[@]}"
 
 # Find the generated IPA (name may vary)

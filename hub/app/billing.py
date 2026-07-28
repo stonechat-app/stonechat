@@ -4,7 +4,7 @@ The flow (PROTOCOL.md "Billing"): a buyer pays through a Stripe Payment Link
 on the landing page → `checkout.session.completed` lands here → we mint an
 activation code and park it, unbound. The landing success page fetches the
 code by checkout session id; the buyer redeems it in the app, which binds
-the subscription to their Zeon ID. Stripe never learns the Zeon ID; we never
+the subscription to their Stonechat ID. Stripe never learns the Stonechat ID; we never
 learn the buyer's name or email.
 
 Assumes a single uvicorn process (as deployed): the rate limiter is
@@ -15,19 +15,19 @@ webhook needs it, and it imports lazily there. Comp grants, the test code and
 redemption all work without it.
 
 Config (env):
-    ZEON_STRIPE_WEBHOOK_SECRET  webhook signing secret (whsec_…); unset →
+    STONECHAT_STRIPE_WEBHOOK_SECRET  webhook signing secret (whsec_…); unset →
                                 webhook endpoint answers 503
-    ZEON_ADMIN_TOKEN            enables POST /v1/billing/comp (comp grants
+    STONECHAT_ADMIN_TOKEN            enables POST /v1/billing/comp (comp grants
                                 for testers); unset → endpoint disabled
-    ZEON_TEST_CODES             reusable tester codes with per-code plans:
-                                "ZEON-AAAA-AAAA=private,ZEON-BBBB-BBBB=sovereign"
+    STONECHAT_TEST_CODES             reusable tester codes with per-code plans:
+                                "STONECHAT-AAAA-AAAA=private,STONECHAT-BBBB-BBBB=sovereign"
                                 (plan omitted → private). Redeeming one mints a
                                 fresh comp subscription every time instead of
                                 consuming a stored one (TestFlight testers can
                                 reset identity and reactivate with the same
                                 code); unset → disabled
-    ZEON_TEST_CODE              legacy single code, still honored
-    ZEON_TEST_CODE_PLAN         plan the legacy code grants (default private)
+    STONECHAT_TEST_CODE              legacy single code, still honored
+    STONECHAT_TEST_CODE_PLAN         plan the legacy code grants (default private)
 """
 
 import logging
@@ -45,7 +45,7 @@ from .db import hash_token
 from .deps import Admin, User, store
 from .ratelimit import RateLimiter
 
-log = logging.getLogger("zeon.hub.billing")
+log = logging.getLogger("stonechat.hub.billing")
 
 router = APIRouter()
 
@@ -58,13 +58,13 @@ _CODE_LEN = 8
 
 def mint_code() -> str:
     body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LEN))
-    return f"ZEON-{body[:4]}-{body[4:]}"
+    return f"STONECHAT-{body[:4]}-{body[4:]}"
 
 
 def normalize_code(raw: str) -> str:
-    """Uppercase, strip separators and the ZEON prefix: what gets hashed."""
+    """Uppercase, strip separators and the STONECHAT prefix: what gets hashed."""
     s = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
-    return s.removeprefix("ZEON")
+    return s.removeprefix("STONECHAT")
 
 
 def _code_hash(raw: str) -> str:
@@ -80,13 +80,13 @@ _activation_limiter = RateLimiter(limit=30, window_s=60.0)
 
 @router.post("/v1/billing/webhook")
 async def stripe_webhook(request: Request):
-    secret = os.environ.get("ZEON_STRIPE_WEBHOOK_SECRET")
+    secret = os.environ.get("STONECHAT_STRIPE_WEBHOOK_SECRET")
     if not secret:
         raise HTTPException(503, "billing is not configured")
     try:
         import stripe
     except ImportError:
-        log.error("ZEON_STRIPE_WEBHOOK_SECRET is set but the stripe package "
+        log.error("STONECHAT_STRIPE_WEBHOOK_SECRET is set but the stripe package "
                   "is not installed (pip install stripe)")
         raise HTTPException(503, "billing is not configured")
     payload = await request.body()
@@ -198,7 +198,7 @@ def activation(session_id: str, request: Request):
     if not sub:
         # also the "webhook hasn't arrived yet" case — the page polls on 404
         raise HTTPException(404, "unknown checkout session")
-    claimed = sub["zeon_id"] is not None
+    claimed = sub["stonechat_id"] is not None
     return {
         "plan": sub["plan"],
         "code": None if claimed else sub["code_plain"],
@@ -216,19 +216,19 @@ class RedeemIn(BaseModel):
 def _test_code_plan(normalized: str) -> str | None:
     """The plan granted if `normalized` is a configured tester code, else None.
 
-    ZEON_TEST_CODES holds several codes with per-code plans:
-    "ZEON-AAAA-AAAA=private,ZEON-BBBB-BBBB=sovereign" (plan omitted →
-    private). The legacy single ZEON_TEST_CODE (+ ZEON_TEST_CODE_PLAN) is
+    STONECHAT_TEST_CODES holds several codes with per-code plans:
+    "STONECHAT-AAAA-AAAA=private,STONECHAT-BBBB-BBBB=sovereign" (plan omitted →
+    private). The legacy single STONECHAT_TEST_CODE (+ STONECHAT_TEST_CODE_PLAN) is
     still honored alongside."""
     entries: list[tuple[str, str]] = []
-    for part in os.environ.get("ZEON_TEST_CODES", "").split(","):
+    for part in os.environ.get("STONECHAT_TEST_CODES", "").split(","):
         part = part.strip()
         if part:
             code, _, plan = part.partition("=")
             entries.append((normalize_code(code), plan.strip() or "private"))
-    legacy = normalize_code(os.environ.get("ZEON_TEST_CODE", ""))
+    legacy = normalize_code(os.environ.get("STONECHAT_TEST_CODE", ""))
     if legacy:
-        entries.append((legacy, os.environ.get("ZEON_TEST_CODE_PLAN", "private")))
+        entries.append((legacy, os.environ.get("STONECHAT_TEST_CODE_PLAN", "private")))
     granted = None
     for code, plan in entries:  # no early exit — comparisons stay constant-time
         if code and secrets.compare_digest(code, normalized):
@@ -236,7 +236,7 @@ def _test_code_plan(normalized: str) -> str | None:
     return granted
 
 
-def _grant_test_subscription(zeon_id: str, plan: str) -> dict | None:
+def _grant_test_subscription(stonechat_id: str, plan: str) -> dict | None:
     """A test code is never consumed: each redemption mints and claims a
     fresh comp subscription, so it survives identity resets on test devices."""
     for _ in range(5):
@@ -246,30 +246,30 @@ def _grant_test_subscription(zeon_id: str, plan: str) -> dict | None:
                                       note="test code grant")
         except sqlite3.IntegrityError:
             continue
-        return store.claim_subscription(_code_hash(code), zeon_id)
+        return store.claim_subscription(_code_hash(code), stonechat_id)
     return None
 
 
 @router.post("/v1/billing/redeem")
 def redeem(body: RedeemIn, user: User):
-    if store.entitlement_for(user["zeon_id"]):
+    if store.entitlement_for(user["stonechat_id"]):
         raise HTTPException(409, {
             "code": "already_subscribed",
             "message": "this account already has an active plan",
         })
     normalized = normalize_code(body.code)
     if (test_plan := _test_code_plan(normalized)) is not None:
-        sub = _grant_test_subscription(user["zeon_id"], test_plan)
+        sub = _grant_test_subscription(user["stonechat_id"], test_plan)
     else:
         sub = (
-            store.claim_subscription(hash_token(normalized), user["zeon_id"])
+            store.claim_subscription(hash_token(normalized), user["stonechat_id"])
             if len(normalized) == _CODE_LEN
             else None
         )
     if not sub:
         # invalid, spent and lapsed all look identical — no oracle
         raise HTTPException(404, "invalid or already used code")
-    log.info("code redeemed by %s (%s)", user["zeon_id"][:12], sub["plan"])
+    log.info("code redeemed by %s (%s)", user["stonechat_id"][:12], sub["plan"])
     return {
         "plan": sub["plan"],
         "status": sub["status"],
@@ -279,7 +279,7 @@ def redeem(body: RedeemIn, user: User):
 
 @router.get("/v1/billing/entitlement")
 def entitlement(user: User):
-    ent = store.entitlement_for(user["zeon_id"])
+    ent = store.entitlement_for(user["stonechat_id"])
     if not ent:
         return {"plan": None}
     return {
@@ -300,7 +300,7 @@ class CompIn(BaseModel):
 @router.post("/v1/billing/comp", status_code=201)
 def comp(body: CompIn, _admin: Admin):
     """Mint a free activation code (TestFlight testers, e2e). Redeemed in the
-    app exactly like a paid one. Disabled unless ZEON_ADMIN_TOKEN is set."""
+    app exactly like a paid one. Disabled unless STONECHAT_ADMIN_TOKEN is set."""
     for _ in range(5):
         code = mint_code()
         try:

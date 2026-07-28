@@ -16,11 +16,11 @@ class MyIdScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = context.watch<AppState>();
-    final zeonId = app.zeonId ?? '';
+    final stonechatId = app.stonechatId ?? '';
     // Cross-hub builds tag the invite with our hub so a peer on another hub
     // can resolve the ID; untagged invites keep meaning "the scanner's hub".
-    final inviteLink = zeonInviteLink(zeonId,
-        hub: zeonCrossHub ? app.api.baseUrl : null);
+    final inviteLink = stonechatInviteLink(stonechatId,
+        hub: stonechatCrossHub ? app.api.baseUrl : null);
 
     return Scaffold(
       appBar: AppBar(
@@ -53,7 +53,7 @@ class MyIdScreen extends StatelessWidget {
               ),
               const SizedBox(height: 18),
               SelectableText(
-                zeonId,
+                stonechatId,
                 textAlign: TextAlign.center,
                 style: Zn.mono(size: 13, color: Zn.orange, weight: FontWeight.w700),
               ),
@@ -65,7 +65,7 @@ class MyIdScreen extends StatelessWidget {
                 children: [
                   OutlinedButton.icon(
                     onPressed: () {
-                      Clipboard.setData(ClipboardData(text: zeonId));
+                      Clipboard.setData(ClipboardData(text: stonechatId));
                       showZnSnack(context, 'Code copied');
                     },
                     icon: const Icon(Icons.copy, size: 16),
@@ -114,8 +114,8 @@ class _AvatarEditor extends StatelessWidget {
       child: Stack(
         clipBehavior: Clip.none,
         children: [
-          ZeonAvatar(
-            zeonId: app.zeonId ?? '',
+          StonechatAvatar(
+            stonechatId: app.stonechatId ?? '',
             name: app.displayName ?? '',
             size: 96,
             image: app.avatar,

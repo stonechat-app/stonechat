@@ -41,8 +41,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final allContacts = [...chat.acceptedContacts]..sort((a, b) => compare(
         a.pinnedAt,
         b.pinnedAt,
-        activity(a.zeonId, a.createdAt),
-        activity(b.zeonId, b.createdAt)));
+        activity(a.stonechatId, a.createdAt),
+        activity(b.stonechatId, b.createdAt)));
     final allGroups = [...chat.groups]..sort((a, b) => compare(a.pinnedAt,
         b.pinnedAt, activity(a.id, a.createdAt), activity(b.id, b.createdAt)));
 
@@ -62,7 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('ZEON',
+        title: Text('STONECHAT',
             style: Zn.mono(
                 size: 20, color: Zn.orange, weight: FontWeight.w700, letterSpacing: 6)),
         actions: [
@@ -398,7 +398,7 @@ class _GroupTile extends StatelessWidget {
     final memberCount = chat.groupMembers[group.id]?.length ?? 0;
 
     return ListTile(
-      leading: ZeonAvatar(zeonId: group.id, name: '◈', size: 42),
+      leading: StonechatAvatar(stonechatId: group.id, name: '◈', size: 42),
       title: Text(group.name,
           style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: last == null
@@ -444,13 +444,13 @@ class _RequestTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final chat = context.read<ChatState>();
     return ListTile(
-      leading: ZeonAvatar(
-          zeonId: contact.zeonId,
+      leading: StonechatAvatar(
+          stonechatId: contact.stonechatId,
           name: contact.displayName,
           image: contact.avatar),
       title: Text(contact.displayName,
           style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text('${contact.zeonId.substring(0, 12)} · wants to connect',
+      subtitle: Text('${contact.stonechatId.substring(0, 12)} · wants to connect',
           style: const TextStyle(color: Zn.muted, fontSize: 12)),
       // An unsolicited request from a stranger is the one abuse that arrives
       // before there is any conversation to report from, so the report path
@@ -492,14 +492,14 @@ class _SentRequestTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final chat = context.read<ChatState>();
     return ListTile(
-      leading: ZeonAvatar(
-          zeonId: contact.zeonId,
+      leading: StonechatAvatar(
+          stonechatId: contact.stonechatId,
           name: contact.displayName,
           image: contact.avatar),
       title: Text(contact.displayName,
           style: const TextStyle(fontWeight: FontWeight.w600)),
       subtitle: Text(
-          '${contact.zeonId.substring(0, 12)} · request sent · waiting',
+          '${contact.stonechatId.substring(0, 12)} · request sent · waiting',
           style: const TextStyle(color: Zn.muted, fontSize: 12)),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -539,11 +539,11 @@ class _ConversationTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final chat = context.watch<ChatState>();
-    final last = chat.lastMessage[contact.zeonId];
+    final last = chat.lastMessage[contact.stonechatId];
 
     return ListTile(
-      leading: ZeonAvatar(
-          zeonId: contact.zeonId,
+      leading: StonechatAvatar(
+          stonechatId: contact.stonechatId,
           name: contact.displayName,
           image: contact.avatar),
       title: Text(contact.displayName,
@@ -568,8 +568,8 @@ class _ConversationTile extends StatelessWidget {
           archived: contact.isArchived,
           blocked: contact.isBlocked,
           onTogglePin: () => chat.togglePinContact(contact),
-          onMute: (until) => chat.setMute(contact.zeonId, until),
-          onToggleArchive: () => chat.toggleArchive(contact.zeonId),
+          onMute: (until) => chat.setMute(contact.stonechatId, until),
+          onToggleArchive: () => chat.toggleArchive(contact.stonechatId),
           onToggleBlock: () => chat.toggleBlock(contact),
           onReport: () => _reportContact(context, chat, contact)),
     );
@@ -583,11 +583,11 @@ Future<void> _reportContact(
   // From the list, the conversation may never have been opened — read the
   // stored history rather than the in-memory cache, which would be empty and
   // silently offer nothing to attach.
-  final history = await chat.historyFor(contact.zeonId);
+  final history = await chat.historyFor(contact.stonechatId);
   if (!context.mounted) return;
   final outcome = await showReportSheet(
     context,
-    zeonId: contact.zeonId,
+    stonechatId: contact.stonechatId,
     displayName: contact.displayName,
     hub: contact.hub,
     conversation: history,

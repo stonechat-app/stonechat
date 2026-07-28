@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Zeon Chat - TestFlight Upload Script
+# Stonechat - TestFlight Upload Script
 # Validates and uploads the IPA to App Store Connect
 
 set -e

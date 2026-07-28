@@ -47,7 +47,7 @@ pub async fn ping_gateway(state: Arc<AppState>, ring: bool) {
             "ring": ring,
         }));
     if !state.cfg.push_key.is_empty() {
-        req = req.header("X-Zeon-Push-Key", &state.cfg.push_key);
+        req = req.header("X-Stonechat-Push-Key", &state.cfg.push_key);
     }
     // warning, not debug: a misconfigured/unreachable gateway looks exactly
     // like "push doesn't work" and must be visible in logs.

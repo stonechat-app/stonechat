@@ -1,4 +1,4 @@
-"""End-to-end test of the Zeon stack (protocol v1), no Flutter needed.
+"""End-to-end test of the Stonechat stack (protocol v1), no Flutter needed.
 
 Simulates phones with PyNaCl (same libsodium primitives the app uses) plus
 the pqcore Rust library over ctypes (the same C ABI the app loads over FFI —
@@ -45,10 +45,10 @@ from nacl.signing import SigningKey, VerifyKey
 from nacl.utils import random as nacl_random
 
 import os
-HUB = os.environ.get("ZEON_HUB", "http://127.0.0.1:8477")
-# must match the ZEON_ADMIN_TOKEN / ZEON_TEST_CODE the hub was started with (README)
-ADMIN_TOKEN = os.environ.get("ZEON_ADMIN_TOKEN", "test-admin")
-TEST_CODE = os.environ.get("ZEON_TEST_CODE", "ZEON-TEST-TEST")
+HUB = os.environ.get("STONECHAT_HUB", "http://127.0.0.1:8477")
+# must match the STONECHAT_ADMIN_TOKEN / STONECHAT_TEST_CODE the hub was started with (README)
+ADMIN_TOKEN = os.environ.get("STONECHAT_ADMIN_TOKEN", "test-admin")
+TEST_CODE = os.environ.get("STONECHAT_TEST_CODE", "STONECHAT-TEST-TEST")
 
 # Mailbox client: no CA validation (self-signed by design); see module docstring.
 MX = httpx.Client(verify=False, timeout=10)
@@ -57,9 +57,9 @@ WS_SSL.check_hostname = False
 WS_SSL.verify_mode = ssl.CERT_NONE
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "hub"))
-from app.identity import zeon_id_from_pubkey  # noqa: E402
+from app.identity import stonechat_id_from_pubkey  # noqa: E402
 
-TLS_SIG_CONTEXT = b"zeon-v1-tls"
+TLS_SIG_CONTEXT = b"stonechat-v1-tls"
 
 
 def live_cert_fp(address: str) -> str:
@@ -74,7 +74,7 @@ def live_cert_fp(address: str) -> str:
 def assert_pinned(phone: "Phone") -> None:
     """The full client-side transport check: directory fp is vouched for by
     the owner's identity key AND matches the certificate actually served."""
-    entry = httpx.get(f"{HUB}/v1/directory/{phone.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{phone.stonechat_id}").json()
     srv = entry["server"]
     VerifyKey(base64.b64decode(entry["pubkey"])).verify(
         TLS_SIG_CONTEXT + base64.b64decode(srv["tls_fp"]),
@@ -88,13 +88,13 @@ def assert_pinned(phone: "Phone") -> None:
 
 import pqcore  # noqa: E402  (scripts/pqcore.py — ctypes over the Rust core)
 
-X3DH_KDF_KEY = b"zeon-v1-pqxdh-kdf"
-SPK_SIG_CONTEXT = b"zeon-v1-spk"
-KSPK_SIG_CONTEXT = b"zeon-v1-kspk"
-PQPK_SIG_CONTEXT = b"zeon-v1-pqpk"
-PQID_SEED_KEY = b"zeon-v1-pqidseed"
-HSEAL_KDF_KEY = b"zeon-v1-hsealkdf"
-HSEAL_AD = b"zeon-v1-hseal"
+X3DH_KDF_KEY = b"stonechat-v1-pqxdh-kdf"
+SPK_SIG_CONTEXT = b"stonechat-v1-spk"
+KSPK_SIG_CONTEXT = b"stonechat-v1-kspk"
+PQPK_SIG_CONTEXT = b"stonechat-v1-pqpk"
+PQID_SEED_KEY = b"stonechat-v1-pqidseed"
+HSEAL_KDF_KEY = b"stonechat-v1-hsealkdf"
+HSEAL_AD = b"stonechat-v1-hseal"
 MAX_SKIP = 256
 
 
@@ -122,7 +122,7 @@ def unb64(s: str) -> bytes:
 def ad_for(envelope: dict) -> bytes:
     r = envelope["ratchet"]
     return (
-        f"zeon/v1|{envelope['from']}|{envelope['to']}|{envelope['type']}"
+        f"stonechat/v1|{envelope['from']}|{envelope['to']}|{envelope['type']}"
         f"|{r['dh']}|{r['pn']}|{r['n']}"
     ).encode()
 
@@ -134,7 +134,7 @@ def session_encrypt(state: dict, plaintext: bytes, meta: dict) -> dict:
     state["ns"] += 1
     nonce = nacl_random(24)
     ad = (
-        f"zeon/v1|{meta['from']}|{meta['to']}|{meta['type']}"
+        f"stonechat/v1|{meta['from']}|{meta['to']}|{meta['type']}"
         f"|{header['dh']}|{header['pn']}|{header['n']}"
     ).encode()
     ct = crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, ad, nonce, mk)
@@ -196,10 +196,10 @@ class Phone:
         self.name = name
         self.identity = SigningKey.generate()  # Ed25519
         self.pubkey_b64 = b64(bytes(self.identity.verify_key))
-        self.zeon_id = None
+        self.stonechat_id = None
         self.token = None
         self.server = None
-        self.sessions = {}  # peer zeon_id -> ratchet state dict
+        self.sessions = {}  # peer stonechat_id -> ratchet state dict
         self.spk = None  # {"id", "priv", "pub"}
         self.opks = {}  # id -> priv bytes
         self.kspk = None  # {"id", "seed", "pub"} — ML-KEM-768 signed prekey
@@ -209,7 +209,7 @@ class Phone:
 
     def derive_pq(self):
         """The X-Wing identity is derived from the Ed25519 secret exactly as
-        the app does (crypto.dart): seed = H(sk64, key="zeon-v1-pqidseed").
+        the app does (crypto.dart): seed = H(sk64, key="stonechat-v1-pqidseed").
         Re-call after replacing self.identity (echo_bot restore path)."""
         sk64 = bytes(self.identity) + bytes(self.identity.verify_key)
         self.pq_seed = H(sk64, PQID_SEED_KEY, 32)
@@ -227,11 +227,11 @@ class Phone:
         })
         r.raise_for_status()
         data = r.json()
-        self.zeon_id, self.token = data["zeon_id"], data["account_token"]
-        expected = zeon_id_from_pubkey(bytes(self.identity.verify_key))
-        assert self.zeon_id == expected, "server-derived ID != client-derived ID"
+        self.stonechat_id, self.token = data["stonechat_id"], data["account_token"]
+        expected = stonechat_id_from_pubkey(bytes(self.identity.verify_key))
+        assert self.stonechat_id == expected, "server-derived ID != client-derived ID"
         assert "handle" not in data, "handles were removed; register must not return one"
-        print(f"  {self.name}: {self.zeon_id}")
+        print(f"  {self.name}: {self.stonechat_id}")
 
     @property
     def auth(self):
@@ -247,7 +247,7 @@ class Phone:
         digest = hashlib.blake2b(
             category.encode() + b"\x1f" + note.encode() + b"\x1f"
             + (evidence or "").encode(), digest_size=32).digest()
-        material = (b"zeon-v1-report" + reported_id.encode()
+        material = (b"stonechat-v1-report" + reported_id.encode()
                     + str(timestamp).encode() + digest)
         return httpx.post(f"{hub or HUB}/v1/report", json={
             "reported_id": reported_id,
@@ -367,7 +367,7 @@ class Phone:
 
         ratchet = PrivateKey.generate()
         rk, cks = kdf_rk(sk, crypto_scalarmult(bytes(ratchet), spk_pub))
-        self.sessions[to.zeon_id] = {
+        self.sessions[to.stonechat_id] = {
             "rk": rk, "dhs_priv": bytes(ratchet), "dhs_pub": bytes(ratchet.public_key),
             "dhr": spk_pub, "cks": cks, "ckr": None,
             "ns": 0, "nr": 0, "pn": 0, "skipped": {}, "confirmed": False,
@@ -386,8 +386,8 @@ class Phone:
         """Responder PQXDH from an initial envelope's x3dh block."""
         block = envelope["x3dh"]
         sender_ed = VerifyKey(unb64(block["ik"]))
-        assert zeon_id_from_pubkey(bytes(sender_ed)) == envelope["from"], \
-            "x3dh identity key must commit to the sender's Zeon ID"
+        assert stonechat_id_from_pubkey(bytes(sender_ed)) == envelope["from"], \
+            "x3dh identity key must commit to the sender's Stonechat ID"
         assert block["spk_id"] == self.spk["id"]
         ek_pub = unb64(block["ek"])
         sender_ikx = bytes(sender_ed.to_curve25519_public_key())
@@ -420,17 +420,17 @@ class Phone:
                       envelope_id=None, blob_id=None) -> dict:
         """The inner envelope: session-encrypted payload + routing fields.
         Only the recipient ever sees this — it travels inside wrap()."""
-        if to.zeon_id not in self.sessions:
+        if to.stonechat_id not in self.sessions:
             self._initiate_session(to)
-        state = self.sessions[to.zeon_id]
-        meta = {"from": self.zeon_id, "to": to.zeon_id, "type": type_}
+        state = self.sessions[to.stonechat_id]
+        meta = {"from": self.stonechat_id, "to": to.stonechat_id, "type": type_}
         sealed = session_encrypt(state, json.dumps(payload).encode(), meta)
         envelope = {
             "v": 1,
             "id": envelope_id or str(uuid.uuid4()),
             "type": type_,
-            "from": self.zeon_id,
-            "to": to.zeon_id,
+            "from": self.stonechat_id,
+            "to": to.stonechat_id,
             "sent_at": datetime.now(timezone.utc).isoformat(),
             **sealed,
         }
@@ -532,9 +532,9 @@ def main():
     bob.register()
 
     print("2) directory lookup + commitment check")
-    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
     assert entry["pubkey"] == bob.pubkey_b64
-    assert zeon_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.zeon_id
+    assert stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.stonechat_id
     # The X-Wing identity key rides in the directory under an Ed25519
     # signature — resolvers verify it before sealing anything to it.
     assert entry["pq_pk"] == bob.pq_pk_b64
@@ -552,7 +552,7 @@ def main():
         "pq_sig": b64(sig_by_other_key),
     })
     assert r.status_code == 400, f"forged pq_sig: expected 400, got {r.status_code}"
-    lower = bob.zeon_id.lower().replace("-", "")
+    lower = bob.stonechat_id.lower().replace("-", "")
     assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
     assert "handle" not in entry, "directory must not return a handle"
 
@@ -569,7 +569,7 @@ def main():
     print("3a) pinned TLS: owners vouch for their relays' certificates")
     # before publication the directory has the fingerprint but no signature —
     # pinning clients treat that as "no server"
-    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
     assert entry["server"]["tls_sig"] is None
     alice.publish_tls_sig()
     bob.publish_tls_sig()
@@ -618,7 +618,7 @@ def main():
                    json={"plan": "private", "note": "e2e"})
     assert r.status_code == 201, (
         f"comp grant failed ({r.status_code}) — start the hub with "
-        f"ZEON_ADMIN_TOKEN={ADMIN_TOKEN}")
+        f"STONECHAT_ADMIN_TOKEN={ADMIN_TOKEN}")
     code = r.json()["code"]
     httpx.post(f"{HUB}/v1/billing/redeem", headers=carol.auth,
                json={"code": code}).raise_for_status()
@@ -629,7 +629,7 @@ def main():
                    json={"code": code})
     assert r.status_code == 409, f"re-redeem: expected 409, got {r.status_code}"
 
-    # ...except ZEON_TEST_CODE, which works for any number of fresh identities
+    # ...except STONECHAT_TEST_CODE, which works for any number of fresh identities
     # (the TestFlight reset-and-reactivate loop, PROTOCOL.md "Billing")
     for name in ("tess1", "tess2"):
         tess = Phone(name)
@@ -638,7 +638,7 @@ def main():
                        json={"code": TEST_CODE})
         assert r.status_code == 200, (
             f"test code redeem failed ({r.status_code}) — start the hub with "
-            f"ZEON_TEST_CODE={TEST_CODE}")
+            f"STONECHAT_TEST_CODE={TEST_CODE}")
         ent = httpx.get(f"{HUB}/v1/billing/entitlement",
                         headers=tess.auth).json()
         assert ent["plan"] == "private" and ent["source"] == "test"
@@ -647,10 +647,10 @@ def main():
     r.raise_for_status()
     carol.wait_running()
     assert MX.get(f"{carol.server['address']}/owner",
-                  params={"zeon_id": carol.zeon_id}).status_code == 200, \
+                  params={"stonechat_id": carol.stonechat_id}).status_code == 200, \
         "mailbox must confirm its own owner"
     assert MX.get(f"{carol.server['address']}/owner",
-                  params={"zeon_id": "ZC-NOT-THE-OWNER"}).status_code == 404, \
+                  params={"stonechat_id": "SC-NOT-THE-OWNER"}).status_code == 404, \
         "mailbox must not confirm a stranger's ID (no address→identity leak)"
     carol.destroy()
     assert httpx.get(f"{HUB}/v1/server", headers=carol.auth).json()["status"] == "none"
@@ -661,9 +661,9 @@ def main():
     dave_token = "dave-keeps-this-token-himself"
     cid = subprocess.run(
         ["docker", "run", "-d", "-p", "0:8080",
-         "-e", f"ZEON_OWNER_ID={dave.zeon_id}",
-         "-e", f"ZEON_OWNER_TOKEN={dave_token}",
-         "zeon-server:dev"],
+         "-e", f"STONECHAT_OWNER_ID={dave.stonechat_id}",
+         "-e", f"STONECHAT_OWNER_TOKEN={dave_token}",
+         "stonechat-server:dev"],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     try:
@@ -691,7 +691,7 @@ def main():
         r.raise_for_status()
         record = httpx.get(f"{HUB}/v1/server", headers=dave.auth).json()
         assert record["provider"] == "external" and record["server_token"] is None
-        entry = httpx.get(f"{HUB}/v1/directory/{dave.zeon_id}").json()
+        entry = httpx.get(f"{HUB}/v1/directory/{dave.stonechat_id}").json()
         assert entry["server"]["address"] == dave_address
         dave.server = {"address": dave_address, "server_token": dave_token,
                        "status": "running"}
@@ -707,7 +707,7 @@ def main():
 
         # disconnect = directory delisting only (no provider destroy)
         httpx.delete(f"{HUB}/v1/server", headers=dave.auth).raise_for_status()
-        entry = httpx.get(f"{HUB}/v1/directory/{dave.zeon_id}").json()
+        entry = httpx.get(f"{HUB}/v1/directory/{dave.stonechat_id}").json()
         assert entry["server"] is None
         assert MX.get(f"{dave_address}/health").status_code == 200, \
             "dave's own server must keep running after disconnect"
@@ -723,11 +723,11 @@ def main():
     agent_proc = subprocess.Popen(
         [sys.executable, str(agent_dir / "main.py")],
         env={**os.environ,
-             "ZEON_HOST_AGENT_ADMIN_TOKEN": agent_admin,
-             "ZEON_HOST_AGENT_ADVERTISE_HOST": "127.0.0.1",
-             "ZEON_HOST_AGENT_PORT": agent_port,
-             "ZEON_HOST_AGENT_DB": os.path.join(agent_data, "agent.db"),
-             "ZEON_HOST_AGENT_TLS_DIR": agent_data},
+             "STONECHAT_HOST_AGENT_ADMIN_TOKEN": agent_admin,
+             "STONECHAT_HOST_AGENT_ADVERTISE_HOST": "127.0.0.1",
+             "STONECHAT_HOST_AGENT_PORT": agent_port,
+             "STONECHAT_HOST_AGENT_DB": os.path.join(agent_data, "agent.db"),
+             "STONECHAT_HOST_AGENT_TLS_DIR": agent_data},
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     admin_hdr = {"Authorization": f"Bearer {agent_admin}"}
@@ -747,7 +747,7 @@ def main():
                     json={"uses": 1, "ttl_hours": 24})
         r.raise_for_status()
         blob = r.json()["invite"]
-        assert blob.startswith("zeon-host:")
+        assert blob.startswith("stonechat-host:")
         invite = json.loads(base64.urlsafe_b64decode(blob.split(":", 1)[1] + "=="))
         assert invite["f"] == live_cert_fp(agent_url), \
             "invite must pin the host agent's real certificate"
@@ -755,14 +755,14 @@ def main():
         # a bad token is rejected
         assert MX.post(f"{agent_url}/v1/redeem",
                        json={"invite": "not-a-real-invite-token",
-                             "owner_id": "ZC-" + "A" * 36}
+                             "owner_id": "SC-" + "A" * 36}
                        ).status_code == 403
 
         # frank redeems it -> a mailbox on the host-owner's box
         frank = Phone("frank")
         frank.register()
         r = MX.post(f"{agent_url}/v1/redeem",
-                    json={"invite": invite["t"], "owner_id": frank.zeon_id})
+                    json={"invite": invite["t"], "owner_id": frank.stonechat_id})
         r.raise_for_status()
         hosted = r.json()
         assert hosted["tls_fp"] == live_cert_fp(hosted["address"]), \
@@ -787,7 +787,7 @@ def main():
         grace = Phone("grace")
         grace.register()
         assert MX.post(f"{agent_url}/v1/redeem",
-                       json={"invite": invite["t"], "owner_id": grace.zeon_id}
+                       json={"invite": invite["t"], "owner_id": grace.stonechat_id}
                        ).status_code == 403, "single-use invite must not redeem twice"
 
         # the host-owner sees sent-invite status: who accepted, uses left
@@ -796,11 +796,11 @@ def main():
         r.raise_for_status()
         mine = [i for i in r.json()["invites"] if i["invite"] == blob]
         assert mine and mine[0]["uses"] == 1 and mine[0]["uses_left"] == 0 \
-            and mine[0]["redeemed_by"] == [frank.zeon_id], \
+            and mine[0]["redeemed_by"] == [frank.stonechat_id], \
             "invite status must record frank's redemption"
 
         # host-owner evicts frank -> his container is destroyed
-        MX.delete(f"{agent_url}/v1/guest/{frank.zeon_id}",
+        MX.delete(f"{agent_url}/v1/guest/{frank.stonechat_id}",
                   headers=admin_hdr).raise_for_status()
         httpx.delete(f"{HUB}/v1/server", headers=frank.auth)  # tidy the directory
     finally:
@@ -810,7 +810,7 @@ def main():
         except Exception:
             agent_proc.kill()
         leftover = subprocess.run(
-            ["docker", "ps", "-aq", "--filter", "label=zeon.hosted=1"],
+            ["docker", "ps", "-aq", "--filter", "label=stonechat.hosted=1"],
             capture_output=True, text=True).stdout.split()
         if leftover:
             subprocess.run(["docker", "rm", "-f", *leftover], capture_output=True)
@@ -840,15 +840,15 @@ def main():
     bob.deliver_to(alice, bob.seal(alice, "contact_accept", {"display_name": "Bob"}))
     acc = asyncio.run(alice.receive_one())
     assert alice.open_envelope(acc, bob) == {"display_name": "Bob"}
-    assert alice.sessions[bob.zeon_id]["confirmed"], "round trip confirms the session"
+    assert alice.sessions[bob.stonechat_id]["confirmed"], "round trip confirms the session"
 
     print("5b) group wire format: create + message, key commitments verify")
     group_id = str(uuid.uuid4())
     membership = {
         "group_id": group_id, "name": "e2e crew", "version": 1,
-        "admin": alice.zeon_id,
+        "admin": alice.stonechat_id,
         "members": [
-            {"zeon_id": p.zeon_id, "pubkey": p.pubkey_b64, "display_name": p.name}
+            {"stonechat_id": p.stonechat_id, "pubkey": p.pubkey_b64, "display_name": p.name}
             for p in (alice, bob)
         ],
     }
@@ -858,8 +858,8 @@ def main():
     assert bob.unseal(created)["from"] == got_membership["admin"], \
         "admin must be the sender"
     for m in got_membership["members"]:
-        derived = zeon_id_from_pubkey(base64.b64decode(m["pubkey"]))
-        assert derived == m["zeon_id"], "member key commitment must verify"
+        derived = stonechat_id_from_pubkey(base64.b64decode(m["pubkey"]))
+        assert derived == m["stonechat_id"], "member key commitment must verify"
 
     alice.deliver_to(bob, alice.seal(bob, "group_msg",
                                      {"group_id": group_id, "text": "hi crew"}))
@@ -886,7 +886,7 @@ def main():
     # …and bob's CURRENT session state cannot decrypt the recorded envelope 6:
     # the message key that sealed it was deleted on use — compromise-now does
     # not decrypt recorded-then.
-    compromised = copy.deepcopy(bob.sessions[alice.zeon_id])
+    compromised = copy.deepcopy(bob.sessions[alice.stonechat_id])
     try:
         session_decrypt(compromised, first_inner)
         raise AssertionError("old ciphertext decrypted from current state — no FS!")
@@ -898,13 +898,13 @@ def main():
     print("6b) unsealed / wrong-version envelopes are rejected outright")
     cleartext_env = {
         "v": 1, "id": str(uuid.uuid4()), "type": "msg",
-        "from": alice.zeon_id, "to": bob.zeon_id,
+        "from": alice.stonechat_id, "to": bob.stonechat_id,
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "nonce": b64(nacl_random(24)), "ciphertext": b64(nacl_random(64)),
     }
     r = MX.post(f"{bob.server['address']}/inbox", json=cleartext_env)
     assert r.status_code == 400, f"expected 400 for unsealed envelope, got {r.status_code}"
-    wrong_version = {"v": 2, "id": str(uuid.uuid4()), "to": bob.zeon_id,
+    wrong_version = {"v": 2, "id": str(uuid.uuid4()), "to": bob.stonechat_id,
                      "sealed": b64(nacl_random(64))}
     r = MX.post(f"{bob.server['address']}/inbox", json=wrong_version)
     assert r.status_code == 400, f"expected 400 for wrong version, got {r.status_code}"
@@ -970,7 +970,7 @@ def main():
     time.sleep(0.5)
     assert bob.queue_depth() == 0
 
-    push_gateway = os.environ.get("ZEON_TEST_PUSH_GATEWAY")
+    push_gateway = os.environ.get("STONECHAT_TEST_PUSH_GATEWAY")
     if push_gateway:
         print("8b) offline owner triggers a content-free gateway ping")
         r = MX.post(
@@ -1009,7 +1009,7 @@ def main():
 
     r = httpx.get(f"{HUB}/v1/admin/whois", params={"host": host}, headers=admin_hdr)
     r.raise_for_status()
-    hit = next(s for s in r.json()["servers"] if s["zeon_id"] == mallory.zeon_id)
+    hit = next(s for s in r.json()["servers"] if s["stonechat_id"] == mallory.stonechat_id)
     assert hit["provider"] == "local" and hit["prior_destroys"] == 0
     assert hit["banned_at"] is None
     assert "server_token" not in r.text and "host_agent_token" not in r.text, \
@@ -1021,7 +1021,7 @@ def main():
     assert r.json()["servers"] == [], "substring matched — wrong customer at risk"
 
     # ban shuts BOTH provisioning doors; the external one is the cheap bypass
-    r = httpx.post(f"{HUB}/v1/admin/users/{mallory.zeon_id}/ban",
+    r = httpx.post(f"{HUB}/v1/admin/users/{mallory.stonechat_id}/ban",
                    headers=admin_hdr, json={"reason": "e2e: phishing report"})
     r.raise_for_status()
     r = httpx.post(f"{HUB}/v1/server", headers=mallory.auth,
@@ -1038,37 +1038,37 @@ def main():
     # account. Making "banned" and "never existed" the same state would be a
     # censorship lever the hub shouldn't have.
     assert httpx.get(f"{HUB}/v1/server", headers=mallory.auth).status_code == 200
-    assert httpx.get(f"{HUB}/v1/directory/{mallory.zeon_id}").status_code == 200
+    assert httpx.get(f"{HUB}/v1/directory/{mallory.stonechat_id}").status_code == 200
 
-    r = httpx.post(f"{HUB}/v1/admin/servers/{mallory.zeon_id}/destroy",
+    r = httpx.post(f"{HUB}/v1/admin/servers/{mallory.stonechat_id}/destroy",
                    headers=admin_hdr, json={"reason": "e2e: provider case 12345"})
     r.raise_for_status()
     assert httpx.get(f"{HUB}/v1/server", headers=mallory.auth).json()["status"] == "none"
-    assert httpx.get(f"{HUB}/v1/directory/{mallory.zeon_id}").json()["server"] is None
+    assert httpx.get(f"{HUB}/v1/directory/{mallory.stonechat_id}").json()["server"] is None
     try:
         MX.get(f"{mallory.server['address']}/health", timeout=3)
         raise AssertionError("mailbox still answering after destroy")
     except httpx.HTTPError:
         pass  # container is gone, not merely delisted
-    r = httpx.post(f"{HUB}/v1/admin/servers/{mallory.zeon_id}/destroy",
+    r = httpx.post(f"{HUB}/v1/admin/servers/{mallory.stonechat_id}/destroy",
                    headers=admin_hdr, json={"reason": "e2e: repeat"})
     assert r.status_code == 404, f"second destroy: expected 404, got {r.status_code}"
 
     # unban reopens the door, and the tombstone outlives the machine — that
     # history is what tells a first offence from a pattern on the next report
-    httpx.post(f"{HUB}/v1/admin/users/{mallory.zeon_id}/unban",
+    httpx.post(f"{HUB}/v1/admin/users/{mallory.stonechat_id}/unban",
                headers=admin_hdr).raise_for_status()
     mallory.provision()
     mallory.wait_running()
     r = httpx.get(f"{HUB}/v1/admin/whois",
                   params={"host": urlsplit(mallory.server["address"]).hostname},
                   headers=admin_hdr)
-    hit = next(s for s in r.json()["servers"] if s["zeon_id"] == mallory.zeon_id)
+    hit = next(s for s in r.json()["servers"] if s["stonechat_id"] == mallory.stonechat_id)
     assert hit["prior_destroys"] == 1, "tombstone did not survive the destroy"
     assert hit["banned_at"] is None
     mallory.destroy()
 
-    r = httpx.post(f"{HUB}/v1/admin/users/ZC-NOBODY/ban",
+    r = httpx.post(f"{HUB}/v1/admin/users/SC-NOBODY/ban",
                    headers=admin_hdr, json={"reason": "e2e: unknown"})
     assert r.status_code == 404, f"unknown ID ban: expected 404, got {r.status_code}"
 
@@ -1077,7 +1077,7 @@ def main():
     # report authenticates by *signature*, so it works across a hub
     # boundary where the reporter has no account — and that message plaintext
     # only ever appears when the reporter attached it.
-    r = alice.file_report(mallory.zeon_id, note="e2e: unsolicited messages")
+    r = alice.file_report(mallory.stonechat_id, note="e2e: unsolicited messages")
     assert r.status_code == 202, f"report: expected 202, got {r.status_code} {r.text}"
     ref = r.json()["report_id"]
 
@@ -1085,18 +1085,18 @@ def main():
     timestamp = int(time.time())
     digest = hashlib.blake2b(b"harassment\x1fe2e\x1f", digest_size=32).digest()
     good = alice.identity.sign(
-        b"zeon-v1-report" + mallory.zeon_id.encode()
+        b"stonechat-v1-report" + mallory.stonechat_id.encode()
         + str(timestamp).encode() + digest).signature
     r = httpx.post(f"{HUB}/v1/report", json={
-        "reported_id": mallory.zeon_id, "reporter_pubkey": alice.pubkey_b64,
+        "reported_id": mallory.stonechat_id, "reporter_pubkey": alice.pubkey_b64,
         "timestamp": timestamp, "category": "harassment",
         "note": "something the reporter never wrote", "evidence": None,
         "signature": b64(good)})
     assert r.status_code == 401, f"tampered note: expected 401, got {r.status_code}"
 
     # reporting yourself, and reporting into a hub that does not host you
-    assert alice.file_report(alice.zeon_id).status_code == 400
-    stranger = zeon_id_from_pubkey(bytes(SigningKey.generate().verify_key))
+    assert alice.file_report(alice.stonechat_id).status_code == 400
+    stranger = stonechat_id_from_pubkey(bytes(SigningKey.generate().verify_key))
     r = alice.file_report(stranger)
     assert r.status_code == 404 and r.json()["detail"]["code"] == "not_our_account", \
         "a report about an account we don't host must say so, not vanish"
@@ -1104,7 +1104,7 @@ def main():
     # a second, independent reporter — distinct reporters is the triage signal
     evidence = json.dumps({"v": 1, "messages": [
         {"sent_at": 1, "kind": "text", "text": "e2e attached message"}]})
-    r = bob.file_report(mallory.zeon_id, category="spam",
+    r = bob.file_report(mallory.stonechat_id, category="spam",
                         note="e2e: with transcript", evidence=evidence)
     assert r.status_code == 202, r.text
 
@@ -1143,7 +1143,7 @@ def main():
     alice.destroy()
     bob.destroy()
     assert httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["status"] == "none"
-    entry = httpx.get(f"{HUB}/v1/directory/{bob.zeon_id}").json()
+    entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
     assert entry["server"] is None
 
     print("\nALL E2E CHECKS PASSED")

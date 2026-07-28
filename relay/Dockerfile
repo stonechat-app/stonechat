@@ -8,14 +8,14 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
 COPY tests ./tests
-RUN cargo build --release && strip target/release/zeon-relay
+RUN cargo build --release && strip target/release/stonechat-relay
 
 FROM scratch
-COPY --from=build /src/target/release/zeon-relay /zeon-relay
+COPY --from=build /src/target/release/stonechat-relay /stonechat-relay
 
-ENV ZEON_DB=/data/mailbox.db
-ENV ZEON_BLOBS=/data/blobs
-ENV ZEON_TLS_DIR=/data
+ENV STONECHAT_DB=/data/mailbox.db
+ENV STONECHAT_BLOBS=/data/blobs
+ENV STONECHAT_TLS_DIR=/data
 
 EXPOSE 8080
-ENTRYPOINT ["/zeon-relay"]
+ENTRYPOINT ["/stonechat-relay"]

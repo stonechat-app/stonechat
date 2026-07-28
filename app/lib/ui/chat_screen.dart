@@ -1,4 +1,4 @@
-/// The Zeon conversation view: a left-aligned ledger, not bubbles.
+/// The Stonechat conversation view: a left-aligned ledger, not bubbles.
 ///
 /// Every message is a full-width entry with a colored rail — ion for you,
 /// the contact's derived color for them. Long silences render as actual
@@ -63,7 +63,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _flashTimer;
 
   bool get isGroup => widget.group != null;
-  String get conversationId => widget.contact?.zeonId ?? widget.group!.id;
+  String get conversationId => widget.contact?.stonechatId ?? widget.group!.id;
 
   @override
   void initState() {
@@ -443,8 +443,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   children: [
                     for (final c in contacts)
                       ListTile(
-                        leading: ZeonAvatar(
-                            zeonId: c.zeonId,
+                        leading: StonechatAvatar(
+                            stonechatId: c.stonechatId,
                             name: c.displayName,
                             size: 34,
                             image: c.avatar),
@@ -456,8 +456,8 @@ class _ChatScreenState extends State<ChatScreen> {
                       ),
                     for (final g in groups)
                       ListTile(
-                        leading: ZeonAvatar(
-                            zeonId: g.id, name: '◈ ${g.name}', size: 34),
+                        leading: StonechatAvatar(
+                            stonechatId: g.id, name: '◈ ${g.name}', size: 34),
                         title: Text(g.name),
                         onTap: () {
                           Navigator.pop(sheetContext);
@@ -803,13 +803,13 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// Who wrote [zeonId]'s messages, for quote headers: "You", a member's
+  /// Who wrote [stonechatId]'s messages, for quote headers: "You", a member's
   /// name, or the DM peer.
-  String _senderName(String? zeonId, ChatState chat) {
-    if (zeonId == null) return isGroup ? 'someone' : widget.contact!.displayName;
-    if (zeonId == chat.app.zeonId) return 'You';
+  String _senderName(String? stonechatId, ChatState chat) {
+    if (stonechatId == null) return isGroup ? 'someone' : widget.contact!.displayName;
+    if (stonechatId == chat.app.stonechatId) return 'You';
     if (isGroup) {
-      return chat.memberOf(conversationId, zeonId)?.displayName ??
+      return chat.memberOf(conversationId, stonechatId)?.displayName ??
           'former member';
     }
     return widget.contact!.displayName;
@@ -897,8 +897,8 @@ class _ChatScreenState extends State<ChatScreen> {
               : null,
           child: Row(
           children: [
-            ZeonAvatar(
-                zeonId: conversationId,
+            StonechatAvatar(
+                stonechatId: conversationId,
                 name: isGroup ? '◈ ${widget.group!.name}' : title,
                 size: 32,
                 image: widget.contact?.avatar),
@@ -918,7 +918,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     Text(
                         isGroup
                             ? '$memberCount members'
-                            : widget.contact!.zeonId.substring(0, 12),
+                            : widget.contact!.stonechatId.substring(0, 12),
                         style: Zn.mono(size: 9, letterSpacing: 1)),
                   ],
                 ),
@@ -973,10 +973,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 final contact = widget.contact!;
                 final outcome = await showReportSheet(
                   context,
-                  zeonId: contact.zeonId,
+                  stonechatId: contact.stonechatId,
                   displayName: contact.displayName,
                   hub: contact.hub,
-                  conversation: chat.messagesFor(contact.zeonId),
+                  conversation: chat.messagesFor(contact.stonechatId),
                   canBlock: !contact.isBlocked,
                 );
                 if (outcome.alsoBlock && !contact.isBlocked) {
@@ -1157,7 +1157,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         Text(
                             _senderName(
                                     _replyingTo!.outgoing
-                                        ? chat.app.zeonId
+                                        ? chat.app.stonechatId
                                         : (_replyingTo!.senderId ??
                                             _replyingTo!.contactId),
                                     chat)
@@ -1231,7 +1231,7 @@ class _LedgerEntry extends StatelessWidget {
   final String peerName;
   final Color peerColor;
   final bool showSender;
-  final Map<String, String> reactions; // reactor Zeon ID → emoji
+  final Map<String, String> reactions; // reactor Stonechat ID → emoji
   final String? myEmoji;
   final void Function(String emoji)? onReact;
   final String? quoteSender; // display name for the reply_to header
@@ -1916,7 +1916,7 @@ class _ComposerState extends State<_Composer> {
     await _recorder.start(
       const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 48000),
       path:
-          '${dir.path}/zeon-voice-${DateTime.now().millisecondsSinceEpoch}.m4a',
+          '${dir.path}/stonechat-voice-${DateTime.now().millisecondsSinceEpoch}.m4a',
     );
     setState(() => _recordingStarted = DateTime.now());
     _ticker =

@@ -1,4 +1,4 @@
-"""Zeon push gateway — the only place APNs/FCM credentials live.
+"""Stonechat push gateway — the only place APNs/FCM credentials live.
 
 Deliberately a separate service from the hub:
 - it holds the app-wide push credentials (most dangerous secret in the system),
@@ -12,17 +12,17 @@ alert; the phone connects to its own mailbox to fetch the actual (encrypted)
 envelopes.
 
 Config (env) — with none set the gateway runs in dev mode and just logs:
-    ZEON_APNS_KEY        path to the .p8 signing key        (iOS)
-    ZEON_APNS_KEY_ID     key id
-    ZEON_APNS_TEAM_ID    Apple team id
-    ZEON_APNS_TOPIC      app bundle id, e.g. com.zeon.zeonChat
-    ZEON_APNS_SANDBOX    "1" for the APNs sandbox host
-    ZEON_FCM_CREDENTIALS path to a Firebase service-account JSON (Android)
-    ZEON_GATEWAY_DEBUG   "1" → expose GET /v1/debug/pings (dev/e2e only)
-    ZEON_PUSH_MINT_SECRET  shared with the hub; when set, /v1/ping requires a
-                           hub-minted X-Zeon-Push-Key (PROTOCOL.md "Push
+    STONECHAT_APNS_KEY        path to the .p8 signing key        (iOS)
+    STONECHAT_APNS_KEY_ID     key id
+    STONECHAT_APNS_TEAM_ID    Apple team id
+    STONECHAT_APNS_TOPIC      app bundle id, e.g. com.stonechat.stonechat
+    STONECHAT_APNS_SANDBOX    "1" for the APNs sandbox host
+    STONECHAT_FCM_CREDENTIALS path to a Firebase service-account JSON (Android)
+    STONECHAT_GATEWAY_DEBUG   "1" → expose GET /v1/debug/pings (dev/e2e only)
+    STONECHAT_PUSH_MINT_SECRET  shared with the hub; when set, /v1/ping requires a
+                           hub-minted X-Stonechat-Push-Key (PROTOCOL.md "Push
                            gateway"). Unset → open, as before.
-    ZEON_PUSH_BLOCKLIST  path to a file of revoked key ids (one per line,
+    STONECHAT_PUSH_BLOCKLIST  path to a file of revoked key ids (one per line,
                          # comments ok); reloaded on mtime change.
 """
 
@@ -38,17 +38,17 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-log = logging.getLogger("zeon.gateway")
+log = logging.getLogger("stonechat.gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 MIN_INTERVAL_S = 3.0  # per-token debounce; mailboxes also debounce their side
 
-app = FastAPI(title="zeon-push-gateway")
+app = FastAPI(title="stonechat-push-gateway")
 
 _last_ping: dict[str, float] = {}  # token -> monotonic ts (bounded below)
 _debug_pings: deque = deque(maxlen=100)
 
-DEBUG = os.environ.get("ZEON_GATEWAY_DEBUG") == "1"
+DEBUG = os.environ.get("STONECHAT_GATEWAY_DEBUG") == "1"
 
 
 class PingIn(BaseModel):
@@ -58,12 +58,12 @@ class PingIn(BaseModel):
 
 # -- push-key auth ----------------------------------------------------------------
 # The hub mints each relay an opaque credential `pk_<id>:<hmac>` where the hmac
-# is HMAC-SHA256(ZEON_PUSH_MINT_SECRET, key_id). Verification is pure local
+# is HMAC-SHA256(STONECHAT_PUSH_MINT_SECRET, key_id). Verification is pure local
 # computation — no identity lookup, no hub round-trip — so this stays a
 # tokens+timing-only service. Revocation = key id in the blocklist file.
 
-MINT_SECRET = os.environ.get("ZEON_PUSH_MINT_SECRET", "")
-BLOCKLIST_PATH = os.environ.get("ZEON_PUSH_BLOCKLIST", "")
+MINT_SECRET = os.environ.get("STONECHAT_PUSH_MINT_SECRET", "")
+BLOCKLIST_PATH = os.environ.get("STONECHAT_PUSH_BLOCKLIST", "")
 
 _blocklist_cache: tuple[float, frozenset[str]] = (0.0, frozenset())
 
@@ -88,7 +88,7 @@ def _blocklist() -> frozenset[str]:
 
 def _check_push_key(push_key: str | None) -> str:
     """Returns the key id (for abuse tracing), or raises 403.
-    No-op ('') when ZEON_PUSH_MINT_SECRET is unset."""
+    No-op ('') when STONECHAT_PUSH_MINT_SECRET is unset."""
     if not MINT_SECRET:
         return ""
     if not push_key or ":" not in push_key or len(push_key) > 256:
@@ -114,9 +114,9 @@ async def health():
 @app.post("/v1/ping")
 async def ping(
     body: PingIn,
-    x_zeon_push_key: Annotated[str | None, Header()] = None,
+    x_stonechat_push_key: Annotated[str | None, Header()] = None,
 ):
-    key_id = _check_push_key(x_zeon_push_key)
+    key_id = _check_push_key(x_stonechat_push_key)
     now = time.monotonic()
     if now - _last_ping.get(body.device_token, 0.0) < MIN_INTERVAL_S:
         return {"sent": False, "reason": "debounced"}
@@ -155,7 +155,7 @@ async def debug_pings():
 def _apns_configured() -> bool:
     return all(
         os.environ.get(k)
-        for k in ("ZEON_APNS_KEY", "ZEON_APNS_KEY_ID", "ZEON_APNS_TEAM_ID", "ZEON_APNS_TOPIC")
+        for k in ("STONECHAT_APNS_KEY", "STONECHAT_APNS_KEY_ID", "STONECHAT_APNS_TEAM_ID", "STONECHAT_APNS_TOPIC")
     )
 
 
@@ -170,13 +170,13 @@ def _apns_auth_token() -> str:
     now = time.time()
     if _apns_jwt and now - _apns_jwt[1] < 50 * 60:
         return _apns_jwt[0]
-    with open(os.environ["ZEON_APNS_KEY"]) as f:
+    with open(os.environ["STONECHAT_APNS_KEY"]) as f:
         key = f.read()
     token = jwt.encode(
-        {"iss": os.environ["ZEON_APNS_TEAM_ID"], "iat": int(now)},
+        {"iss": os.environ["STONECHAT_APNS_TEAM_ID"], "iat": int(now)},
         key,
         algorithm="ES256",
-        headers={"kid": os.environ["ZEON_APNS_KEY_ID"]},
+        headers={"kid": os.environ["STONECHAT_APNS_KEY_ID"]},
     )
     _apns_jwt = (token, now)
     return token
@@ -185,7 +185,7 @@ def _apns_auth_token() -> str:
 async def _send_apns(device_token: str, key_id: str = "") -> None:
     host = (
         "https://api.sandbox.push.apple.com"
-        if os.environ.get("ZEON_APNS_SANDBOX") == "1"
+        if os.environ.get("STONECHAT_APNS_SANDBOX") == "1"
         else "https://api.push.apple.com"
     )
     # Content-free by design: a generic visible alert. Planned follow-up: a
@@ -193,7 +193,7 @@ async def _send_apns(device_token: str, key_id: str = "") -> None:
     # rewrites this.
     payload = {
         "aps": {
-            "alert": {"title": "Zeon", "body": "You have new messages"},
+            "alert": {"title": "Stonechat", "body": "You have new messages"},
             "sound": "default",
             "mutable-content": 1,
         }
@@ -204,9 +204,9 @@ async def _send_apns(device_token: str, key_id: str = "") -> None:
             json=payload,
             headers={
                 "authorization": f"bearer {_apns_auth_token()}",
-                "apns-topic": os.environ["ZEON_APNS_TOPIC"],
+                "apns-topic": os.environ["STONECHAT_APNS_TOPIC"],
                 "apns-push-type": "alert",
-                "apns-collapse-id": "zeon-new-messages",
+                "apns-collapse-id": "stonechat-new-messages",
             },
         )
     if r.status_code != 200:
@@ -218,7 +218,7 @@ async def _send_apns(device_token: str, key_id: str = "") -> None:
 # -- FCM ------------------------------------------------------------------------
 
 def _fcm_configured() -> bool:
-    return bool(os.environ.get("ZEON_FCM_CREDENTIALS"))
+    return bool(os.environ.get("STONECHAT_FCM_CREDENTIALS"))
 
 
 _fcm_token: tuple[str, float] | None = None
@@ -232,7 +232,7 @@ def _fcm_auth() -> tuple[str, str]:
     from google.auth.transport.requests import Request
     from google.oauth2 import service_account
 
-    path = os.environ["ZEON_FCM_CREDENTIALS"]
+    path = os.environ["STONECHAT_FCM_CREDENTIALS"]
     with open(path) as f:
         project_id = json.load(f)["project_id"]
     now = time.time()
@@ -251,8 +251,8 @@ async def _send_fcm(device_token: str, key_id: str = "") -> None:
     message = {
         "message": {
             "token": device_token,
-            "notification": {"title": "Zeon", "body": "You have new messages"},
-            "android": {"collapse_key": "zeon-new-messages", "priority": "HIGH"},
+            "notification": {"title": "Stonechat", "body": "You have new messages"},
+            "android": {"collapse_key": "stonechat-new-messages", "priority": "HIGH"},
         }
     }
     async with httpx.AsyncClient(timeout=10) as client:
@@ -268,4 +268,4 @@ async def _send_fcm(device_token: str, key_id: str = "") -> None:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("ZEON_GATEWAY_PORT", "8100")))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("STONECHAT_GATEWAY_PORT", "8100")))
