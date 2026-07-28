@@ -204,7 +204,7 @@ class CryptoService {
   String normalizeStonechatId(String raw) {
     final compact =
         raw.trim().toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
-    if (!compact.startsWith('ZC')) {
+    if (!compact.startsWith('SC')) {
       throw const FormatException('Stonechat IDs start with SC-');
     }
     final b32 = compact.substring(2);

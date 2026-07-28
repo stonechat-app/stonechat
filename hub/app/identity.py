@@ -44,7 +44,7 @@ def stonechat_id_from_pubkey(pubkey: bytes) -> str:
 def normalize_stonechat_id(raw: str) -> str:
     """Parse user/wire input into canonical form. Raises ValueError if invalid."""
     compact = raw.strip().upper().replace("-", "").replace(" ", "")
-    if not compact.startswith("ZC"):
+    if not compact.startswith("SC"):
         raise ValueError("Stonechat IDs start with SC-")
     b32 = compact[2:]
     if len(b32) != 36:
