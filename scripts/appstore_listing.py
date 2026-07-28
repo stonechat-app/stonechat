@@ -15,7 +15,7 @@ same file upload_to_testflight.sh reads).
 Two things this deliberately does not do, because neither can be done honestly
 without a human: upload screenshots (they must depict the real app) and set the
 privacy "nutrition labels" (that questionnaire has no public API and must be
-answered in the web UI — landing/src/pages/privacy.astro is the source text).
+answered in the web UI — src/pages/privacy.astro in the stonechat-app/landing repo is the source text).
 
 Requires: pip install 'pyjwt[crypto]' httpx
 """
