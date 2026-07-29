@@ -45,7 +45,7 @@ NO PHONE NUMBER. NO EMAIL.
 Your identity is a cryptographic keypair generated on your device the first time you open the app. Your Stonechat ID reveals nothing about you — share it by QR code or as plain text. There is no directory of users to search, and no way for strangers to find you.
 
 ENCRYPTION THAT DOESN'T ASK FOR TRUST
-X3DH key agreement and a double ratchet — the same primitives Signal uses — with prekeys served by your own relay instead of a company's. Every message gets a fresh key. Keys stolen today cannot decrypt traffic recorded yesterday.
+PQXDH key agreement and a double ratchet — the same construction Signal uses — with prekeys served by your own relay instead of a company's. Every message gets a fresh key. Keys stolen today cannot decrypt traffic recorded yesterday, and the key agreement is hybrid post-quantum (ML-KEM-768): messages recorded now stay sealed against future quantum computers.
 
 YOUR HISTORY LIVES ON YOUR PHONE
 Messages are stored encrypted on your device and nowhere else. Delivered envelopes are wiped from the relay immediately. Uninstall the app and your history is genuinely gone — there is no cloud copy, because there is no cloud.
@@ -56,10 +56,14 @@ Relays sign their own certificates. Your app pins a fingerprint that the relay's
 HOST YOUR CIRCLE
 On a dedicated machine you can invite friends and family and give each of them their own isolated mailbox on your box. You host the metal; you never host the meaning — their messages stay end-to-end encrypted, including from you.
 
-OPEN SOURCE
-The relay is a few hundred lines of Python. Read every one of them. Audit it, run it yourself, and still talk to everyone on the network. If you can edit a config file, you never owe us anything.
+SELF-HOSTING IS FREE, FOREVER
+The relay is one small program with one job. Run it on your own hardware and still talk to everyone on the network. If you can edit a config file, you never owe us anything.
 
-Subscriptions are optional, and exist only for people who would rather not administer a server. Self-hosting is free, forever."""
+Subscriptions are optional, and exist only for people who would rather not administer a server."""
+
+# NOTE: the previous "OPEN SOURCE — read every line" section comes back the
+# day the repo actually flips public (notes/todo-rebrand.md "Before
+# open-sourcing"). Until then the claim would be false and App Review checks.
 
 # <= 4000. Only meaningful on an update; Apple rejects it on a first version,
 # so the script skips it while the app has never been released.
