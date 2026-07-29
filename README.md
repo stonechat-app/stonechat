@@ -137,9 +137,9 @@ register it in `providers/__init__.py`.
 ## Testing
 
 ```bash
-# once: build the pqcore KEM library the protocol clients load
-# (ML-KEM/X-Wing — notes/docs/POST_QUANTUM.md; needs a Rust toolchain)
-./scripts/build_pqcore.sh host
+# once: build the stonechat-core library the app and protocol clients load
+# (session engine + ML-KEM/X-Wing KEMs; needs a Rust toolchain)
+./scripts/build_core.sh host
 
 # end-to-end: register → provision (docker) → handshake → message → ack → destroy
 # (STONECHAT_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only;
@@ -149,7 +149,7 @@ STONECHAT_FLEET_HOSTS="local=|127.0.0.1" STONECHAT_ADMIN_TOKEN=test-admin STONEC
 .venv/bin/python ../scripts/e2e.py
 
 # app unit tests + static analysis (pqcore lib enables the FFI vector tests)
-cd app && STONECHAT_PQCORE_LIB=$PWD/../pqcore/target/release/libpqcore.dylib flutter test && flutter analyze
+cd app && STONECHAT_CORE_LIB=$PWD/../core/target/release/libstonechat_core.dylib flutter test && flutter analyze
 ```
 
 ## Honest limitations (v1)

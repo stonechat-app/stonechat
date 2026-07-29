@@ -2,7 +2,7 @@
 
 Simulates phones with PyNaCl (same libsodium primitives the app uses) plus
 the pqcore Rust library over ctypes (the same C ABI the app loads over FFI —
-build once with scripts/build_pqcore.sh host):
+build once with scripts/build_core.sh host):
 register → provision local-Docker relays → pin TLS + publish prekeys → PQXDH
 contact handshake → double-ratchet messages inside hybrid-sealed envelopes →
 ack → forward-secrecy + sealed-sender proofs → destroy.

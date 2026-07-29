@@ -503,19 +503,8 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-force_load",
-					"$(PROJECT_DIR)/PqCore/libpqcore.a",
-					"-Wl,-u,_stonechat_mlkem_pk_from_seed",
-					"-Wl,-u,_stonechat_mlkem_encaps",
-					"-Wl,-u,_stonechat_mlkem_decaps",
-					"-Wl,-u,_stonechat_xwing_pk_from_seed",
-					"-Wl,-u,_stonechat_xwing_encaps",
-					"-Wl,-u,_stonechat_xwing_decaps",
-					"-Wl,-exported_symbol,_stonechat_mlkem_pk_from_seed",
-					"-Wl,-exported_symbol,_stonechat_mlkem_encaps",
-					"-Wl,-exported_symbol,_stonechat_mlkem_decaps",
-					"-Wl,-exported_symbol,_stonechat_xwing_pk_from_seed",
-					"-Wl,-exported_symbol,_stonechat_xwing_encaps",
-					"-Wl,-exported_symbol,_stonechat_xwing_decaps",
+					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"-Wl,-exported_symbol,_stonechat_*",
 				);
 				STRIP_STYLE = "non-global";
 				ENABLE_BITCODE = NO;
@@ -708,19 +697,8 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-force_load",
-					"$(PROJECT_DIR)/PqCore/libpqcore.a",
-					"-Wl,-u,_stonechat_mlkem_pk_from_seed",
-					"-Wl,-u,_stonechat_mlkem_encaps",
-					"-Wl,-u,_stonechat_mlkem_decaps",
-					"-Wl,-u,_stonechat_xwing_pk_from_seed",
-					"-Wl,-u,_stonechat_xwing_encaps",
-					"-Wl,-u,_stonechat_xwing_decaps",
-					"-Wl,-exported_symbol,_stonechat_mlkem_pk_from_seed",
-					"-Wl,-exported_symbol,_stonechat_mlkem_encaps",
-					"-Wl,-exported_symbol,_stonechat_mlkem_decaps",
-					"-Wl,-exported_symbol,_stonechat_xwing_pk_from_seed",
-					"-Wl,-exported_symbol,_stonechat_xwing_encaps",
-					"-Wl,-exported_symbol,_stonechat_xwing_decaps",
+					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"-Wl,-exported_symbol,_stonechat_*",
 				);
 				STRIP_STYLE = "non-global";
 				ENABLE_BITCODE = NO;
@@ -753,19 +731,8 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-force_load",
-					"$(PROJECT_DIR)/PqCore/libpqcore.a",
-					"-Wl,-u,_stonechat_mlkem_pk_from_seed",
-					"-Wl,-u,_stonechat_mlkem_encaps",
-					"-Wl,-u,_stonechat_mlkem_decaps",
-					"-Wl,-u,_stonechat_xwing_pk_from_seed",
-					"-Wl,-u,_stonechat_xwing_encaps",
-					"-Wl,-u,_stonechat_xwing_decaps",
-					"-Wl,-exported_symbol,_stonechat_mlkem_pk_from_seed",
-					"-Wl,-exported_symbol,_stonechat_mlkem_encaps",
-					"-Wl,-exported_symbol,_stonechat_mlkem_decaps",
-					"-Wl,-exported_symbol,_stonechat_xwing_pk_from_seed",
-					"-Wl,-exported_symbol,_stonechat_xwing_encaps",
-					"-Wl,-exported_symbol,_stonechat_xwing_decaps",
+					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"-Wl,-exported_symbol,_stonechat_*",
 				);
 				STRIP_STYLE = "non-global";
 				ENABLE_BITCODE = NO;

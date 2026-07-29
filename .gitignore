@@ -11,5 +11,7 @@ __pycache__/
 .env.appstore
 credentials/
 
-# Rust build artifacts (relay/, pqcore/)
+# Rust build artifacts (relay/, pqcore/, core/)
 target/
+# Device staticlib installed by scripts/build_core.sh ios
+app/ios/Core/*.a

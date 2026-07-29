@@ -52,9 +52,11 @@ Uint8List base32Decode(String s) {
   return Uint8List.fromList(out);
 }
 
-/// Domain-separation constants — must match scripts/e2e.py and PROTOCOL.md.
-final x3dhKdfKey = utf8.encode('stonechat-v1-pqxdh-kdf'); // 16+ bytes, generichash key
-final hsealKdfKey = utf8.encode('stonechat-v1-hsealkdf'); // 16 bytes, generichash min
+/// Domain-separation constants — must match scripts/e2e.py, PROTOCOL.md and
+/// stonechat-core (core/src/primitives.rs), which owns the ratchet-side set.
+final hsealKdfKey = utf8.encode(
+  'stonechat-v1-hsealkdf',
+); // 16 bytes, generichash min
 final hsealAd = utf8.encode('stonechat-v1-hseal');
 final pqidSeedKey = utf8.encode('stonechat-v1-pqidseed'); // 16 bytes
 final spkSigContext = utf8.encode('stonechat-v1-spk');
@@ -68,13 +70,11 @@ class CryptoService {
   final SodiumSumo sodium;
   final PqCore pq;
   final KeyPair _identity; // Ed25519
-  late final SecureKey _identityXsk; // converted X25519 secret, cached
   late final Uint8List _pqSeed; // X-Wing identity seed, derived
   late final Uint8List pqPublicKey; // X-Wing identity public (directory pq_pk)
 
   CryptoService._(this.sodium, this._identity, {PqCore? pqCore})
-      : pq = pqCore ?? PqCore() {
-    _identityXsk = sodium.crypto.sign.skToCurve25519(_identity.secretKey);
+    : pq = pqCore ?? PqCore() {
     // The X-Wing identity is *derived* from the Ed25519 secret (domain-
     // separated KDF), not stored: identity export, recovery and backups
     // restore it for free, and holding the Ed25519 key already means total
@@ -113,16 +113,12 @@ class CryptoService {
   String get pqPublicKeyB64 => base64Encode(pqPublicKey);
   Uint8List exportSecretKey() => _identity.secretKey.extractBytes();
 
+  /// The Ed25519 seed (first half of the libsodium signing key) — what
+  /// stonechat-core expands identities from (core_ffi.dart).
+  Uint8List get identityEdSeed =>
+      Uint8List.sublistView(exportSecretKey(), 0, 32);
+
   String get stonechatId => deriveStonechatId(_identity.publicKey);
-
-  /// Own identity as X25519, for X3DH.
-  SecureKey get identityXsk => _identityXsk;
-  Uint8List get identityXpk =>
-      sodium.crypto.sign.pkToCurve25519(_identity.publicKey);
-
-  /// A peer's Ed25519 identity key as X25519.
-  Uint8List toX25519(Uint8List edPubkey) =>
-      sodium.crypto.sign.pkToCurve25519(edPubkey);
 
   // -- sealed envelopes (PROTOCOL.md "Envelope") --------------------------------
 
@@ -140,11 +136,16 @@ class CryptoService {
   /// involves no sender key: nothing on the wire identifies or links senders.
   Uint8List sealTo(Uint8List recipientPqPk, Uint8List message) {
     final enc = pq.xwingEncaps(
-        recipientPqPk, sodium.randombytes.buf(xwingEncapsRandomBytes));
+      recipientPqPk,
+      sodium.randombytes.buf(xwingEncapsRandomBytes),
+    );
     final key = _keyedHash(enc.ss, Uint8List.fromList(hsealKdfKey), 32);
     final sealed = aeadSeal(key, message, Uint8List.fromList(hsealAd));
-    return Uint8List.fromList(
-        [...enc.ct, ...sealed.nonce, ...sealed.ciphertext]);
+    return Uint8List.fromList([
+      ...enc.ct,
+      ...sealed.nonce,
+      ...sealed.ciphertext,
+    ]);
   }
 
   /// Returns null when the envelope wasn't sealed to this identity (or is
@@ -156,9 +157,14 @@ class CryptoService {
     try {
       final kemCt = Uint8List.sublistView(sealed, 0, xwingCiphertextBytes);
       final nonce = Uint8List.sublistView(
-          sealed, xwingCiphertextBytes, xwingCiphertextBytes + nonceBytes);
-      final box =
-          Uint8List.sublistView(sealed, xwingCiphertextBytes + nonceBytes);
+        sealed,
+        xwingCiphertextBytes,
+        xwingCiphertextBytes + nonceBytes,
+      );
+      final box = Uint8List.sublistView(
+        sealed,
+        xwingCiphertextBytes + nonceBytes,
+      );
       final ss = pq.xwingDecaps(_pqSeed, kemCt);
       final key = _keyedHash(ss, Uint8List.fromList(hsealKdfKey), 32);
       return aeadOpen(key, nonce, box, Uint8List.fromList(hsealAd));
@@ -169,10 +175,12 @@ class CryptoService {
 
   /// The owner vouching for their X-Wing identity key; published beside it
   /// in the hub directory and verified by every resolver.
-  String signPqPk() => base64Encode(sodium.crypto.sign.detached(
-        message: Uint8List.fromList([...pqPkSigContext, ...pqPublicKey]),
-        secretKey: _identity.secretKey,
-      ));
+  String signPqPk() => base64Encode(
+    sodium.crypto.sign.detached(
+      message: Uint8List.fromList([...pqPkSigContext, ...pqPublicKey]),
+      secretKey: _identity.secretKey,
+    ),
+  );
 
   bool verifyPqPkSig(Uint8List pqPk, Uint8List sig, Uint8List identityEdPub) {
     try {
@@ -202,8 +210,7 @@ class CryptoService {
 
   /// Canonicalize user input; throws [FormatException] with a friendly message.
   String normalizeStonechatId(String raw) {
-    final compact =
-        raw.trim().toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
+    final compact = raw.trim().toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
     if (!compact.startsWith('SC')) {
       throw const FormatException('Stonechat IDs start with SC-');
     }
@@ -237,12 +244,15 @@ class CryptoService {
   /// Proof of key possession for POST /v1/recover (identity restore): a
   /// signature over "stonechat-v1-recover" || the current unix time, so the hub
   /// can re-issue an account token without ever having stored one.
-  String signRecovery(int unixSeconds) =>
-      base64Encode(sodium.crypto.sign.detached(
-        message: Uint8List.fromList(
-            [...recoverSigContext, ...utf8.encode('$unixSeconds')]),
-        secretKey: _identity.secretKey,
-      ));
+  String signRecovery(int unixSeconds) => base64Encode(
+    sodium.crypto.sign.detached(
+      message: Uint8List.fromList([
+        ...recoverSigContext,
+        ...utf8.encode('$unixSeconds'),
+      ]),
+      secretKey: _identity.secretKey,
+    ),
+  );
 
   /// Signs an abuse report (PROTOCOL.md "Reporting", hub/app/report.py).
   ///
@@ -271,15 +281,17 @@ class CryptoService {
       ]),
       outLen: 32,
     );
-    return base64Encode(sodium.crypto.sign.detached(
-      message: Uint8List.fromList([
-        ...reportSigContext,
-        ...utf8.encode(reportedId),
-        ...utf8.encode('$unixSeconds'),
-        ...digest,
-      ]),
-      secretKey: _identity.secretKey,
-    ));
+    return base64Encode(
+      sodium.crypto.sign.detached(
+        message: Uint8List.fromList([
+          ...reportSigContext,
+          ...utf8.encode(reportedId),
+          ...utf8.encode('$unixSeconds'),
+          ...digest,
+        ]),
+        secretKey: _identity.secretKey,
+      ),
+    );
   }
 
   // -- prekeys -----------------------------------------------------------------
@@ -294,23 +306,16 @@ class CryptoService {
     return (seed: seed, pub: pq.mlkemPkFromSeed(seed));
   }
 
-  /// Encapsulate to a peer's ML-KEM prekey (initiator side of PQXDH).
-  /// Throws [StateError] on a malformed key — treat like a forged bundle.
-  ({Uint8List ct, Uint8List ss}) kemEncaps(Uint8List peerKemPub) =>
-      pq.mlkemEncaps(
-          peerKemPub, sodium.randombytes.buf(mlkemEncapsRandomBytes));
-
-  /// Decapsulate with a stored prekey seed (responder side of PQXDH).
-  Uint8List kemDecaps(Uint8List seed, Uint8List ct) =>
-      pq.mlkemDecaps(seed, ct);
-
   Uint8List signPrekey(Uint8List spkPub) => sodium.crypto.sign.detached(
-        message: Uint8List.fromList([...spkSigContext, ...spkPub]),
-        secretKey: _identity.secretKey,
-      );
+    message: Uint8List.fromList([...spkSigContext, ...spkPub]),
+    secretKey: _identity.secretKey,
+  );
 
   bool verifyPrekeySig(
-      Uint8List spkPub, Uint8List sig, Uint8List identityEdPub) {
+    Uint8List spkPub,
+    Uint8List sig,
+    Uint8List identityEdPub,
+  ) {
     try {
       return sodium.crypto.sign.verifyDetached(
         message: Uint8List.fromList([...spkSigContext, ...spkPub]),
@@ -323,12 +328,15 @@ class CryptoService {
   }
 
   Uint8List signKemPrekey(Uint8List kspkPub) => sodium.crypto.sign.detached(
-        message: Uint8List.fromList([...kspkSigContext, ...kspkPub]),
-        secretKey: _identity.secretKey,
-      );
+    message: Uint8List.fromList([...kspkSigContext, ...kspkPub]),
+    secretKey: _identity.secretKey,
+  );
 
   bool verifyKemPrekeySig(
-      Uint8List kspkPub, Uint8List sig, Uint8List identityEdPub) {
+    Uint8List kspkPub,
+    Uint8List sig,
+    Uint8List identityEdPub,
+  ) {
     try {
       return sodium.crypto.sign.verifyDetached(
         message: Uint8List.fromList([...kspkSigContext, ...kspkPub]),
@@ -347,16 +355,17 @@ class CryptoService {
       base64Encode(sodium.crypto.genericHash(message: certDer, outLen: 32));
 
   /// The owner vouching for their mailbox's TLS key.
-  String signTlsFp(String fpB64) => base64Encode(sodium.crypto.sign.detached(
-        message: Uint8List.fromList([...tlsSigContext, ...base64Decode(fpB64)]),
-        secretKey: _identity.secretKey,
-      ));
+  String signTlsFp(String fpB64) => base64Encode(
+    sodium.crypto.sign.detached(
+      message: Uint8List.fromList([...tlsSigContext, ...base64Decode(fpB64)]),
+      secretKey: _identity.secretKey,
+    ),
+  );
 
   bool verifyTlsSig(String fpB64, String sigB64, Uint8List identityEdPub) {
     try {
       return sodium.crypto.sign.verifyDetached(
-        message:
-            Uint8List.fromList([...tlsSigContext, ...base64Decode(fpB64)]),
+        message: Uint8List.fromList([...tlsSigContext, ...base64Decode(fpB64)]),
         signature: base64Decode(sigB64),
         publicKey: identityEdPub,
       );
@@ -365,55 +374,37 @@ class CryptoService {
     }
   }
 
-  // -- ratchet primitives (shared constants in PROTOCOL.md) ---------------------
-
-  Uint8List dh(SecureKey secret, Uint8List pub) {
-    final shared = sodium.crypto.scalarmult(n: secret, p: pub);
-    final bytes = shared.extractBytes();
-    shared.dispose();
-    return bytes;
-  }
+  // -- AEAD + keyed hash (the hybrid seal above; the ratchet's copies of
+  // these live in stonechat-core since the cutover) -----------------------------
 
   Uint8List _keyedHash(Uint8List message, Uint8List key, int outLen) {
     final k = SecureKey.fromList(sodium, key);
     try {
-      return sodium.crypto.genericHash(message: message, key: k, outLen: outLen);
+      return sodium.crypto.genericHash(
+        message: message,
+        key: k,
+        outLen: outLen,
+      );
     } finally {
       k.dispose();
     }
   }
 
-  /// SK = H(DH1 || DH2 || DH3 [|| DH4] || KEM_SS,
-  ///        key="stonechat-v1-pqxdh-kdf", 32)
-  ///
-  /// PQXDH: the classical X3DH transcript plus the ML-KEM shared secret.
-  /// A PQ-secure SK makes the whole ratchet chain harvest-proof — every
-  /// later root key derives from it (notes/docs/POST_QUANTUM.md step 1).
-  Uint8List x3dhSharedKey(List<Uint8List> dhs, Uint8List kemSs) => _keyedHash(
-      Uint8List.fromList([for (final d in dhs) ...d, ...kemSs]),
-      Uint8List.fromList(x3dhKdfKey),
-      32);
-
-  /// KDF_RK: (rk', ck) from the root key and a fresh DH output.
-  (Uint8List, Uint8List) kdfRoot(Uint8List rk, Uint8List dhOut) {
-    final out = _keyedHash(dhOut, rk, 64);
-    return (Uint8List.sublistView(out, 0, 32), Uint8List.sublistView(out, 32));
-  }
-
-  /// KDF_CK: (mk, ck') — one step down a chain.
-  (Uint8List, Uint8List) kdfChain(Uint8List ck) => (
-        _keyedHash(Uint8List.fromList([1]), ck, 32),
-        _keyedHash(Uint8List.fromList([2]), ck, 32),
-      );
-
   ({Uint8List nonce, Uint8List ciphertext}) aeadSeal(
-      Uint8List key, Uint8List plaintext, Uint8List ad) {
+    Uint8List key,
+    Uint8List plaintext,
+    Uint8List ad,
+  ) {
     final aead = sodium.crypto.aeadXChaCha20Poly1305IETF;
     final nonce = sodium.randombytes.buf(aead.nonceBytes);
     final k = SecureKey.fromList(sodium, key);
     try {
       final ciphertext = aead.encrypt(
-          message: plaintext, nonce: nonce, key: k, additionalData: ad);
+        message: plaintext,
+        nonce: nonce,
+        key: k,
+        additionalData: ad,
+      );
       return (nonce: nonce, ciphertext: ciphertext);
     } finally {
       k.dispose();
@@ -422,12 +413,20 @@ class CryptoService {
 
   /// Returns null on authentication failure.
   Uint8List? aeadOpen(
-      Uint8List key, Uint8List nonce, Uint8List ciphertext, Uint8List ad) {
+    Uint8List key,
+    Uint8List nonce,
+    Uint8List ciphertext,
+    Uint8List ad,
+  ) {
     final aead = sodium.crypto.aeadXChaCha20Poly1305IETF;
     final k = SecureKey.fromList(sodium, key);
     try {
       return aead.decrypt(
-          cipherText: ciphertext, nonce: nonce, key: k, additionalData: ad);
+        cipherText: ciphertext,
+        nonce: nonce,
+        key: k,
+        additionalData: ad,
+      );
     } catch (_) {
       return null;
     } finally {
@@ -441,22 +440,33 @@ class CryptoService {
   /// the recipient inside the session-encrypted envelope payload; the blob
   /// itself is opaque to every server that touches it.
   ({Uint8List key, Uint8List nonce, Uint8List ciphertext}) sealBlob(
-      Uint8List data) {
+    Uint8List data,
+  ) {
     final key = sodium.crypto.secretBox.keygen();
     final nonce = sodium.randombytes.buf(sodium.crypto.secretBox.nonceBytes);
-    final ciphertext =
-        sodium.crypto.secretBox.easy(message: data, nonce: nonce, key: key);
+    final ciphertext = sodium.crypto.secretBox.easy(
+      message: data,
+      nonce: nonce,
+      key: key,
+    );
     final keyBytes = key.extractBytes();
     key.dispose();
     return (key: keyBytes, nonce: nonce, ciphertext: ciphertext);
   }
 
   /// Returns null on tamper/corruption.
-  Uint8List? openBlob(Uint8List ciphertext, Uint8List keyBytes, Uint8List nonce) {
+  Uint8List? openBlob(
+    Uint8List ciphertext,
+    Uint8List keyBytes,
+    Uint8List nonce,
+  ) {
     final key = SecureKey.fromList(sodium, keyBytes);
     try {
-      return sodium.crypto.secretBox
-          .openEasy(cipherText: ciphertext, nonce: nonce, key: key);
+      return sodium.crypto.secretBox.openEasy(
+        cipherText: ciphertext,
+        nonce: nonce,
+        key: key,
+      );
     } catch (_) {
       return null;
     } finally {

@@ -1,8 +1,9 @@
-"""ctypes bindings to the pqcore Rust crate (repo /pqcore) — the same C ABI
-the Flutter app loads over dart:ffi, so the Python protocol clients (e2e.py,
-echo_bot.py) exercise byte-identical KEM code instead of a second
-implementation. Build it once with `scripts/build_pqcore.sh host`; point
-STONECHAT_PQCORE_LIB at the library to override discovery.
+"""ctypes bindings to the pqcore KEM ABI — the same C ABI the Flutter app
+loads over dart:ffi, so the Python protocol clients (e2e.py, echo_bot.py)
+exercise byte-identical KEM code instead of a second implementation. Since
+the stonechat-core cutover the symbols ship inside libstonechat_core (repo
+/core, which links pqcore). Build it once with `scripts/build_core.sh
+host`; point STONECHAT_CORE_LIB at the library to override discovery.
 
 ML-KEM-768 secrets are 64-byte seeds, X-Wing secrets 32-byte seeds
 (notes/docs/POST_QUANTUM.md, internal). Randomness is drawn here (secrets module) and passed
@@ -26,16 +27,23 @@ SS = 32
 
 
 def _find_lib() -> str:
-    env = os.environ.get("STONECHAT_PQCORE_LIB")
+    env = os.environ.get("STONECHAT_CORE_LIB") or os.environ.get("STONECHAT_PQCORE_LIB")
     if env:
         return env
-    release = pathlib.Path(__file__).resolve().parents[1] / "pqcore" / "target" / "release"
-    for name in ("libpqcore.dylib", "libpqcore.so"):
-        if (release / name).exists():
-            return str(release / name)
+    root = pathlib.Path(__file__).resolve().parents[1]
+    candidates = [
+        root / "core" / "target" / "release" / "libstonechat_core.dylib",
+        root / "core" / "target" / "release" / "libstonechat_core.so",
+        # pre-cutover artifacts, still fine for the KEM symbols
+        root / "pqcore" / "target" / "release" / "libpqcore.dylib",
+        root / "pqcore" / "target" / "release" / "libpqcore.so",
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
     raise RuntimeError(
-        "pqcore library not found — run scripts/build_pqcore.sh host "
-        "(or set STONECHAT_PQCORE_LIB)"
+        "core library not found — run scripts/build_core.sh host "
+        "(or set STONECHAT_CORE_LIB)"
     )
 
 
