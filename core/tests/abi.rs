@@ -236,3 +236,69 @@ fn abi_rejects_malformed_input_without_allocating() {
     // Freeing NULL is a no-op.
     unsafe { stonechat_free(std::ptr::null_mut(), 0) };
 }
+
+#[test]
+fn envelope_helpers_round_trip() {
+    // pq seed derivation matches the app's domain-separated KDF, unseal
+    // opens what envelope::seal_to produced, fingerprint is BLAKE2b-256.
+    let ed_seed = rnd32("env/id");
+    let mut pq_seed = [0u8; 32];
+    assert_eq!(
+        unsafe { stonechat_pq_seed_from_ed_seed(ed_seed.as_ptr(), pq_seed.as_mut_ptr()) },
+        0
+    );
+    assert_eq!(
+        pq_seed,
+        stonechat_core::primitives::keyed_hash_32(
+            &ed_seed,
+            stonechat_core::primitives::PQID_SEED_KEY
+        )
+    );
+
+    let pq_pk = pqcore::xwing_pk_from_seed(&pq_seed);
+    let sealed = stonechat_core::envelope::seal_to(
+        &pq_pk,
+        b"{\"v\":1}",
+        &rnd64("env/r"),
+        &rnd64("env/n")[..24].try_into().unwrap(),
+    )
+    .unwrap();
+
+    let mut out = Out::new();
+    let rc = unsafe {
+        stonechat_unseal(
+            pq_seed.as_ptr(),
+            sealed.as_ptr(),
+            sealed.len(),
+            &mut out.ptr,
+            &mut out.len,
+        )
+    };
+    assert_eq!(rc, 0);
+    let inner = unsafe { std::slice::from_raw_parts(out.ptr, out.len) }.to_vec();
+    unsafe { stonechat_free(out.ptr, out.len) };
+    assert_eq!(inner, b"{\"v\":1}");
+
+    // Wrong identity refuses without allocating.
+    let other = rnd32("env/other");
+    let mut out2 = Out::new();
+    let rc = unsafe {
+        stonechat_unseal(
+            other.as_ptr(),
+            sealed.as_ptr(),
+            sealed.len(),
+            &mut out2.ptr,
+            &mut out2.len,
+        )
+    };
+    assert_eq!(rc, -3);
+    assert!(out2.ptr.is_null());
+
+    let der = b"pretend this is certificate DER";
+    let mut fp = [0u8; 32];
+    assert_eq!(
+        unsafe { stonechat_tls_fingerprint(der.as_ptr(), der.len(), fp.as_mut_ptr()) },
+        0
+    );
+    assert_eq!(fp.to_vec(), stonechat_core::primitives::hash_var(der, 32));
+}

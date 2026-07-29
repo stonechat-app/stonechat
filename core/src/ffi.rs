@@ -24,6 +24,8 @@ use serde_json::{Value, json};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 
+use crate::envelope;
+use crate::primitives::{PQID_SEED_KEY, hash_var, keyed_hash_32};
 use crate::session::{Identity, InitiateRandom, PrekeyBundle, RatchetHeader, SessionState};
 
 const OK: i32 = 0;
@@ -305,5 +307,79 @@ pub unsafe extern "C" fn stonechat_session_decrypt(
             }
             None => ERR_REFUSED,
         }
+    })
+}
+
+// -- envelope + identity helpers (the NSE's non-session needs) -----------------
+
+/// Derive the X-Wing identity seed from the Ed25519 seed — the same
+/// domain-separated KDF the app uses (crypto.dart `_pqSeed`).
+///
+/// # Safety
+/// `ed_seed`: 32 readable bytes. `pq_seed_out`: 32 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_pq_seed_from_ed_seed(
+    ed_seed: *const u8,
+    pq_seed_out: *mut u8,
+) -> i32 {
+    ffi_guard!({
+        let Some(seed) = (unsafe { arr::<32>(ed_seed) }) else {
+            return ERR_INPUT;
+        };
+        let pq = keyed_hash_32(seed, PQID_SEED_KEY);
+        unsafe { pq_seed_out.copy_from_nonoverlapping(pq.as_ptr(), pq.len()) };
+        OK
+    })
+}
+
+/// Open a sealed envelope (X-Wing hybrid seal, PROTOCOL.md "Envelope") with
+/// our identity seed. `-3` when it wasn't sealed to this identity or is
+/// garbage — a normal outcome, drop the envelope.
+///
+/// # Safety
+/// `pq_seed`: 32 readable bytes. `sealed`: `sealed_len` readable bytes.
+/// `out_ptr`/`out_len` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_unseal(
+    pq_seed: *const u8,
+    sealed: *const u8,
+    sealed_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let (Some(seed), Some(sealed)) = (unsafe { arr::<32>(pq_seed) }, unsafe {
+            slice(sealed, sealed_len)
+        }) else {
+            return ERR_INPUT;
+        };
+        match envelope::unseal(seed, sealed) {
+            Some(inner) => {
+                unsafe { emit(inner, out_ptr, out_len) };
+                OK
+            }
+            None => ERR_REFUSED,
+        }
+    })
+}
+
+/// What clients pin: BLAKE2b-256 over the relay certificate's DER bytes
+/// (PROTOCOL.md "Transport"). Compare base64(out) with the stored `tls_fp`.
+///
+/// # Safety
+/// `cert_der`: `der_len` readable bytes. `fp_out`: 32 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_tls_fingerprint(
+    cert_der: *const u8,
+    der_len: usize,
+    fp_out: *mut u8,
+) -> i32 {
+    ffi_guard!({
+        let Some(der) = (unsafe { slice(cert_der, der_len) }) else {
+            return ERR_INPUT;
+        };
+        let fp = hash_var(der, 32);
+        unsafe { fp_out.copy_from_nonoverlapping(fp.as_ptr(), fp.len()) };
+        OK
     })
 }
