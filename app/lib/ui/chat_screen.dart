@@ -40,7 +40,7 @@ class ChatScreen extends StatefulWidget {
 
   const ChatScreen({super.key, required Contact this.contact}) : group = null;
   const ChatScreen.group({super.key, required Group this.group})
-      : contact = null;
+    : contact = null;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -49,6 +49,9 @@ class ChatScreen extends StatefulWidget {
 class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
   final _itemScroll = ItemScrollController();
+  final _itemPositions = ItemPositionsListener.create();
+  final _scrollOffset = ScrollOffsetController();
+  final _listKey = GlobalKey(); // measures the viewport for _scrollToEnd
   late final ChatState _chat;
   Message? _editing; // composer is rewriting this message instead of sending
   Message? _replyingTo; // composer sends the next message as a reply to this
@@ -90,8 +93,11 @@ class _ChatScreenState extends State<ChatScreen> {
       setState(() => _editing = null);
       final reachedEveryone = await chat.editMessage(editing, text);
       if (!reachedEveryone && mounted) {
-        showZnSnack(context, "Edit couldn't reach everyone — they still see the old text",
-            error: true);
+        showZnSnack(
+          context,
+          "Edit couldn't reach everyone — they still see the old text",
+          error: true,
+        );
       }
       return;
     }
@@ -148,10 +154,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _flash(id);
     if (_itemScroll.isAttached) {
       _itemScroll.scrollTo(
-          index: index,
-          alignment: 0.3,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut);
+        index: index,
+        alignment: 0.3,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+      );
     }
   }
 
@@ -166,7 +173,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!messages[i].deleted &&
             (messages[i].text.toLowerCase().contains(q) ||
                 (messages[i].fileName?.toLowerCase().contains(q) ?? false)))
-          i
+          i,
     ];
   }
 
@@ -192,10 +199,11 @@ class _ChatScreenState extends State<ChatScreen> {
     _flash(messages[index].id);
     if (_itemScroll.isAttached) {
       _itemScroll.scrollTo(
-          index: index,
-          alignment: 0.3,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut);
+        index: index,
+        alignment: 0.3,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
     }
   }
 
@@ -230,50 +238,55 @@ class _ChatScreenState extends State<ChatScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (!isLocalRow && !blocked)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  for (final emoji in _quickReactions)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  vertical: 10,
+                  horizontal: 16,
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    for (final emoji in _quickReactions)
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          chat.react(m, emoji);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: myEmoji == emoji ? Zn.raised : null,
+                            borderRadius: BorderRadius.circular(Zn.radius),
+                            border: myEmoji == emoji
+                                ? Border.all(color: Zn.orange)
+                                : null,
+                          ),
+                          child: Text(
+                            emoji,
+                            style: const TextStyle(fontSize: 24),
+                          ),
+                        ),
+                      ),
+                    // The full collection lives one tap further.
                     GestureDetector(
                       onTap: () {
                         Navigator.pop(sheetContext);
-                        chat.react(m, emoji);
+                        _showEmojiPicker(m);
                       },
                       child: Container(
-                        padding: const EdgeInsets.all(6),
+                        width: 36,
+                        height: 36,
                         decoration: BoxDecoration(
-                          color: myEmoji == emoji ? Zn.raised : null,
+                          color: Zn.raised,
                           borderRadius: BorderRadius.circular(Zn.radius),
-                          border: myEmoji == emoji
-                              ? Border.all(color: Zn.orange)
-                              : null,
+                          border: Border.all(color: Zn.line),
                         ),
-                        child: Text(emoji,
-                            style: const TextStyle(fontSize: 24)),
+                        child: const Icon(Icons.add, size: 20, color: Zn.muted),
                       ),
                     ),
-                  // The full collection lives one tap further.
-                  GestureDetector(
-                    onTap: () {
-                      Navigator.pop(sheetContext);
-                      _showEmojiPicker(m);
-                    },
-                    child: Container(
-                      width: 36,
-                      height: 36,
-                      decoration: BoxDecoration(
-                        color: Zn.raised,
-                        borderRadius: BorderRadius.circular(Zn.radius),
-                        border: Border.all(color: Zn.line),
-                      ),
-                      child: const Icon(Icons.add, size: 20, color: Zn.muted),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
             if (!isLocalRow && !blocked) const Divider(height: 1),
             if (!isLocalRow && !blocked)
               ListTile(
@@ -314,16 +327,21 @@ class _ChatScreenState extends State<ChatScreen> {
             if (chat.canDeleteForEveryone(m) && !isLocalRow && !blocked)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Zn.danger),
-                title: const Text('Delete for everyone',
-                    style: TextStyle(color: Zn.danger)),
+                title: const Text(
+                  'Delete for everyone',
+                  style: TextStyle(color: Zn.danger),
+                ),
                 onTap: () async {
                   Navigator.pop(sheetContext);
-                  final reachedEveryone =
-                      await chat.deleteMessageForEveryone(m);
+                  final reachedEveryone = await chat.deleteMessageForEveryone(
+                    m,
+                  );
                   if (!reachedEveryone && mounted) {
-                    showZnSnack(context,
-                        "Couldn't reach everyone — some may still see it",
-                        error: true);
+                    showZnSnack(
+                      context,
+                      "Couldn't reach everyone — some may still see it",
+                      error: true,
+                    );
                   }
                 },
               ),
@@ -387,21 +405,26 @@ class _ChatScreenState extends State<ChatScreen> {
     final chat = context.read<ChatState>();
     final isMedia = m.kind != MessageKind.text;
     if (isMedia && !File(m.mediaPath ?? '').existsSync()) {
-      showZnSnack(context, 'That file is no longer on this device',
-          error: true);
+      showZnSnack(
+        context,
+        'That file is no longer on this device',
+        error: true,
+      );
       return;
     }
     // No forwarding to blocked contacts — the composer is closed to them too.
-    final contacts =
-        chat.acceptedContacts.where((c) => !c.isBlocked).toList();
+    final contacts = chat.acceptedContacts.where((c) => !c.isBlocked).toList();
     final groups = isMedia ? const <Group>[] : chat.groups;
     if (contacts.isEmpty && groups.isEmpty) {
       showZnSnack(context, 'No one to forward to yet');
       return;
     }
 
-    Future<void> forward(
-        {Contact? toContact, Group? toGroup, required String name}) async {
+    Future<void> forward({
+      Contact? toContact,
+      Group? toGroup,
+      required String name,
+    }) async {
       await chat.forwardMessage(m, toContact: toContact, toGroup: toGroup);
       if (mounted) showZnSnack(context, 'Forwarded to $name');
     }
@@ -415,7 +438,8 @@ class _ChatScreenState extends State<ChatScreen> {
       builder: (sheetContext) => SafeArea(
         child: ConstrainedBox(
           constraints: BoxConstraints(
-              maxHeight: MediaQuery.of(sheetContext).size.height * 0.6),
+            maxHeight: MediaQuery.of(sheetContext).size.height * 0.6,
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -423,8 +447,10 @@ class _ChatScreenState extends State<ChatScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: Text('FORWARD TO',
-                      style: Zn.mono(size: 10, letterSpacing: 2)),
+                  child: Text(
+                    'FORWARD TO',
+                    style: Zn.mono(size: 10, letterSpacing: 2),
+                  ),
                 ),
               ),
               if (isMedia)
@@ -433,8 +459,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: Align(
                     alignment: Alignment.centerLeft,
                     child: Text(
-                        'Photos, videos, documents and voice notes can only go to direct chats',
-                        style: Zn.mono(size: 9, color: Zn.muted)),
+                      'Photos, videos, documents and voice notes can only go to direct chats',
+                      style: Zn.mono(size: 9, color: Zn.muted),
+                    ),
                   ),
                 ),
               Flexible(
@@ -444,10 +471,11 @@ class _ChatScreenState extends State<ChatScreen> {
                     for (final c in contacts)
                       ListTile(
                         leading: StonechatAvatar(
-                            stonechatId: c.stonechatId,
-                            name: c.displayName,
-                            size: 34,
-                            image: c.avatar),
+                          stonechatId: c.stonechatId,
+                          name: c.displayName,
+                          size: 34,
+                          image: c.avatar,
+                        ),
                         title: Text(c.displayName),
                         onTap: () {
                           Navigator.pop(sheetContext);
@@ -457,7 +485,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     for (final g in groups)
                       ListTile(
                         leading: StonechatAvatar(
-                            stonechatId: g.id, name: '◈ ${g.name}', size: 34),
+                          stonechatId: g.id,
+                          name: '◈ ${g.name}',
+                          size: 34,
+                        ),
                         title: Text(g.name),
                         onTap: () {
                           Navigator.pop(sheetContext);
@@ -490,8 +521,10 @@ class _ChatScreenState extends State<ChatScreen> {
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 2),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('DISAPPEARING MESSAGES',
-                    style: Zn.mono(size: 10, letterSpacing: 2)),
+                child: Text(
+                  'DISAPPEARING MESSAGES',
+                  style: Zn.mono(size: 10, letterSpacing: 2),
+                ),
               ),
             ),
             Padding(
@@ -499,8 +532,9 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                    'New messages will vanish for everyone after the selected time',
-                    style: Zn.mono(size: 9, color: Zn.muted)),
+                  'New messages will vanish for everyone after the selected time',
+                  style: Zn.mono(size: 9, color: Zn.muted),
+                ),
               ),
             ),
             RadioGroup<int>(
@@ -532,8 +566,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (typers.isEmpty) return '';
     if (!isGroup) return 'typing ···';
     final names = typers
-        .map((id) =>
-            chat.memberOf(conversationId, id)?.displayName ?? 'someone')
+        .map(
+          (id) => chat.memberOf(conversationId, id)?.displayName ?? 'someone',
+        )
         .toList();
     return '${names.join(', ')} ${names.length == 1 ? 'is' : 'are'} typing ···';
   }
@@ -550,11 +585,19 @@ class _ChatScreenState extends State<ChatScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: const Icon(Icons.photo_camera_outlined, color: Zn.muted),
+              title: const Text('Camera'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _sendPhoto(ImageSource.camera);
+              },
+            ),
+            ListTile(
               leading: const Icon(Icons.photo_outlined, color: Zn.muted),
               title: const Text('Photo'),
               onTap: () {
                 Navigator.pop(sheetContext);
-                _sendPhoto();
+                _sendPhoto(ImageSource.gallery);
               },
             ),
             ListTile(
@@ -579,20 +622,20 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Future<void> _sendPhoto() async {
+  Future<void> _sendPhoto(ImageSource source) async {
     final picked = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
+      source: source,
       maxWidth: 1600,
       imageQuality: 82,
     );
     if (picked == null || !mounted) return;
     await context.read<ChatState>().sendMedia(
-          widget.contact!,
-          picked.path,
-          kind: MessageKind.image,
-          mime: 'image/jpeg',
-          replyTo: _takeReply(),
-        );
+      widget.contact!,
+      picked.path,
+      kind: MessageKind.image,
+      mime: 'image/jpeg',
+      replyTo: _takeReply(),
+    );
     _scrollToEnd();
   }
 
@@ -611,15 +654,15 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (_) {}
     if (!mounted) return;
     await context.read<ChatState>().sendMedia(
-          widget.contact!,
-          picked.path,
-          kind: MessageKind.video,
-          mime: picked.path.toLowerCase().endsWith('.mov')
-              ? 'video/quicktime'
-              : 'video/mp4',
-          durationMs: durationMs,
-          replyTo: _takeReply(),
-        );
+      widget.contact!,
+      picked.path,
+      kind: MessageKind.video,
+      mime: picked.path.toLowerCase().endsWith('.mov')
+          ? 'video/quicktime'
+          : 'video/mp4',
+      durationMs: durationMs,
+      replyTo: _takeReply(),
+    );
     _scrollToEnd();
   }
 
@@ -630,13 +673,13 @@ class _ChatScreenState extends State<ChatScreen> {
     if (!await _fitsBlobCap(file!.path!)) return;
     if (!mounted) return;
     await context.read<ChatState>().sendMedia(
-          widget.contact!,
-          file.path!,
-          kind: MessageKind.file,
-          mime: 'application/octet-stream',
-          fileName: file.name,
-          replyTo: _takeReply(),
-        );
+      widget.contact!,
+      file.path!,
+      kind: MessageKind.file,
+      mime: 'application/octet-stream',
+      fileName: file.name,
+      replyTo: _takeReply(),
+    );
     _scrollToEnd();
   }
 
@@ -645,9 +688,11 @@ class _ChatScreenState extends State<ChatScreen> {
     final size = await File(path).length();
     if (size <= ChatState.maxBlobBytes) return true;
     if (mounted) {
-      showZnSnack(context,
-          'Too big — attachments can be at most ${ChatState.maxBlobBytes ~/ (1024 * 1024)} MB',
-          error: true);
+      showZnSnack(
+        context,
+        'Too big — attachments can be at most ${ChatState.maxBlobBytes ~/ (1024 * 1024)} MB',
+        error: true,
+      );
     }
     return false;
   }
@@ -671,13 +716,19 @@ class _ChatScreenState extends State<ChatScreen> {
               final packs = [
                 if (store.recents.isNotEmpty)
                   StickerPack(
-                      name: 'Recent', bundled: true, refs: store.recents),
+                    name: 'Recent',
+                    bundled: true,
+                    refs: store.recents,
+                  ),
                 ...store.packs,
               ];
               if (packs.isEmpty) {
                 return Center(
-                    child: Text('No stickers yet — import some below',
-                        style: Zn.mono(size: 11, color: Zn.muted)));
+                  child: Text(
+                    'No stickers yet — import some below',
+                    style: Zn.mono(size: 11, color: Zn.muted),
+                  ),
+                );
               }
               return DefaultTabController(
                 length: packs.length,
@@ -701,8 +752,11 @@ class _ChatScreenState extends State<ChatScreen> {
                           ),
                         ),
                         IconButton(
-                          icon: const Icon(Icons.add_photo_alternate_outlined,
-                              color: Zn.muted, size: 20),
+                          icon: const Icon(
+                            Icons.add_photo_alternate_outlined,
+                            color: Zn.muted,
+                            size: 20,
+                          ),
                           tooltip: 'Import stickers (transparent WebP/PNG)',
                           onPressed: () => _importStickers(sheetContext),
                         ),
@@ -716,10 +770,10 @@ class _ChatScreenState extends State<ChatScreen> {
                               padding: const EdgeInsets.all(12),
                               gridDelegate:
                                   const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 4,
-                                mainAxisSpacing: 10,
-                                crossAxisSpacing: 10,
-                              ),
+                                    crossAxisCount: 4,
+                                    mainAxisSpacing: 10,
+                                    crossAxisSpacing: 10,
+                                  ),
                               itemCount: pack.refs.length,
                               itemBuilder: (context, i) => GestureDetector(
                                 onTap: () {
@@ -727,8 +781,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                   _sendSticker(pack.refs[i]);
                                 },
                                 child: Image(
-                                    image: store.imageFor(pack.refs[i]),
-                                    fit: BoxFit.contain),
+                                  image: store.imageFor(pack.refs[i]),
+                                  fit: BoxFit.contain,
+                                ),
                               ),
                             ),
                         ],
@@ -746,16 +801,19 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _importStickers(BuildContext sheetContext) async {
     final result = await FilePicker.pickFiles(
-        allowMultiple: true,
-        type: FileType.custom,
-        allowedExtensions: ['webp', 'png', 'jpg', 'jpeg']);
+      allowMultiple: true,
+      type: FileType.custom,
+      allowedExtensions: ['webp', 'png', 'jpg', 'jpeg'],
+    );
     final paths =
         result?.files.map((f) => f.path).whereType<String>().toList() ?? [];
     if (paths.isEmpty) return;
     await StickerStore.instance.importFiles(paths);
     if (sheetContext.mounted) {
-      showZnSnack(sheetContext,
-          'Imported ${paths.length} ${paths.length == 1 ? 'sticker' : 'stickers'}');
+      showZnSnack(
+        sheetContext,
+        'Imported ${paths.length} ${paths.length == 1 ? 'sticker' : 'stickers'}',
+      );
     }
   }
 
@@ -770,24 +828,24 @@ class _ChatScreenState extends State<ChatScreen> {
       _ => 'image/webp',
     };
     await context.read<ChatState>().sendMedia(
-          widget.contact!,
-          file.path,
-          kind: MessageKind.sticker,
-          mime: mime,
-          replyTo: _takeReply(),
-        );
+      widget.contact!,
+      file.path,
+      kind: MessageKind.sticker,
+      mime: mime,
+      replyTo: _takeReply(),
+    );
     _scrollToEnd();
   }
 
   Future<void> _sendVoice(String path, int durationMs) async {
     await context.read<ChatState>().sendMedia(
-          widget.contact!,
-          path,
-          kind: MessageKind.audio,
-          mime: 'audio/mp4',
-          durationMs: durationMs,
-          replyTo: _takeReply(),
-        );
+      widget.contact!,
+      path,
+      kind: MessageKind.audio,
+      mime: 'audio/mp4',
+      durationMs: durationMs,
+      replyTo: _takeReply(),
+    );
     _scrollToEnd();
   }
 
@@ -796,17 +854,47 @@ class _ChatScreenState extends State<ChatScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final count = _chat.messagesFor(conversationId).length;
       if (count == 0 || !_itemScroll.isAttached) return;
+      // scrollTo(index) aims the item's TOP edge at the viewport top — for
+      // the last message that offset lies past the end of the list, so the
+      // animation overshoots and bounces back. When the newest message is
+      // already laid out (the normal case: we were at the bottom and it
+      // appeared just below the fold), scroll by the exact distance that
+      // puts its bottom edge flush with the end instead.
+      ItemPosition? last;
+      for (final pos in _itemPositions.itemPositions.value) {
+        if (pos.index == count - 1) {
+          last = pos;
+          break;
+        }
+      }
+      final viewport = _listKey.currentContext?.size?.height;
+      if (last != null && viewport != null) {
+        // +12 covers the list's bottom padding, landing on the true end.
+        final delta = (last.itemTrailingEdge - 1) * viewport + 12;
+        if (delta > 0) {
+          _scrollOffset.animateScroll(
+            offset: delta,
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+          );
+        }
+        return;
+      }
+      // Sent from far up in history: fall back to the index-based scroll.
       _itemScroll.scrollTo(
-          index: count - 1,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut);
+        index: count - 1,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
     });
   }
 
   /// Who wrote [stonechatId]'s messages, for quote headers: "You", a member's
   /// name, or the DM peer.
   String _senderName(String? stonechatId, ChatState chat) {
-    if (stonechatId == null) return isGroup ? 'someone' : widget.contact!.displayName;
+    if (stonechatId == null) {
+      return isGroup ? 'someone' : widget.contact!.displayName;
+    }
     if (stonechatId == chat.app.stonechatId) return 'You';
     if (isGroup) {
       return chat.memberOf(conversationId, stonechatId)?.displayName ??
@@ -869,7 +957,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final chat = context.watch<ChatState>();
     final messages = chat.messagesFor(conversationId);
     final title = widget.contact?.displayName ?? widget.group!.name;
-    final memberCount = isGroup ? chat.groupMembers[conversationId]?.length : null;
+    final memberCount = isGroup
+        ? chat.groupMembers[conversationId]?.length
+        : null;
     final searchQuery = _searching ? _searchInput.text.trim() : '';
 
     // First frame with content: land on the newest message.
@@ -883,242 +973,286 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     return Scaffold(
-      appBar: _searching ? _searchAppBar(messages) : AppBar(
-        titleSpacing: 0,
-        title: GestureDetector(
-          // Group header opens the member ledger, WhatsApp-style.
-          onTap: isGroup
-              ? () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) =>
-                            GroupInfoScreen(group: widget.group!)),
-                  )
-              : null,
-          child: Row(
-          children: [
-            StonechatAvatar(
-                stonechatId: conversationId,
-                name: isGroup ? '◈ ${widget.group!.name}' : title,
-                size: 32,
-                image: widget.contact?.avatar),
-            const SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: const TextStyle(fontSize: 16)),
-                Row(
+      appBar: _searching
+          ? _searchAppBar(messages)
+          : AppBar(
+              titleSpacing: 0,
+              title: GestureDetector(
+                // Group header opens the member ledger, WhatsApp-style.
+                onTap: isGroup
+                    ? () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => GroupInfoScreen(group: widget.group!),
+                        ),
+                      )
+                    : null,
+                child: Row(
                   children: [
-                    if (chat.expireTimerFor(conversationId) > 0)
-                      const Padding(
-                        padding: EdgeInsets.only(right: 3),
-                        child: Icon(Icons.timer_outlined,
-                            size: 11, color: Zn.muted),
+                    StonechatAvatar(
+                      stonechatId: conversationId,
+                      name: isGroup ? '◈ ${widget.group!.name}' : title,
+                      size: 32,
+                      image: widget.contact?.avatar,
+                    ),
+                    const SizedBox(width: 10),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title, style: const TextStyle(fontSize: 16)),
+                        Row(
+                          children: [
+                            if (chat.expireTimerFor(conversationId) > 0)
+                              const Padding(
+                                padding: EdgeInsets.only(right: 3),
+                                child: Icon(
+                                  Icons.timer_outlined,
+                                  size: 11,
+                                  color: Zn.muted,
+                                ),
+                              ),
+                            Text(
+                              isGroup
+                                  ? '$memberCount members'
+                                  : widget.contact!.stonechatId.substring(
+                                      0,
+                                      12,
+                                    ),
+                              style: Zn.mono(size: 9, letterSpacing: 1),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                if (!isGroup && !widget.contact!.isBlocked) ...[
+                  IconButton(
+                    icon: const Icon(
+                      Icons.call_outlined,
+                      color: Zn.muted,
+                      size: 22,
+                    ),
+                    tooltip: 'Voice call',
+                    onPressed: () => context.read<CallState>().startCall(
+                      widget.contact!,
+                      video: false,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.videocam_outlined,
+                      color: Zn.muted,
+                      size: 22,
+                    ),
+                    tooltip: 'Video call',
+                    onPressed: () => context.read<CallState>().startCall(
+                      widget.contact!,
+                      video: true,
+                    ),
+                  ),
+                ],
+                PopupMenuButton<String>(
+                  color: Zn.raised,
+                  icon: const Icon(Icons.more_vert, color: Zn.muted),
+                  onSelected: (value) async {
+                    if (value == 'search') {
+                      setState(() => _searching = true);
+                      return;
+                    }
+                    if (value == 'timer') {
+                      _showTimerSheet();
+                      return;
+                    }
+                    if (value == 'info') {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => GroupInfoScreen(group: widget.group!),
+                        ),
+                      );
+                      return;
+                    }
+                    if (value == 'block') {
+                      await chat.toggleBlock(widget.contact!);
+                      return;
+                    }
+                    if (value == 'report') {
+                      final contact = widget.contact!;
+                      final outcome = await showReportSheet(
+                        context,
+                        stonechatId: contact.stonechatId,
+                        displayName: contact.displayName,
+                        hub: contact.hub,
+                        conversation: chat.messagesFor(contact.stonechatId),
+                        canBlock: !contact.isBlocked,
+                      );
+                      if (outcome.alsoBlock && !contact.isBlocked) {
+                        await chat.toggleBlock(contact);
+                      }
+                      return;
+                    }
+                    if (value == 'leave') {
+                      await chat.leaveGroup(widget.group!);
+                      if (context.mounted) Navigator.pop(context);
+                    }
+                  },
+                  itemBuilder: (_) => [
+                    if (isGroup)
+                      const PopupMenuItem(
+                        value: 'info',
+                        child: Text('Group info'),
                       ),
-                    Text(
-                        isGroup
-                            ? '$memberCount members'
-                            : widget.contact!.stonechatId.substring(0, 12),
-                        style: Zn.mono(size: 9, letterSpacing: 1)),
+                    const PopupMenuItem(value: 'search', child: Text('Search')),
+                    const PopupMenuItem(
+                      value: 'timer',
+                      child: Text('Disappearing messages'),
+                    ),
+                    if (!isGroup)
+                      PopupMenuItem(
+                        value: 'block',
+                        child: widget.contact!.isBlocked
+                            ? const Text('Unblock')
+                            : const Text(
+                                'Block',
+                                style: TextStyle(color: Zn.danger),
+                              ),
+                      ),
+                    if (!isGroup)
+                      const PopupMenuItem(
+                        value: 'report',
+                        child: Text(
+                          'Report',
+                          style: TextStyle(color: Zn.danger),
+                        ),
+                      ),
+                    if (isGroup)
+                      const PopupMenuItem(
+                        value: 'leave',
+                        child: Text(
+                          'Leave group',
+                          style: TextStyle(color: Zn.danger),
+                        ),
+                      ),
                   ],
                 ),
               ],
             ),
-          ],
-          ),
-        ),
-        actions: [
-          if (!isGroup && !widget.contact!.isBlocked) ...[
-            IconButton(
-              icon: const Icon(Icons.call_outlined, color: Zn.muted, size: 22),
-              tooltip: 'Voice call',
-              onPressed: () => context
-                  .read<CallState>()
-                  .startCall(widget.contact!, video: false),
-            ),
-            IconButton(
-              icon: const Icon(Icons.videocam_outlined,
-                  color: Zn.muted, size: 22),
-              tooltip: 'Video call',
-              onPressed: () => context
-                  .read<CallState>()
-                  .startCall(widget.contact!, video: true),
-            ),
-          ],
-          PopupMenuButton<String>(
-            color: Zn.raised,
-            icon: const Icon(Icons.more_vert, color: Zn.muted),
-            onSelected: (value) async {
-              if (value == 'search') {
-                setState(() => _searching = true);
-                return;
-              }
-              if (value == 'timer') {
-                _showTimerSheet();
-                return;
-              }
-              if (value == 'info') {
-                await Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (_) => GroupInfoScreen(group: widget.group!)),
-                );
-                return;
-              }
-              if (value == 'block') {
-                await chat.toggleBlock(widget.contact!);
-                return;
-              }
-              if (value == 'report') {
-                final contact = widget.contact!;
-                final outcome = await showReportSheet(
-                  context,
-                  stonechatId: contact.stonechatId,
-                  displayName: contact.displayName,
-                  hub: contact.hub,
-                  conversation: chat.messagesFor(contact.stonechatId),
-                  canBlock: !contact.isBlocked,
-                );
-                if (outcome.alsoBlock && !contact.isBlocked) {
-                  await chat.toggleBlock(contact);
-                }
-                return;
-              }
-              if (value == 'leave') {
-                await chat.leaveGroup(widget.group!);
-                if (context.mounted) Navigator.pop(context);
-              }
-            },
-            itemBuilder: (_) => [
-              if (isGroup)
-                const PopupMenuItem(
-                  value: 'info',
-                  child: Text('Group info'),
-                ),
-              const PopupMenuItem(
-                value: 'search',
-                child: Text('Search'),
-              ),
-              const PopupMenuItem(
-                value: 'timer',
-                child: Text('Disappearing messages'),
-              ),
-              if (!isGroup)
-                PopupMenuItem(
-                  value: 'block',
-                  child: widget.contact!.isBlocked
-                      ? const Text('Unblock')
-                      : const Text('Block',
-                          style: TextStyle(color: Zn.danger)),
-                ),
-              if (!isGroup)
-                const PopupMenuItem(
-                  value: 'report',
-                  child: Text('Report', style: TextStyle(color: Zn.danger)),
-                ),
-              if (isGroup)
-                const PopupMenuItem(
-                  value: 'leave',
-                  child: Text('Leave group',
-                      style: TextStyle(color: Zn.danger)),
-                ),
-            ],
-          ),
-        ],
-      ),
       body: Column(
         children: [
           Expanded(
-            child: ScrollablePositionedList.builder(
-              itemScrollController: _itemScroll,
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              itemCount: messages.length,
-              itemBuilder: (context, i) {
-                final m = messages[i];
-                final previous = i > 0 ? messages[i - 1] : null;
-                final senderName = m.outgoing
-                    ? 'YOU'
-                    : isGroup
-                        ? (chat
+            // Starting to drag the history tucks the keyboard away.
+            child: NotificationListener<ScrollStartNotification>(
+              onNotification: (notification) {
+                if (notification.dragDetails != null) {
+                  FocusManager.instance.primaryFocus?.unfocus();
+                }
+                return false;
+              },
+              child: ScrollablePositionedList.builder(
+                key: _listKey,
+                itemScrollController: _itemScroll,
+                itemPositionsListener: _itemPositions,
+                scrollOffsetController: _scrollOffset,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                itemCount: messages.length,
+                itemBuilder: (context, i) {
+                  final m = messages[i];
+                  final previous = i > 0 ? messages[i - 1] : null;
+                  final senderName = m.outgoing
+                      ? 'YOU'
+                      : isGroup
+                      ? (chat
                                 .memberOf(conversationId, m.senderId ?? '')
                                 ?.displayName ??
                             'former member')
-                        : title;
-                final railColor = m.outgoing
-                    ? Zn.orange
-                    : Zn.idColor(isGroup ? (m.senderId ?? '') : conversationId);
-                if (m.kind == MessageKind.notice) {
-                  return GestureDetector(
-                    onLongPress: () => _showMessageSheet(m),
-                    behavior: HitTestBehavior.opaque,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
+                      : title;
+                  final railColor = m.outgoing
+                      ? Zn.orange
+                      : Zn.idColor(
+                          isGroup ? (m.senderId ?? '') : conversationId,
+                        );
+                  if (m.kind == MessageKind.notice) {
+                    return GestureDetector(
+                      onLongPress: () => _showMessageSheet(m),
+                      behavior: HitTestBehavior.opaque,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 10),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
                               m.text.contains('disappearing messages')
                                   ? Icons.timer_outlined
                                   : Icons.info_outline,
                               size: 11,
-                              color: Zn.muted),
-                          const SizedBox(width: 5),
-                          Flexible(
-                            child: Text(m.text,
+                              color: Zn.muted,
+                            ),
+                            const SizedBox(width: 5),
+                            Flexible(
+                              child: Text(
+                                m.text,
                                 textAlign: TextAlign.center,
-                                style: Zn.mono(size: 10, color: Zn.muted)),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                }
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (previous != null) _GapMarker.between(previous, m),
-                    GestureDetector(
-                      onLongPress: () => _showMessageSheet(m),
-                      behavior: HitTestBehavior.opaque,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 300),
-                        color: _flashId == m.id
-                            ? Zn.orange.withValues(alpha: 0.08)
-                            : Colors.transparent,
-                        child: _LedgerEntry(
-                          message: m,
-                          peerName: senderName,
-                          peerColor: railColor,
-                          // A notice breaks the run: re-show the sender after it.
-                          showSender: previous == null ||
-                              previous.kind == MessageKind.notice ||
-                              previous.outgoing != m.outgoing ||
-                              previous.senderId != m.senderId,
-                          reactions:
-                              chat.reactionsByMessage[m.id] ?? const {},
-                          myEmoji: chat.myReactionTo(m),
-                          onReact: (emoji) => chat.react(m, emoji),
-                          quoteSender: m.replyToId == null
-                              ? null
-                              : _senderName(m.replyToSender, chat),
-                          onQuoteTap: m.replyToId == null
-                              ? null
-                              : () => _jumpToMessage(m.replyToId!),
-                          searchQuery: searchQuery,
+                                style: Zn.mono(size: 10, color: Zn.muted),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                  ],
-                );
-              },
+                    );
+                  }
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      if (previous != null) _GapMarker.between(previous, m),
+                      GestureDetector(
+                        onLongPress: () => _showMessageSheet(m),
+                        behavior: HitTestBehavior.opaque,
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          color: _flashId == m.id
+                              ? Zn.orange.withValues(alpha: 0.08)
+                              : Colors.transparent,
+                          child: _LedgerEntry(
+                            message: m,
+                            peerName: senderName,
+                            peerColor: railColor,
+                            // A notice breaks the run: re-show the sender after it.
+                            showSender:
+                                previous == null ||
+                                previous.kind == MessageKind.notice ||
+                                previous.outgoing != m.outgoing ||
+                                previous.senderId != m.senderId,
+                            reactions:
+                                chat.reactionsByMessage[m.id] ?? const {},
+                            myEmoji: chat.myReactionTo(m),
+                            onReact: (emoji) => chat.react(m, emoji),
+                            quoteSender: m.replyToId == null
+                                ? null
+                                : _senderName(m.replyToSender, chat),
+                            onQuoteTap: m.replyToId == null
+                                ? null
+                                : () => _jumpToMessage(m.replyToId!),
+                            searchQuery: searchQuery,
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
             ),
           ),
           if (_typingLabel(chat).isNotEmpty)
             Container(
               alignment: Alignment.centerLeft,
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
-              child: Text(_typingLabel(chat),
-                  style: Zn.mono(size: 10, color: Zn.amber, letterSpacing: 1)),
+              child: Text(
+                _typingLabel(chat),
+                style: Zn.mono(size: 10, color: Zn.amber, letterSpacing: 1),
+              ),
             ),
           if (_editing != null)
             Container(
@@ -1129,8 +1263,14 @@ class _ChatScreenState extends State<ChatScreen> {
                   const Icon(Icons.edit_outlined, size: 14, color: Zn.orange),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('Editing message',
-                        style: Zn.mono(size: 10, color: Zn.orange, letterSpacing: 1)),
+                    child: Text(
+                      'Editing message',
+                      style: Zn.mono(
+                        size: 10,
+                        color: Zn.orange,
+                        letterSpacing: 1,
+                      ),
+                    ),
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, size: 16, color: Zn.muted),
@@ -1155,20 +1295,25 @@ class _ChatScreenState extends State<ChatScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                            _senderName(
-                                    _replyingTo!.outgoing
-                                        ? chat.app.stonechatId
-                                        : (_replyingTo!.senderId ??
-                                            _replyingTo!.contactId),
-                                    chat)
-                                .toUpperCase(),
-                            style: Zn.mono(
-                                size: 9, color: Zn.orange, letterSpacing: 1)),
-                        Text(_replyingTo!.preview,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style:
-                                const TextStyle(fontSize: 12, color: Zn.muted)),
+                          _senderName(
+                            _replyingTo!.outgoing
+                                ? chat.app.stonechatId
+                                : (_replyingTo!.senderId ??
+                                      _replyingTo!.contactId),
+                            chat,
+                          ).toUpperCase(),
+                          style: Zn.mono(
+                            size: 9,
+                            color: Zn.orange,
+                            letterSpacing: 1,
+                          ),
+                        ),
+                        Text(
+                          _replyingTo!.preview,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 12, color: Zn.muted),
+                        ),
                       ],
                     ),
                   ),
@@ -1196,14 +1341,21 @@ class _ChatScreenState extends State<ChatScreen> {
                   const Icon(Icons.block, size: 14, color: Zn.danger),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: Text('You blocked $title',
-                        style: Zn.mono(size: 10, color: Zn.muted)),
+                    child: Text(
+                      'You blocked $title',
+                      style: Zn.mono(size: 10, color: Zn.muted),
+                    ),
                   ),
                   TextButton(
                     onPressed: () => chat.toggleBlock(widget.contact!),
-                    child: Text('UNBLOCK',
-                        style: Zn.mono(
-                            size: 10, color: Zn.orange, letterSpacing: 1)),
+                    child: Text(
+                      'UNBLOCK',
+                      style: Zn.mono(
+                        size: 10,
+                        color: Zn.orange,
+                        letterSpacing: 1,
+                      ),
+                    ),
                   ),
                 ],
               ),
@@ -1265,11 +1417,15 @@ class _LedgerEntry extends StatelessWidget {
         break;
       }
       if (i > start) spans.add(TextSpan(text: text.substring(start, i)));
-      spans.add(TextSpan(
+      spans.add(
+        TextSpan(
           text: text.substring(i, i + q.length),
           style: TextStyle(
-              backgroundColor: Zn.orange.withValues(alpha: 0.35),
-              color: Zn.text)));
+            backgroundColor: Zn.orange.withValues(alpha: 0.35),
+            color: Zn.text,
+          ),
+        ),
+      );
       start = i + q.length;
     }
     return spans;
@@ -1310,12 +1466,15 @@ class _LedgerEntry extends StatelessWidget {
                   if (showSender)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 3),
-                      child: Text(sender,
-                          style: Zn.mono(
-                              size: 9,
-                              color: color,
-                              weight: FontWeight.w700,
-                              letterSpacing: 2)),
+                      child: Text(
+                        sender,
+                        style: Zn.mono(
+                          size: 9,
+                          color: color,
+                          weight: FontWeight.w700,
+                          letterSpacing: 2,
+                        ),
+                      ),
                     ),
                   if (!message.deleted && message.replyToId != null)
                     GestureDetector(
@@ -1327,73 +1486,97 @@ class _LedgerEntry extends StatelessWidget {
                           color: Zn.raised,
                           borderRadius: BorderRadius.circular(Zn.radius),
                           border: Border(
-                              left: BorderSide(
-                                  color: color.withValues(alpha: 0.7),
-                                  width: 2)),
+                            left: BorderSide(
+                              color: color.withValues(alpha: 0.7),
+                              width: 2,
+                            ),
+                          ),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text((quoteSender ?? '').toUpperCase(),
-                                style: Zn.mono(
-                                    size: 8,
-                                    color: color,
-                                    weight: FontWeight.w700,
-                                    letterSpacing: 1)),
+                            Text(
+                              (quoteSender ?? '').toUpperCase(),
+                              style: Zn.mono(
+                                size: 8,
+                                color: color,
+                                weight: FontWeight.w700,
+                                letterSpacing: 1,
+                              ),
+                            ),
                             const SizedBox(height: 1),
-                            Text(message.replyToPreview ?? 'Message',
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                    fontSize: 12, color: Zn.muted)),
+                            Text(
+                              message.replyToPreview ?? 'Message',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Zn.muted,
+                              ),
+                            ),
                           ],
                         ),
                       ),
                     ),
                   if (message.deleted)
-                    Text('message deleted',
-                        style: Zn.mono(size: 12).copyWith(
-                            fontStyle: FontStyle.italic, color: Zn.muted))
+                    Text(
+                      'message deleted',
+                      style: Zn.mono(
+                        size: 12,
+                      ).copyWith(fontStyle: FontStyle.italic, color: Zn.muted),
+                    )
                   else
                     switch (message.kind) {
                       MessageKind.image => _ImageEntry(message: message),
-                      MessageKind.audio =>
-                        _AudioEntry(message: message, color: color),
-                      MessageKind.video =>
-                        _VideoEntry(message: message, color: color),
+                      MessageKind.audio => _AudioEntry(
+                        message: message,
+                        color: color,
+                      ),
+                      MessageKind.video => _VideoEntry(
+                        message: message,
+                        color: color,
+                      ),
                       MessageKind.sticker => _StickerEntry(message: message),
                       MessageKind.file => _FileEntry(
-                          message: message,
-                          color: color,
-                          searchQuery: searchQuery),
+                        message: message,
+                        color: color,
+                        searchQuery: searchQuery,
+                      ),
                       MessageKind.call => Row(
-                          mainAxisSize: MainAxisSize.min,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            message.text.startsWith('Missed')
+                                ? Icons.phone_missed
+                                : message.text.contains('ideo')
+                                ? Icons.videocam_outlined
+                                : Icons.call_outlined,
+                            size: 14,
+                            color: message.text.startsWith('Missed')
+                                ? Zn.danger
+                                : Zn.muted,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(message.text, style: Zn.mono(size: 12)),
+                        ],
+                      ),
+                      _ => Text.rich(
+                        TextSpan(
                           children: [
-                            Icon(
-                                message.text.startsWith('Missed')
-                                    ? Icons.phone_missed
-                                    : message.text.contains('ideo')
-                                        ? Icons.videocam_outlined
-                                        : Icons.call_outlined,
-                                size: 14,
-                                color: message.text.startsWith('Missed')
-                                    ? Zn.danger
-                                    : Zn.muted),
-                            const SizedBox(width: 6),
-                            Text(message.text, style: Zn.mono(size: 12)),
+                            ..._highlighted(message.text),
+                            if (message.editedAt != null)
+                              TextSpan(
+                                text: '  · edited',
+                                style: Zn.mono(size: 9),
+                              ),
                           ],
                         ),
-                      _ => Text.rich(
-                          TextSpan(
-                            children: [
-                              ..._highlighted(message.text),
-                              if (message.editedAt != null)
-                                TextSpan(
-                                    text: '  · edited', style: Zn.mono(size: 9)),
-                            ],
-                          ),
-                          style: const TextStyle(
-                              color: Zn.text, fontSize: 15, height: 1.35)),
+                        style: const TextStyle(
+                          color: Zn.text,
+                          fontSize: 15,
+                          height: 1.35,
+                        ),
+                      ),
                     },
                   if (reactions.isNotEmpty)
                     Padding(
@@ -1407,22 +1590,28 @@ class _LedgerEntry extends StatelessWidget {
                               onTap: () => onReact?.call(entry.key),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 2),
+                                  horizontal: 8,
+                                  vertical: 2,
+                                ),
                                 decoration: BoxDecoration(
                                   color: Zn.raised,
-                                  borderRadius:
-                                      BorderRadius.circular(Zn.radius),
+                                  borderRadius: BorderRadius.circular(
+                                    Zn.radius,
+                                  ),
                                   border: Border.all(
-                                      color: myEmoji == entry.key
-                                          ? Zn.orange
-                                          : Zn.line),
+                                    color: myEmoji == entry.key
+                                        ? Zn.orange
+                                        : Zn.line,
+                                  ),
                                 ),
                                 child: Text(
                                   entry.value > 1
                                       ? '${entry.key} ${entry.value}'
                                       : entry.key,
                                   style: const TextStyle(
-                                      fontSize: 13, color: Zn.text),
+                                    fontSize: 13,
+                                    color: Zn.text,
+                                  ),
                                 ),
                               ),
                             ),
@@ -1441,7 +1630,8 @@ class _LedgerEntry extends StatelessWidget {
                   children: [
                     Text(
                       DateFormat('HH:mm').format(
-                          DateTime.fromMillisecondsSinceEpoch(message.sentAt)),
+                        DateTime.fromMillisecondsSinceEpoch(message.sentAt),
+                      ),
                       style: Zn.mono(size: 9),
                     ),
                     if (message.outgoing) ...[
@@ -1453,10 +1643,11 @@ class _LedgerEntry extends StatelessWidget {
                           _ => '●●', // delivered / read, read lights up
                         },
                         style: Zn.mono(
-                            size: 9,
-                            color: message.status == MessageStatus.read
-                                ? Zn.amber
-                                : Zn.muted),
+                          size: 9,
+                          color: message.status == MessageStatus.read
+                              ? Zn.amber
+                              : Zn.muted,
+                        ),
                       ),
                     ],
                   ],
@@ -1486,11 +1677,12 @@ class _GapMarker extends StatelessWidget {
     final label = gap.inDays >= 1
         ? '${gap.inDays}D'
         : gap.inHours >= 1
-            ? '${gap.inHours}H'
-            : '${gap.inMinutes}M';
+        ? '${gap.inHours}H'
+        : '${gap.inMinutes}M';
     return Padding(
       padding: EdgeInsets.symmetric(
-          vertical: (12 + gap.inHours.clamp(0, 10) * 2).toDouble()),
+        vertical: (12 + gap.inHours.clamp(0, 10) * 2).toDouble(),
+      ),
       child: Row(
         children: [
           const Expanded(child: Divider(indent: 16, endIndent: 12)),
@@ -1549,8 +1741,13 @@ class _StickerEntry extends StatelessWidget {
     }
     return Padding(
       padding: const EdgeInsets.only(top: 2),
-      child: Image.file(file, width: 160, height: 160, fit: BoxFit.contain,
-          alignment: Alignment.centerLeft),
+      child: Image.file(
+        file,
+        width: 160,
+        height: 160,
+        fit: BoxFit.contain,
+        alignment: Alignment.centerLeft,
+      ),
     );
   }
 }
@@ -1572,8 +1769,9 @@ class _VideoEntry extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(top: 2),
       child: GestureDetector(
-        onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
-            builder: (_) => _VideoPlayerPage(path: path))),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => _VideoPlayerPage(path: path)),
+        ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(Zn.radius),
           child: Container(
@@ -1598,8 +1796,9 @@ class _VideoEntry extends StatelessWidget {
                     right: 8,
                     bottom: 6,
                     child: Text(
-                        _fmt(Duration(milliseconds: message.durationMs!)),
-                        style: Zn.mono(size: 10, color: Zn.text)),
+                      _fmt(Duration(milliseconds: message.durationMs!)),
+                      style: Zn.mono(size: 10, color: Zn.text),
+                    ),
                   ),
               ],
             ),
@@ -1653,9 +1852,11 @@ class _VideoPlayerPageState extends State<_VideoPlayerPage> {
       ),
       body: _controller.value.isInitialized
           ? GestureDetector(
-              onTap: () => setState(() => _controller.value.isPlaying
-                  ? _controller.pause()
-                  : _controller.play()),
+              onTap: () => setState(
+                () => _controller.value.isPlaying
+                    ? _controller.pause()
+                    : _controller.play(),
+              ),
               child: Column(
                 children: [
                   Expanded(
@@ -1673,7 +1874,9 @@ class _VideoPlayerPageState extends State<_VideoPlayerPage> {
                       allowScrubbing: true,
                       padding: const EdgeInsets.all(12),
                       colors: const VideoProgressColors(
-                          playedColor: Zn.orange, backgroundColor: Zn.line),
+                        playedColor: Zn.orange,
+                        backgroundColor: Zn.line,
+                      ),
                     ),
                   ),
                 ],
@@ -1689,8 +1892,11 @@ class _FileEntry extends StatelessWidget {
   final Message message;
   final Color color;
   final String searchQuery;
-  const _FileEntry(
-      {required this.message, required this.color, this.searchQuery = ''});
+  const _FileEntry({
+    required this.message,
+    required this.color,
+    this.searchQuery = '',
+  });
 
   static String _sizeLabel(int bytes) => bytes >= 1024 * 1024
       ? '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB'
@@ -1709,8 +1915,11 @@ class _FileEntry extends StatelessWidget {
             : () async {
                 final result = await OpenFilex.open(path);
                 if (result.type != ResultType.done && context.mounted) {
-                  showZnSnack(context, "Couldn't open ${message.fileName}",
-                      error: true);
+                  showZnSnack(
+                    context,
+                    "Couldn't open ${message.fileName}",
+                    error: true,
+                  );
                 }
               },
         child: Container(
@@ -1739,16 +1948,19 @@ class _FileEntry extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(name,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 13, color: Zn.text)),
+                    Text(
+                      name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13, color: Zn.text),
+                    ),
                     const SizedBox(height: 2),
                     Text(
-                        exists
-                            ? _sizeLabel(File(path).lengthSync())
-                            : 'no longer on this device',
-                        style: Zn.mono(size: 9, color: Zn.muted)),
+                      exists
+                          ? _sizeLabel(File(path).lengthSync())
+                          : 'no longer on this device',
+                      style: Zn.mono(size: 9, color: Zn.muted),
+                    ),
                   ],
                 ),
               ),
@@ -1817,11 +2029,15 @@ class _AudioEntryState extends State<_AudioEntry> {
                   decoration: BoxDecoration(
                     color: widget.color.withValues(alpha: 0.15),
                     borderRadius: BorderRadius.circular(Zn.radius),
-                    border:
-                        Border.all(color: widget.color.withValues(alpha: 0.5)),
+                    border: Border.all(
+                      color: widget.color.withValues(alpha: 0.5),
+                    ),
                   ),
-                  child: Icon(playing ? Icons.pause : Icons.play_arrow,
-                      size: 20, color: widget.color),
+                  child: Icon(
+                    playing ? Icons.pause : Icons.play_arrow,
+                    size: 20,
+                    color: widget.color,
+                  ),
                 ),
               );
             },
@@ -1834,7 +2050,10 @@ class _AudioEntryState extends State<_AudioEntry> {
               builder: (context, snap) {
                 final pos = snap.data ?? Duration.zero;
                 final progress = total.inMilliseconds > 0
-                    ? (pos.inMilliseconds / total.inMilliseconds).clamp(0.0, 1.0)
+                    ? (pos.inMilliseconds / total.inMilliseconds).clamp(
+                        0.0,
+                        1.0,
+                      )
                     : 0.0;
                 return ClipRRect(
                   borderRadius: BorderRadius.circular(2),
@@ -1859,9 +2078,11 @@ class _AudioEntryState extends State<_AudioEntry> {
 class _Composer extends StatefulWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
-  final VoidCallback? onTyping; // keystroke → typing indicator (throttled upstream)
+  final VoidCallback?
+  onTyping; // keystroke → typing indicator (throttled upstream)
   final VoidCallback? onAttach; // null → media disabled (groups, deferred)
-  final VoidCallback? onSticker; // opens the sticker picker (DM-only, like media)
+  final VoidCallback?
+  onSticker; // opens the sticker picker (DM-only, like media)
   final void Function(String path, int durationMs)? onVoiceRecorded;
 
   const _Composer({
@@ -1907,8 +2128,11 @@ class _ComposerState extends State<_Composer> {
     }
     if (!await _recorder.hasPermission()) {
       if (mounted) {
-        showZnSnack(context, 'Microphone access is needed for voice notes',
-            error: true);
+        showZnSnack(
+          context,
+          'Microphone access is needed for voice notes',
+          error: true,
+        );
       }
       return;
     }
@@ -1919,8 +2143,10 @@ class _ComposerState extends State<_Composer> {
           '${dir.path}/stonechat-voice-${DateTime.now().millisecondsSinceEpoch}.m4a',
     );
     setState(() => _recordingStarted = DateTime.now());
-    _ticker =
-        Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+    _ticker = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => setState(() {}),
+    );
   }
 
   @override
@@ -1945,16 +2171,22 @@ class _ComposerState extends State<_Composer> {
           if (widget.onAttach != null)
             IconButton(
               onPressed: _recording ? null : widget.onAttach,
-              icon: const Icon(Icons.add_circle_outline,
-                  color: Zn.muted, size: 22),
+              icon: const Icon(
+                Icons.add_circle_outline,
+                color: Zn.muted,
+                size: 22,
+              ),
             )
           else
             const SizedBox(width: 12),
           if (widget.onSticker != null)
             IconButton(
               onPressed: _recording ? null : widget.onSticker,
-              icon: const Icon(Icons.emoji_emotions_outlined,
-                  color: Zn.muted, size: 22),
+              icon: const Icon(
+                Icons.emoji_emotions_outlined,
+                color: Zn.muted,
+                size: 22,
+              ),
             ),
           Expanded(
             child: _recording
@@ -1964,7 +2196,9 @@ class _ComposerState extends State<_Composer> {
                         width: 8,
                         height: 8,
                         decoration: const BoxDecoration(
-                            color: Zn.danger, shape: BoxShape.circle),
+                          color: Zn.danger,
+                          shape: BoxShape.circle,
+                        ),
                       ),
                       const SizedBox(width: 10),
                       Text(
@@ -2011,8 +2245,11 @@ class _ComposerState extends State<_Composer> {
                 color: _recording ? Zn.line : Zn.orange,
                 borderRadius: BorderRadius.circular(Zn.radius),
               ),
-              child: const Icon(Icons.arrow_upward,
-                  size: 20, color: Zn.onAccent),
+              child: const Icon(
+                Icons.arrow_upward,
+                size: 20,
+                color: Zn.onAccent,
+              ),
             ),
           ),
         ],

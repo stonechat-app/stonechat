@@ -38,13 +38,24 @@ class _HomeScreenState extends State<HomeScreen> {
       return activityB.compareTo(activityA);
     }
 
-    final allContacts = [...chat.acceptedContacts]..sort((a, b) => compare(
-        a.pinnedAt,
-        b.pinnedAt,
-        activity(a.stonechatId, a.createdAt),
-        activity(b.stonechatId, b.createdAt)));
-    final allGroups = [...chat.groups]..sort((a, b) => compare(a.pinnedAt,
-        b.pinnedAt, activity(a.id, a.createdAt), activity(b.id, b.createdAt)));
+    final allContacts = [...chat.acceptedContacts]
+      ..sort(
+        (a, b) => compare(
+          a.pinnedAt,
+          b.pinnedAt,
+          activity(a.stonechatId, a.createdAt),
+          activity(b.stonechatId, b.createdAt),
+        ),
+      );
+    final allGroups = [...chat.groups]
+      ..sort(
+        (a, b) => compare(
+          a.pinnedAt,
+          b.pinnedAt,
+          activity(a.id, a.createdAt),
+          activity(b.id, b.createdAt),
+        ),
+      );
 
     // Archived conversations live in their own collapsed section.
     final contacts = allContacts.where((c) => !c.isArchived).toList();
@@ -52,7 +63,8 @@ class _HomeScreenState extends State<HomeScreen> {
     final groups = allGroups.where((g) => !g.isArchived).toList();
     final archivedGroups = allGroups.where((g) => g.isArchived).toList();
 
-    final chatsEmpty = requests.isEmpty &&
+    final chatsEmpty =
+        requests.isEmpty &&
         sent.isEmpty &&
         contacts.isEmpty &&
         archivedContacts.isEmpty;
@@ -62,9 +74,22 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('STONECHAT',
-            style: Zn.mono(
-                size: 20, color: Zn.orange, weight: FontWeight.w700, letterSpacing: 6)),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Image.asset('assets/logo/bird.png', height: 22),
+            const SizedBox(width: 8),
+            Text(
+              'STONECHAT',
+              style: Zn.mono(
+                size: 20,
+                color: Zn.orange,
+                weight: FontWeight.w700,
+                letterSpacing: 6,
+              ),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.qr_code_2, color: Zn.muted),
@@ -72,7 +97,10 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () => Navigator.pushNamed(context, '/my-id'),
           ),
           IconButton(
-            icon: const Icon(Icons.markunread_mailbox_outlined, color: Zn.muted),
+            icon: const Icon(
+              Icons.markunread_mailbox_outlined,
+              color: Zn.muted,
+            ),
             tooltip: 'Mailbox',
             onPressed: () => Navigator.pushNamed(context, '/server'),
           ),
@@ -120,22 +148,27 @@ class _HomeScreenState extends State<HomeScreen> {
                           ? [
                               if (requests.isNotEmpty || sent.isNotEmpty) ...[
                                 _SectionLabel(
-                                    'Requests · ${requests.length + sent.length}'),
-                                ...requests
-                                    .map((c) => _RequestTile(contact: c)),
-                                ...sent
-                                    .map((c) => _SentRequestTile(contact: c)),
+                                  'Requests · ${requests.length + sent.length}',
+                                ),
+                                ...requests.map(
+                                  (c) => _RequestTile(contact: c),
+                                ),
+                                ...sent.map(
+                                  (c) => _SentRequestTile(contact: c),
+                                ),
                               ],
                               if (contacts.isNotEmpty) ...[
                                 const _SectionLabel('Chats'),
                                 ...contacts.map(
-                                    (c) => _ConversationTile(contact: c)),
+                                  (c) => _ConversationTile(contact: c),
+                                ),
                               ],
                               if (archivedContacts.isNotEmpty) ...[
                                 _archivedHeader(archivedContacts.length),
                                 if (_showArchived)
                                   ...archivedContacts.map(
-                                      (c) => _ConversationTile(contact: c)),
+                                    (c) => _ConversationTile(contact: c),
+                                  ),
                               ],
                             ]
                           : [
@@ -146,8 +179,9 @@ class _HomeScreenState extends State<HomeScreen> {
                               if (archivedGroups.isNotEmpty) ...[
                                 _archivedHeader(archivedGroups.length),
                                 if (_showArchived)
-                                  ...archivedGroups
-                                      .map((g) => _GroupTile(group: g)),
+                                  ...archivedGroups.map(
+                                    (g) => _GroupTile(group: g),
+                                  ),
                               ],
                             ],
                     ),
@@ -167,7 +201,9 @@ class _HomeScreenState extends State<HomeScreen> {
       floatingActionButton: FloatingActionButton(
         backgroundColor: Zn.orange,
         foregroundColor: Zn.onAccent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Zn.radius)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Zn.radius),
+        ),
         onPressed: () => _showNewMenu(context),
         child: const Icon(Icons.add),
       ),
@@ -176,22 +212,24 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Collapsed "Archived · n" row; tap toggles the section open.
   Widget _archivedHeader(int count) => InkWell(
-        onTap: () => setState(() => _showArchived = !_showArchived),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
-          child: Row(
-            children: [
-              const Icon(Icons.archive_outlined, size: 13, color: Zn.muted),
-              const SizedBox(width: 8),
-              Text('Archived · $count',
-                  style: Zn.mono(size: 10, letterSpacing: 2)),
-              const Spacer(),
-              Icon(_showArchived ? Icons.expand_less : Icons.expand_more,
-                  size: 16, color: Zn.muted),
-            ],
+    onTap: () => setState(() => _showArchived = !_showArchived),
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
+      child: Row(
+        children: [
+          const Icon(Icons.archive_outlined, size: 13, color: Zn.muted),
+          const SizedBox(width: 8),
+          Text('Archived · $count', style: Zn.mono(size: 10, letterSpacing: 2)),
+          const Spacer(),
+          Icon(
+            _showArchived ? Icons.expand_less : Icons.expand_more,
+            size: 16,
+            color: Zn.muted,
           ),
-        ),
-      );
+        ],
+      ),
+    ),
+  );
 
   void _showNewMenu(BuildContext context) {
     showModalBottomSheet<void>(
@@ -236,8 +274,12 @@ String _when(int ms) {
   return DateFormat('dd MMM').format(t);
 }
 
-Widget? _tileTrailing(Message? last, bool pinned,
-    {bool muted = false, bool blocked = false}) {
+Widget? _tileTrailing(
+  Message? last,
+  bool pinned, {
+  bool muted = false,
+  bool blocked = false,
+}) {
   if (last == null && !pinned && !muted && !blocked) return null;
   return Row(
     mainAxisSize: MainAxisSize.min,
@@ -250,8 +292,11 @@ Widget? _tileTrailing(Message? last, bool pinned,
       if (muted)
         const Padding(
           padding: EdgeInsets.only(right: 6),
-          child: Icon(Icons.notifications_off_outlined,
-              size: 12, color: Zn.muted),
+          child: Icon(
+            Icons.notifications_off_outlined,
+            size: 12,
+            color: Zn.muted,
+          ),
         ),
       if (pinned)
         Padding(
@@ -291,8 +336,9 @@ void _showConversationSheet(
         children: [
           ListTile(
             leading: Icon(
-                pinned ? Icons.push_pin_outlined : Icons.push_pin,
-                color: Zn.muted),
+              pinned ? Icons.push_pin_outlined : Icons.push_pin,
+              color: Zn.muted,
+            ),
             title: Text(pinned ? 'Unpin' : 'Pin to top'),
             onTap: () {
               Navigator.pop(sheetContext);
@@ -301,10 +347,11 @@ void _showConversationSheet(
           ),
           ListTile(
             leading: Icon(
-                muted
-                    ? Icons.notifications_active_outlined
-                    : Icons.notifications_off_outlined,
-                color: Zn.muted),
+              muted
+                  ? Icons.notifications_active_outlined
+                  : Icons.notifications_off_outlined,
+              color: Zn.muted,
+            ),
             title: Text(muted ? 'Unmute' : 'Mute'),
             onTap: () {
               Navigator.pop(sheetContext);
@@ -317,8 +364,9 @@ void _showConversationSheet(
           ),
           ListTile(
             leading: Icon(
-                archived ? Icons.unarchive_outlined : Icons.archive_outlined,
-                color: Zn.muted),
+              archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+              color: Zn.muted,
+            ),
             title: Text(archived ? 'Unarchive' : 'Archive'),
             onTap: () {
               Navigator.pop(sheetContext);
@@ -327,10 +375,11 @@ void _showConversationSheet(
           ),
           if (onToggleBlock != null)
             ListTile(
-              leading: Icon(Icons.block,
-                  color: blocked ? Zn.muted : Zn.danger),
-              title: Text(blocked ? 'Unblock' : 'Block',
-                  style: TextStyle(color: blocked ? Zn.text : Zn.danger)),
+              leading: Icon(Icons.block, color: blocked ? Zn.muted : Zn.danger),
+              title: Text(
+                blocked ? 'Unblock' : 'Block',
+                style: TextStyle(color: blocked ? Zn.text : Zn.danger),
+              ),
               onTap: () {
                 Navigator.pop(sheetContext);
                 onToggleBlock();
@@ -352,7 +401,9 @@ void _showConversationSheet(
 }
 
 void _showMuteSheet(
-    BuildContext context, Future<void> Function(int? untilMs) onMute) {
+  BuildContext context,
+  Future<void> Function(int? untilMs) onMute,
+) {
   showModalBottomSheet<void>(
     context: context,
     backgroundColor: Zn.surface,
@@ -367,8 +418,10 @@ void _showMuteSheet(
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
             child: Align(
               alignment: Alignment.centerLeft,
-              child:
-                  Text('MUTE FOR', style: Zn.mono(size: 10, letterSpacing: 2)),
+              child: Text(
+                'MUTE FOR',
+                style: Zn.mono(size: 10, letterSpacing: 2),
+              ),
             ),
           ),
           for (final ms in MuteDuration.options)
@@ -376,9 +429,11 @@ void _showMuteSheet(
               title: Text(MuteDuration.label(ms)),
               onTap: () {
                 Navigator.pop(sheetContext);
-                onMute(ms == MuteDuration.forever
-                    ? MuteDuration.forever
-                    : DateTime.now().millisecondsSinceEpoch + ms);
+                onMute(
+                  ms == MuteDuration.forever
+                      ? MuteDuration.forever
+                      : DateTime.now().millisecondsSinceEpoch + ms,
+                );
               },
             ),
         ],
@@ -399,8 +454,10 @@ class _GroupTile extends StatelessWidget {
 
     return ListTile(
       leading: StonechatAvatar(stonechatId: group.id, name: '◈', size: 42),
-      title: Text(group.name,
-          style: const TextStyle(fontWeight: FontWeight.w600)),
+      title: Text(
+        group.name,
+        style: const TextStyle(fontWeight: FontWeight.w600),
+      ),
       subtitle: last == null
           ? Text('$memberCount members', style: Zn.mono(size: 11))
           : Text(
@@ -414,13 +471,15 @@ class _GroupTile extends StatelessWidget {
         context,
         MaterialPageRoute(builder: (_) => ChatScreen.group(group: group)),
       ),
-      onLongPress: () => _showConversationSheet(context,
-          pinned: group.isPinned,
-          muted: group.isMuted,
-          archived: group.isArchived,
-          onTogglePin: () => chat.togglePinGroup(group),
-          onMute: (until) => chat.setMute(group.id, until),
-          onToggleArchive: () => chat.toggleArchive(group.id)),
+      onLongPress: () => _showConversationSheet(
+        context,
+        pinned: group.isPinned,
+        muted: group.isMuted,
+        archived: group.isArchived,
+        onTogglePin: () => chat.togglePinGroup(group),
+        onMute: (until) => chat.setMute(group.id, until),
+        onToggleArchive: () => chat.toggleArchive(group.id),
+      ),
     );
   }
 }
@@ -431,9 +490,9 @@ class _SectionLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
-        child: Text(text, style: Zn.mono(size: 10, letterSpacing: 2)),
-      );
+    padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
+    child: Text(text, style: Zn.mono(size: 10, letterSpacing: 2)),
+  );
 }
 
 class _RequestTile extends StatelessWidget {
@@ -445,13 +504,18 @@ class _RequestTile extends StatelessWidget {
     final chat = context.read<ChatState>();
     return ListTile(
       leading: StonechatAvatar(
-          stonechatId: contact.stonechatId,
-          name: contact.displayName,
-          image: contact.avatar),
-      title: Text(contact.displayName,
-          style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text('${contact.stonechatId.substring(0, 12)} · wants to connect',
-          style: const TextStyle(color: Zn.muted, fontSize: 12)),
+        stonechatId: contact.stonechatId,
+        name: contact.displayName,
+        image: contact.avatar,
+      ),
+      title: Text(
+        contact.displayName,
+        style: const TextStyle(fontWeight: FontWeight.w600),
+      ),
+      subtitle: Text(
+        '${contact.stonechatId.substring(0, 12)} · wants to connect',
+        style: const TextStyle(color: Zn.muted, fontSize: 12),
+      ),
       // An unsolicited request from a stranger is the one abuse that arrives
       // before there is any conversation to report from, so the report path
       // has to exist here too — decline alone only makes it stop for you.
@@ -470,7 +534,10 @@ class _RequestTile extends StatelessWidget {
                 await chat.acceptContact(contact);
               } catch (e) {
                 if (context.mounted) {
-                  showZnSnack(context, 'Accepted — will notify them when reachable');
+                  showZnSnack(
+                    context,
+                    'Accepted — will notify them when reachable',
+                  );
                 }
               }
             },
@@ -493,14 +560,18 @@ class _SentRequestTile extends StatelessWidget {
     final chat = context.read<ChatState>();
     return ListTile(
       leading: StonechatAvatar(
-          stonechatId: contact.stonechatId,
-          name: contact.displayName,
-          image: contact.avatar),
-      title: Text(contact.displayName,
-          style: const TextStyle(fontWeight: FontWeight.w600)),
+        stonechatId: contact.stonechatId,
+        name: contact.displayName,
+        image: contact.avatar,
+      ),
+      title: Text(
+        contact.displayName,
+        style: const TextStyle(fontWeight: FontWeight.w600),
+      ),
       subtitle: Text(
-          '${contact.stonechatId.substring(0, 12)} · request sent · waiting',
-          style: const TextStyle(color: Zn.muted, fontSize: 12)),
+        '${contact.stonechatId.substring(0, 12)} · request sent · waiting',
+        style: const TextStyle(color: Zn.muted, fontSize: 12),
+      ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -520,8 +591,11 @@ class _SentRequestTile extends StatelessWidget {
                 }
               } catch (e) {
                 if (context.mounted) {
-                  showZnSnack(context, "Couldn't reach their mailbox: $e",
-                      error: true);
+                  showZnSnack(
+                    context,
+                    "Couldn't reach their mailbox: $e",
+                    error: true,
+                  );
                 }
               }
             },
@@ -543,11 +617,14 @@ class _ConversationTile extends StatelessWidget {
 
     return ListTile(
       leading: StonechatAvatar(
-          stonechatId: contact.stonechatId,
-          name: contact.displayName,
-          image: contact.avatar),
-      title: Text(contact.displayName,
-          style: const TextStyle(fontWeight: FontWeight.w600)),
+        stonechatId: contact.stonechatId,
+        name: contact.displayName,
+        image: contact.avatar,
+      ),
+      title: Text(
+        contact.displayName,
+        style: const TextStyle(fontWeight: FontWeight.w600),
+      ),
       subtitle: last == null
           ? Text('say hello', style: Zn.mono(size: 11))
           : Text(
@@ -556,22 +633,28 @@ class _ConversationTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Zn.muted, fontSize: 13),
             ),
-      trailing: _tileTrailing(last, contact.isPinned,
-          muted: contact.isMuted, blocked: contact.isBlocked),
+      trailing: _tileTrailing(
+        last,
+        contact.isPinned,
+        muted: contact.isMuted,
+        blocked: contact.isBlocked,
+      ),
       onTap: () => Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => ChatScreen(contact: contact)),
       ),
-      onLongPress: () => _showConversationSheet(context,
-          pinned: contact.isPinned,
-          muted: contact.isMuted,
-          archived: contact.isArchived,
-          blocked: contact.isBlocked,
-          onTogglePin: () => chat.togglePinContact(contact),
-          onMute: (until) => chat.setMute(contact.stonechatId, until),
-          onToggleArchive: () => chat.toggleArchive(contact.stonechatId),
-          onToggleBlock: () => chat.toggleBlock(contact),
-          onReport: () => _reportContact(context, chat, contact)),
+      onLongPress: () => _showConversationSheet(
+        context,
+        pinned: contact.isPinned,
+        muted: contact.isMuted,
+        archived: contact.isArchived,
+        blocked: contact.isBlocked,
+        onTogglePin: () => chat.togglePinContact(contact),
+        onMute: (until) => chat.setMute(contact.stonechatId, until),
+        onToggleArchive: () => chat.toggleArchive(contact.stonechatId),
+        onToggleBlock: () => chat.toggleBlock(contact),
+        onReport: () => _reportContact(context, chat, contact),
+      ),
     );
   }
 }
@@ -579,7 +662,10 @@ class _ConversationTile extends StatelessWidget {
 /// Report a contact from the conversation list, honouring the sheet's
 /// "block them as well" choice.
 Future<void> _reportContact(
-    BuildContext context, ChatState chat, Contact contact) async {
+  BuildContext context,
+  ChatState chat,
+  Contact contact,
+) async {
   // From the list, the conversation may never have been opened — read the
   // stored history rather than the in-memory cache, which would be empty and
   // silently offer nothing to attach.

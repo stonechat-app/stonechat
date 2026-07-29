@@ -80,7 +80,7 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan a contact's Stonechat ID QR code and show yourself in video calls.</string>
+	<string>Take photos to send in chats, scan a contact's Stonechat ID QR code, and show yourself in video calls.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Unlock Stonechat with Face ID when app lock is on.</string>
 	<key>NSMicrophoneUsageDescription</key>
