@@ -517,6 +517,7 @@
 					"-Wl,-exported_symbol,_stonechat_xwing_encaps",
 					"-Wl,-exported_symbol,_stonechat_xwing_decaps",
 				);
+				STRIP_STYLE = "non-global";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -721,6 +722,7 @@
 					"-Wl,-exported_symbol,_stonechat_xwing_encaps",
 					"-Wl,-exported_symbol,_stonechat_xwing_decaps",
 				);
+				STRIP_STYLE = "non-global";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -765,6 +767,7 @@
 					"-Wl,-exported_symbol,_stonechat_xwing_encaps",
 					"-Wl,-exported_symbol,_stonechat_xwing_decaps",
 				);
+				STRIP_STYLE = "non-global";
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
