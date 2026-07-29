@@ -50,8 +50,11 @@ class ChatState extends ChangeNotifier {
   // Call signaling hook, set by CallState: call_* envelopes from accepted
   // contacts are handed over instead of being handled here.
   Future<void> Function(
-      Contact contact, Envelope envelope, Map<String, dynamic> payload)?
-      onCallSignal;
+    Contact contact,
+    Envelope envelope,
+    Map<String, dynamic> payload,
+  )?
+  onCallSignal;
 
   // Emoji reactions: message id → (reactor Stonechat ID → emoji). Loaded per
   // conversation on open, updated live.
@@ -66,11 +69,14 @@ class ChatState extends ChangeNotifier {
   // expiry, on the peer's "stopped", or when their message arrives.
   final Map<String, Map<String, int>> _typing = {};
   Timer? _typingSweep;
-  final Map<String, int> _typingSentAt = {}; // our own throttle, per conversation
+  final Map<String, int> _typingSentAt =
+      {}; // our own throttle, per conversation
 
-  static const _typingRefreshMs = 8 * 1000; // resend "started" at most this often
+  static const _typingRefreshMs =
+      8 * 1000; // resend "started" at most this often
   static const _typingTtlMs = 15 * 1000; // shown this long without a refresh
-  static const _editWindowMs = 24 * 3600 * 1000; // sender-side edit/delete window
+  static const _editWindowMs =
+      24 * 3600 * 1000; // sender-side edit/delete window
   static const _editGraceMs = 12 * 3600 * 1000; // receiver-side slack on top
   static const _replyPreviewMax = 140; // reply_to snapshot cap (chars)
 
@@ -98,6 +104,25 @@ class ChatState extends ChangeNotifier {
     mailboxTlsFp = tlsFp;
     _registeredPushToken = null; // new mailbox → re-register the token
     _registerPush();
+    // Mirror the coordinates into the shared DB: the iOS notification
+    // extension drains the mailbox from its own process and has no other
+    // way to learn where it lives.
+    unawaited(
+      app.db.kvPut(
+        'own_mailbox',
+        address == null
+            ? null
+            : Uint8List.fromList(
+                utf8.encode(
+                  jsonEncode({
+                    'address': address,
+                    'token': token,
+                    'tls_fp': tlsFp,
+                  }),
+                ),
+              ),
+      ),
+    );
   }
 
   /// Called by PushService when we obtain or refresh a device token.
@@ -205,6 +230,27 @@ class ChatState extends ChangeNotifier {
     // Anything that expired while the app was closed vanishes before it can
     // be rendered (the sweep also fixes the previews it just loaded).
     unawaited(sweepExpired());
+  }
+
+  /// Coming back to the foreground on iOS: the notification extension may
+  /// have stored messages AND advanced ratchet sessions while we were
+  /// suspended. Drop every cache that could now be stale — sessions above
+  /// all: encrypting from a stale cached session would clobber the
+  /// extension's state on save and fork the ratchet. Sessions reload
+  /// lazily from the DB; the open conversation re-reads eagerly so the
+  /// screen shows what the extension stored.
+  Future<void> reloadAfterExtension() async {
+    _sessions.clear();
+    _messages.clear();
+    final open = _openConversationId;
+    if (open != null) await openConversation(open);
+    for (final c in contacts) {
+      lastMessage[c.stonechatId] = await app.db.lastMessageFor(c.stonechatId);
+    }
+    for (final g in groups) {
+      lastMessage[g.id] = await app.db.lastMessageFor(g.id);
+    }
+    notifyListeners();
   }
 
   /// A backup restore merged rows straight into the DB underneath the
@@ -316,32 +362,42 @@ class ChatState extends ChangeNotifier {
   /// contact's stored home hub. The verification below is what makes asking a
   /// foreign hub safe: it can lie only into a failed lookup.
   Future<DirectoryEntry> _resolve(String stonechatId, {String? hub}) async {
-    final entry = await app.api
-        .directory(stonechatId, hubUrl: hub ?? contactById(stonechatId)?.hub);
+    final entry = await app.api.directory(
+      stonechatId,
+      hubUrl: hub ?? contactById(stonechatId)?.hub,
+    );
     if (!app.crypto.pubkeyMatchesId(entry.pubkeyB64, entry.stonechatId)) {
       throw ApiException(
-          'Directory returned a key that does not match this ID — refusing.');
+        'Directory returned a key that does not match this ID — refusing.',
+      );
     }
     // The X-Wing identity key seals every envelope to this peer; it is only
     // trusted signed by the (commitment-verified) Ed25519 key. Absent or
     // forged → unusable entry: the protocol has no classical-seal fallback.
-    final pqOk = entry.pqPkB64 != null &&
+    final pqOk =
+        entry.pqPkB64 != null &&
         entry.pqSigB64 != null &&
         app.crypto.verifyPqPkSig(
-            Uint8List.fromList(base64Decode(entry.pqPkB64!)),
-            Uint8List.fromList(base64Decode(entry.pqSigB64!)),
-            Uint8List.fromList(base64Decode(entry.pubkeyB64)));
+          Uint8List.fromList(base64Decode(entry.pqPkB64!)),
+          Uint8List.fromList(base64Decode(entry.pqSigB64!)),
+          Uint8List.fromList(base64Decode(entry.pubkeyB64)),
+        );
     if (!pqOk) {
       throw ApiException(
-          'Directory entry lacks a valid post-quantum key — refusing.');
+        'Directory entry lacks a valid post-quantum key — refusing.',
+      );
     }
     if (entry.serverAddress != null) {
       final fp = entry.serverTlsFp;
       final sig = entry.serverTlsSig;
-      final vouched = fp != null &&
+      final vouched =
+          fp != null &&
           sig != null &&
           app.crypto.verifyTlsSig(
-              fp, sig, Uint8List.fromList(base64Decode(entry.pubkeyB64)));
+            fp,
+            sig,
+            Uint8List.fromList(base64Decode(entry.pubkeyB64)),
+          );
       if (!vouched) {
         return DirectoryEntry(
           stonechatId: entry.stonechatId,
@@ -363,7 +419,8 @@ class ChatState extends ChangeNotifier {
     final entry = await _resolve(contact.stonechatId);
     if (entry.serverAddress == null) {
       throw ApiException(
-          "${contact.displayName}'s mailbox is off right now — they'll get it when it's back");
+        "${contact.displayName}'s mailbox is off right now — they'll get it when it's back",
+      );
     }
     contact.serverAddress = entry.serverAddress;
     contact.tlsFp = entry.serverTlsFp;
@@ -379,27 +436,44 @@ class ChatState extends ChangeNotifier {
   /// its owner. [transient] (typing, call ICE), [noPush] (receipts) and
   /// [ring] (call offers) are the delivery hints the mailbox is allowed to
   /// see.
-  SealedEnvelope _wireSeal(Envelope envelope, String toPqPkB64,
-          {bool transient = false, bool noPush = false, bool ring = false}) =>
-      SealedEnvelope(
-        id: envelope.id,
-        to: envelope.to,
-        sealedB64: base64Encode(app.crypto.sealTo(
-            Uint8List.fromList(base64Decode(toPqPkB64)),
-            utf8.encode(jsonEncode(envelope.toJson())))),
-        blobId: envelope.blobId,
-        transient: transient,
-        noPush: noPush,
-        ring: ring,
-      );
+  SealedEnvelope _wireSeal(
+    Envelope envelope,
+    String toPqPkB64, {
+    bool transient = false,
+    bool noPush = false,
+    bool ring = false,
+  }) => SealedEnvelope(
+    id: envelope.id,
+    to: envelope.to,
+    sealedB64: base64Encode(
+      app.crypto.sealTo(
+        Uint8List.fromList(base64Decode(toPqPkB64)),
+        utf8.encode(jsonEncode(envelope.toJson())),
+      ),
+    ),
+    blobId: envelope.blobId,
+    transient: transient,
+    noPush: noPush,
+    ring: ring,
+  );
 
-  Future<void> _deliver(Contact contact, Envelope envelope,
-      {bool transient = false, bool noPush = false, bool ring = false}) async {
+  Future<void> _deliver(
+    Contact contact,
+    Envelope envelope, {
+    bool transient = false,
+    bool noPush = false,
+    bool ring = false,
+  }) async {
     // _addressFor also backfills pq_pk for contacts saved before a resolve
     // (e.g. a pending_in row built from an x3dh block alone).
     var address = await _addressFor(contact);
-    var wire = _wireSeal(envelope, contact.pqPkB64!,
-        transient: transient, noPush: noPush, ring: ring);
+    var wire = _wireSeal(
+      envelope,
+      contact.pqPkB64!,
+      transient: transient,
+      noPush: noPush,
+      ring: ring,
+    );
     try {
       await deliverEnvelope(address, wire, contact.tlsFp!);
     } on Exception {
@@ -407,8 +481,13 @@ class ChatState extends ChangeNotifier {
       // key) — refresh everything and retry once, re-sealing in case their
       // directory entry rotated.
       address = await _addressFor(contact, refresh: true);
-      wire = _wireSeal(envelope, contact.pqPkB64!,
-          transient: transient, noPush: noPush, ring: ring);
+      wire = _wireSeal(
+        envelope,
+        contact.pqPkB64!,
+        transient: transient,
+        noPush: noPush,
+        ring: ring,
+      );
       await deliverEnvelope(address, wire, contact.tlsFp!);
     }
   }
@@ -421,7 +500,10 @@ class ChatState extends ChangeNotifier {
     final stateJson = await app.db.sessionState(peerId);
     if (stateJson == null) return null;
     final session = RatchetSession.fromJson(
-        app.crypto, peerId, jsonDecode(stateJson) as Map<String, dynamic>);
+      app.crypto,
+      peerId,
+      jsonDecode(stateJson) as Map<String, dynamic>,
+    );
     _sessions[peerId] = session;
     return session;
   }
@@ -433,8 +515,12 @@ class ChatState extends ChangeNotifier {
 
   /// The session for an outgoing message, establishing one via the peer's
   /// prekey bundle when none exists yet.
-  Future<RatchetSession> _sessionFor(String peerId, String peerPubkeyB64,
-      {String? serverAddress, String? serverTlsFp}) async {
+  Future<RatchetSession> _sessionFor(
+    String peerId,
+    String peerPubkeyB64, {
+    String? serverAddress,
+    String? serverTlsFp,
+  }) async {
     final existing = await _loadSession(peerId);
     if (existing != null && existing.canSend) return existing;
 
@@ -452,28 +538,40 @@ class ChatState extends ChangeNotifier {
       final entry = await _resolve(peerId);
       if (entry.serverAddress == null) {
         throw ApiException(
-            "Their mailbox is off right now — they'll get it when it's back");
+          "Their mailbox is off right now — they'll get it when it's back",
+        );
       }
       bundle = await fetchFrom(entry.serverAddress!, entry.serverTlsFp!);
     }
 
     final peerEd = Uint8List.fromList(base64Decode(peerPubkeyB64));
     if (!app.crypto.verifyPrekeySig(bundle.spkPub, bundle.spkSig, peerEd) ||
-        !app.crypto
-            .verifyKemPrekeySig(bundle.kspkPub, bundle.kspkSig, peerEd)) {
+        !app.crypto.verifyKemPrekeySig(
+          bundle.kspkPub,
+          bundle.kspkSig,
+          peerEd,
+        )) {
       throw ApiException(
-          'Their mailbox served a forged prekey — refusing to send.');
+        'Their mailbox served a forged prekey — refusing to send.',
+      );
     }
-    final session =
-        RatchetSession.initiate(app.crypto, peerId, peerEd, bundle);
+    final session = RatchetSession.initiate(app.crypto, peerId, peerEd, bundle);
     await _saveSession(session);
     return session;
   }
 
   Future<Envelope> _seal(
-          String type, Contact contact, Map<String, Object?> payload) =>
-      _sealFor(type, contact.stonechatId, contact.pubkeyB64, payload,
-          serverAddress: contact.serverAddress, serverTlsFp: contact.tlsFp);
+    String type,
+    Contact contact,
+    Map<String, Object?> payload,
+  ) => _sealFor(
+    type,
+    contact.stonechatId,
+    contact.pubkeyB64,
+    payload,
+    serverAddress: contact.serverAddress,
+    serverTlsFp: contact.tlsFp,
+  );
 
   Future<Envelope> _sealFor(
     String type,
@@ -485,8 +583,12 @@ class ChatState extends ChangeNotifier {
     String? serverTlsFp,
     String? blobId,
   }) async {
-    final session = await _sessionFor(toStonechatId, toPubkeyB64,
-        serverAddress: serverAddress, serverTlsFp: serverTlsFp);
+    final session = await _sessionFor(
+      toStonechatId,
+      toPubkeyB64,
+      serverAddress: serverAddress,
+      serverTlsFp: serverTlsFp,
+    );
     final adPrefix = 'stonechat/v1|${app.stonechatId}|$toStonechatId|$type';
     final sealed = session.encrypt(jsonEncode(payload), adPrefix);
     final x3dh = session.pendingX3dh?.toJson();
@@ -515,16 +617,15 @@ class ChatState extends ChangeNotifier {
         'stonechat/v1|${envelope.from}|${envelope.to}|${envelope.type}';
     final header = envelope.ratchet.cast<String, dynamic>();
     final nonce = Uint8List.fromList(base64Decode(envelope.nonceB64));
-    final ciphertext =
-        Uint8List.fromList(base64Decode(envelope.ciphertextB64));
-    final block =
-        X3dhBlock.fromJson(envelope.x3dh?.cast<String, dynamic>());
+    final ciphertext = Uint8List.fromList(base64Decode(envelope.ciphertextB64));
+    final block = X3dhBlock.fromJson(envelope.x3dh?.cast<String, dynamic>());
     final session = await _loadSession(envelope.from);
 
     if (session != null) {
       // Simultaneous add: both sides initiated. The lower Stonechat ID's session
       // wins deterministically; if theirs wins, skip ours and adopt below.
-      final theirsWins = block != null &&
+      final theirsWins =
+          block != null &&
           !session.confirmed &&
           session.initiatedByUs &&
           envelope.from.compareTo(app.stonechatId!) < 0;
@@ -567,8 +668,10 @@ class ChatState extends ChangeNotifier {
     final kemKind = block.kemOneTime ? 'kopk' : 'kspk';
     final kemRow = await app.db.prekeyById(block.kemId, kemKind);
     if (kemRow == null) {
-      _dropLog(envelope,
-          '$kemKind ${block.kemId} not held (rotated/consumed/replay?)');
+      _dropLog(
+        envelope,
+        '$kemKind ${block.kemId} not held (rotated/consumed/replay?)',
+      );
       return null; // sender will re-encrypt
     }
     final fresh = RatchetSession.respond(
@@ -601,8 +704,10 @@ class ChatState extends ChangeNotifier {
   /// Dropped envelopes are invisible by design (they're acked and deleted);
   /// leave a trace so "message never arrived" is diagnosable from logs.
   static void _dropLog(Envelope envelope, String reason) {
-    debugPrint('stonechat: dropped ${envelope.type} from '
-        '${envelope.from.substring(0, 12)}…: $reason');
+    debugPrint(
+      'stonechat: dropped ${envelope.type} from '
+      '${envelope.from.substring(0, 12)}…: $reason',
+    );
   }
 
   // -- prekey publishing -----------------------------------------------------------
@@ -628,7 +733,10 @@ class ChatState extends ChangeNotifier {
       final sec = kp.secretKey.extractBytes();
       kp.secretKey.dispose();
       final id = await app.db.insertPrekey(
-          'spk', base64Encode(kp.publicKey), base64Encode(sec));
+        'spk',
+        base64Encode(kp.publicKey),
+        base64Encode(sec),
+      );
       await app.db.pruneSigned('spk');
       spkRow = await app.db.prekeyById(id, 'spk');
     }
@@ -640,7 +748,10 @@ class ChatState extends ChangeNotifier {
         now - (kspkRow['created_at'] as int) > _spkRotateMs) {
       final kp = app.crypto.newMlkemPrekey();
       final id = await app.db.insertPrekey(
-          'kspk', base64Encode(kp.pub), base64Encode(kp.seed));
+        'kspk',
+        base64Encode(kp.pub),
+        base64Encode(kp.seed),
+      );
       await app.db.pruneSigned('kspk');
       kspkRow = await app.db.prekeyById(id, 'kspk');
     }
@@ -650,15 +761,21 @@ class ChatState extends ChangeNotifier {
       final kp = app.crypto.newX25519();
       final sec = kp.secretKey.extractBytes();
       kp.secretKey.dispose();
-      await app.db
-          .insertPrekey('opk', base64Encode(kp.publicKey), base64Encode(sec));
+      await app.db.insertPrekey(
+        'opk',
+        base64Encode(kp.publicKey),
+        base64Encode(sec),
+      );
     }
 
     final existingKem = await app.db.kopks();
     for (var i = existingKem.length; i < _opkTarget; i++) {
       final kp = app.crypto.newMlkemPrekey();
-      await app.db
-          .insertPrekey('kopk', base64Encode(kp.pub), base64Encode(kp.seed));
+      await app.db.insertPrekey(
+        'kopk',
+        base64Encode(kp.pub),
+        base64Encode(kp.seed),
+      );
     }
 
     // Upload the FULL remaining stock; the mailbox replaces its store with
@@ -667,10 +784,12 @@ class ChatState extends ChangeNotifier {
     // holding keys from a previous install.
     final toPublish = await app.db.opks();
     final kemToPublish = await app.db.kopks();
-    final spkPubBytes =
-        Uint8List.fromList(base64Decode(spkRow!['pub'] as String));
-    final kspkPubBytes =
-        Uint8List.fromList(base64Decode(kspkRow!['pub'] as String));
+    final spkPubBytes = Uint8List.fromList(
+      base64Decode(spkRow!['pub'] as String),
+    );
+    final kspkPubBytes = Uint8List.fromList(
+      base64Decode(kspkRow!['pub'] as String),
+    );
     await uploadPrekeys(
       address,
       token,
@@ -681,7 +800,7 @@ class ChatState extends ChangeNotifier {
         'sig': base64Encode(app.crypto.signPrekey(spkPubBytes)),
       },
       [
-        for (final o in toPublish) {'id': o['id'], 'pub': o['pub']}
+        for (final o in toPublish) {'id': o['id'], 'pub': o['pub']},
       ],
       {
         'id': kspkRow['id'],
@@ -689,14 +808,18 @@ class ChatState extends ChangeNotifier {
         'sig': base64Encode(app.crypto.signKemPrekey(kspkPubBytes)),
       },
       [
-        for (final o in kemToPublish) {'id': o['id'], 'pub': o['pub']}
+        for (final o in kemToPublish) {'id': o['id'], 'pub': o['pub']},
       ],
     );
   }
 
   /// Resolve + deliver to a group member (same trust-but-verify as contacts).
-  Future<void> _deliverToMember(GroupMember member, Envelope envelope,
-      {bool transient = false, bool noPush = false}) async {
+  Future<void> _deliverToMember(
+    GroupMember member,
+    Envelope envelope, {
+    bool transient = false,
+    bool noPush = false,
+  }) async {
     Future<String> resolve() async {
       final entry = await _resolve(member.stonechatId);
       if (entry.serverAddress == null) {
@@ -709,19 +832,28 @@ class ChatState extends ChangeNotifier {
       return entry.serverAddress!;
     }
 
-    var address = (member.serverAddress != null &&
+    var address =
+        (member.serverAddress != null &&
             member.tlsFp != null &&
             member.pqPkB64 != null)
         ? member.serverAddress!
         : await resolve();
-    var wire = _wireSeal(envelope, member.pqPkB64!,
-        transient: transient, noPush: noPush);
+    var wire = _wireSeal(
+      envelope,
+      member.pqPkB64!,
+      transient: transient,
+      noPush: noPush,
+    );
     try {
       await deliverEnvelope(address, wire, member.tlsFp!);
     } on Exception {
       address = await resolve(); // their mailbox may have moved
-      wire = _wireSeal(envelope, member.pqPkB64!,
-          transient: transient, noPush: noPush);
+      wire = _wireSeal(
+        envelope,
+        member.pqPkB64!,
+        transient: transient,
+        noPush: noPush,
+      );
       await deliverEnvelope(address, wire, member.tlsFp!);
     }
   }
@@ -733,12 +865,12 @@ class ChatState extends ChangeNotifier {
   /// cleared) so receivers converge on removals too. Cross-hub builds also
   /// name our home hub, so a peer on another hub can resolve us back.
   Map<String, Object?> _profilePayload() => {
-        'display_name': app.displayName,
-        'avatar': app.avatar == null
-            ? null
-            : {'data': base64Encode(app.avatar!), 'mime': 'image/jpeg'},
-        if (stonechatCrossHub) 'hub': app.api.baseUrl,
-      };
+    'display_name': app.displayName,
+    'avatar': app.avatar == null
+        ? null
+        : {'data': base64Encode(app.avatar!), 'mime': 'image/jpeg'},
+    if (stonechatCrossHub) 'hub': app.api.baseUrl,
+  };
 
   /// A peer's home hub from a contact_request/accept payload: only under the
   /// cross-hub flag, only http(s), and null when it's just our own hub. The
@@ -764,8 +896,10 @@ class ChatState extends ChangeNotifier {
     for (final contact in acceptedContacts.where((c) => !c.isBlocked)) {
       try {
         await _deliver(
-            contact, await _seal(EnvelopeType.profileUpdate, contact, payload),
-            noPush: true); // nobody's phone wakes for a photo swap
+          contact,
+          await _seal(EnvelopeType.profileUpdate, contact, payload),
+          noPush: true,
+        ); // nobody's phone wakes for a photo swap
       } catch (_) {
         // unreachable — they keep the old photo, no durable retry by design
       }
@@ -807,13 +941,15 @@ class ChatState extends ChangeNotifier {
     }
     // Lookup is by full SC- ID only (there are no handles). normalizeStonechatId
     // validates the checksum locally and throws FormatException on garbage.
-    final invite = stonechatInviteFromInput(input) ?? (stonechatId: input, hub: null);
+    final invite =
+        stonechatInviteFromInput(input) ?? (stonechatId: input, hub: null);
     final query = app.crypto.normalizeStonechatId(invite.stonechatId);
     final hub = invite.hub == app.api.baseUrl ? null : invite.hub;
     if (hub != null && !stonechatCrossHub) {
       throw const FormatException(
-          'This invite lives on a different Stonechat hub — this build only '
-          'reaches people on yours');
+        'This invite lives on a different Stonechat hub — this build only '
+        'reaches people on yours',
+      );
     }
 
     final entry = await _resolve(query, hub: hub);
@@ -878,23 +1014,26 @@ class ChatState extends ChangeNotifier {
 
   // -- groups ----------------------------------------------------------------------
 
-  Map<String, Object?> _membershipPayload(Group group, List<GroupMember> members) => {
-        'group_id': group.id,
-        'name': group.name,
-        'version': group.version,
-        'admin': group.adminId,
-        'members': [
-          for (final m in members)
-            {
-              'stonechat_id': m.stonechatId,
-              'pubkey': m.pubkeyB64,
-              'display_name': m.displayName,
-            }
-        ],
-        // Joiners bootstrap the disappearing-messages timer from this;
-        // established members ignore it (PROTOCOL.md "Disappearing messages").
-        if (group.expireTimerMs > 0) 'expire_ms': group.expireTimerMs,
-      };
+  Map<String, Object?> _membershipPayload(
+    Group group,
+    List<GroupMember> members,
+  ) => {
+    'group_id': group.id,
+    'name': group.name,
+    'version': group.version,
+    'admin': group.adminId,
+    'members': [
+      for (final m in members)
+        {
+          'stonechat_id': m.stonechatId,
+          'pubkey': m.pubkeyB64,
+          'display_name': m.displayName,
+        },
+    ],
+    // Joiners bootstrap the disappearing-messages timer from this;
+    // established members ignore it (PROTOCOL.md "Disappearing messages").
+    if (group.expireTimerMs > 0) 'expire_ms': group.expireTimerMs,
+  };
 
   /// Create a group from accepted contacts. We are the admin.
   Future<Group> createGroup(String name, List<Contact> selected) async {
@@ -932,10 +1071,16 @@ class ChatState extends ChangeNotifier {
     for (final m in members.where((m) => m.stonechatId != app.stonechatId)) {
       try {
         await _deliverToMember(
-            m,
-            await _sealFor(EnvelopeType.groupCreate, m.stonechatId, m.pubkeyB64,
-                payload,
-                serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+          m,
+          await _sealFor(
+            EnvelopeType.groupCreate,
+            m.stonechatId,
+            m.pubkeyB64,
+            payload,
+            serverAddress: m.serverAddress,
+            serverTlsFp: m.tlsFp,
+          ),
+        );
       } catch (_) {
         // unreachable member hears about the group via the next groupUpdate
         // or message retry; eventual delivery is accepted
@@ -956,14 +1101,13 @@ class ChatState extends ChangeNotifier {
   /// The wire form of a message's stored reply snapshot (PROTOCOL.md
   /// "reply_to"). Built from the message's own fields so pending-outbox
   /// retries carry exactly what the original send did.
-  static Map<String, Object?>? _replyPayloadOf(Message m) =>
-      m.replyToId == null
-          ? null
-          : {
-              'id': m.replyToId,
-              if (m.replyToSender != null) 'sender': m.replyToSender,
-              if (m.replyToPreview != null) 'preview': m.replyToPreview,
-            };
+  static Map<String, Object?>? _replyPayloadOf(Message m) => m.replyToId == null
+      ? null
+      : {
+          'id': m.replyToId,
+          if (m.replyToSender != null) 'sender': m.replyToSender,
+          if (m.replyToPreview != null) 'preview': m.replyToPreview,
+        };
 
   /// Incoming reply_to block → (id, sender, preview), all null when absent
   /// or malformed. Cooperative display data — never trusted beyond shape.
@@ -996,10 +1140,11 @@ class ChatState extends ChangeNotifier {
     final current = groupMembers[group.id] ?? const <GroupMember>[];
     final added = [
       for (final c in addContacts)
-        if (!current.any((m) => m.stonechatId == c.stonechatId)) c
+        if (!current.any((m) => m.stonechatId == c.stonechatId)) c,
     ];
-    final removed =
-        current.where((m) => removeIds.contains(m.stonechatId)).toList();
+    final removed = current
+        .where((m) => removeIds.contains(m.stonechatId))
+        .toList();
     final newName = name?.trim();
     final renamed =
         newName != null && newName.isNotEmpty && newName != group.name;
@@ -1044,18 +1189,27 @@ class ChatState extends ChangeNotifier {
     for (final m in recipients) {
       try {
         await _deliverToMember(
-            m,
-            await _sealFor(EnvelopeType.groupUpdate, m.stonechatId, m.pubkeyB64,
-                payload,
-                serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+          m,
+          await _sealFor(
+            EnvelopeType.groupUpdate,
+            m.stonechatId,
+            m.pubkeyB64,
+            payload,
+            serverAddress: m.serverAddress,
+            serverTlsFp: m.tlsFp,
+          ),
+        );
       } catch (_) {
         // unreachable member keeps the old view until the next update
       }
     }
   }
 
-  Future<void> sendGroupMessage(Group group, String text,
-      {Message? replyTo}) async {
+  Future<void> sendGroupMessage(
+    Group group,
+    String text, {
+    Message? replyTo,
+  }) async {
     _typingSentAt.remove(group.id); // the message itself says "stopped typing"
     final members = (groupMembers[group.id] ?? [])
         .where((m) => m.stonechatId != app.stonechatId)
@@ -1068,14 +1222,15 @@ class ChatState extends ChangeNotifier {
       text: text,
       sentAt: sentAt,
       status: MessageStatus.pending,
-      expiresAt:
-          group.expireTimerMs > 0 ? sentAt + group.expireTimerMs : null,
+      expiresAt: group.expireTimerMs > 0 ? sentAt + group.expireTimerMs : null,
       replyToId: replyTo?.id,
       replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
     );
     await app.db.insertMessage(message);
-    await app.db.addOutbox(message.id, group.id, [for (final m in members) m.stonechatId]);
+    await app.db.addOutbox(message.id, group.id, [
+      for (final m in members) m.stonechatId,
+    ]);
     (_messages[group.id] ??= []).add(message);
     lastMessage[group.id] = message;
     if (message.expiresAt != null) _scheduleExpirySweep();
@@ -1084,7 +1239,11 @@ class ChatState extends ChangeNotifier {
     await _fanOut(group, message, members);
   }
 
-  Future<void> _fanOut(Group group, Message message, List<GroupMember> members) async {
+  Future<void> _fanOut(
+    Group group,
+    Message message,
+    List<GroupMember> members,
+  ) async {
     // Expiry rides the message itself, not the current setting: a retry after
     // a timer change must still carry the TTL this message was sent under.
     final payload = {
@@ -1092,7 +1251,8 @@ class ChatState extends ChangeNotifier {
       'text': message.text,
       if (message.expiresAt != null)
         'expire_after_ms': message.expiresAt! - message.sentAt,
-      if (_replyPayloadOf(message) != null) 'reply_to': _replyPayloadOf(message),
+      if (_replyPayloadOf(message) != null)
+        'reply_to': _replyPayloadOf(message),
     };
     for (final member in members) {
       try {
@@ -1100,11 +1260,15 @@ class ChatState extends ChangeNotifier {
         // so ids never collide, and both mailbox and receiver dedupe retries.
         await _deliverToMember(
           member,
-          await _sealFor(EnvelopeType.groupMsg, member.stonechatId,
-              member.pubkeyB64, payload,
-              envelopeId: message.id,
-              serverAddress: member.serverAddress,
-              serverTlsFp: member.tlsFp),
+          await _sealFor(
+            EnvelopeType.groupMsg,
+            member.stonechatId,
+            member.pubkeyB64,
+            payload,
+            envelopeId: message.id,
+            serverAddress: member.serverAddress,
+            serverTlsFp: member.tlsFp,
+          ),
         );
         await app.db.clearOutbox(message.id, member.stonechatId);
       } catch (_) {
@@ -1126,10 +1290,16 @@ class ChatState extends ChangeNotifier {
     for (final m in members) {
       try {
         await _deliverToMember(
-            m,
-            await _sealFor(EnvelopeType.groupLeave, m.stonechatId, m.pubkeyB64,
-                {'group_id': group.id},
-                serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+          m,
+          await _sealFor(
+            EnvelopeType.groupLeave,
+            m.stonechatId,
+            m.pubkeyB64,
+            {'group_id': group.id},
+            serverAddress: m.serverAddress,
+            serverTlsFp: m.tlsFp,
+          ),
+        );
       } catch (_) {}
     }
     await app.db.deleteGroup(group.id);
@@ -1142,9 +1312,14 @@ class ChatState extends ChangeNotifier {
 
   // -- messaging -------------------------------------------------------------------
 
-  Future<void> sendMessage(Contact contact, String text,
-      {Message? replyTo}) async {
-    _typingSentAt.remove(contact.stonechatId); // the message itself says "stopped"
+  Future<void> sendMessage(
+    Contact contact,
+    String text, {
+    Message? replyTo,
+  }) async {
+    _typingSentAt.remove(
+      contact.stonechatId,
+    ); // the message itself says "stopped"
     final sentAt = DateTime.now().millisecondsSinceEpoch;
     final message = Message(
       id: _uuid.v4(),
@@ -1153,8 +1328,9 @@ class ChatState extends ChangeNotifier {
       text: text,
       sentAt: sentAt,
       status: MessageStatus.pending,
-      expiresAt:
-          contact.expireTimerMs > 0 ? sentAt + contact.expireTimerMs : null,
+      expiresAt: contact.expireTimerMs > 0
+          ? sentAt + contact.expireTimerMs
+          : null,
       replyToId: replyTo?.id,
       replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
@@ -1172,19 +1348,25 @@ class ChatState extends ChangeNotifier {
   /// ordinary new message — fresh id, own outbox lifecycle, no link back to
   /// the original. Media forwards re-copy and re-encrypt the local file, so
   /// they only work while it still exists on this device.
-  Future<void> forwardMessage(Message m,
-      {Contact? toContact, Group? toGroup}) async {
+  Future<void> forwardMessage(
+    Message m, {
+    Contact? toContact,
+    Group? toGroup,
+  }) async {
     assert((toContact == null) != (toGroup == null));
     if (toGroup != null) {
       await sendGroupMessage(toGroup, m.text);
     } else if (m.kind == MessageKind.text) {
       await sendMessage(toContact!, m.text);
     } else {
-      await sendMedia(toContact!, m.mediaPath!,
-          kind: m.kind,
-          mime: _mimeFromPath(m.mediaPath!),
-          durationMs: m.durationMs,
-          fileName: m.fileName);
+      await sendMedia(
+        toContact!,
+        m.mediaPath!,
+        kind: m.kind,
+        mime: _mimeFromPath(m.mediaPath!),
+        durationMs: m.durationMs,
+        fileName: m.fileName,
+      );
     }
   }
 
@@ -1216,8 +1398,9 @@ class ChatState extends ChangeNotifier {
       fileName: fileName,
       sentAt: sentAt,
       status: MessageStatus.pending,
-      expiresAt:
-          contact.expireTimerMs > 0 ? sentAt + contact.expireTimerMs : null,
+      expiresAt: contact.expireTimerMs > 0
+          ? sentAt + contact.expireTimerMs
+          : null,
       replyToId: replyTo?.id,
       replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
@@ -1231,8 +1414,11 @@ class ChatState extends ChangeNotifier {
     await _trySend(contact, message, mime: mime);
   }
 
-  Future<void> _trySend(Contact contact, Message message,
-      {String? mime}) async {
+  Future<void> _trySend(
+    Contact contact,
+    Message message, {
+    String? mime,
+  }) async {
     try {
       final envelope = message.kind == MessageKind.text
           ? await _sealMessage(contact, message)
@@ -1248,8 +1434,11 @@ class ChatState extends ChangeNotifier {
 
   /// Media path: encrypt file with a one-off key, park the ciphertext on the
   /// recipient's mailbox, reference it from a small normal envelope.
-  Future<Envelope> _sealMedia(Contact contact, Message message,
-      {String? mime}) async {
+  Future<Envelope> _sealMedia(
+    Contact contact,
+    Message message, {
+    String? mime,
+  }) async {
     final bytes = await File(message.mediaPath!).readAsBytes();
     final blob = app.crypto.sealBlob(bytes);
     final address = await _addressFor(contact);
@@ -1266,14 +1455,19 @@ class ChatState extends ChangeNotifier {
       if (message.fileName != null) 'name': message.fileName,
       if (message.expiresAt != null)
         'expire_after_ms': message.expiresAt! - message.sentAt,
-      if (_replyPayloadOf(message) != null) 'reply_to': _replyPayloadOf(message),
+      if (_replyPayloadOf(message) != null)
+        'reply_to': _replyPayloadOf(message),
     };
-    return _sealFor(EnvelopeType.media, contact.stonechatId, contact.pubkeyB64,
-        payload,
-        envelopeId: message.id,
-        serverAddress: address,
-        serverTlsFp: contact.tlsFp,
-        blobId: blobId);
+    return _sealFor(
+      EnvelopeType.media,
+      contact.stonechatId,
+      contact.pubkeyB64,
+      payload,
+      envelopeId: message.id,
+      serverAddress: address,
+      serverTlsFp: contact.tlsFp,
+      blobId: blobId,
+    );
   }
 
   static String _mimeFromPath(String path) =>
@@ -1290,33 +1484,33 @@ class ChatState extends ChangeNotifier {
       };
 
   static String _extFromMime(String mime) => switch (mime) {
-        'image/jpeg' => '.jpg',
-        'image/png' => '.png',
-        'image/heic' => '.heic',
-        'image/webp' => '.webp',
-        'audio/mp4' || 'audio/aac' => '.m4a',
-        'video/mp4' => '.mp4',
-        'video/quicktime' => '.mov',
-        'application/pdf' => '.pdf',
-        _ => '.bin',
-      };
+    'image/jpeg' => '.jpg',
+    'image/png' => '.png',
+    'image/heic' => '.heic',
+    'image/webp' => '.webp',
+    'audio/mp4' || 'audio/aac' => '.m4a',
+    'video/mp4' => '.mp4',
+    'video/quicktime' => '.mov',
+    'application/pdf' => '.pdf',
+    _ => '.bin',
+  };
 
-  Future<Envelope> _sealMessage(Contact contact, Message message) =>
-      _sealFor(
-          EnvelopeType.msg,
-          contact.stonechatId,
-          contact.pubkeyB64,
-          {
-            'text': message.text,
-            if (message.expiresAt != null)
-              'expire_after_ms': message.expiresAt! - message.sentAt,
-            if (_replyPayloadOf(message) != null)
-              'reply_to': _replyPayloadOf(message),
-          },
-          // envelope id == message id → dedupe on the other side
-          envelopeId: message.id,
-          serverAddress: contact.serverAddress,
-          serverTlsFp: contact.tlsFp);
+  Future<Envelope> _sealMessage(Contact contact, Message message) => _sealFor(
+    EnvelopeType.msg,
+    contact.stonechatId,
+    contact.pubkeyB64,
+    {
+      'text': message.text,
+      if (message.expiresAt != null)
+        'expire_after_ms': message.expiresAt! - message.sentAt,
+      if (_replyPayloadOf(message) != null)
+        'reply_to': _replyPayloadOf(message),
+    },
+    // envelope id == message id → dedupe on the other side
+    envelopeId: message.id,
+    serverAddress: contact.serverAddress,
+    serverTlsFp: contact.tlsFp,
+  );
 
   /// Re-attempt everything in the pending outbox (app resume, reconnect, …).
   Future<void> retryPending() async {
@@ -1325,8 +1519,9 @@ class ChatState extends ChangeNotifier {
     await sweepExpired();
     // Contact requests that never made it out (their mailbox was off when we
     // added them). Receivers dedupe by sender, so re-sending is safe.
-    for (final contact
-        in contacts.where((c) => c.status == ContactStatus.pendingOut)) {
+    for (final contact in contacts.where(
+      (c) => c.status == ContactStatus.pendingOut,
+    )) {
       try {
         await _deliver(
           contact,
@@ -1345,8 +1540,9 @@ class ChatState extends ChangeNotifier {
           .firstOrNull;
       await _trySend(contact, cached ?? message);
       if (cached == null) {
-        lastMessage[message.contactId] =
-            await app.db.lastMessageFor(message.contactId);
+        lastMessage[message.contactId] = await app.db.lastMessageFor(
+          message.contactId,
+        );
       }
     }
     // Group fan-outs still owed to unreachable members.
@@ -1387,9 +1583,10 @@ class ChatState extends ChangeNotifier {
     for (final peer in batch.entries) {
       for (final kinds in peer.value.entries) {
         try {
-          await _sendToPeer(peer.key, EnvelopeType.receipt,
-              {'kind': kinds.key, 'ids': kinds.value.toList()},
-              noPush: true); // never wake their phone for a checkmark
+          await _sendToPeer(peer.key, EnvelopeType.receipt, {
+            'kind': kinds.key,
+            'ids': kinds.value.toList(),
+          }, noPush: true); // never wake their phone for a checkmark
         } catch (_) {
           // unreachable mailbox — drop; the next receipt supersedes this one
         }
@@ -1401,23 +1598,38 @@ class ChatState extends ChangeNotifier {
   /// member (receipts for group messages go pairwise to the sender, who need
   /// not be a direct contact).
   Future<void> _sendToPeer(
-      String stonechatId, String type, Map<String, Object?> payload,
-      {bool transient = false, bool noPush = false}) async {
+    String stonechatId,
+    String type,
+    Map<String, Object?> payload, {
+    bool transient = false,
+    bool noPush = false,
+  }) async {
     final contact = contactById(stonechatId);
     if (contact != null) {
-      await _deliver(contact, await _seal(type, contact, payload),
-          transient: transient, noPush: noPush);
+      await _deliver(
+        contact,
+        await _seal(type, contact, payload),
+        transient: transient,
+        noPush: noPush,
+      );
       return;
     }
     for (final members in groupMembers.values) {
       for (final m in members) {
         if (m.stonechatId != stonechatId) continue;
         await _deliverToMember(
-            m,
-            await _sealFor(type, m.stonechatId, m.pubkeyB64, payload,
-                serverAddress: m.serverAddress, serverTlsFp: m.tlsFp),
-            transient: transient,
-            noPush: noPush);
+          m,
+          await _sealFor(
+            type,
+            m.stonechatId,
+            m.pubkeyB64,
+            payload,
+            serverAddress: m.serverAddress,
+            serverTlsFp: m.tlsFp,
+          ),
+          transient: transient,
+          noPush: noPush,
+        );
         return;
       }
     }
@@ -1427,10 +1639,13 @@ class ChatState extends ChangeNotifier {
   /// move forward; group messages advance when *every* current member is
   /// there (per-member rows in the receipts table).
   Future<void> _applyReceipt(
-      Envelope envelope, Map<String, dynamic> payload) async {
+    Envelope envelope,
+    Map<String, dynamic> payload,
+  ) async {
     final kind = payload['kind'] as String?;
     if (kind != ReceiptKind.delivered && kind != ReceiptKind.read) return;
-    final ids = (payload['ids'] as List?)?.whereType<String>() ?? const <String>[];
+    final ids =
+        (payload['ids'] as List?)?.whereType<String>() ?? const <String>[];
     final now = DateTime.now().millisecondsSinceEpoch;
     for (final id in ids) {
       final message = await app.db.messageById(id);
@@ -1440,8 +1655,9 @@ class ChatState extends ChangeNotifier {
       if (group == null) {
         // A DM receipt is only valid from the person the message went to.
         if (message.contactId != envelope.from) continue;
-        next =
-            kind == ReceiptKind.read ? MessageStatus.read : MessageStatus.delivered;
+        next = kind == ReceiptKind.read
+            ? MessageStatus.read
+            : MessageStatus.delivered;
       } else {
         if (memberOf(group.id, envelope.from) == null) continue;
         await app.db.upsertReceipt(id, envelope.from, kind!, now);
@@ -1474,10 +1690,10 @@ class ChatState extends ChangeNotifier {
   /// The list cache and lastMessage may hold instances distinct from a
   /// DB-loaded one — mutations must reach all of them.
   List<Message> _cachedCopies(Message message) => [
-        ...?_messages[message.contactId]?.where((m) => m.id == message.id),
-        if (lastMessage[message.contactId]?.id == message.id)
-          lastMessage[message.contactId]!,
-      ];
+    ...?_messages[message.contactId]?.where((m) => m.id == message.id),
+    if (lastMessage[message.contactId]?.id == message.id)
+      lastMessage[message.contactId]!,
+  ];
 
   // -- typing indicators (PROTOCOL.md "typing") ---------------------------------------
 
@@ -1513,22 +1729,35 @@ class ChatState extends ChangeNotifier {
         if (contact == null || !contact.isAccepted || contact.isBlocked) {
           return;
         }
-        if (!((await _loadSession(contact.stonechatId))?.canSend ?? false)) return;
+        if (!((await _loadSession(contact.stonechatId))?.canSend ?? false)) {
+          return;
+        }
         await _deliver(
-            contact, await _seal(EnvelopeType.typing, contact, {'state': state}),
-            transient: true);
+          contact,
+          await _seal(EnvelopeType.typing, contact, {'state': state}),
+          transient: true,
+        );
       } else {
         final payload = {'group_id': group.id, 'state': state};
-        for (final m in (groupMembers[group.id] ?? [])
-            .where((m) => m.stonechatId != app.stonechatId)) {
-          if (!((await _loadSession(m.stonechatId))?.canSend ?? false)) continue;
+        for (final m in (groupMembers[group.id] ?? []).where(
+          (m) => m.stonechatId != app.stonechatId,
+        )) {
+          if (!((await _loadSession(m.stonechatId))?.canSend ?? false)) {
+            continue;
+          }
           try {
             await _deliverToMember(
-                m,
-                await _sealFor(EnvelopeType.typing, m.stonechatId, m.pubkeyB64,
-                    payload,
-                    serverAddress: m.serverAddress, serverTlsFp: m.tlsFp),
-                transient: true);
+              m,
+              await _sealFor(
+                EnvelopeType.typing,
+                m.stonechatId,
+                m.pubkeyB64,
+                payload,
+                serverAddress: m.serverAddress,
+                serverTlsFp: m.tlsFp,
+              ),
+              transient: true,
+            );
           } catch (_) {} // per-member fire-and-forget
         }
       }
@@ -1619,21 +1848,33 @@ class ChatState extends ChangeNotifier {
       final contact = contactById(message.contactId);
       if (contact == null) return false;
       try {
-        await _deliver(contact,
-            await _seal(EnvelopeType.msgEdit, contact, {'id': message.id, 'text': text}));
+        await _deliver(
+          contact,
+          await _seal(EnvelopeType.msgEdit, contact, {
+            'id': message.id,
+            'text': text,
+          }),
+        );
       } catch (_) {
         reachedEveryone = false;
       }
     } else {
       final payload = {'group_id': group.id, 'id': message.id, 'text': text};
-      for (final m in (groupMembers[group.id] ?? [])
-          .where((m) => m.stonechatId != app.stonechatId)) {
+      for (final m in (groupMembers[group.id] ?? []).where(
+        (m) => m.stonechatId != app.stonechatId,
+      )) {
         try {
           await _deliverToMember(
-              m,
-              await _sealFor(EnvelopeType.groupMsgEdit, m.stonechatId, m.pubkeyB64,
-                  payload,
-                  serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+            m,
+            await _sealFor(
+              EnvelopeType.groupMsgEdit,
+              m.stonechatId,
+              m.pubkeyB64,
+              payload,
+              serverAddress: m.serverAddress,
+              serverTlsFp: m.tlsFp,
+            ),
+          );
         } catch (_) {
           reachedEveryone = false;
         }
@@ -1647,8 +1888,7 @@ class ChatState extends ChangeNotifier {
   Future<bool> deleteMessageForEveryone(Message message) async {
     if (!canDeleteForEveryone(message)) return true;
     final group = groupById(message.contactId);
-    final neverLeft =
-        message.status == MessageStatus.pending && group == null;
+    final neverLeft = message.status == MessageStatus.pending && group == null;
     await _tombstone(message);
     await app.db.clearOutboxMessage(message.id); // stop owing group copies
     notifyListeners();
@@ -1659,21 +1899,30 @@ class ChatState extends ChangeNotifier {
       final contact = contactById(message.contactId);
       if (contact == null) return false;
       try {
-        await _deliver(contact,
-            await _seal(EnvelopeType.msgDelete, contact, {'id': message.id}));
+        await _deliver(
+          contact,
+          await _seal(EnvelopeType.msgDelete, contact, {'id': message.id}),
+        );
       } catch (_) {
         reachedEveryone = false;
       }
     } else {
       final payload = {'group_id': group.id, 'id': message.id};
-      for (final m in (groupMembers[group.id] ?? [])
-          .where((m) => m.stonechatId != app.stonechatId)) {
+      for (final m in (groupMembers[group.id] ?? []).where(
+        (m) => m.stonechatId != app.stonechatId,
+      )) {
         try {
           await _deliverToMember(
-              m,
-              await _sealFor(EnvelopeType.groupMsgDelete, m.stonechatId,
-                  m.pubkeyB64, payload,
-                  serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+            m,
+            await _sealFor(
+              EnvelopeType.groupMsgDelete,
+              m.stonechatId,
+              m.pubkeyB64,
+              payload,
+              serverAddress: m.serverAddress,
+              serverTlsFp: m.tlsFp,
+            ),
+          );
         } catch (_) {
           reachedEveryone = false;
         }
@@ -1690,8 +1939,9 @@ class ChatState extends ChangeNotifier {
     reactionsByMessage.remove(message.id);
     _messages[message.contactId]?.removeWhere((m) => m.id == message.id);
     if (lastMessage[message.contactId]?.id == message.id) {
-      lastMessage[message.contactId] =
-          await app.db.lastMessageFor(message.contactId);
+      lastMessage[message.contactId] = await app.db.lastMessageFor(
+        message.contactId,
+      );
     }
     notifyListeners();
   }
@@ -1749,22 +1999,31 @@ class ChatState extends ChangeNotifier {
 
     if (group != null) {
       final payload = {'group_id': group.id, 'expire_ms': expireMs};
-      for (final m in (groupMembers[group.id] ?? [])
-          .where((m) => m.stonechatId != app.stonechatId)) {
+      for (final m in (groupMembers[group.id] ?? []).where(
+        (m) => m.stonechatId != app.stonechatId,
+      )) {
         try {
           await _deliverToMember(
-              m,
-              await _sealFor(EnvelopeType.groupTimerUpdate, m.stonechatId,
-                  m.pubkeyB64, payload,
-                  serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+            m,
+            await _sealFor(
+              EnvelopeType.groupTimerUpdate,
+              m.stonechatId,
+              m.pubkeyB64,
+              payload,
+              serverAddress: m.serverAddress,
+              serverTlsFp: m.tlsFp,
+            ),
+          );
         } catch (_) {}
       }
     } else {
       try {
         await _deliver(
-            contact!,
-            await _seal(EnvelopeType.timerUpdate, contact,
-                {'expire_ms': expireMs}));
+          contact!,
+          await _seal(EnvelopeType.timerUpdate, contact, {
+            'expire_ms': expireMs,
+          }),
+        );
       } catch (_) {}
     }
   }
@@ -1777,8 +2036,11 @@ class ChatState extends ChangeNotifier {
   /// bookkeeping — every device writes its own — so no receipts, and it
   /// never expires. Passing the envelope id as [id] makes redelivered
   /// announcements idempotent (insertMessage ignores conflicts).
-  Future<void> _insertNotice(String conversationId, String text,
-      {String? id}) async {
+  Future<void> _insertNotice(
+    String conversationId,
+    String text, {
+    String? id,
+  }) async {
     final message = Message(
       id: id ?? _uuid.v4(),
       contactId: conversationId,
@@ -1829,16 +2091,20 @@ class ChatState extends ChangeNotifier {
       if (next == null) return;
       final now = DateTime.now().millisecondsSinceEpoch;
       final delay = (next - now).clamp(1000, 3600 * 1000).toInt();
-      _expirySweep =
-          Timer(Duration(milliseconds: delay), () => unawaited(sweepExpired()));
+      _expirySweep = Timer(
+        Duration(milliseconds: delay),
+        () => unawaited(sweepExpired()),
+      );
     }());
   }
 
   /// The peer edited one of their messages. The session already authenticated
   /// them; what's left is checking the target is really theirs.
   Future<void> _applyRemoteEdit(
-      Envelope envelope, Map<String, dynamic> payload,
-      {bool group = false}) async {
+    Envelope envelope,
+    Map<String, dynamic> payload, {
+    bool group = false,
+  }) async {
     final message = await _remoteEditTarget(envelope, payload, group: group);
     final text = (payload['text'] as String?)?.trim();
     if (message == null || text == null || text.isEmpty) return;
@@ -1852,8 +2118,10 @@ class ChatState extends ChangeNotifier {
   }
 
   Future<void> _applyRemoteDelete(
-      Envelope envelope, Map<String, dynamic> payload,
-      {bool group = false}) async {
+    Envelope envelope,
+    Map<String, dynamic> payload, {
+    bool group = false,
+  }) async {
     final message = await _remoteEditTarget(envelope, payload, group: group);
     if (message == null) return;
     await _tombstone(message);
@@ -1864,8 +2132,10 @@ class ChatState extends ChangeNotifier {
   /// by the envelope's (session-authenticated) sender, and still be inside
   /// the edit window plus receiver-side grace.
   Future<Message?> _remoteEditTarget(
-      Envelope envelope, Map<String, dynamic> payload,
-      {required bool group}) async {
+    Envelope envelope,
+    Map<String, dynamic> payload, {
+    required bool group,
+  }) async {
     final id = payload['id'] as String?;
     if (id == null) return null;
     final message = await app.db.messageById(id);
@@ -1912,17 +2182,26 @@ class ChatState extends ChangeNotifier {
         final contact = contactById(message.contactId);
         if (contact == null) return;
         await _deliver(
-            contact, await _seal(EnvelopeType.reaction, contact, payload));
+          contact,
+          await _seal(EnvelopeType.reaction, contact, payload),
+        );
       } else {
         final groupPayload = {...payload, 'group_id': group.id};
-        for (final m in (groupMembers[group.id] ?? [])
-            .where((m) => m.stonechatId != app.stonechatId)) {
+        for (final m in (groupMembers[group.id] ?? []).where(
+          (m) => m.stonechatId != app.stonechatId,
+        )) {
           try {
             await _deliverToMember(
-                m,
-                await _sealFor(EnvelopeType.groupReaction, m.stonechatId,
-                    m.pubkeyB64, groupPayload,
-                    serverAddress: m.serverAddress, serverTlsFp: m.tlsFp));
+              m,
+              await _sealFor(
+                EnvelopeType.groupReaction,
+                m.stonechatId,
+                m.pubkeyB64,
+                groupPayload,
+                serverAddress: m.serverAddress,
+                serverTlsFp: m.tlsFp,
+              ),
+            );
           } catch (_) {} // best-effort, like receipts
         }
       }
@@ -1940,8 +2219,10 @@ class ChatState extends ChangeNotifier {
   }
 
   Future<void> _applyRemoteReaction(
-      Envelope envelope, Map<String, dynamic> payload,
-      {bool group = false}) async {
+    Envelope envelope,
+    Map<String, dynamic> payload, {
+    bool group = false,
+  }) async {
     final id = payload['id'] as String?;
     final emoji = payload['emoji'] as String?;
     // 32 UTF-16 units of headroom: ZWJ sequences (families, skin-tone
@@ -1961,8 +2242,7 @@ class ChatState extends ChangeNotifier {
       // conversation keyed by the peer — which must be the sender.
       if (message.contactId != envelope.from) return;
     }
-    await app.db.setReaction(
-        id, envelope.from, emoji, _sentAtMs(envelope));
+    await app.db.setReaction(id, envelope.from, emoji, _sentAtMs(envelope));
     _recordReaction(id, envelope.from, emoji);
   }
 
@@ -1971,17 +2251,28 @@ class ChatState extends ChangeNotifier {
   /// Send one call-signaling envelope on the pairwise session. Used only by
   /// CallState; delivery failures propagate so the call fails fast.
   Future<void> sendCallSignal(
-      Contact contact, String type, Map<String, Object?> payload,
-      {bool transient = false, bool ring = false}) async {
-    await _deliver(contact, await _seal(type, contact, payload),
-        transient: transient, ring: ring);
+    Contact contact,
+    String type,
+    Map<String, Object?> payload, {
+    bool transient = false,
+    bool ring = false,
+  }) async {
+    await _deliver(
+      contact,
+      await _seal(type, contact, payload),
+      transient: transient,
+      ring: ring,
+    );
   }
 
   /// A call's epitaph in the conversation ("Missed voice call",
   /// "Video call · 3:42"). Local-only bookkeeping — both sides write their
   /// own — so no receipts are queued for it.
-  Future<void> recordCallEvent(Contact contact, String label,
-      {required bool outgoing}) async {
+  Future<void> recordCallEvent(
+    Contact contact,
+    String label, {
+    required bool outgoing,
+  }) async {
     final message = Message(
       id: _uuid.v4(),
       contactId: contact.stonechatId,
@@ -2009,14 +2300,16 @@ class ChatState extends ChangeNotifier {
     // dropped (and acked — same silent-drop rule as a failed session).
     final Envelope envelope;
     try {
-      final inner = app.crypto
-          .unseal(Uint8List.fromList(base64Decode(wire.sealedB64)));
+      final inner = app.crypto.unseal(
+        Uint8List.fromList(base64Decode(wire.sealedB64)),
+      );
       if (inner == null) {
         debugPrint('stonechat: dropped envelope ${wire.id}: not sealed to us');
         return;
       }
       envelope = Envelope.fromJson(
-          jsonDecode(utf8.decode(inner)) as Map<String, dynamic>);
+        jsonDecode(utf8.decode(inner)) as Map<String, dynamic>,
+      );
     } catch (_) {
       debugPrint('stonechat: dropped envelope ${wire.id}: malformed seal');
       return;
@@ -2039,18 +2332,18 @@ class ChatState extends ChangeNotifier {
     if (contact != null && contact.isBlocked) {
       switch (envelope.type) {
         case EnvelopeType.contactRequest ||
-              EnvelopeType.msg ||
-              EnvelopeType.media ||
-              EnvelopeType.typing ||
-              EnvelopeType.msgEdit ||
-              EnvelopeType.msgDelete ||
-              EnvelopeType.reaction ||
-              EnvelopeType.profileUpdate ||
-              EnvelopeType.timerUpdate ||
-              EnvelopeType.callOffer ||
-              EnvelopeType.callAnswer ||
-              EnvelopeType.callIce ||
-              EnvelopeType.callEnd:
+            EnvelopeType.msg ||
+            EnvelopeType.media ||
+            EnvelopeType.typing ||
+            EnvelopeType.msgEdit ||
+            EnvelopeType.msgDelete ||
+            EnvelopeType.reaction ||
+            EnvelopeType.profileUpdate ||
+            EnvelopeType.timerUpdate ||
+            EnvelopeType.callOffer ||
+            EnvelopeType.callAnswer ||
+            EnvelopeType.callIce ||
+            EnvelopeType.callEnd:
           _dropLog(envelope, 'sender is blocked');
           return;
       }
@@ -2076,25 +2369,31 @@ class ChatState extends ChangeNotifier {
             await _deliver(
               contact,
               await _seal(
-                  EnvelopeType.contactAccept, contact, _profilePayload()),
+                EnvelopeType.contactAccept,
+                contact,
+                _profilePayload(),
+              ),
             );
             break;
           }
-          _dropLog(envelope, 'duplicate contact request (already ${contact.status})');
+          _dropLog(
+            envelope,
+            'duplicate contact request (already ${contact.status})',
+          );
           return;
         }
         // Identity key: the (already commitment-verified) x3dh block if this
         // was a session-opening message, else the directory (the sender's own
         // hub when the request names one), best-effort.
         final senderHub = _peerHubFrom(payload);
-        final senderEntry =
-            await _resolveOrNull(envelope.from, hub: senderHub);
+        final senderEntry = await _resolveOrNull(envelope.from, hub: senderHub);
         final pubkeyB64 =
             (envelope.x3dh?['ik'] as String?) ?? senderEntry?.pubkeyB64;
         if (pubkeyB64 == null) return; // unresolvable sender — drop
         contact = Contact(
           stonechatId: envelope.from,
-          displayName: (payload['display_name'] as String?) ??
+          displayName:
+              (payload['display_name'] as String?) ??
               envelope.from.substring(3, 12),
           pubkeyB64: pubkeyB64,
           // May be null when the directory was unreachable; _deliver
@@ -2130,8 +2429,10 @@ class ChatState extends ChangeNotifier {
         // suspended before we drain (see core/notices.dart).
         if (WidgetsBinding.instance.lifecycleState !=
             AppLifecycleState.resumed) {
-          onNotice?.call('Request accepted',
-              '${contact.displayName} accepted your request');
+          onNotice?.call(
+            'Request accepted',
+            '${contact.displayName} accepted your request',
+          );
         }
 
       case EnvelopeType.profileUpdate:
@@ -2152,7 +2453,10 @@ class ChatState extends ChangeNotifier {
 
       case EnvelopeType.msg:
         if (contact == null || !contact.isAccepted) {
-          _dropLog(envelope, 'msg from non-accepted contact — strangers cannot chat');
+          _dropLog(
+            envelope,
+            'msg from non-accepted contact — strangers cannot chat',
+          );
           return;
         }
         final (replyId, replySender, replyPreview) = _replyFrom(payload);
@@ -2176,11 +2480,17 @@ class ChatState extends ChangeNotifier {
         if (contact == null || !contact.isAccepted) return;
         // Fetch + decrypt + persist BEFORE returning: returning acks the
         // envelope, which deletes the blob from our mailbox.
-        if (mailboxAddress == null || mailboxToken == null || mailboxTlsFp == null) {
+        if (mailboxAddress == null ||
+            mailboxToken == null ||
+            mailboxTlsFp == null) {
           throw StateError('mailbox info missing'); // don't ack — retry later
         }
-        final ciphertext = await downloadBlob(mailboxAddress!,
-            payload['blob_id'] as String, mailboxToken!, mailboxTlsFp!);
+        final ciphertext = await downloadBlob(
+          mailboxAddress!,
+          payload['blob_id'] as String,
+          mailboxToken!,
+          mailboxTlsFp!,
+        );
         final data = app.crypto.openBlob(
           Uint8List.fromList(ciphertext),
           base64Decode(payload['key'] as String),
@@ -2192,8 +2502,7 @@ class ChatState extends ChangeNotifier {
           MessageKind.audio ||
           MessageKind.video ||
           MessageKind.file ||
-          MessageKind.sticker =>
-            payload['kind'] as String,
+          MessageKind.sticker => payload['kind'] as String,
           _ => MessageKind.image,
         };
         final name = payload['name'] as String?;
@@ -2255,12 +2564,21 @@ class ChatState extends ChangeNotifier {
         final group = groupById(payload['group_id'] as String? ?? '');
         if (group == null) return;
         final member = memberOf(group.id, envelope.from);
-        if (member == null) return; // only a member can announce their own leave
-        groupMembers[group.id]?.removeWhere((m) => m.stonechatId == envelope.from);
-        await app.db
-            .replaceMembers(group.id, groupMembers[group.id] ?? const []);
-        await _insertNotice(group.id, '${member.displayName} left',
-            id: envelope.id);
+        if (member == null) {
+          return; // only a member can announce their own leave
+        }
+        groupMembers[group.id]?.removeWhere(
+          (m) => m.stonechatId == envelope.from,
+        );
+        await app.db.replaceMembers(
+          group.id,
+          groupMembers[group.id] ?? const [],
+        );
+        await _insertNotice(
+          group.id,
+          '${member.displayName} left',
+          id: envelope.id,
+        );
 
       case EnvelopeType.receipt:
         await _applyReceipt(envelope, payload);
@@ -2300,8 +2618,10 @@ class ChatState extends ChangeNotifier {
         contact.expireTimerAt = _sentAtMs(envelope);
         await app.db.upsertContact(contact);
         await _insertNotice(
-            contact.stonechatId, _timerNoticeText(contact.displayName, ms),
-            id: envelope.id);
+          contact.stonechatId,
+          _timerNoticeText(contact.displayName, ms),
+          id: envelope.id,
+        );
 
       case EnvelopeType.groupTimerUpdate:
         final group = groupById(payload['group_id'] as String? ?? '');
@@ -2315,13 +2635,15 @@ class ChatState extends ChangeNotifier {
         group.expireTimerAt = _sentAtMs(envelope);
         await app.db.upsertGroup(group);
         await _insertNotice(
-            group.id, _timerNoticeText(member.displayName, ms),
-            id: envelope.id);
+          group.id,
+          _timerNoticeText(member.displayName, ms),
+          id: envelope.id,
+        );
 
       case EnvelopeType.callOffer ||
-            EnvelopeType.callAnswer ||
-            EnvelopeType.callIce ||
-            EnvelopeType.callEnd:
+          EnvelopeType.callAnswer ||
+          EnvelopeType.callIce ||
+          EnvelopeType.callEnd:
         if (contact == null || !contact.isAccepted) return;
         await onCallSignal?.call(contact, envelope, payload);
     }
@@ -2332,13 +2654,19 @@ class ChatState extends ChangeNotifier {
   /// Only the admin's word counts, versions only move forward, and every
   /// member key must hash to its claimed ID (offline commitment check).
   Future<void> _applyMembership(
-      Envelope envelope, Map<String, dynamic> payload) async {
+    Envelope envelope,
+    Map<String, dynamic> payload,
+  ) async {
     final groupId = payload['group_id'] as String?;
     final admin = payload['admin'] as String?;
     final name = payload['name'] as String?;
     final version = payload['version'] as int?;
     final rawMembers = payload['members'] as List?;
-    if (groupId == null || admin == null || name == null || version == null || rawMembers == null) {
+    if (groupId == null ||
+        admin == null ||
+        name == null ||
+        version == null ||
+        rawMembers == null) {
       return;
     }
     if (envelope.from != admin) return; // only the admin defines membership
@@ -2356,14 +2684,19 @@ class ChatState extends ChangeNotifier {
       final stonechatId = raw['stonechat_id'] as String?;
       final pubkey = raw['pubkey'] as String?;
       if (stonechatId == null || pubkey == null) return;
-      if (!app.crypto.pubkeyMatchesId(pubkey, stonechatId)) return; // forged key
+      if (!app.crypto.pubkeyMatchesId(pubkey, stonechatId)) {
+        return; // forged key
+      }
       if (stonechatId == app.stonechatId) includesUs = true;
-      members.add(GroupMember(
-        groupId: groupId,
-        stonechatId: stonechatId,
-        pubkeyB64: pubkey,
-        displayName: (raw['display_name'] as String?) ?? stonechatId.substring(3, 12),
-      ));
+      members.add(
+        GroupMember(
+          groupId: groupId,
+          stonechatId: stonechatId,
+          pubkeyB64: pubkey,
+          displayName:
+              (raw['display_name'] as String?) ?? stonechatId.substring(3, 12),
+        ),
+      );
     }
     if (!includesUs) {
       // we were removed — drop the group locally, keep history? for now: keep
@@ -2371,8 +2704,11 @@ class ChatState extends ChangeNotifier {
       if (existing != null) {
         groupMembers[groupId] = [];
         await app.db.replaceMembers(groupId, const []);
-        await _insertNotice(groupId, 'You were removed from this group',
-            id: envelope.id);
+        await _insertNotice(
+          groupId,
+          'You were removed from this group',
+          id: envelope.id,
+        );
       }
       return;
     }
@@ -2381,8 +2717,7 @@ class ChatState extends ChangeNotifier {
     // timer from the payload. Established members ignore the field — an
     // admin's membership fan-out must not clobber a newer member-set timer.
     final expireMs = payload['expire_ms'];
-    final bootstrapTimer =
-        existing == null && expireMs is int && expireMs > 0;
+    final bootstrapTimer = existing == null && expireMs is int && expireMs > 0;
     final group = Group(
       id: groupId,
       name: name,
@@ -2412,28 +2747,39 @@ class ChatState extends ChangeNotifier {
     // it). First sight of the group renders no diff — it just appears.
     if (existing != null) {
       if (oldName != null && oldName != name) {
-        await _insertNotice(groupId, 'Group renamed to "$name"',
-            id: '${envelope.id}-rename');
+        await _insertNotice(
+          groupId,
+          'Group renamed to "$name"',
+          id: '${envelope.id}-rename',
+        );
       }
       for (final m in members) {
         if (m.stonechatId != app.stonechatId &&
             !before.any((b) => b.stonechatId == m.stonechatId)) {
-          await _insertNotice(groupId, '${m.displayName} was added',
-              id: '${envelope.id}-add-${m.stonechatId}');
+          await _insertNotice(
+            groupId,
+            '${m.displayName} was added',
+            id: '${envelope.id}-add-${m.stonechatId}',
+          );
         }
       }
       for (final b in before) {
         if (b.stonechatId != app.stonechatId &&
             !members.any((m) => m.stonechatId == b.stonechatId)) {
-          await _insertNotice(groupId, '${b.displayName} was removed',
-              id: '${envelope.id}-rm-${b.stonechatId}');
+          await _insertNotice(
+            groupId,
+            '${b.displayName} was removed',
+            id: '${envelope.id}-rm-${b.stonechatId}',
+          );
         }
       }
     }
   }
 
   Future<void> _storeIncomingConversation(
-      String conversationId, Message message) async {
+    String conversationId,
+    Message message,
+  ) async {
     // Their message just landed — whatever they were typing, this is it.
     final sender = message.senderId ?? conversationId;
     _typing[conversationId]?.remove(sender);
@@ -2453,9 +2799,12 @@ class ChatState extends ChangeNotifier {
     // (and the privacy setting allows), else "delivered". Delivery receipts
     // are unconditional, Signal-style.
     _queueReceipt(
-        sender,
-        onScreen && app.sendReadReceipts ? ReceiptKind.read : ReceiptKind.delivered,
-        message.id);
+      sender,
+      onScreen && app.sendReadReceipts
+          ? ReceiptKind.read
+          : ReceiptKind.delivered,
+      message.id,
+    );
   }
 
   static int _sentAtMs(Envelope envelope) =>
@@ -2472,7 +2821,10 @@ class ChatState extends ChangeNotifier {
   Future<void> _storeIncoming(Contact contact, Message message) =>
       _storeIncomingConversation(contact.stonechatId, message);
 
-  Future<DirectoryEntry?> _resolveOrNull(String stonechatId, {String? hub}) async {
+  Future<DirectoryEntry?> _resolveOrNull(
+    String stonechatId, {
+    String? hub,
+  }) async {
     try {
       return await _resolve(stonechatId, hub: hub);
     } catch (_) {

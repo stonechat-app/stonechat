@@ -18,7 +18,16 @@ import '../core/db.dart';
 import '../core/identity_export.dart';
 
 class AppState extends ChangeNotifier {
-  static const _storage = FlutterSecureStorage();
+  // iOS: items ride the shared app-group access group so the notification
+  // extension can read the DB key and identity, and first_unlock so a
+  // push received while the phone is locked (post first unlock) can too —
+  // the same accessibility Signal uses for its shared keychain.
+  static const _storage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      groupId: 'group.app.stonechat.mobile',
+      accessibility: KeychainAccessibility.first_unlock,
+    ),
+  );
 
   late final ChatDb db;
   late final HubApi api;
@@ -102,8 +111,8 @@ class AppState extends ChangeNotifier {
     final sodium = await CryptoService.loadSodium();
     _sodium = sodium;
     // Mailbox TLS pinning (api.dart): fingerprint = BLAKE2b-256 of DER cert.
-    certFingerprinter =
-        (der) => base64Encode(sodium.crypto.genericHash(message: der, outLen: 32));
+    certFingerprinter = (der) =>
+        base64Encode(sodium.crypto.genericHash(message: der, outLen: 32));
 
     sendReadReceipts = await _readPreference('read_receipts', true);
     sendTypingIndicators = await _readPreference('typing_indicators', true);
@@ -210,7 +219,8 @@ class AppState extends ChangeNotifier {
     if (existing != null) return existing;
     final rng = Random.secure();
     final key = base64UrlEncode(
-        List<int>.generate(32, (_) => rng.nextInt(256)));
+      List<int>.generate(32, (_) => rng.nextInt(256)),
+    );
     await _storage.write(key: 'zn_db_key', value: key);
     return key;
   }
@@ -224,7 +234,10 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> setHostAgent(
-      String? address, String? adminToken, String? tlsFp) async {
+    String? address,
+    String? adminToken,
+    String? tlsFp,
+  ) async {
     hostAgentAddress = address;
     hostAgentAdminToken = adminToken;
     hostAgentTlsFp = tlsFp;
@@ -240,8 +253,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setExternalMailbox(String? token, String? tlsFp,
-      {bool friendHosted = false}) async {
+  Future<void> setExternalMailbox(
+    String? token,
+    String? tlsFp, {
+    bool friendHosted = false,
+  }) async {
     externalMailboxToken = token;
     externalMailboxTlsFp = tlsFp;
     externalMailboxFriendHosted = token != null && friendHosted;
@@ -253,7 +269,9 @@ class AppState extends ChangeNotifier {
       await _storage.write(key: 'zn_ext_token', value: token);
       await _storage.write(key: 'zn_ext_tls_fp', value: tlsFp);
       await _storage.write(
-          key: 'zn_ext_friend', value: friendHosted ? '1' : '0');
+        key: 'zn_ext_friend',
+        value: friendHosted ? '1' : '0',
+      );
     }
   }
 
@@ -270,11 +288,16 @@ class AppState extends ChangeNotifier {
     api.baseUrl = hubUrl;
 
     final result = await api.register(
-        crypto.publicKeyB64, crypto.pqPublicKeyB64, crypto.signPqPk());
+      crypto.publicKeyB64,
+      crypto.pqPublicKeyB64,
+      crypto.signPqPk(),
+    );
     api.accountToken = result.accountToken;
 
     await _storage.write(
-        key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
+      key: 'zn_secret',
+      value: base64Encode(crypto.exportSecretKey()),
+    );
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
     await _storage.write(key: 'zn_id', value: result.stonechatId);
     await _storage.write(key: 'zn_token', value: result.accountToken);
@@ -330,13 +353,18 @@ class AppState extends ChangeNotifier {
       // The X-Wing identity is derived from the Ed25519 secret, so a
       // restored identity re-publishes the same pq_pk it always had.
       result = await api.register(
-          crypto.publicKeyB64, crypto.pqPublicKeyB64, crypto.signPqPk());
+        crypto.publicKeyB64,
+        crypto.pqPublicKeyB64,
+        crypto.signPqPk(),
+      );
     }
     api.accountToken = result.accountToken;
 
     final name = decoded.name ?? 'Me';
     await _storage.write(
-        key: 'zn_secret', value: base64Encode(crypto.exportSecretKey()));
+      key: 'zn_secret',
+      value: base64Encode(crypto.exportSecretKey()),
+    );
     await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
     await _storage.write(key: 'zn_id', value: result.stonechatId);
     await _storage.write(key: 'zn_token', value: result.accountToken);

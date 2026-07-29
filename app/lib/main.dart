@@ -56,8 +56,7 @@ Future<void> main() async {
     onProvisioningDone: (ok) {
       // Foregrounded users watch the status flip on screen; the notice is
       // for the "you can leave the app" promise on the setup screen.
-      if (WidgetsBinding.instance.lifecycleState ==
-          AppLifecycleState.resumed) {
+      if (WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
         return;
       }
       notices.show(
@@ -112,7 +111,8 @@ class StonechatApp extends StatefulWidget {
   State<StonechatApp> createState() => _StonechatAppState();
 }
 
-class _StonechatAppState extends State<StonechatApp> with WidgetsBindingObserver {
+class _StonechatAppState extends State<StonechatApp>
+    with WidgetsBindingObserver {
   final _navKey = GlobalKey<NavigatorState>();
   final _appLinks = AppLinks();
   StreamSubscription<Uri>? _linkSub;
@@ -129,8 +129,9 @@ class _StonechatAppState extends State<StonechatApp> with WidgetsBindingObserver
     _linkSub = _appLinks.uriLinkStream.listen(_handleInviteLink);
     _appLinks.getInitialLink().then((uri) {
       if (uri != null) {
-        WidgetsBinding.instance
-            .addPostFrameCallback((_) => _handleInviteLink(uri));
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _handleInviteLink(uri),
+        );
       }
     });
   }
@@ -150,9 +151,11 @@ class _StonechatAppState extends State<StonechatApp> with WidgetsBindingObserver
   void _handleInviteLink(Uri uri) {
     if (stonechatInviteFromUri(uri) == null || !mounted) return;
     if (!context.read<AppState>().hasIdentity) return;
-    _navKey.currentState?.push(MaterialPageRoute<void>(
-      builder: (_) => AddContactScreen(initialId: uri.fragment),
-    ));
+    _navKey.currentState?.push(
+      MaterialPageRoute<void>(
+        builder: (_) => AddContactScreen(initialId: uri.fragment),
+      ),
+    );
   }
 
   /// The call surface follows CallState: pushed over whatever the user is
@@ -162,18 +165,19 @@ class _StonechatAppState extends State<StonechatApp> with WidgetsBindingObserver
     if (call == null) return;
     if (call.inCall && !_callRouteUp) {
       _callRouteUp = true;
-      _navKey.currentState?.push(MaterialPageRoute<void>(
-        fullscreenDialog: true,
-        builder: (_) => const CallScreen(),
-      ));
+      _navKey.currentState?.push(
+        MaterialPageRoute<void>(
+          fullscreenDialog: true,
+          builder: (_) => const CallScreen(),
+        ),
+      );
     } else if (!call.inCall && _callRouteUp) {
       _callRouteUp = false;
       _navKey.currentState?.pop();
       // A call kept the mailbox socket open past `paused` (signaling rides
       // it); if the call ends while we're still backgrounded, close it now
       // so queued envelopes go through the push gateway.
-      if (WidgetsBinding.instance.lifecycleState !=
-          AppLifecycleState.resumed) {
+      if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
         context.read<ServerState>().onBackground();
       }
     }
@@ -184,10 +188,19 @@ class _StonechatAppState extends State<StonechatApp> with WidgetsBindingObserver
     final app = context.read<AppState>();
     if (!app.hasIdentity) return;
     if (state == AppLifecycleState.resumed) {
-      context.read<ServerState>()
-        ..onForeground()
-        ..refresh();
-      context.read<ChatState>().retryPending();
+      final chat = context.read<ChatState>();
+      final server = context.read<ServerState>();
+      // Reconcile with what the notification extension wrote BEFORE the
+      // socket reconnects — new envelopes must never meet a stale session
+      // cache (chat_state.reloadAfterExtension).
+      unawaited(
+        chat.reloadAfterExtension().then((_) {
+          server
+            ..onForeground()
+            ..refresh();
+          chat.retryPending();
+        }),
+      );
     } else if (state == AppLifecycleState.paused) {
       // Mid-call the app keeps running in the background and signaling
       // (ICE, hangup) rides this socket — those envelopes are transient,

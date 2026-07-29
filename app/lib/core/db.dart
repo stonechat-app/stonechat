@@ -7,10 +7,29 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../models.dart';
+
+const _native = MethodChannel('stonechat/native');
+
+/// On iOS the DB lives in the shared app-group container so the
+/// notification service extension can open it from its own process
+/// (group.app.stonechat.mobile — AppDelegate.swift is the other holder of
+/// that constant). Elsewhere: the platform's default database directory.
+Future<String> _databaseDir() async {
+  if (Platform.isIOS) {
+    try {
+      final path = await _native.invokeMethod<String>('appGroupPath');
+      if (path != null) return path;
+    } catch (_) {
+      // Channel unavailable (tests) — fall through.
+    }
+  }
+  return getDatabasesPath();
+}
 
 class ChatDb {
   final Database _db;
@@ -22,7 +41,7 @@ class ChatDb {
   /// persisted DB encrypted under the old key would be unopenable — drop it
   /// and let a clean one be created.
   static Future<void> deleteDatabaseFiles() async {
-    final base = p.join(await getDatabasesPath(), 'stonechat.db');
+    final base = p.join(await _databaseDir(), 'stonechat.db');
     for (final suffix in ['', '-wal', '-shm']) {
       final f = File('$base$suffix');
       if (await f.exists()) await f.delete();
@@ -30,7 +49,7 @@ class ChatDb {
   }
 
   static Future<ChatDb> open(String password) async {
-    final path = p.join(await getDatabasesPath(), 'stonechat.db');
+    final path = p.join(await _databaseDir(), 'stonechat.db');
     final db = await openDatabase(
       path,
       password: password,
@@ -85,9 +104,11 @@ class ChatDb {
           )
         ''');
         await db.execute(
-            'CREATE INDEX idx_messages_contact ON messages(contact_id, sent_at)');
+          'CREATE INDEX idx_messages_contact ON messages(contact_id, sent_at)',
+        );
         await db.execute(
-            'CREATE INDEX idx_messages_expires ON messages(expires_at)');
+          'CREATE INDEX idx_messages_expires ON messages(expires_at)',
+        );
         await db.execute(_createGroups);
         await db.execute(_createGroupMembers);
         await db.execute(_createGroupOutbox);
@@ -222,8 +243,12 @@ class ChatDb {
   // -- kv -----------------------------------------------------------------------
 
   Future<Uint8List?> kvGet(String key) async {
-    final rows =
-        await _db.query('kv', where: 'k = ?', whereArgs: [key], limit: 1);
+    final rows = await _db.query(
+      'kv',
+      where: 'k = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
     final v = rows.isEmpty ? null : rows.first['v'];
     return v == null ? null : Uint8List.fromList(v as List<int>);
   }
@@ -232,8 +257,10 @@ class ChatDb {
     if (value == null) {
       await _db.delete('kv', where: 'k = ?', whereArgs: [key]);
     } else {
-      await _db.insert('kv', {'k': key, 'v': value},
-          conflictAlgorithm: ConflictAlgorithm.replace);
+      await _db.insert('kv', {
+        'k': key,
+        'v': value,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   }
 
@@ -245,63 +272,95 @@ class ChatDb {
   }
 
   Future<void> upsertContact(Contact c) async {
-    await _db.insert('contacts', c.toRow(),
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await _db.insert(
+      'contacts',
+      c.toRow(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   Future<void> setContactPinned(String stonechatId, int? pinnedAt) async {
-    await _db.update('contacts', {'pinned_at': pinnedAt},
-        where: 'stonechat_id = ?', whereArgs: [stonechatId]);
+    await _db.update(
+      'contacts',
+      {'pinned_at': pinnedAt},
+      where: 'stonechat_id = ?',
+      whereArgs: [stonechatId],
+    );
   }
 
   Future<void> deleteContact(String stonechatId) async {
     await _purgeConversationExtras(stonechatId);
-    await _db.delete('messages', where: 'contact_id = ?', whereArgs: [stonechatId]);
-    await _db.delete('contacts', where: 'stonechat_id = ?', whereArgs: [stonechatId]);
+    await _db.delete(
+      'messages',
+      where: 'contact_id = ?',
+      whereArgs: [stonechatId],
+    );
+    await _db.delete(
+      'contacts',
+      where: 'stonechat_id = ?',
+      whereArgs: [stonechatId],
+    );
   }
 
   Future<void> _purgeConversationExtras(String contactId) async {
     for (final table in ['receipts', 'reactions']) {
       await _db.execute(
-          'DELETE FROM $table WHERE message_id IN '
-          '(SELECT id FROM messages WHERE contact_id = ?)',
-          [contactId]);
+        'DELETE FROM $table WHERE message_id IN '
+        '(SELECT id FROM messages WHERE contact_id = ?)',
+        [contactId],
+      );
     }
   }
 
   // -- messages ---------------------------------------------------------------
 
   Future<List<Message>> messagesFor(String contactId) async {
-    final rows = await _db.query('messages',
-        where: 'contact_id = ?', whereArgs: [contactId], orderBy: 'sent_at');
+    final rows = await _db.query(
+      'messages',
+      where: 'contact_id = ?',
+      whereArgs: [contactId],
+      orderBy: 'sent_at',
+    );
     return rows.map(Message.fromRow).toList();
   }
 
   Future<void> insertMessage(Message m) async {
-    await _db.insert('messages', m.toRow(),
-        conflictAlgorithm: ConflictAlgorithm.ignore);
+    await _db.insert(
+      'messages',
+      m.toRow(),
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
   }
 
   Future<void> setMessageStatus(String id, String status) async {
-    await _db.update('messages', {'status': status},
-        where: 'id = ?', whereArgs: [id]);
+    await _db.update(
+      'messages',
+      {'status': status},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   /// [editedAt] is null when rewriting a still-pending message — the new
   /// text ships with the original send, so nothing was "edited".
   Future<void> setMessageText(String id, String text, int? editedAt) async {
-    await _db.update('messages', {'text': text, 'edited_at': ?editedAt},
-        where: 'id = ?', whereArgs: [id]);
+    await _db.update(
+      'messages',
+      {'text': text, 'edited_at': ?editedAt},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   /// Delete-for-everyone tombstone: the row stays (so the conversation shows
   /// "message deleted"), the content goes.
   Future<void> tombstoneMessage(String id) async {
     await _db.update(
-        'messages',
-        {'text': '', 'media_path': null, 'deleted': 1},
-        where: 'id = ?',
-        whereArgs: [id]);
+      'messages',
+      {'text': '', 'media_path': null, 'deleted': 1},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   /// Delete-for-me: the row itself goes.
@@ -315,22 +374,30 @@ class ChatDb {
 
   /// Record a peer's receipt; read replaces delivered, never the reverse.
   Future<void> upsertReceipt(
-      String messageId, String peerId, String kind, int at) async {
-    await _db.execute('''
+    String messageId,
+    String peerId,
+    String kind,
+    int at,
+  ) async {
+    await _db.execute(
+      '''
       INSERT INTO receipts (message_id, peer_id, kind, at)
       VALUES (?, ?, ?, ?)
       ON CONFLICT (message_id, peer_id) DO UPDATE SET kind = excluded.kind,
         at = excluded.at
         WHERE receipts.kind = 'delivered' AND excluded.kind = 'read'
-    ''', [messageId, peerId, kind, at]);
+    ''',
+      [messageId, peerId, kind, at],
+    );
   }
 
   /// How many distinct peers have at least delivered / read this message.
   /// (A read receipt implies delivery.)
   Future<({int delivered, int read})> receiptCounts(String messageId) async {
     final rows = await _db.rawQuery(
-        'SELECT kind, COUNT(*) AS n FROM receipts WHERE message_id = ? GROUP BY kind',
-        [messageId]);
+      'SELECT kind, COUNT(*) AS n FROM receipts WHERE message_id = ? GROUP BY kind',
+      [messageId],
+    );
     var delivered = 0, read = 0;
     for (final r in rows) {
       final n = r['n'] as int;
@@ -343,32 +410,47 @@ class ChatDb {
   // -- reactions ----------------------------------------------------------------
 
   Future<void> setReaction(
-      String messageId, String peerId, String emoji, int at) async {
+    String messageId,
+    String peerId,
+    String emoji,
+    int at,
+  ) async {
     if (emoji.isEmpty) {
-      await _db.delete('reactions',
-          where: 'message_id = ? AND peer_id = ?',
-          whereArgs: [messageId, peerId]);
+      await _db.delete(
+        'reactions',
+        where: 'message_id = ? AND peer_id = ?',
+        whereArgs: [messageId, peerId],
+      );
     } else {
-      await _db.insert(
-          'reactions',
-          {'message_id': messageId, 'peer_id': peerId, 'emoji': emoji, 'at': at},
-          conflictAlgorithm: ConflictAlgorithm.replace);
+      await _db.insert('reactions', {
+        'message_id': messageId,
+        'peer_id': peerId,
+        'emoji': emoji,
+        'at': at,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   }
 
   Future<void> clearReactions(String messageId) async {
-    await _db.delete('reactions',
-        where: 'message_id = ?', whereArgs: [messageId]);
+    await _db.delete(
+      'reactions',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
   }
 
   /// All reactions on a conversation's messages: message id → (reactor → emoji).
   Future<Map<String, Map<String, String>>> reactionsFor(
-      String contactId) async {
-    final rows = await _db.rawQuery('''
+    String contactId,
+  ) async {
+    final rows = await _db.rawQuery(
+      '''
       SELECT r.message_id, r.peer_id, r.emoji FROM reactions r
       JOIN messages m ON m.id = r.message_id
       WHERE m.contact_id = ?
-    ''', [contactId]);
+    ''',
+      [contactId],
+    );
     final out = <String, Map<String, String>>{};
     for (final r in rows) {
       (out[r['message_id'] as String] ??= {})[r['peer_id'] as String] =
@@ -379,25 +461,31 @@ class ChatDb {
 
   Future<List<Message>> pendingMessages() async {
     // deleted = 0: a tombstoned pending message must never leave the phone.
-    final rows = await _db.query('messages',
-        where: 'status = ? AND outgoing = 1 AND deleted = 0',
-        whereArgs: [MessageStatus.pending],
-        orderBy: 'sent_at');
+    final rows = await _db.query(
+      'messages',
+      where: 'status = ? AND outgoing = 1 AND deleted = 0',
+      whereArgs: [MessageStatus.pending],
+      orderBy: 'sent_at',
+    );
     return rows.map(Message.fromRow).toList();
   }
 
   /// Disappearing messages past their expiry — full rows, so the caller can
   /// remove media files before deleting.
   Future<List<Message>> expiredMessages(int now) async {
-    final rows = await _db.query('messages',
-        where: 'expires_at IS NOT NULL AND expires_at <= ?', whereArgs: [now]);
+    final rows = await _db.query(
+      'messages',
+      where: 'expires_at IS NOT NULL AND expires_at <= ?',
+      whereArgs: [now],
+    );
     return rows.map(Message.fromRow).toList();
   }
 
   /// The soonest future expiry, or null when nothing is set to disappear.
   Future<int?> nextExpiryAt() async {
     final rows = await _db.rawQuery(
-        'SELECT MIN(expires_at) AS t FROM messages WHERE expires_at IS NOT NULL');
+      'SELECT MIN(expires_at) AS t FROM messages WHERE expires_at IS NOT NULL',
+    );
     return rows.first['t'] as int?;
   }
 
@@ -409,72 +497,113 @@ class ChatDb {
   }
 
   Future<void> setGroupPinned(String id, int? pinnedAt) async {
-    await _db.update('groups', {'pinned_at': pinnedAt},
-        where: 'id = ?', whereArgs: [id]);
+    await _db.update(
+      'groups',
+      {'pinned_at': pinnedAt},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   Future<void> upsertGroup(Group g) async {
-    await _db.insert('groups', g.toRow(),
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await _db.insert(
+      'groups',
+      g.toRow(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   Future<List<GroupMember>> membersOf(String groupId) async {
-    final rows = await _db
-        .query('group_members', where: 'group_id = ?', whereArgs: [groupId]);
+    final rows = await _db.query(
+      'group_members',
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+    );
     return rows.map(GroupMember.fromRow).toList();
   }
 
   Future<void> replaceMembers(String groupId, List<GroupMember> members) async {
     await _db.transaction((tx) async {
-      await tx.delete('group_members',
-          where: 'group_id = ?', whereArgs: [groupId]);
+      await tx.delete(
+        'group_members',
+        where: 'group_id = ?',
+        whereArgs: [groupId],
+      );
       for (final m in members) {
-        await tx.insert('group_members', m.toRow(),
-            conflictAlgorithm: ConflictAlgorithm.replace);
+        await tx.insert(
+          'group_members',
+          m.toRow(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
       }
     });
   }
 
   Future<void> updateMember(GroupMember m) async {
-    await _db.insert('group_members', m.toRow(),
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await _db.insert(
+      'group_members',
+      m.toRow(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
   Future<void> deleteGroup(String groupId) async {
     await _purgeConversationExtras(groupId);
     await _db.delete('messages', where: 'contact_id = ?', whereArgs: [groupId]);
-    await _db.delete('group_outbox', where: 'group_id = ?', whereArgs: [groupId]);
-    await _db.delete('group_members', where: 'group_id = ?', whereArgs: [groupId]);
+    await _db.delete(
+      'group_outbox',
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+    );
+    await _db.delete(
+      'group_members',
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+    );
     await _db.delete('groups', where: 'id = ?', whereArgs: [groupId]);
   }
 
   // -- group outbox ---------------------------------------------------------------
 
-  Future<void> addOutbox(String messageId, String groupId, List<String> memberIds) async {
+  Future<void> addOutbox(
+    String messageId,
+    String groupId,
+    List<String> memberIds,
+  ) async {
     await _db.transaction((tx) async {
       for (final memberId in memberIds) {
-        await tx.insert(
-            'group_outbox',
-            {'message_id': messageId, 'group_id': groupId, 'member_id': memberId},
-            conflictAlgorithm: ConflictAlgorithm.ignore);
+        await tx.insert('group_outbox', {
+          'message_id': messageId,
+          'group_id': groupId,
+          'member_id': memberId,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
     });
   }
 
   Future<void> clearOutbox(String messageId, String memberId) async {
-    await _db.delete('group_outbox',
-        where: 'message_id = ? AND member_id = ?', whereArgs: [messageId, memberId]);
+    await _db.delete(
+      'group_outbox',
+      where: 'message_id = ? AND member_id = ?',
+      whereArgs: [messageId, memberId],
+    );
   }
 
   /// Stop owing every remaining copy (the message was deleted).
   Future<void> clearOutboxMessage(String messageId) async {
-    await _db.delete('group_outbox',
-        where: 'message_id = ?', whereArgs: [messageId]);
+    await _db.delete(
+      'group_outbox',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
   }
 
   Future<int> outboxRemaining(String messageId) async {
-    final rows = await _db.query('group_outbox',
-        where: 'message_id = ?', whereArgs: [messageId]);
+    final rows = await _db.query(
+      'group_outbox',
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
     return rows.length;
   }
 
@@ -482,37 +611,51 @@ class ChatDb {
     final rows = await _db.query('group_outbox');
     final byMessage = <String, List<String>>{};
     for (final r in rows) {
-      (byMessage[r['message_id'] as String] ??= []).add(r['member_id'] as String);
+      (byMessage[r['message_id'] as String] ??= []).add(
+        r['member_id'] as String,
+      );
     }
     return byMessage;
   }
 
   Future<Message?> messageById(String id) async {
-    final rows =
-        await _db.query('messages', where: 'id = ?', whereArgs: [id], limit: 1);
+    final rows = await _db.query(
+      'messages',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
     return rows.isEmpty ? null : Message.fromRow(rows.first);
   }
 
   Future<Message?> lastMessageFor(String contactId) async {
-    final rows = await _db.query('messages',
-        where: 'contact_id = ?',
-        whereArgs: [contactId],
-        orderBy: 'sent_at DESC',
-        limit: 1);
+    final rows = await _db.query(
+      'messages',
+      where: 'contact_id = ?',
+      whereArgs: [contactId],
+      orderBy: 'sent_at DESC',
+      limit: 1,
+    );
     return rows.isEmpty ? null : Message.fromRow(rows.first);
   }
 
   // -- ratchet sessions -------------------------------------------------------
 
   Future<String?> sessionState(String peerId) async {
-    final rows = await _db.query('sessions',
-        where: 'peer_id = ?', whereArgs: [peerId], limit: 1);
+    final rows = await _db.query(
+      'sessions',
+      where: 'peer_id = ?',
+      whereArgs: [peerId],
+      limit: 1,
+    );
     return rows.isEmpty ? null : rows.first['state'] as String;
   }
 
   Future<void> saveSession(String peerId, String stateJson) async {
-    await _db.insert('sessions', {'peer_id': peerId, 'state': stateJson},
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await _db.insert('sessions', {
+      'peer_id': peerId,
+      'state': stateJson,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> deleteSession(String peerId) async {
@@ -531,16 +674,25 @@ class ChatDb {
   }
 
   Future<Map<String, Object?>?> prekeyById(int id, String kind) async {
-    final rows = await _db.query('prekeys',
-        where: 'id = ? AND kind = ?', whereArgs: [id, kind], limit: 1);
+    final rows = await _db.query(
+      'prekeys',
+      where: 'id = ? AND kind = ?',
+      whereArgs: [id, kind],
+      limit: 1,
+    );
     return rows.isEmpty ? null : rows.first;
   }
 
   /// Newest signed prekey of [kind] ('spk' X25519 | 'kspk' ML-KEM) — the
   /// one we currently publish.
   Future<Map<String, Object?>?> currentSigned(String kind) async {
-    final rows = await _db.query('prekeys',
-        where: 'kind = ?', whereArgs: [kind], orderBy: 'id DESC', limit: 1);
+    final rows = await _db.query(
+      'prekeys',
+      where: 'kind = ?',
+      whereArgs: [kind],
+      orderBy: 'id DESC',
+      limit: 1,
+    );
     return rows.isEmpty ? null : rows.first;
   }
 
@@ -561,11 +713,14 @@ class ChatDb {
   /// Drop retired signed prekeys of [kind] (keep the newest two: current +
   /// previous, so in-flight initial messages keep working across a rotation).
   Future<void> pruneSigned(String kind) async {
-    await _db.execute('''
+    await _db.execute(
+      '''
       DELETE FROM prekeys WHERE kind = ? AND id NOT IN (
         SELECT id FROM prekeys WHERE kind = ? ORDER BY id DESC LIMIT 2
       )
-    ''', [kind, kind]);
+    ''',
+      [kind, kind],
+    );
   }
 
   Future<void> pruneSpks() => pruneSigned('spk');
@@ -585,10 +740,11 @@ class ChatDb {
   /// so a restored contact re-applies the peer's next profile broadcast and
   /// gets its avatar back that way.
   Future<List<Map<String, Object?>>> backupContacts() => _db.rawQuery(
-      'SELECT stonechat_id, display_name, pubkey, status, server_address, tls_fp, '
-      'hub, created_at, pinned_at, expire_timer_ms, expire_timer_at, '
-      'blocked_at, muted_until, archived_at, 0 AS profile_at '
-      'FROM contacts ORDER BY created_at');
+    'SELECT stonechat_id, display_name, pubkey, status, server_address, tls_fp, '
+    'hub, created_at, pinned_at, expire_timer_ms, expire_timer_at, '
+    'blocked_at, muted_until, archived_at, 0 AS profile_at '
+    'FROM contacts ORDER BY created_at',
+  );
 
   Future<List<Map<String, Object?>>> backupGroups() =>
       _db.query('groups', orderBy: 'created_at');
@@ -597,51 +753,100 @@ class ChatDb {
       _db.query('group_members', orderBy: 'group_id, stonechat_id');
 
   Future<List<Map<String, Object?>>> backupMessages(int nowMs) => _db.rawQuery(
-      'SELECT id, contact_id, sender_id, outgoing, text, kind, duration_ms, '
-      'sent_at, status, edited_at, expires_at, reply_to_id, reply_to_sender, '
-      'reply_to_preview FROM messages '
-      'WHERE ${_backupMessageWhere('messages')} ORDER BY sent_at',
-      [nowMs]);
+    'SELECT id, contact_id, sender_id, outgoing, text, kind, duration_ms, '
+    'sent_at, status, edited_at, expires_at, reply_to_id, reply_to_sender, '
+    'reply_to_preview FROM messages '
+    'WHERE ${_backupMessageWhere('messages')} ORDER BY sent_at',
+    [nowMs],
+  );
 
   /// Reactions on exported messages only, so the payload can't hold orphans.
   Future<List<Map<String, Object?>>> backupReactions(int nowMs) => _db.rawQuery(
-      'SELECT r.message_id, r.peer_id, r.emoji, r.at FROM reactions r '
-      'JOIN messages m ON m.id = r.message_id '
-      'WHERE ${_backupMessageWhere('m')}',
-      [nowMs]);
+    'SELECT r.message_id, r.peer_id, r.emoji, r.at FROM reactions r '
+    'JOIN messages m ON m.id = r.message_id '
+    'WHERE ${_backupMessageWhere('m')}',
+    [nowMs],
+  );
 
   // Columns accepted from a backup payload, per table. Inserts go through this
   // whitelist so unknown keys from a future payload revision can't raise
   // "no such column", and so a crafted file can't touch other columns.
   static const _importCols = {
     'contacts': {
-      'stonechat_id', 'display_name', 'pubkey', 'status', 'server_address',
-      'tls_fp', 'hub', 'created_at', 'pinned_at', 'expire_timer_ms',
-      'expire_timer_at', 'blocked_at', 'muted_until', 'archived_at',
+      'stonechat_id',
+      'display_name',
+      'pubkey',
+      'status',
+      'server_address',
+      'tls_fp',
+      'hub',
+      'created_at',
+      'pinned_at',
+      'expire_timer_ms',
+      'expire_timer_at',
+      'blocked_at',
+      'muted_until',
+      'archived_at',
       'profile_at',
     },
     'groups': {
-      'id', 'name', 'admin_id', 'version', 'created_at', 'pinned_at',
-      'expire_timer_ms', 'expire_timer_at', 'muted_until', 'archived_at',
+      'id',
+      'name',
+      'admin_id',
+      'version',
+      'created_at',
+      'pinned_at',
+      'expire_timer_ms',
+      'expire_timer_at',
+      'muted_until',
+      'archived_at',
     },
     'group_members': {
-      'group_id', 'stonechat_id', 'pubkey', 'display_name', 'server_address',
+      'group_id',
+      'stonechat_id',
+      'pubkey',
+      'display_name',
+      'server_address',
       'tls_fp',
     },
     'messages': {
-      'id', 'contact_id', 'sender_id', 'outgoing', 'text', 'kind',
-      'duration_ms', 'sent_at', 'status', 'edited_at', 'expires_at',
-      'reply_to_id', 'reply_to_sender', 'reply_to_preview',
+      'id',
+      'contact_id',
+      'sender_id',
+      'outgoing',
+      'text',
+      'kind',
+      'duration_ms',
+      'sent_at',
+      'status',
+      'edited_at',
+      'expires_at',
+      'reply_to_id',
+      'reply_to_sender',
+      'reply_to_preview',
     },
     'reactions': {'message_id', 'peer_id', 'emoji', 'at'},
   };
 
   static const _importRequired = {
-    'contacts': {'stonechat_id', 'display_name', 'pubkey', 'status', 'created_at'},
+    'contacts': {
+      'stonechat_id',
+      'display_name',
+      'pubkey',
+      'status',
+      'created_at',
+    },
     'groups': {'id', 'name', 'admin_id', 'version', 'created_at'},
     'group_members': {'group_id', 'stonechat_id', 'pubkey', 'display_name'},
-    'messages': {'id', 'contact_id', 'outgoing', 'text', 'kind', 'sent_at',
-        'status'},
+    'messages': {
+      'id',
+      'contact_id',
+      'outgoing',
+      'text',
+      'kind',
+      'sent_at',
+      'status',
+    },
     'reactions': {'message_id', 'peer_id', 'emoji', 'at'},
   };
 
@@ -650,8 +855,15 @@ class ChatDb {
   /// always win, so restoring can never clobber a contact's current key or
   /// name, and re-restoring the same file is a no-op. Malformed rows are
   /// skipped, not fatal — one bad row shouldn't sink the other few thousand.
-  Future<({int contactsAdded, int groupsAdded, int messagesAdded,
-      int messagesSkipped})> importBackup({
+  Future<
+    ({
+      int contactsAdded,
+      int groupsAdded,
+      int messagesAdded,
+      int messagesSkipped,
+    })
+  >
+  importBackup({
     required List<Map<String, Object?>> contacts,
     required List<Map<String, Object?>> groups,
     required List<Map<String, Object?>> groupMembers,
@@ -661,12 +873,16 @@ class ChatDb {
   }) async {
     return _db.transaction((tx) async {
       Future<int> count(String table) async => Sqflite.firstIntValue(
-          await tx.rawQuery('SELECT COUNT(*) FROM $table'))!;
+        await tx.rawQuery('SELECT COUNT(*) FROM $table'),
+      )!;
 
       // insert() returns the last rowid even when IGNORE dropped the row, so
       // "added" has to come from before/after counts.
-      Future<int> merge(String table, List<Map<String, Object?>> rows,
-          {bool Function(Map<String, Object?>)? accept}) async {
+      Future<int> merge(
+        String table,
+        List<Map<String, Object?>> rows, {
+        bool Function(Map<String, Object?>)? accept,
+      }) async {
         final before = await count(table);
         final cols = _importCols[table]!;
         final required = _importRequired[table]!;
@@ -674,9 +890,10 @@ class ChatDb {
           if (required.any((c) => row[c] == null)) continue;
           if (accept != null && !accept(row)) continue;
           try {
-            await tx.insert(
-                table, {for (final c in cols) if (row.containsKey(c)) c: row[c]},
-                conflictAlgorithm: ConflictAlgorithm.ignore);
+            await tx.insert(table, {
+              for (final c in cols)
+                if (row.containsKey(c)) c: row[c],
+            }, conflictAlgorithm: ConflictAlgorithm.ignore);
           } catch (_) {
             // Wrong value type for a column, etc. — skip the row.
           }
@@ -687,11 +904,14 @@ class ChatDb {
       final contactsAdded = await merge('contacts', contacts);
       final groupsAdded = await merge('groups', groups);
       await merge('group_members', groupMembers);
-      final messagesAdded = await merge('messages', messages,
-          accept: (row) {
-        final expiresAt = row['expires_at'];
-        return expiresAt is! int || expiresAt > nowMs;
-      });
+      final messagesAdded = await merge(
+        'messages',
+        messages,
+        accept: (row) {
+          final expiresAt = row['expires_at'];
+          return expiresAt is! int || expiresAt > nowMs;
+        },
+      );
       await merge('reactions', reactions);
 
       return (
