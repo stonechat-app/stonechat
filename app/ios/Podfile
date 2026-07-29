@@ -36,6 +36,15 @@ target 'Runner' do
   end
 end
 
+
+# The notification extension opens the shared SQLCipher DB directly.
+# Keep the version pinned to what sqflite_sqlcipher resolves for Runner
+# (Podfile.lock) so both targets ship the same cipher.
+target 'NotificationService' do
+  use_frameworks!
+  pod 'SQLCipher', '4.10.0'
+end
+
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
