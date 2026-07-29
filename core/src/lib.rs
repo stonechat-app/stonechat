@@ -1,0 +1,46 @@
+//! Stonechat protocol core (notes/docs/ROADMAP.md "stonechat-core").
+//!
+//! The single implementation of the Stonechat session protocol — PQXDH
+//! establishment, double ratchet, X-Wing hybrid envelope seal — shared by
+//! every process that must encrypt or decrypt: the Flutter app (dart:ffi),
+//! the iOS Notification Service Extension (Swift over the C ABI), desktop
+//! builds, and a future wasm web client. The relay never links this crate;
+//! it depends on `pqcore` alone.
+//!
+//! Design rules (PROTOCOL.md "Session crypto" is the spec; the Dart
+//! original is app/lib/core/session.dart + crypto.dart):
+//!
+//! - **State-in/state-out.** Nothing here touches the network, the
+//!   filesystem, or a clock. A session is a value: hosts persist it
+//!   (serde JSON, byte-compatible with the Dart `RatchetSession.toJson`
+//!   shape) and hand it back for the next message.
+//! - **Caller-supplied randomness**, like pqcore: every operation that
+//!   needs entropy takes explicit CSPRNG bytes. Deterministic, golden-
+//!   corpus-testable, and wasm needs no getrandom shim.
+//! - **Pure Rust.** libsodium's algorithms via RustCrypto/dalek — the
+//!   implementations libsignal ships. Byte-identical output (pinned by
+//!   the reference vectors in tests/, generated with hashlib.blake2b and
+//!   PyNaCl against the constants in PROTOCOL.md).
+//! - Sessions are values with no owner id inside — hosts key storage by
+//!   (peer, device) per MULTIDEVICE.md so the multi-device migration
+//!   never touches this crate's state shape.
+//!
+//! The C ABI surface for sessions (state blob in → state blob + result
+//! out) is deliberately not committed yet; it lands with the first real
+//! consumer (the NSE), designed against its memory budget. Only an ABI
+//! version probe is exported for now.
+
+pub mod envelope;
+pub mod ids;
+pub mod primitives;
+pub mod session;
+
+pub use pqcore;
+
+/// Bumped whenever the exported C ABI changes shape.
+pub const ABI_VERSION: u32 = 1;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn stonechat_core_abi_version() -> u32 {
+    ABI_VERSION
+}

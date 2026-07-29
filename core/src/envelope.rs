@@ -1,0 +1,94 @@
+//! The X-Wing hybrid envelope seal and the x3dh block codec
+//! (PROTOCOL.md "Envelope"). Wire form of a sealed envelope:
+//!
+//! ```text
+//! kem_ct (1120) || nonce (24) || xchacha20poly1305(inner, ad="stonechat-v1-hseal")
+//!     with key = H(kem_ss, key="stonechat-v1-hsealkdf", 32)
+//! ```
+//!
+//! Anonymous and hybrid: fresh encapsulation per envelope, no sender key
+//! anywhere on the wire (sealed sender), X25519 + ML-KEM-768 in one KEM.
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
+use pqcore::{
+    XWING_CIPHERTEXT_BYTES, XWING_ENCAPS_RANDOM_BYTES, XWING_PUBLIC_BYTES, XWING_SEED_BYTES,
+    xwing_decaps, xwing_encaps,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::primitives::{
+    AEAD_NONCE_BYTES, AEAD_TAG_BYTES, HSEAL_AD, HSEAL_KDF_KEY, aead_open, aead_seal, keyed_hash_32,
+};
+
+/// Seal `message` to a peer's X-Wing identity key (`pq_pk` in the hub
+/// directory, signature-verified by the host before use). `random` must be
+/// fresh CSPRNG output, `nonce` likewise. `None` when `pq_pk` doesn't parse.
+pub fn seal_to(
+    pq_pk: &[u8; XWING_PUBLIC_BYTES],
+    message: &[u8],
+    random: &[u8; XWING_ENCAPS_RANDOM_BYTES],
+    nonce: &[u8; AEAD_NONCE_BYTES],
+) -> Option<Vec<u8>> {
+    let (ct, ss) = xwing_encaps(pq_pk, random)?;
+    let key = keyed_hash_32(&ss, HSEAL_KDF_KEY);
+    let boxed = aead_seal(&key, nonce, message, HSEAL_AD);
+    let mut out = Vec::with_capacity(ct.len() + nonce.len() + boxed.len());
+    out.extend_from_slice(&ct);
+    out.extend_from_slice(nonce);
+    out.extend_from_slice(&boxed);
+    Some(out)
+}
+
+/// Unseal with our X-Wing identity seed. `None` when the envelope wasn't
+/// sealed to this identity (wrong recipient decapsulates to a wrong shared
+/// secret and the AEAD refuses) or is garbage.
+pub fn unseal(seed: &[u8; XWING_SEED_BYTES], sealed: &[u8]) -> Option<Vec<u8>> {
+    if sealed.len() < XWING_CIPHERTEXT_BYTES + AEAD_NONCE_BYTES + AEAD_TAG_BYTES {
+        return None;
+    }
+    let kem_ct: &[u8; XWING_CIPHERTEXT_BYTES] = sealed[..XWING_CIPHERTEXT_BYTES].try_into().ok()?;
+    let nonce: &[u8; AEAD_NONCE_BYTES] = sealed
+        [XWING_CIPHERTEXT_BYTES..XWING_CIPHERTEXT_BYTES + AEAD_NONCE_BYTES]
+        .try_into()
+        .ok()?;
+    let boxed = &sealed[XWING_CIPHERTEXT_BYTES + AEAD_NONCE_BYTES..];
+    let ss = xwing_decaps(seed, kem_ct);
+    let key = keyed_hash_32(&ss, HSEAL_KDF_KEY);
+    aead_open(&key, nonce, boxed, HSEAL_AD)
+}
+
+/// The `x3dh` block attached to a session's initial envelopes until the
+/// initiator has decrypted one reply. JSON field names are the wire form
+/// (and identical to the Dart `X3dhBlock.toJson`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct X3dhBlock {
+    /// Sender's Ed25519 identity key, base64.
+    pub ik: String,
+    /// Sender's ephemeral X25519 key, base64.
+    pub ek: String,
+    pub spk_id: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opk_id: Option<u64>,
+    /// ML-KEM-768 ciphertext (PQXDH), base64.
+    pub kct: String,
+    /// Id of the KEM prekey encapsulated to.
+    pub kem_id: u64,
+    /// Whether `kem_id` names a one-time KEM prekey.
+    #[serde(default)]
+    pub kem_one_time: bool,
+}
+
+impl X3dhBlock {
+    pub fn ik_bytes(&self) -> Option<[u8; 32]> {
+        B64.decode(&self.ik).ok()?.try_into().ok()
+    }
+
+    pub fn ek_bytes(&self) -> Option<[u8; 32]> {
+        B64.decode(&self.ek).ok()?.try_into().ok()
+    }
+
+    pub fn kct_bytes(&self) -> Option<[u8; pqcore::MLKEM_CIPHERTEXT_BYTES]> {
+        B64.decode(&self.kct).ok()?.try_into().ok()
+    }
+}

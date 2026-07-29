@@ -1,0 +1,29 @@
+[package]
+name = "stonechat-core"
+version = "0.1.0"
+edition = "2024"
+description = "Stonechat protocol core: PQXDH + double ratchet + X-Wing envelope seal. Pure Rust, state-in/state-out, caller-supplied randomness — one implementation for app (FFI), iOS NSE (static lib), desktop, and wasm."
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+pqcore = { path = "../pqcore" }
+# Same primitives libsodium implements — standardized algorithms, so output
+# stays byte-compatible with what the Dart app produces via `sodium` today.
+blake2 = "0.10"          # crypto_generichash (keyed + variable-length BLAKE2b)
+sha2 = "0.10"            # Ed25519 seed -> X25519 scalar (crypto_sign_*_to_curve25519)
+# default-features off: their `getrandom` doesn't build on bare wasm32 and
+# this crate never draws entropy anyway (caller-supplied randomness).
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] } # crypto_aead_xchacha20poly1305_ietf
+ed25519-dalek = "2"      # crypto_sign (identity, prekey signatures)
+x25519-dalek = "2"       # crypto_scalarmult (X3DH, ratchet)
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[workspace]
