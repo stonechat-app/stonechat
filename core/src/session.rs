@@ -62,6 +62,45 @@ pub struct PrekeyBundle {
     pub kopk_pub: Option<[u8; pqcore::MLKEM_PUBLIC_BYTES]>,
 }
 
+impl PrekeyBundle {
+    /// Parse the bundle exactly as the peer's mailbox serves it
+    /// (`GET /prekeys/bundle`, PROTOCOL.md "Prekeys"):
+    /// `{"spk": {id, pub, sig}, "opk": {...}|null, "kspk": {...}, "kopk": {...}|null}`.
+    /// Signatures are NOT checked here — that stays with the host, which
+    /// holds the peer's verified identity key.
+    pub fn from_relay_json(v: &serde_json::Value) -> Option<PrekeyBundle> {
+        fn b64<const N: usize>(v: &serde_json::Value) -> Option<[u8; N]> {
+            B64.decode(v.as_str()?).ok()?.try_into().ok()
+        }
+        let spk = &v["spk"];
+        let kspk = &v["kspk"];
+        let opk = v.get("opk").filter(|o| !o.is_null());
+        let kopk = v.get("kopk").filter(|k| !k.is_null());
+        Some(PrekeyBundle {
+            spk_id: spk["id"].as_u64()?,
+            spk_pub: b64(&spk["pub"])?,
+            opk_id: match opk {
+                Some(o) => Some(o["id"].as_u64()?),
+                None => None,
+            },
+            opk_pub: match opk {
+                Some(o) => Some(b64(&o["pub"])?),
+                None => None,
+            },
+            kspk_id: kspk["id"].as_u64()?,
+            kspk_pub: b64(&kspk["pub"])?,
+            kopk_id: match kopk {
+                Some(k) => Some(k["id"].as_u64()?),
+                None => None,
+            },
+            kopk_pub: match kopk {
+                Some(k) => Some(b64(&k["pub"])?),
+                None => None,
+            },
+        })
+    }
+}
+
 /// Double-ratchet message header (`ratchet` in the inner envelope).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RatchetHeader {

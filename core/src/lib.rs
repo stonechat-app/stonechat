@@ -25,12 +25,14 @@
 //!   (peer, device) per MULTIDEVICE.md so the multi-device migration
 //!   never touches this crate's state shape.
 //!
-//! The C ABI surface for sessions (state blob in → state blob + result
-//! out) is deliberately not committed yet; it lands with the first real
-//! consumer (the NSE), designed against its memory budget. Only an ABI
-//! version probe is exported for now.
+//! The C ABI (src/ffi.rs) is the session surface every host calls:
+//! state blob in → result + advanced state blob out, core-allocated
+//! buffers released via `stonechat_free`. The staticlib/cdylib builds
+//! also carry pqcore's `stonechat_mlkem_*`/`stonechat_xwing_*` symbols,
+//! so one linked artifact serves both ABIs.
 
 pub mod envelope;
+pub mod ffi;
 pub mod ids;
 pub mod primitives;
 pub mod session;

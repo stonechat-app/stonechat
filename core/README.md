@@ -7,10 +7,15 @@ code (notes/docs/ROADMAP.md is the decision record):
 
 | Consumer | How | Status |
 |---|---|---|
-| Flutter app | dart:ffi over the C ABI (like pqcore) | planned — replaces `session.dart` internals |
-| iOS Notification Service Extension | Swift over the C ABI, static lib | planned — the first payoff |
+| Flutter app | dart:ffi over the C ABI (`app/lib/core/core_ffi.dart`) | **live** — `session.dart` is a thin wrapper since the cutover |
+| iOS Notification Service Extension | Swift over the C ABI, static lib | next — the reason the ABI exists |
 | Desktop (Flutter) | same dart:ffi bindings | later |
 | Web (tethered device, WEB_CLIENT.md) | wasm32 + wasm-bindgen wrapper | later — `cargo build --target wasm32-unknown-unknown` works today |
+
+One artifact serves everything: the staticlib/cdylib carries this crate's
+session ABI **and** pqcore's KEM symbols (`scripts/build_core.sh`
+supersedes `build_pqcore.sh`; iOS links `app/ios/Core/libstonechat_core.a`
+with `-force_load`).
 
 The **relay is deliberately not a consumer**: it depends on `pqcore` alone
 and must never grow a dependency on protocol code.
@@ -55,15 +60,18 @@ the executable reference until the app switches over.
   absurd-gap refusal, tamper/state-untouched guarantees, Dart-shape JSON
   round-trip, hybrid-seal round trip.
 
-Follow-ups, in order (tracked in ROADMAP.md):
+- `tests/golden.rs` + `tests/fixtures/dart_transcript.json` — the frozen
+  transcript recorded from the retired Dart ratchet (via
+  `app/test/golden_transcript_test.dart`, which now exercises the FFI
+  path instead). It is the compatibility baseline for session rows
+  written before the cutover — regenerate only deliberately.
+- `tests/abi.rs` — a full conversation driven through the C functions
+  exactly as a foreign host would.
 
-1. **Dart↔Rust golden corpus**: record handshake + ratchet transcripts from
-   the running Dart implementation and replay them here (and vice versa) —
-   the cross-implementation gate before the app switches. The e2e harness
-   (`scripts/e2e.py`) already speaks the protocol from Python and is the
-   natural recorder.
-2. **C ABI for sessions** (state blob in → state blob + result out),
-   designed against the NSE's 24 MB budget; then the PqCore-style iOS
-   framework wrapper.
-3. Zeroization pass (secret material in state blobs) once the ABI shape is
-   settled.
+Follow-ups (tracked in ROADMAP.md):
+
+1. The NSE itself: app-group storage + shared keychain, then the Swift
+   extension linking this same static lib.
+2. Zeroization pass (secret material in state blobs and FFI buffers).
+3. Migrate the rest of `crypto.dart` (envelope seal, signatures, IDs)
+   opportunistically — the ratchet-side primitives already live here.
