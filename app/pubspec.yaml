@@ -2,7 +2,7 @@ name: stonechat
 description: "Stonechat — privacy-first messaging over your own server."
 publish_to: 'none'
 
-version: 0.1.0+30
+version: 0.1.0+31
 
 environment:
   sdk: ^3.11.5
