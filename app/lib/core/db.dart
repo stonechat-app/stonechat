@@ -4,6 +4,7 @@
 /// device backup) yields ciphertext, not conversations.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -53,11 +54,25 @@ class ChatDb {
     final db = await openDatabase(
       path,
       password: password,
-      version: 2,
+      version: 4,
       onUpgrade: (db, from, _) async {
         if (from < 2) {
           // v2: a contact's home hub for cross-hub resolution.
           await db.execute('ALTER TABLE contacts ADD COLUMN hub TEXT');
+        }
+        if (from < 3) {
+          // v3: the shared blob behind an outgoing group-media fan-out.
+          await db.execute('ALTER TABLE messages ADD COLUMN blob TEXT');
+        }
+        if (from < 4) {
+          // v4: why a send didn't land, and the backoff bookkeeping behind it.
+          await db.execute('ALTER TABLE messages ADD COLUMN fail_reason TEXT');
+          await db.execute(
+            'ALTER TABLE messages ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
+          );
+          await db.execute(
+            'ALTER TABLE messages ADD COLUMN last_attempt_at INTEGER',
+          );
         }
       },
       onCreate: (db, _) async {
@@ -100,7 +115,11 @@ class ChatDb {
             expires_at  INTEGER,
             reply_to_id      TEXT,
             reply_to_sender  TEXT,
-            reply_to_preview TEXT
+            reply_to_preview TEXT,
+            blob             TEXT,
+            fail_reason      TEXT,
+            attempts         INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at  INTEGER
           )
         ''');
         await db.execute(
@@ -336,6 +355,34 @@ class ChatDb {
     await _db.update(
       'messages',
       {'status': status},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// Persist the outcome of a send attempt: the status it left the message in,
+  /// why, and the backoff bookkeeping. One write per attempt.
+  Future<void> saveSendAttempt(Message m) async {
+    await _db.update(
+      'messages',
+      {
+        'status': m.status,
+        'fail_reason': m.failReason,
+        'attempts': m.attempts,
+        'last_attempt_at': m.lastAttemptAt,
+      },
+      where: 'id = ?',
+      whereArgs: [m.id],
+    );
+  }
+
+  /// Remember (or forget) the shared blob behind an outgoing group-media
+  /// fan-out. Null once the blob has been deleted from our mailbox — the key
+  /// has no reason to outlive the ciphertext it opens.
+  Future<void> setMessageBlob(String id, SharedBlob? blob) async {
+    await _db.update(
+      'messages',
+      {'blob': blob == null ? null : jsonEncode(blob.toJson())},
       where: 'id = ?',
       whereArgs: [id],
     );

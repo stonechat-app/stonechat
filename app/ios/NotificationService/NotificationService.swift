@@ -7,8 +7,8 @@
 // Scope, deliberately narrow (v1):
 // - Processes only `msg` and `group_msg` from accepted, unblocked senders
 //   with an existing session. Everything else (prekey first-messages,
-//   media — whose payload carries the blob key and must be fetched by the
-//   app — receipts, group control traffic) is left UNACKED in the queue
+//   media and group_media — whose payloads carry a blob key and a fetch the
+//   app must perform — receipts, group control traffic) is left UNACKED in the queue
 //   for the app; the ratchet's skipped-key stash absorbs the ordering gap.
 // - Write-then-ack: message row + advanced session state commit in one
 //   transaction BEFORE the ack frame. Dying mid-work never loses mail —

@@ -1,6 +1,7 @@
 /// Core data types. Mirrors PROTOCOL.md.
 library;
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 class ContactStatus {
@@ -122,9 +123,18 @@ class MessageStatus {
   static const delivered = 'delivered'; // their device persisted it
   static const read = 'read'; // displayed on their screen
 
+  /// Nobody is trying any more: either the send was *refused* (a directory or
+  /// prekey that doesn't verify — retrying a lie never helps) or it stayed
+  /// undeliverable past the give-up window. Only a manual retry leaves this
+  /// state; an honest failure beats a spinner that never resolves.
+  static const failed = 'failed';
+
   /// Receipts only move a message forward: sent → delivered → read.
+  /// `failed` ranks with `pending` on purpose — if a receipt somehow arrives
+  /// for a message we gave up on, it *did* land, and the receipt heals it.
   static int rank(String s) => switch (s) {
         pending => 0,
+        failed => 0,
         sent => 1,
         delivered => 2,
         read => 3,
@@ -180,6 +190,21 @@ class Message {
   final String? replyToId;
   final String? replyToSender;
   final String? replyToPreview;
+  /// Outgoing group media only: the one shared blob this message's fan-out
+  /// points at (PROTOCOL.md "Group media"). Persisted because a retry to a
+  /// member we couldn't reach must reference the *same* upload — re-encrypting
+  /// would mint a new key that the already-parked ciphertext doesn't match —
+  /// and because the sender deletes the blob once everyone has it. Cleared
+  /// then; null for everything else.
+  SharedBlob? blob;
+  /// Why the last send attempt didn't land, in words meant for the user.
+  /// Set on every failed attempt (not just terminal ones) so a still-retrying
+  /// message can explain itself; cleared once it goes out.
+  String? failReason;
+  /// Send-attempt bookkeeping for the retry backoff: how many attempts this
+  /// message has cost and when the last one was. Outgoing messages only.
+  int attempts;
+  int? lastAttemptAt;
 
   Message({
     required this.id,
@@ -199,6 +224,10 @@ class Message {
     this.replyToId,
     this.replyToSender,
     this.replyToPreview,
+    this.blob,
+    this.failReason,
+    this.attempts = 0,
+    this.lastAttemptAt,
   });
 
   Map<String, Object?> toRow() => {
@@ -219,6 +248,10 @@ class Message {
         'reply_to_id': replyToId,
         'reply_to_sender': replyToSender,
         'reply_to_preview': replyToPreview,
+        'blob': blob == null ? null : jsonEncode(blob!.toJson()),
+        'fail_reason': failReason,
+        'attempts': attempts,
+        'last_attempt_at': lastAttemptAt,
       };
 
   factory Message.fromRow(Map<String, Object?> r) => Message(
@@ -239,6 +272,14 @@ class Message {
         replyToId: r['reply_to_id'] as String?,
         replyToSender: r['reply_to_sender'] as String?,
         replyToPreview: r['reply_to_preview'] as String?,
+        blob: r['blob'] == null
+            ? null
+            : SharedBlob.fromJson(
+                jsonDecode(r['blob'] as String) as Map<String, dynamic>,
+              ),
+        failReason: r['fail_reason'] as String?,
+        attempts: (r['attempts'] as int?) ?? 0,
+        lastAttemptAt: r['last_attempt_at'] as int?,
       );
 
   String get preview => deleted
@@ -253,6 +294,55 @@ class Message {
         };
 }
 
+/// The sender's half of a group-media upload: one encrypted blob parked on
+/// their own mailbox, plus everything a member needs to fetch and open it
+/// (PROTOCOL.md "Group media"). The key lives here only until the fan-out
+/// completes and the blob is deleted — it rides the ratchet to members, and
+/// never reaches the mailbox holding the ciphertext.
+class SharedBlob {
+  final String id;
+  final String fetchToken;
+  final String keyB64;
+  final String nonceB64;
+  final int size;
+  /// The mailbox that accepted the upload, and the cert to pin when talking
+  /// to it. Recorded rather than read from the current mailbox settings: a
+  /// retry — or a cleanup after the user moves house — must reach the box
+  /// that actually holds the bytes.
+  final String host;
+  final String tlsFp;
+
+  const SharedBlob({
+    required this.id,
+    required this.fetchToken,
+    required this.keyB64,
+    required this.nonceB64,
+    required this.size,
+    required this.host,
+    required this.tlsFp,
+  });
+
+  Map<String, Object?> toJson() => {
+        'id': id,
+        'fetch_token': fetchToken,
+        'key': keyB64,
+        'nonce': nonceB64,
+        'size': size,
+        'host': host,
+        'tls_fp': tlsFp,
+      };
+
+  factory SharedBlob.fromJson(Map<String, dynamic> j) => SharedBlob(
+        id: j['id'] as String,
+        fetchToken: j['fetch_token'] as String,
+        keyB64: j['key'] as String,
+        nonceB64: j['nonce'] as String,
+        size: j['size'] as int,
+        host: j['host'] as String,
+        tlsFp: j['tls_fp'] as String,
+      );
+}
+
 class EnvelopeType {
   static const msg = 'msg';
   static const media = 'media';
@@ -262,6 +352,7 @@ class EnvelopeType {
   static const groupCreate = 'group_create';
   static const groupUpdate = 'group_update';
   static const groupMsg = 'group_msg';
+  static const groupMedia = 'group_media'; // one shared blob on the sender's box
   static const groupLeave = 'group_leave';
   static const receipt = 'receipt'; // delivered/read, batched message ids
   static const typing = 'typing'; // transient, never queued or pushed

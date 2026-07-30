@@ -303,6 +303,13 @@ Widget? _tileTrailing(
           padding: EdgeInsets.only(right: last == null ? 0 : 6),
           child: const Icon(Icons.push_pin, size: 12, color: Zn.muted),
         ),
+      // A conversation whose newest message never went out says so from the
+      // list — otherwise the user has to open every chat to find out.
+      if (last != null && last.status == MessageStatus.failed)
+        const Padding(
+          padding: EdgeInsets.only(right: 6),
+          child: Icon(Icons.error_outline, size: 12, color: Zn.danger),
+        ),
       if (last != null) Text(_when(last.sentAt), style: Zn.mono(size: 10)),
     ],
   );

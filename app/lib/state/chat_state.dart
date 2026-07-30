@@ -20,6 +20,43 @@ import 'app_state.dart';
 
 const _uuid = Uuid();
 
+// -- send-retry policy (TODO.md §11 "Message reliability") --------------------
+// Top-level and pure so the policy can be pinned by tests without standing up
+// a ChatState: these three numbers are the difference between "still trying"
+// and "gave up", and they are a product decision, not an implementation
+// detail.
+
+/// How long an undeliverable message keeps being retried before it is marked
+/// `failed` and left alone. Long enough to outlast a weekend of VM trouble,
+/// short enough that "sending…" never becomes a lie you live with.
+const sendGiveUpAfterMs = 7 * 24 * 3600 * 1000;
+
+const _sendRetryBaseMs = 30 * 1000;
+const _sendRetryCeilingMs = 30 * 60 * 1000;
+
+/// Backoff before attempt N+1: 30 s doubling to a 30-minute ceiling. Retries
+/// are cheap, but a contact whose mailbox died should not be dialled on every
+/// sweep for a week.
+int sendBackoffMs(int attempts) {
+  if (attempts <= 0) return 0;
+  final shift = (attempts - 1).clamp(0, 20);
+  return (_sendRetryBaseMs * (1 << shift)).clamp(
+    _sendRetryBaseMs,
+    _sendRetryCeilingMs,
+  );
+}
+
+/// Coarse age for the "not sent · 3d" line. Null below five minutes — a
+/// message a moment old needs no commentary, it just hasn't landed yet.
+String? sendAgeLabel(int ms) {
+  if (ms < 5 * 60 * 1000) return null;
+  final minutes = ms ~/ 60000;
+  if (minutes < 60) return '${minutes}m';
+  final hours = minutes ~/ 60;
+  if (hours < 24) return '${hours}h';
+  return '${hours ~/ 24}d';
+}
+
 class ChatState extends ChangeNotifier {
   final AppState app;
 
@@ -226,10 +263,16 @@ class ChatState extends ChangeNotifier {
       groupMembers[g.id] = await app.db.membersOf(g.id);
       lastMessage[g.id] = await app.db.lastMessageFor(g.id);
     }
+    // Partial-delivery counts before the first frame: a group message stuck
+    // owing two members should say so on a cold start, not only after the
+    // first retry sweep runs.
+    await _reloadGroupOwed();
     notifyListeners();
     // Anything that expired while the app was closed vanishes before it can
     // be rendered (the sweep also fixes the previews it just loaded).
     unawaited(sweepExpired());
+    // Whatever the last session left undelivered starts ticking again.
+    if (await _hasPendingWork()) _scheduleRetrySweep();
   }
 
   /// Coming back to the foreground on iOS: the notification extension may
@@ -367,7 +410,7 @@ class ChatState extends ChangeNotifier {
       hubUrl: hub ?? contactById(stonechatId)?.hub,
     );
     if (!app.crypto.pubkeyMatchesId(entry.pubkeyB64, entry.stonechatId)) {
-      throw ApiException(
+      throw ApiException.refusing(
         'Directory returned a key that does not match this ID — refusing.',
       );
     }
@@ -383,7 +426,7 @@ class ChatState extends ChangeNotifier {
           Uint8List.fromList(base64Decode(entry.pubkeyB64)),
         );
     if (!pqOk) {
-      throw ApiException(
+      throw ApiException.refusing(
         'Directory entry lacks a valid post-quantum key — refusing.',
       );
     }
@@ -551,7 +594,7 @@ class ChatState extends ChangeNotifier {
           bundle.kspkSig,
           peerEd,
         )) {
-      throw ApiException(
+      throw ApiException.refusing(
         'Their mailbox served a forged prekey — refusing to send.',
       );
     }
@@ -1203,7 +1246,7 @@ class ChatState extends ChangeNotifier {
     }
   }
 
-  Future<void> sendGroupMessage(
+  Future<Message> sendGroupMessage(
     Group group,
     String text, {
     Message? replyTo,
@@ -1235,23 +1278,114 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
 
     await _fanOut(group, message, members);
+    return message;
+  }
+
+  /// Send a photo, video, voice note or document to a group. The file is
+  /// encrypted and uploaded **once**, to our own mailbox, and each member is
+  /// handed a read capability for that one blob (PROTOCOL.md "Group media") —
+  /// so upload cost is flat in the member count, unlike the DM path, which
+  /// parks a copy on the recipient's box.
+  Future<Message> sendGroupMedia(
+    Group group,
+    String sourcePath, {
+    required String kind, // MessageKind.image | audio | video | file | sticker
+    required String mime,
+    int? durationMs,
+    String? fileName, // kind=file: the document's original name
+    Message? replyTo,
+  }) async {
+    _typingSentAt.remove(group.id); // the message itself says "stopped typing"
+    final members = (groupMembers[group.id] ?? [])
+        .where((m) => m.stonechatId != app.stonechatId)
+        .toList();
+    final id = _uuid.v4();
+    final dir = await _mediaDir();
+    final localPath = p.join(dir.path, '$id${p.extension(sourcePath)}');
+    await File(sourcePath).copy(localPath);
+
+    final sentAt = DateTime.now().millisecondsSinceEpoch;
+    final message = Message(
+      id: id,
+      contactId: group.id,
+      outgoing: true,
+      text: '',
+      kind: kind,
+      mediaPath: localPath,
+      durationMs: durationMs,
+      fileName: fileName,
+      sentAt: sentAt,
+      status: MessageStatus.pending,
+      expiresAt: group.expireTimerMs > 0 ? sentAt + group.expireTimerMs : null,
+      replyToId: replyTo?.id,
+      replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
+      replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
+    );
+    await app.db.insertMessage(message);
+    await app.db.addOutbox(message.id, group.id, [
+      for (final m in members) m.stonechatId,
+    ]);
+    (_messages[group.id] ??= []).add(message);
+    lastMessage[group.id] = message;
+    if (message.expiresAt != null) _scheduleExpirySweep();
+    notifyListeners();
+
+    await _fanOut(group, message, members, mime: mime);
+    return message;
   }
 
   Future<void> _fanOut(
     Group group,
     Message message,
-    List<GroupMember> members,
-  ) async {
+    List<GroupMember> members, {
+    String? mime, // first attempt only; retries re-derive it from the file
+  }) async {
+    // A group of one owes nobody anything — and must not park a blob on our
+    // mailbox that no member will ever come to fetch.
+    if (members.isEmpty) return _settleFanOut(message);
+    final isMedia = message.kind != MessageKind.text;
+    SharedBlob? blob;
+    if (isMedia) {
+      try {
+        blob = await _shareBlobFor(message);
+      } catch (e) {
+        // Nothing was fanned out, so the outbox rows stand and retryPending
+        // comes back — but the message now says why it hasn't moved.
+        await _recordSendFailure(message, e);
+        notifyListeners();
+        return;
+      }
+    }
     // Expiry rides the message itself, not the current setting: a retry after
     // a timer change must still carry the TTL this message was sent under.
     final payload = {
       'group_id': group.id,
-      'text': message.text,
+      if (!isMedia) 'text': message.text,
+      if (isMedia) ...{
+        'blob_id': blob!.id,
+        'key': blob.keyB64,
+        'blob_nonce': blob.nonceB64,
+        // Where to fetch it and which pinned cert to expect — the box that
+        // took the upload, not whichever is current. Our own mailbox: members
+        // come to us, we don't push a copy to each of them.
+        'fetch_token': blob.fetchToken,
+        'blob_host': blob.host,
+        'blob_tls_fp': blob.tlsFp,
+        'mime': mime ?? _mimeFromPath(message.mediaPath ?? ''),
+        'kind': message.kind,
+        'size': blob.size,
+        if (message.durationMs != null) 'duration_ms': message.durationMs,
+        if (message.fileName != null) 'name': message.fileName,
+      },
       if (message.expiresAt != null)
         'expire_after_ms': message.expiresAt! - message.sentAt,
       if (_replyPayloadOf(message) != null)
         'reply_to': _replyPayloadOf(message),
     };
+    // The outer envelope carries no blob_id: the blob is on *our* mailbox, so
+    // a member's ack must not try to garbage-collect it from theirs.
+    final type = isMedia ? EnvelopeType.groupMedia : EnvelopeType.groupMsg;
+    Object? lastError; // one member's failure shouldn't hide behind the others
     for (final member in members) {
       try {
         // Envelope id == message id for every copy: mailboxes are per-member
@@ -1259,7 +1393,7 @@ class ChatState extends ChangeNotifier {
         await _deliverToMember(
           member,
           await _sealFor(
-            EnvelopeType.groupMsg,
+            type,
             member.stonechatId,
             member.pubkeyB64,
             payload,
@@ -1269,15 +1403,105 @@ class ChatState extends ChangeNotifier {
           ),
         );
         await app.db.clearOutbox(message.id, member.stonechatId);
-      } catch (_) {
-        // stays in outbox; retryPending will re-attempt this member
+      } catch (e) {
+        lastError = e; // stays in outbox; retryPending re-attempts this member
       }
     }
-    if (await app.db.outboxRemaining(message.id) == 0) {
-      message.status = MessageStatus.sent;
-      await app.db.setMessageStatus(message.id, MessageStatus.sent);
+    await _settleFanOut(message, lastError);
+  }
+
+  /// A fan-out pass is over. The message counts as sent once no member is
+  /// still owed a copy; short of that it keeps the reason the last member
+  /// gave, so the bubble can say "sent to 3 of 5" and why the other two
+  /// missed out. A group is never failed by one dead mailbox — only by the
+  /// give-up window, or a refusal, closing over the whole thing.
+  Future<void> _settleFanOut(Message message, [Object? lastError]) async {
+    final owed = await app.db.outboxRemaining(message.id);
+    _groupOwed[message.id] = owed;
+    if (owed == 0) {
+      await _recordSendSuccess(message);
+    } else if (lastError != null) {
+      await _recordSendFailure(message, lastError, mayBeTerminal: false);
     }
     notifyListeners();
+  }
+
+  /// Group messages still owed to at least one member: message id → how many
+  /// members are left. Kept in memory so a bubble can render "sent to 3 of 5"
+  /// without a query per frame; `group_outbox` stays the source of truth.
+  final Map<String, int> _groupOwed = {};
+
+  /// How many members still haven't been handed [messageId]. 0 means every
+  /// mailbox took it — which is what "sent" means for a group.
+  int owedFor(String messageId) => _groupOwed[messageId] ?? 0;
+
+  Future<void> _reloadGroupOwed() async {
+    final owed = await app.db.pendingOutbox();
+    _groupOwed
+      ..clear()
+      ..addEntries(owed.entries.map((e) => MapEntry(e.key, e.value.length)));
+  }
+
+  /// The single shared upload behind a group-media fan-out, created on first
+  /// need and reused by every retry — re-encrypting would mint a fresh key,
+  /// which the ciphertext already parked on our mailbox would not match.
+  ///
+  /// Throws rather than returning null on failure: the caller turns that into
+  /// a reason on the message. A silent null here was how "nothing happened
+  /// and nobody said why" used to look.
+  Future<SharedBlob> _shareBlobFor(Message message) async {
+    final existing = message.blob;
+    if (existing != null) return existing;
+    final host = mailboxAddress;
+    final tlsFp = mailboxTlsFp;
+    if (host == null || tlsFp == null) {
+      throw ApiException("Your mailbox isn't ready — this will send once it is");
+    }
+    final path = message.mediaPath ?? '';
+    final file = File(path);
+    if (!await file.exists()) {
+      // Terminal: no retry brings a deleted file back.
+      throw FileSystemException('media file is gone', path);
+    }
+    final bytes = await file.readAsBytes();
+    final sealed = app.crypto.sealBlob(bytes);
+    final up = await uploadSharedBlob(host, sealed.ciphertext, tlsFp);
+    final blob = SharedBlob(
+      id: up.blobId,
+      fetchToken: up.fetchToken,
+      keyB64: base64Encode(sealed.key),
+      nonceB64: base64Encode(sealed.nonce),
+      size: bytes.length,
+      host: host,
+      tlsFp: tlsFp,
+    );
+    message.blob = blob;
+    for (final m in _cachedCopies(message)) {
+      m.blob = blob;
+    }
+    await app.db.setMessageBlob(message.id, blob);
+    return blob;
+  }
+
+  /// Everyone has the file (or the message is gone): drop the ciphertext from
+  /// our mailbox rather than let it sit out the relay's 14-day TTL against our
+  /// storage cap. Best-effort — that TTL is the backstop. The key is forgotten
+  /// with it; it has no reason to outlive the blob it opens.
+  Future<void> _releaseSharedBlob(Message message) async {
+    final blob = message.blob;
+    if (blob == null) return;
+    final token = mailboxToken;
+    if (token == null) return; // keep the record; a later cleanup can retry
+    try {
+      await deleteBlob(blob.host, blob.id, token, blob.tlsFp);
+    } catch (_) {
+      return; // unreachable, or a mailbox move left the old token behind
+    }
+    message.blob = null;
+    for (final m in _cachedCopies(message)) {
+      m.blob = null;
+    }
+    await app.db.setMessageBlob(message.id, null);
   }
 
   /// Leave: announce to everyone, then delete locally.
@@ -1310,7 +1534,7 @@ class ChatState extends ChangeNotifier {
 
   // -- messaging -------------------------------------------------------------------
 
-  Future<void> sendMessage(
+  Future<Message> sendMessage(
     Contact contact,
     String text, {
     Message? replyTo,
@@ -1340,6 +1564,7 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
 
     await _trySend(contact, message);
+    return message;
   }
 
   /// Forward an existing message to another conversation. A forward is an
@@ -1352,10 +1577,21 @@ class ChatState extends ChangeNotifier {
     Group? toGroup,
   }) async {
     assert((toContact == null) != (toGroup == null));
-    if (toGroup != null) {
-      await sendGroupMessage(toGroup, m.text);
-    } else if (m.kind == MessageKind.text) {
-      await sendMessage(toContact!, m.text);
+    if (m.kind == MessageKind.text) {
+      if (toGroup != null) {
+        await sendGroupMessage(toGroup, m.text);
+      } else {
+        await sendMessage(toContact!, m.text);
+      }
+    } else if (toGroup != null) {
+      await sendGroupMedia(
+        toGroup,
+        m.mediaPath!,
+        kind: m.kind,
+        mime: _mimeFromPath(m.mediaPath!),
+        durationMs: m.durationMs,
+        fileName: m.fileName,
+      );
     } else {
       await sendMedia(
         toContact!,
@@ -1370,7 +1606,7 @@ class ChatState extends ChangeNotifier {
 
   /// Send a photo, video, voice note or document. `sourcePath` is copied into
   /// the app's media directory first — the local copy is the message history.
-  Future<void> sendMedia(
+  Future<Message> sendMedia(
     Contact contact,
     String sourcePath, {
     required String kind, // MessageKind.image | audio | video | file
@@ -1410,6 +1646,7 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
 
     await _trySend(contact, message, mime: mime);
+    return message;
   }
 
   Future<void> _trySend(
@@ -1422,13 +1659,138 @@ class ChatState extends ChangeNotifier {
           ? await _sealMessage(contact, message)
           : await _sealMedia(contact, message, mime: mime);
       await _deliver(contact, envelope);
-      message.status = MessageStatus.sent;
-      await app.db.setMessageStatus(message.id, MessageStatus.sent);
-    } catch (_) {
-      // stays pending; retryPending() will pick it up
+      await _recordSendSuccess(message);
+    } catch (e) {
+      await _recordSendFailure(message, e);
     }
     notifyListeners();
   }
+
+  // -- send outcomes (TODO.md §11 "Message reliability") -----------------------
+
+  Timer? _retrySweep;
+
+  /// Reasons a peer is unreachable are their business, not the user's — the
+  /// message says what happened in words, and this is the fallback when an
+  /// exception carries none worth showing.
+  static String _reasonFor(Object error) {
+    if (error is ApiException) return error.message;
+    // A media retry whose local copy is gone: no amount of network fixes it,
+    // and "check your connection" would send the user down the wrong path.
+    if (error is FileSystemException) return 'The file is no longer on this phone';
+    return "Couldn't send — check your connection";
+  }
+
+  Future<void> _recordSendSuccess(Message message) async {
+    message.status = MessageStatus.sent;
+    message.failReason = null;
+    message.lastAttemptAt = DateTime.now().millisecondsSinceEpoch;
+    for (final m in _cachedCopies(message)) {
+      m
+        ..status = message.status
+        ..failReason = null;
+    }
+    await app.db.saveSendAttempt(message);
+  }
+
+  /// One attempt didn't land. Refusals are terminal on the spot — a directory
+  /// or prekey that doesn't verify says the same thing on every retry — and
+  /// everything else keeps its place in the queue until the give-up window
+  /// closes. Either way the message now carries a reason the UI can show.
+  Future<void> _recordSendFailure(
+    Message message,
+    Object error, {
+    /// False for a partly-delivered group fan-out: one member refusing must
+    /// not condemn a message four others already have. Only the give-up
+    /// window fails those.
+    bool mayBeTerminal = true,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // Terminal on the spot: a refusal, or media whose local copy is gone —
+    // both say exactly the same thing on the hundredth try as on the first.
+    final terminal =
+        mayBeTerminal &&
+        ((error is ApiException && error.refused) ||
+            error is FileSystemException);
+    message
+      ..attempts += 1
+      ..lastAttemptAt = now
+      ..failReason = _reasonFor(error);
+    if (terminal || now - message.sentAt >= sendGiveUpAfterMs) {
+      message.status = MessageStatus.failed;
+    }
+    for (final m in _cachedCopies(message)) {
+      m
+        ..attempts = message.attempts
+        ..lastAttemptAt = message.lastAttemptAt
+        ..failReason = message.failReason
+        ..status = message.status;
+    }
+    await app.db.saveSendAttempt(message);
+    _scheduleRetrySweep();
+  }
+
+  /// True while this message is inside its backoff window — the sweep skips
+  /// it rather than re-dialling a mailbox that just refused to answer.
+  bool _backingOff(Message message) {
+    final last = message.lastAttemptAt;
+    if (last == null) return false;
+    final wait = sendBackoffMs(message.attempts);
+    return DateTime.now().millisecondsSinceEpoch - last < wait;
+  }
+
+  /// Retrying only on connect/wake/resume left a message stuck behind an
+  /// event that might never come while the user watched. This keeps a slow
+  /// heartbeat going for exactly as long as something is still owed.
+  void _scheduleRetrySweep() {
+    if (_retrySweep != null) return;
+    _retrySweep = Timer(const Duration(seconds: 60), () async {
+      _retrySweep = null;
+      await retryPending();
+      // Still owed? Keep the heartbeat. Otherwise it stops on its own.
+      if (await _hasPendingWork()) _scheduleRetrySweep();
+    });
+  }
+
+  Future<bool> _hasPendingWork() async =>
+      (await app.db.pendingMessages()).isNotEmpty ||
+      (await app.db.pendingOutbox()).isNotEmpty ||
+      contacts.any((c) => c.status == ContactStatus.pendingOut);
+
+  /// Put a given-up message back in the queue and try it now. The user asked,
+  /// so the backoff and the attempt count start over.
+  Future<void> retryMessage(Message message) async {
+    if (!message.outgoing || message.deleted) return;
+    message
+      ..status = MessageStatus.pending
+      ..attempts = 0
+      ..lastAttemptAt = null
+      ..failReason = null;
+    for (final m in _cachedCopies(message)) {
+      m
+        ..status = MessageStatus.pending
+        ..attempts = 0
+        ..lastAttemptAt = null
+        ..failReason = null;
+    }
+    await app.db.saveSendAttempt(message);
+    notifyListeners();
+
+    final group = groupById(message.contactId);
+    if (group != null) {
+      final owed = await app.db.pendingOutbox();
+      final ids = owed[message.id] ?? const <String>[];
+      final members = (groupMembers[group.id] ?? [])
+          .where((m) => ids.contains(m.stonechatId))
+          .toList();
+      await _fanOut(group, message, members);
+      return;
+    }
+    final contact = contactById(message.contactId);
+    if (contact == null || contact.isBlocked) return;
+    await _trySend(contact, message);
+  }
+
 
   /// Media path: encrypt file with a one-off key, park the ciphertext on the
   /// recipient's mailbox, reference it from a small normal envelope.
@@ -1480,6 +1842,97 @@ class ChatState extends ChangeNotifier {
         '.pdf' => 'application/pdf',
         _ => 'application/octet-stream',
       };
+
+  /// The MessageKind an incoming media payload names — anything this build
+  /// doesn't know renders as an image rather than nothing.
+  static String _mediaKindOf(Map<String, dynamic> payload) =>
+      switch (payload['kind']) {
+        MessageKind.image ||
+        MessageKind.audio ||
+        MessageKind.video ||
+        MessageKind.file ||
+        MessageKind.sticker => payload['kind'] as String,
+        _ => MessageKind.image,
+      };
+
+  /// A document's original filename, stripped to its basename — PROTOCOL.md
+  /// requires receivers to drop any path components the sender put there.
+  static String? _mediaNameOf(Map<String, dynamic> payload) {
+    final name = payload['name'] as String?;
+    return name == null ? null : p.basename(name);
+  }
+
+  /// Decrypt a downloaded media blob with the key from its (already
+  /// session-decrypted) payload and write it into the media directory under
+  /// the message's own id. Null if it doesn't open — a tampered blob.
+  Future<String?> _persistMedia(
+    String messageId,
+    List<int> ciphertext,
+    Map<String, dynamic> payload,
+  ) async {
+    final data = app.crypto.openBlob(
+      Uint8List.fromList(ciphertext),
+      base64Decode(payload['key'] as String),
+      base64Decode(payload['blob_nonce'] as String),
+    );
+    if (data == null) return null;
+    final kind = _mediaKindOf(payload);
+    final name = payload['name'] as String?;
+    final dir = await _mediaDir();
+    // Documents keep their original extension so the OS opens them with the
+    // right app; everything else derives it from the mime type.
+    final ext = kind == MessageKind.file && name != null
+        ? p.extension(name)
+        : _extFromMime((payload['mime'] as String?) ?? '');
+    final path = p.join(dir.path, '$messageId$ext');
+    await File(path).writeAsBytes(data);
+    return path;
+  }
+
+  /// Group media (PROTOCOL.md "Group media"): fetch the one shared blob from
+  /// the *sender's* mailbox — pinned to the fingerprint they quoted — using
+  /// the per-blob capability token they put in the payload.
+  ///
+  /// Returns null when the media is permanently unavailable: a malformed
+  /// payload, a host that isn't the sender's own mailbox, a blob the sender
+  /// already reclaimed or that aged past their relay's TTL, or ciphertext that
+  /// doesn't open. A transient failure (their box down, no network) throws
+  /// instead, so the envelope goes un-acked and we try again on the next drain.
+  Future<String?> _fetchSharedMedia(
+    Envelope envelope,
+    GroupMember sender,
+    Map<String, dynamic> payload,
+  ) async {
+    final host = payload['blob_host'] as String?;
+    final tlsFp = payload['blob_tls_fp'] as String?;
+    final blobId = payload['blob_id'] as String?;
+    final token = payload['fetch_token'] as String?;
+    if (host == null || tlsFp == null || blobId == null || token == null) {
+      return null;
+    }
+    // The blob has to be on the sender's *own* mailbox. Without this a group
+    // member could name any host in the payload and have our client go fetch
+    // from it — the one field in this flow that points us somewhere new. A
+    // sender who moved mailboxes mid-flight fails closed (media unavailable)
+    // rather than teaching us to trust an unverified address.
+    if (host != sender.serverAddress) {
+      // Their directory entry may simply be stale here; a lookup failure is
+      // transient and rethrows, so only a real mismatch is fatal.
+      if (host != (await _resolve(sender.stonechatId)).serverAddress) {
+        _dropLog(envelope, "blob_host is not the sender's own mailbox");
+        return null;
+      }
+    }
+    final List<int> ciphertext;
+    try {
+      ciphertext = await downloadBlob(host, blobId, token, tlsFp);
+    } on ApiException catch (e) {
+      // 404 gone, 401 token no longer accepted: neither improves with time.
+      if (e.status == 404 || e.status == 410 || e.status == 401) return null;
+      rethrow;
+    }
+    return _persistMedia(envelope.id, ciphertext, payload);
+  }
 
   static String _extFromMime(String mime) => switch (mime) {
     'image/jpeg' => '.jpg',
@@ -1536,7 +1989,10 @@ class ChatState extends ChangeNotifier {
       final cached = _messages[message.contactId]
           ?.where((m) => m.id == message.id)
           .firstOrNull;
-      await _trySend(contact, cached ?? message);
+      final target = cached ?? message;
+      if (await _giveUpIfStale(target)) continue;
+      if (_backingOff(target)) continue;
+      await _trySend(contact, target);
       if (cached == null) {
         lastMessage[message.contactId] = await app.db.lastMessageFor(
           message.contactId,
@@ -1550,6 +2006,12 @@ class ChatState extends ChangeNotifier {
       if (message == null) continue;
       final group = groupById(message.contactId);
       if (group == null) continue;
+      final cached = _messages[message.contactId]
+          ?.where((m) => m.id == message.id)
+          .firstOrNull;
+      final target = cached ?? message;
+      if (await _giveUpIfStale(target)) continue;
+      if (_backingOff(target)) continue;
       final owed = (groupMembers[group.id] ?? [])
           .where((m) => entry.value.contains(m.stonechatId))
           .toList();
@@ -1557,6 +2019,26 @@ class ChatState extends ChangeNotifier {
         await _fanOut(group, message, owed);
       }
     }
+    await _reloadGroupOwed();
+    if (await _hasPendingWork()) _scheduleRetrySweep();
+  }
+
+  /// A message past the give-up window stops being retried, even if the last
+  /// attempt was long enough ago to be due — otherwise "we're still trying"
+  /// would outlive any honest claim to it. Returns true when it just failed.
+  Future<bool> _giveUpIfStale(Message message) async {
+    if (message.status == MessageStatus.failed) return true;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - message.sentAt < sendGiveUpAfterMs) return false;
+    message.status = MessageStatus.failed;
+    message.failReason ??= "Gave up after 7 days — they never came back online";
+    for (final m in _cachedCopies(message)) {
+      m
+        ..status = MessageStatus.failed
+        ..failReason = message.failReason;
+    }
+    await app.db.saveSendAttempt(message);
+    return true;
   }
 
   // -- receipts (PROTOCOL.md "receipt") ----------------------------------------------
@@ -1675,6 +2157,14 @@ class ChatState extends ChangeNotifier {
         continue;
       }
       await _setStatusEverywhere(message, next);
+      // Everyone has it now: the shared blob behind a group-media fan-out has
+      // nothing left to serve, so reclaim the space (PROTOCOL.md "Group
+      // media"). Delivered is enough — read is about eyeballs, not bytes.
+      if (message.blob != null &&
+          MessageStatus.rank(next) >=
+              MessageStatus.rank(MessageStatus.delivered)) {
+        await _releaseSharedBlob(message);
+      }
     }
   }
 
@@ -1956,7 +2446,11 @@ class ChatState extends ChangeNotifier {
     }
   }
 
+  /// Drop a message's local file — and, for outgoing group media, the shared
+  /// copy still parked on our mailbox: once the message is gone here there is
+  /// nobody left we owe it to.
   Future<void> _removeMediaFile(Message message) async {
+    await _releaseSharedBlob(message);
     final path = message.mediaPath;
     if (path == null) return;
     try {
@@ -2489,29 +2983,8 @@ class ChatState extends ChangeNotifier {
           mailboxToken!,
           mailboxTlsFp!,
         );
-        final data = app.crypto.openBlob(
-          Uint8List.fromList(ciphertext),
-          base64Decode(payload['key'] as String),
-          base64Decode(payload['blob_nonce'] as String),
-        );
-        if (data == null) return; // tampered blob — drop
-        final kind = switch (payload['kind']) {
-          MessageKind.image ||
-          MessageKind.audio ||
-          MessageKind.video ||
-          MessageKind.file ||
-          MessageKind.sticker => payload['kind'] as String,
-          _ => MessageKind.image,
-        };
-        final name = payload['name'] as String?;
-        final dir = await _mediaDir();
-        // Documents keep their original extension so the OS opens them with
-        // the right app; everything else derives it from the mime type.
-        final ext = kind == MessageKind.file && name != null
-            ? p.extension(name)
-            : _extFromMime((payload['mime'] as String?) ?? '');
-        final path = p.join(dir.path, '${envelope.id}$ext');
-        await File(path).writeAsBytes(data);
+        final path = await _persistMedia(envelope.id, ciphertext, payload);
+        if (path == null) return; // tampered blob — drop
         final (replyId, replySender, replyPreview) = _replyFrom(payload);
         await _storeIncoming(
           contact,
@@ -2520,10 +2993,10 @@ class ChatState extends ChangeNotifier {
             contactId: contact.stonechatId,
             outgoing: false,
             text: '',
-            kind: kind,
+            kind: _mediaKindOf(payload),
             mediaPath: path,
             durationMs: payload['duration_ms'] as int?,
-            fileName: name == null ? null : p.basename(name),
+            fileName: _mediaNameOf(payload),
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
             expiresAt: _expiresAtFrom(envelope, payload),
@@ -2549,6 +3022,40 @@ class ChatState extends ChangeNotifier {
             senderId: envelope.from,
             outgoing: false,
             text: (payload['text'] as String?) ?? '',
+            sentAt: _sentAtMs(envelope),
+            status: MessageStatus.sent,
+            expiresAt: _expiresAtFrom(envelope, payload),
+            replyToId: replyId,
+            replyToSender: replySender,
+            replyToPreview: replyPreview,
+          ),
+        );
+
+      case EnvelopeType.groupMedia:
+        final group = groupById(payload['group_id'] as String? ?? '');
+        if (group == null) return; // unknown group — drop (create not seen yet)
+        final sender = memberOf(group.id, envelope.from);
+        if (sender == null) return; // non-member
+        // Fetch from the *sender's* mailbox with the capability token in the
+        // payload, and persist BEFORE returning: returning acks the envelope.
+        // A null path means the blob is provably gone — store the message
+        // anyway (the bubble renders "unavailable") rather than refuse to ack
+        // an envelope that can never succeed. Anything transient throws
+        // instead, leaving it queued for the next drain.
+        final path = await _fetchSharedMedia(envelope, sender, payload);
+        final (replyId, replySender, replyPreview) = _replyFrom(payload);
+        await _storeIncomingConversation(
+          group.id,
+          Message(
+            id: envelope.id,
+            contactId: group.id,
+            senderId: envelope.from,
+            outgoing: false,
+            text: '',
+            kind: _mediaKindOf(payload),
+            mediaPath: path,
+            durationMs: payload['duration_ms'] as int?,
+            fileName: _mediaNameOf(payload),
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
             expiresAt: _expiresAtFrom(envelope, payload),
@@ -2835,6 +3342,7 @@ class ChatState extends ChangeNotifier {
     _receiptFlushTimer?.cancel();
     _typingSweep?.cancel();
     _expirySweep?.cancel();
+    _retrySweep?.cancel();
     super.dispose();
   }
 }

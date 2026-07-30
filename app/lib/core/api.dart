@@ -75,7 +75,24 @@ class ApiException implements Exception {
   final int? status;
   final Object? detail; // parsed JSON `detail` when the server sent one
 
-  ApiException(this.message, [this.status, this.detail]);
+  /// This send was *refused*, not merely unlucky: a directory key that doesn't
+  /// hash to its ID, a prekey that doesn't verify, a peer with no usable
+  /// post-quantum key. Retrying re-asks the same liar the same question, so
+  /// callers fail the message immediately instead of queueing it forever.
+  final bool refused;
+
+  ApiException(
+    this.message, [
+    this.status,
+    this.detail,
+    this.refused = false,
+  ]);
+
+  /// A refusal: unusable now and unusable on every retry.
+  ApiException.refusing(this.message)
+      : status = null,
+        detail = null,
+        refused = true;
 
   /// Machine-readable error code (e.g. 'subscription_required'), when the
   /// hub sent a structured detail.
@@ -718,7 +735,69 @@ Future<String> uploadBlob(
   }
 }
 
-/// Download a blob from *your own* mailbox (owner token required).
+/// Upload one encrypted blob to *our own* mailbox and take a read capability
+/// for it (PROTOCOL.md "Group media"). Group media uploads once and hands the
+/// returned token to every member inside their envelope, instead of parking a
+/// copy on each of their mailboxes.
+Future<SharedBlobUpload> uploadSharedBlob(
+  String serverAddress,
+  List<int> bytes,
+  String tlsFp,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .post(
+          Uri.parse('$serverAddress/blob?shared=1'),
+          headers: {'Content-Type': 'application/octet-stream'},
+          body: bytes,
+        )
+        .timeout(const Duration(seconds: 120));
+    if (r.statusCode >= 400) {
+      throw ApiException('blob upload failed (${r.statusCode})', r.statusCode);
+    }
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    final token = j['fetch_token'];
+    if (token is! String || token.isEmpty) {
+      // An older relay that ignores ?shared=1 — without a token no member
+      // could fetch, so fail here rather than fan out unreadable envelopes.
+      throw ApiException('mailbox does not support shared blobs');
+    }
+    return SharedBlobUpload(j['blob_id'] as String, token);
+  } finally {
+    client.close();
+  }
+}
+
+class SharedBlobUpload {
+  final String blobId;
+  final String fetchToken;
+  const SharedBlobUpload(this.blobId, this.fetchToken);
+}
+
+/// Drop a blob from *your own* mailbox (owner token). Idempotent server-side;
+/// used to reclaim a shared group blob once every member has fetched it.
+Future<void> deleteBlob(
+  String serverAddress,
+  String blobId,
+  String token,
+  String tlsFp,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .delete(Uri.parse('$serverAddress/blob/$blobId?token=$token'))
+        .timeout(const Duration(seconds: 20));
+    if (r.statusCode >= 400) {
+      throw ApiException('blob delete failed (${r.statusCode})', r.statusCode);
+    }
+  } finally {
+    client.close();
+  }
+}
+
+/// Download a blob: from your own mailbox with the owner token, or from a
+/// group sender's mailbox with that blob's fetch token.
 Future<List<int>> downloadBlob(
   String serverAddress,
   String blobId,

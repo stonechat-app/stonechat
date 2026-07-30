@@ -103,12 +103,21 @@ class _ChatScreenState extends State<ChatScreen> {
     }
     final replyTo = _replyingTo;
     if (replyTo != null) setState(() => _replyingTo = null);
-    if (isGroup) {
-      await chat.sendGroupMessage(widget.group!, text, replyTo: replyTo);
-    } else {
-      await chat.sendMessage(widget.contact!, text, replyTo: replyTo);
-    }
+    final sent = isGroup
+        ? await chat.sendGroupMessage(widget.group!, text, replyTo: replyTo)
+        : await chat.sendMessage(widget.contact!, text, replyTo: replyTo);
+    _reportSendTrouble(sent);
     _scrollToEnd();
+  }
+
+  /// The first attempt just failed and the user is still looking at the
+  /// screen — this is the moment the friendly copy in ChatState is worth
+  /// something. The bubble carries the same reason afterwards, so this is a
+  /// nudge, not the only telling.
+  void _reportSendTrouble(Message m) {
+    final reason = m.failReason;
+    if (reason == null || !mounted) return;
+    showZnSnack(context, reason, error: m.status == MessageStatus.failed);
   }
 
   void _startEdit(Message m) {
@@ -304,6 +313,18 @@ class _ChatScreenState extends State<ChatScreen> {
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: m.text));
                   Navigator.pop(sheetContext);
+                },
+              ),
+            if (m.status == MessageStatus.failed)
+              ListTile(
+                leading: const Icon(Icons.refresh, color: Zn.orange),
+                title: const Text('Try again'),
+                subtitle: m.failReason == null
+                    ? null
+                    : Text(m.failReason!, style: Zn.mono(size: 10)),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  chat.retryMessage(m);
                 },
               ),
             if (!isLocalRow)
@@ -622,6 +643,41 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// The one outgoing-attachment path for both conversation kinds: a DM parks
+  /// its ciphertext on the recipient's mailbox, a group parks one copy on ours
+  /// and hands every member a token for it (PROTOCOL.md "Group media").
+  Future<void> _sendAttachment(
+    String path, {
+    required String kind,
+    required String mime,
+    int? durationMs,
+    String? fileName,
+  }) async {
+    final chat = context.read<ChatState>();
+    final replyTo = _takeReply();
+    final sent = isGroup
+        ? await chat.sendGroupMedia(
+            widget.group!,
+            path,
+            kind: kind,
+            mime: mime,
+            durationMs: durationMs,
+            fileName: fileName,
+            replyTo: replyTo,
+          )
+        : await chat.sendMedia(
+            widget.contact!,
+            path,
+            kind: kind,
+            mime: mime,
+            durationMs: durationMs,
+            fileName: fileName,
+            replyTo: replyTo,
+          );
+    _reportSendTrouble(sent);
+    _scrollToEnd();
+  }
+
   Future<void> _sendPhoto(ImageSource source) async {
     final picked = await ImagePicker().pickImage(
       source: source,
@@ -629,14 +685,11 @@ class _ChatScreenState extends State<ChatScreen> {
       imageQuality: 82,
     );
     if (picked == null || !mounted) return;
-    await context.read<ChatState>().sendMedia(
-      widget.contact!,
+    await _sendAttachment(
       picked.path,
       kind: MessageKind.image,
       mime: 'image/jpeg',
-      replyTo: _takeReply(),
     );
-    _scrollToEnd();
   }
 
   Future<void> _sendVideo() async {
@@ -653,17 +706,14 @@ class _ChatScreenState extends State<ChatScreen> {
       await probe.dispose();
     } catch (_) {}
     if (!mounted) return;
-    await context.read<ChatState>().sendMedia(
-      widget.contact!,
+    await _sendAttachment(
       picked.path,
       kind: MessageKind.video,
       mime: picked.path.toLowerCase().endsWith('.mov')
           ? 'video/quicktime'
           : 'video/mp4',
       durationMs: durationMs,
-      replyTo: _takeReply(),
     );
-    _scrollToEnd();
   }
 
   Future<void> _sendFile() async {
@@ -672,15 +722,12 @@ class _ChatScreenState extends State<ChatScreen> {
     if (file?.path == null || !mounted) return;
     if (!await _fitsBlobCap(file!.path!)) return;
     if (!mounted) return;
-    await context.read<ChatState>().sendMedia(
-      widget.contact!,
+    await _sendAttachment(
       file.path!,
       kind: MessageKind.file,
       mime: 'application/octet-stream',
       fileName: file.name,
-      replyTo: _takeReply(),
     );
-    _scrollToEnd();
   }
 
   /// The relay caps blobs (PROTOCOL.md) — fail with words, not a 413.
@@ -827,26 +874,16 @@ class _ChatScreenState extends State<ChatScreen> {
       '.jpg' || '.jpeg' => 'image/jpeg',
       _ => 'image/webp',
     };
-    await context.read<ChatState>().sendMedia(
-      widget.contact!,
-      file.path,
-      kind: MessageKind.sticker,
-      mime: mime,
-      replyTo: _takeReply(),
-    );
-    _scrollToEnd();
+    await _sendAttachment(file.path, kind: MessageKind.sticker, mime: mime);
   }
 
   Future<void> _sendVoice(String path, int durationMs) async {
-    await context.read<ChatState>().sendMedia(
-      widget.contact!,
+    await _sendAttachment(
       path,
       kind: MessageKind.audio,
       mime: 'audio/mp4',
       durationMs: durationMs,
-      replyTo: _takeReply(),
     );
-    _scrollToEnd();
   }
 
   void _scrollToEnd() {
@@ -1236,6 +1273,12 @@ class _ChatScreenState extends State<ChatScreen> {
                                 ? null
                                 : () => _jumpToMessage(m.replyToId!),
                             searchQuery: searchQuery,
+                            owed: isGroup ? chat.owedFor(m.id) : 0,
+                            // Fan-out targets, so everyone but us.
+                            memberCount: isGroup ? (memberCount ?? 1) - 1 : 0,
+                            onRetry: m.status == MessageStatus.failed
+                                ? () => chat.retryMessage(m)
+                                : null,
                           ),
                         ),
                       ),
@@ -1367,10 +1410,9 @@ class _ChatScreenState extends State<ChatScreen> {
               onTyping: _editing == null
                   ? () => context.read<ChatState>().notifyTyping(conversationId)
                   : null,
-              // Media in groups is deferred (see PROTOCOL.md) — DM-only for now.
-              onAttach: isGroup ? null : _showAttachSheet,
-              onSticker: isGroup ? null : _showStickerPicker,
-              onVoiceRecorded: isGroup ? null : _sendVoice,
+              onAttach: _showAttachSheet,
+              onSticker: _showStickerPicker,
+              onVoiceRecorded: _sendVoice,
             ),
         ],
       ),
@@ -1389,6 +1431,11 @@ class _LedgerEntry extends StatelessWidget {
   final String? quoteSender; // display name for the reply_to header
   final VoidCallback? onQuoteTap;
   final String searchQuery; // non-empty → highlight matches in the text
+  /// Groups: members whose mailboxes haven't taken this message yet, and how
+  /// many there are in total. 0 owed → it reached everyone.
+  final int owed;
+  final int memberCount;
+  final VoidCallback? onRetry; // failed messages only
 
   const _LedgerEntry({
     required this.message,
@@ -1401,7 +1448,45 @@ class _LedgerEntry extends StatelessWidget {
     this.quoteSender,
     this.onQuoteTap,
     this.searchQuery = '',
+    this.owed = 0,
+    this.memberCount = 0,
+    this.onRetry,
   });
+
+  /// The line under an outgoing message that hasn't landed cleanly. Null while
+  /// everything is normal — a message on its way needs no commentary, and the
+  /// glyph already carries "sent" and "read".
+  ///
+  /// Silence here was the whole complaint: a mailbox off for an hour and one
+  /// gone for six months both rendered as `◌` forever.
+  String? get _troubleLine {
+    if (!message.outgoing || message.deleted) return null;
+    final age = sendAgeLabel(
+      DateTime.now().millisecondsSinceEpoch - message.sentAt,
+    );
+    final why = message.failReason;
+
+    if (message.status == MessageStatus.failed) {
+      final head = age == null ? 'not sent' : 'not sent · $age';
+      return why == null ? head : '$head — $why';
+    }
+    // A group is never failed by one dead mailbox out of five — say what
+    // actually happened instead of condemning the whole message.
+    if (owed > 0 && memberCount > 0) {
+      final progress = 'sent to ${memberCount - owed} of $memberCount';
+      return age == null ? progress : '$progress · $age';
+    }
+    // Still queued after a real wait. Below five minutes sendAgeLabel returns
+    // null and we stay quiet: a blip that the next sweep clears is not worth
+    // a line of its own.
+    if (message.status == MessageStatus.pending &&
+        message.attempts > 0 &&
+        age != null) {
+      return why == null ? 'sending · $age' : 'sending · $age — $why';
+    }
+    return null;
+  }
+
 
   /// The message text as spans, query matches tinted.
   List<TextSpan> _highlighted(String text) {
@@ -1578,6 +1663,41 @@ class _LedgerEntry extends StatelessWidget {
                         ),
                       ),
                     },
+                  if (_troubleLine case final trouble?)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 3),
+                      child: GestureDetector(
+                        onTap: onRetry,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              message.status == MessageStatus.failed
+                                  ? Icons.error_outline
+                                  : Icons.schedule,
+                              size: 11,
+                              color: message.status == MessageStatus.failed
+                                  ? Zn.danger
+                                  : Zn.muted,
+                            ),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                onRetry == null
+                                    ? trouble
+                                    : '$trouble · tap to retry',
+                                style: Zn.mono(
+                                  size: 9,
+                                  color: message.status == MessageStatus.failed
+                                      ? Zn.danger
+                                      : Zn.muted,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   if (reactions.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
@@ -1639,14 +1759,17 @@ class _LedgerEntry extends StatelessWidget {
                       Text(
                         switch (message.status) {
                           MessageStatus.pending => '◌',
+                          MessageStatus.failed => '✕',
                           MessageStatus.sent => '●',
                           _ => '●●', // delivered / read, read lights up
                         },
                         style: Zn.mono(
                           size: 9,
-                          color: message.status == MessageStatus.read
-                              ? Zn.amber
-                              : Zn.muted,
+                          color: switch (message.status) {
+                            MessageStatus.read => Zn.amber,
+                            MessageStatus.failed => Zn.danger,
+                            _ => Zn.muted,
+                          },
                         ),
                       ),
                     ],
@@ -2080,7 +2203,7 @@ class _Composer extends StatefulWidget {
   final VoidCallback onSend;
   final VoidCallback?
   onTyping; // keystroke → typing indicator (throttled upstream)
-  final VoidCallback? onAttach; // null → media disabled (groups, deferred)
+  final VoidCallback? onAttach; // null → no attachment button at all
   final VoidCallback?
   onSticker; // opens the sticker picker (DM-only, like media)
   final void Function(String path, int durationMs)? onVoiceRecorded;
