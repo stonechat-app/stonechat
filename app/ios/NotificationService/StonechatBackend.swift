@@ -6,9 +6,17 @@
 // BEFORE that envelope is acked — dying mid-work leaves the queue intact.
 
 import Foundation
+import OSLog
 import SQLCipher
 
 let appGroupId = "group.app.stonechat.mobile"
+
+/// Why a push fell back to the generic alert. Content-free by discipline:
+/// no ids, no names, no message text — a notification extension's log is
+/// readable by anyone with the device, so it says WHERE we stopped, never
+/// WHAT was in the envelope. Read with Console.app (subsystem below) or
+/// `log stream --predicate 'subsystem == "app.stonechat.mobile.nse"'`.
+let nseLog = Logger(subsystem: "app.stonechat.mobile.nse", category: "drain")
 
 // MARK: - keychain (flutter_secure_storage layout)
 
@@ -171,10 +179,18 @@ final class Database {
     }
   }
 
-  /// Statement with string-or-null / int64 bindings. Returns affected rows,
-  /// or nil on error.
+  /// Statement bindings. Deliberately a typed enum rather than `[Any?]`:
+  /// a nil `String?` put into an `[Any?]` becomes `.some(Optional.none)`,
+  /// so `case nil` never matches and every row with a NULL (every DM,
+  /// whose sender_id is null) silently failed to bind.
+  enum Arg {
+    case text(String?)
+    case int(Int64?)
+  }
+
+  /// Returns affected rows, or nil on error.
   @discardableResult
-  func execute(_ sql: String, _ args: [Any?]) -> Int? {
+  func execute(_ sql: String, _ args: [Arg] = []) -> Int? {
     var stmt: OpaquePointer?
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
     defer { sqlite3_finalize(stmt) }
@@ -182,16 +198,16 @@ final class Database {
     for (i, arg) in args.enumerated() {
       let idx = Int32(i + 1)
       switch arg {
-      case nil: sqlite3_bind_null(stmt, idx)
-      case let v as String: sqlite3_bind_text(stmt, idx, v, -1, transient)
-      case let v as Int64: sqlite3_bind_int64(stmt, idx, v)
-      case let v as Int: sqlite3_bind_int64(stmt, idx, Int64(v))
-      default: return nil
+      case .text(let v?): sqlite3_bind_text(stmt, idx, v, -1, transient)
+      case .int(let v?): sqlite3_bind_int64(stmt, idx, v)
+      case .text(nil), .int(nil): sqlite3_bind_null(stmt, idx)
       }
     }
     guard sqlite3_step(stmt) == SQLITE_DONE else { return nil }
     return Int(sqlite3_changes(db))
   }
+
+  var lastError: String { String(cString: sqlite3_errmsg(db)) }
 
   func kvGetString(_ key: String) -> String? {
     query("SELECT v FROM kv WHERE k = ?", [key])?.first ?? nil

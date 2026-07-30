@@ -92,13 +92,22 @@ final class Drainer {
       let dbKey = Keychain.read("zn_db_key"),
       let ownId = Keychain.read("zn_id"),
       let secretB64 = Keychain.read("zn_secret"),
-      let secret = Data(base64Encoded: secretB64), secret.count >= 32,
-      let db = Database(key: dbKey)
-    else { return nil }
+      let secret = Data(base64Encoded: secretB64), secret.count >= 32
+    else {
+      nseLog.error("no identity in the shared keychain — nothing to drain")
+      return nil
+    }
+    guard let db = Database(key: dbKey) else {
+      nseLog.error("shared database did not open (missing file or wrong key)")
+      return nil
+    }
     self.db = db
     self.ownId = ownId
     self.edSeed = secret.prefix(32)
-    guard let pq = Core.pqSeed(fromEdSeed: edSeed) else { return nil }
+    guard let pq = Core.pqSeed(fromEdSeed: edSeed) else {
+      nseLog.error("core: pq seed derivation failed")
+      return nil
+    }
     self.pqSeed = pq
 
     // Own mailbox coordinates, mirrored into kv by ChatState.setMailbox.
@@ -109,21 +118,30 @@ final class Drainer {
       let address = mailbox["address"] as? String,
       let token = mailbox["token"] as? String,
       let tlsFp = mailbox["tls_fp"] as? String
-    else { return nil }
+    else {
+      nseLog.error("no mailbox coordinates in kv — open the app once to store them")
+      return nil
+    }
 
     let socket = PinnedWebSocket(address: address, token: token, tlsFp: tlsFp)
-    guard socket.connect(timeout: 6) else { return nil }
+    guard socket.connect(timeout: 6) else {
+      nseLog.error("mailbox socket did not open (pin mismatch, offline, or timeout)")
+      return nil
+    }
     defer { socket.close() }
 
     var summary = DrainSummary()
+    var frames = 0
     // The relay pushes the whole queue on attach; there is no end marker,
     // so idle (no frame for a beat) means drained.
     while Date() < deadline {
       guard let frame = socket.receive(timeout: 1.5) else { break }
+      frames += 1
       if let shown = process(frame: frame, socket: socket) {
         summary.shown.append(shown)
       }
     }
+    nseLog.info("drained \(frames) envelope(s), \(summary.shown.count) shown")
     return summary.shown.isEmpty ? nil : summary
   }
 
@@ -142,10 +160,16 @@ final class Drainer {
       let from = inner["from"] as? String,
       let to = inner["to"] as? String, to == ownId,
       let id = inner["id"] as? String, id == envelopeId
-    else { return nil }
+    else {
+      nseLog.info("envelope did not unseal to this identity — left for the app")
+      return nil
+    }
 
     // Only plain text rides here; everything else waits for the app.
-    guard type == "msg" || type == "group_msg" else { return nil }
+    guard type == "msg" || type == "group_msg" else {
+      nseLog.info("type \(type, privacy: .public) is app-only — left unacked")
+      return nil
+    }
     guard
       let header = inner["ratchet"] as? [String: Any],
       let nonceB64 = inner["nonce"] as? String,
@@ -163,7 +187,10 @@ final class Drainer {
       contact[1] == "accepted", contact[2] == nil,
       let stateJson = db.query("SELECT state FROM sessions WHERE peer_id = ?", [from])?
         .first ?? nil
-    else { return nil }
+    else {
+      nseLog.info("no accepted contact or no established session — left for the app")
+      return nil
+    }
     let senderName = contact[0] ?? from
 
     guard
@@ -177,7 +204,12 @@ final class Drainer {
       let payload = try? JSONSerialization.jsonObject(with: result.plaintext)
         as? [String: Any],
       let text = payload["text"] as? String
-    else { return nil }
+    else {
+      // Refusal is normal (out-of-order, prekey message, app got there
+      // first): the stored state is untouched and the app will retry.
+      nseLog.info("ratchet decrypt refused — state untouched, left for the app")
+      return nil
+    }
 
     // Group context (name + membership), resolved before committing.
     var conversationId = from
@@ -207,7 +239,10 @@ final class Drainer {
     // Write-then-ack, atomically. INSERT OR IGNORE landing on an existing
     // row means the app already has it — ack, keep the app's session
     // state, show nothing.
-    guard db.execute("BEGIN IMMEDIATE", []) != nil else { return nil }
+    guard db.execute("BEGIN IMMEDIATE") != nil else {
+      nseLog.error("could not begin transaction: \(db.lastError, privacy: .public)")
+      return nil
+    }
     let inserted = db.execute(
       """
       INSERT OR IGNORE INTO messages
@@ -216,16 +251,18 @@ final class Drainer {
       VALUES (?, ?, ?, 0, ?, 'text', ?, 'sent', 0, ?, ?, ?, ?)
       """,
       [
-        id, conversationId, senderId, text, sentAt, expiresAt,
-        replyId, replyId == nil ? nil : reply?["sender"] as? String,
-        replyId == nil ? nil : reply?["preview"] as? String,
+        .text(id), .text(conversationId), .text(senderId), .text(text),
+        .int(sentAt), .int(expiresAt), .text(replyId),
+        .text(replyId == nil ? nil : reply?["sender"] as? String),
+        .text(replyId == nil ? nil : reply?["preview"] as? String),
       ])
     guard let inserted else {
-      db.execute("ROLLBACK", [])
+      nseLog.error("message insert failed: \(db.lastError, privacy: .public)")
+      db.execute("ROLLBACK")
       return nil
     }
     if inserted == 0 {
-      db.execute("ROLLBACK", [])
+      db.execute("ROLLBACK")
       socket.ack(envelopeId)
       return nil
     }
@@ -233,10 +270,11 @@ final class Drainer {
       let stateString = String(data: result.state, encoding: .utf8),
       db.execute(
         "INSERT OR REPLACE INTO sessions (peer_id, state) VALUES (?, ?)",
-        [from, stateString]) != nil,
-      db.execute("COMMIT", []) != nil
+        [.text(from), .text(stateString)]) != nil,
+      db.execute("COMMIT") != nil
     else {
-      db.execute("ROLLBACK", [])
+      nseLog.error("session write failed: \(db.lastError, privacy: .public)")
+      db.execute("ROLLBACK")
       return nil
     }
     socket.ack(envelopeId)
