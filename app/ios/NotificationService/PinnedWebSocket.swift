@@ -39,9 +39,16 @@ final class PinnedWebSocket: NSObject, URLSessionDelegate {
     var ok = false
     task.sendPing { error in
       ok = error == nil
+      if let error {
+        // The reason matters: ATS refusals, pin mismatches and plain
+        // offline all look identical from the outside otherwise.
+        nseLog.error("mailbox ping failed: \(error.localizedDescription, privacy: .public)")
+      }
       opened.signal()
     }
-    _ = opened.wait(timeout: .now() + timeout)
+    if opened.wait(timeout: .now() + timeout) == .timedOut {
+      nseLog.error("mailbox ping timed out after \(timeout, privacy: .public)s")
+    }
     return ok
   }
 

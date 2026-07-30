@@ -20,6 +20,18 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- Relays serve a self-signed cert on a bare IP and are pinned by
+	     fingerprint instead (PROTOCOL.md "Transport"), which ATS refuses on
+	     principle — so the extension needs the same exception the app
+	     carries. An extension has its OWN Info.plist and its own ATS
+	     policy: without this key iOS kills the mailbox connection before it
+	     leaves the process, and every push falls back to the generic
+	     alert. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionPointIdentifier</key>
