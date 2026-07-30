@@ -10,6 +10,9 @@ Usage (first run provisions; later runs reuse the saved identity):
     STONECHAT_TEST_CODE=STONECHAT-XXXX-XXXX python3 scripts/echo_bot.py
 
     python3 scripts/echo_bot.py --add SC-...   # bot sends YOU the request
+    python3 scripts/echo_bot.py --say SC-... "text"  # one message, then exit
+                                               # (background the app first —
+                                               # this is the notification test)
     python3 scripts/echo_bot.py --destroy      # tear down mailbox + state
 
 Env: STONECHAT_HUB (default https://hub.stonechat.app), STONECHAT_TEST_CODE (required on
@@ -253,6 +256,18 @@ def main() -> None:
 
     print(f"\n  {BOT_NAME}: {bot.stonechat_id}")
     print("  add this ID as a contact on your phone\n")
+
+    if "--say" in sys.argv:
+        # Fire one message and exit — made for testing the phone's
+        # notification path: background the app there first, then run this;
+        # the relay queues it, pings the gateway, and the push should show
+        # the decrypted preview.
+        i = sys.argv.index("--say")
+        target, text = sys.argv[i + 1], sys.argv[i + 2]
+        peer = resolve(target)
+        send(bot, peer, "msg", {"text": text})
+        print(f"sent to {target}: {text!r}")
+        return
 
     if "--add" in sys.argv:
         target = sys.argv[sys.argv.index("--add") + 1]
