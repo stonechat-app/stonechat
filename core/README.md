@@ -41,7 +41,14 @@ and must never grow a dependency on protocol code.
 ## Layout
 
 - `src/primitives.rs` — KDFs, AEAD, X25519, Ed25519↔X25519 conversions,
-  context-prefixed signatures. Mirrors `app/lib/core/crypto.dart`.
+  context-prefixed signatures.
+- `src/identity.rs` — the identity and everything derived from it: keygen
+  from a caller-supplied seed, the X-Wing derivation (hash of the **full
+  64-byte** secret key), `pq_pk` signature, recovery and abuse-report
+  signatures.
+- `src/vault.rs` — the passphrase container behind `.stonechatbackup` and
+  the identity-export string: Argon2id whose parameters ride inside the
+  container and are authenticated as the AEAD's associated data.
 - `src/session.rs` — PQXDH initiate/respond + double ratchet. Mirrors
   `app/lib/core/session.dart` (same MAX_SKIP=256 / 512 skipped-key
   bounds, same trial-then-commit decrypt semantics).
@@ -73,5 +80,7 @@ Follow-ups (tracked in ROADMAP.md):
 1. The NSE itself: app-group storage + shared keychain, then the Swift
    extension linking this same static lib.
 2. Zeroization pass (secret material in state blobs and FFI buffers).
-3. Migrate the rest of `crypto.dart` (envelope seal, signatures, IDs)
-   opportunistically — the ratchet-side primitives already live here.
+3. ~~Migrate the rest of `crypto.dart`~~ — done 2026-07-30: the app has no
+   cryptography of its own left and libsodium is out of its pubspec. The
+   app supplies randomness (`Random.secure()`); this crate still draws
+   none.
