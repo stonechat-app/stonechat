@@ -18,8 +18,17 @@ class RelayStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final server = context.watch<ServerState>();
 
+    // A confirmed outage outranks "connecting…": we've already checked with
+    // the hub that the network is fine and the mailbox simply isn't there.
+    final down = server.mailboxDownFor;
+
     final (dot, label, color) = switch ((server.record.status, server.socketConnected)) {
       ('running', true) => ('●', "You're reachable", Zn.ok),
+      ('running', false) when down != null => (
+          '✕',
+          "Your mailbox isn't answering · ${formatOutage(down)} — tap to check",
+          Zn.danger
+        ),
       ('running', false) => ('◐', 'Connecting to your mailbox…', Zn.amber),
       ('provisioning', _) => ('◌', 'Setting up your mailbox…', Zn.amber),
       ('error', _) => ('✕', "Mailbox setup didn't work — tap to see why", Zn.danger),

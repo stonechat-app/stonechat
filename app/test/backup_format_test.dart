@@ -1,138 +1,107 @@
-// The .stonechatbackup container format. Restore must parse headers written by
-// any past build, so the layout is pinned here byte-by-byte — a failing
-// round-trip means old backups can no longer be opened, not just that a
-// constant moved. Crypto itself (pwhash/secretstream) is FFI and exercised
-// in the manual on-device checklist instead.
+// The .stonechatbackup container. Since the stonechat-core cutover the
+// KDF and cipher live in Rust (core/src/vault.rs, unit-tested there); what
+// stays here is the file framing plus — new, and the part the old
+// format-only tests could never reach — a real encrypt/decrypt round trip
+// through the FFI.
+//
+// Run: STONECHAT_CORE_LIB=../core/target/release/libstonechat_core.dylib flutter test
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stonechat/core/backup.dart';
+import 'package:stonechat/core/core_ffi.dart';
 
 void main() {
+  // Cheap KDF parameters: the production numbers are the core's default
+  // and are exercised on device, not in a unit test.
+  const mCost = 8 * 1024;
+  const tCost = 1;
   final salt = Uint8List.fromList(List.generate(16, (i) => i + 1));
+  final nonce = Uint8List.fromList(List.generate(24, (i) => i));
 
-  group('encodeHeader', () {
-    test('lays out all fields at their pinned offsets', () {
-      final h = BackupService.encodeHeader(salt, 3, 268435456);
-      expect(h.length, BackupService.headerLength);
-      expect(String.fromCharCodes(h.sublist(0, 8)), 'SC-BAK-1');
-      expect(h[8], 1); // format version
-      expect(h[9], 1); // kdf id
-      expect(h[10], 0); // reserved
-      expect(h[11], 16); // salt length
-      expect(h.sublist(12, 28), salt);
-      final bd = ByteData.sublistView(h);
-      expect(bd.getUint32(28, Endian.little), 3);
-      expect(bd.getUint64(32, Endian.little), 268435456);
+  StonechatCore? core;
+  setUpAll(() {
+    try {
+      core = StonechatCore();
+    } catch (_) {
+      core = null;
+    }
+  });
+
+  group('file framing', () {
+    test('the magic is what restore recognises', () {
+      final header = BackupService.encodeHeader();
+      expect(header.length, BackupService.headerLength);
+      expect(ascii.decode(header), 'SC-BAK-2');
+    });
+
+    test('a foreign file is rejected before the KDF runs', () {
+      final notOurs = Uint8List.fromList(ascii.encode('PKjunkjunk'));
+      expect(
+          () => BackupService.checkMagic(notOurs), throwsA(isA<BackupException>()));
+      // Too short to hold anything, whatever it claims to be.
+      expect(() => BackupService.checkMagic(Uint8List.fromList([1, 2, 3])),
+          throwsA(isA<BackupException>()));
     });
   });
 
-  group('decodeHeader', () {
-    // A one-byte body: decodeHeader only rejects files with nothing at all
-    // after the header.
-    Uint8List withBody(Uint8List header) =>
-        Uint8List.fromList([...header, 0x00]);
-
-    test('round-trips what encodeHeader wrote', () {
-      final decoded =
-          BackupService.decodeHeader(withBody(BackupService.encodeHeader(salt, 2, 1 << 28)));
-      expect(decoded.salt, salt);
-      expect(decoded.opsLimit, 2);
-      expect(decoded.memLimit, 1 << 28);
+  group('vault round trip', () {
+    test('a backup body survives seal then open', () {
+      final c = core;
+      if (c == null) return markTestSkipped('core library unavailable');
+      final payload =
+          Uint8List.fromList(utf8.encode('{"format":"stonechat-backup"}'));
+      final sealed = c.vaultSeal(
+        passphrase: 'correct horse battery staple',
+        plaintext: payload,
+        salt: salt,
+        nonce: nonce,
+        mCostKib: mCost,
+        tCost: tCost,
+      );
+      final opened = c.vaultOpen(
+          passphrase: 'correct horse battery staple', container: sealed);
+      expect(opened.outcome, VaultOutcome.ok);
+      expect(opened.plaintext, payload);
     });
 
-    test('rejects wrong magic as not-a-backup', () {
-      final h = withBody(BackupService.encodeHeader(salt, 2, 1 << 28));
-      h[0] = 0x5A; // 'Z' stays, but
-      h[7] = 0x32; // "SC-BAK-2" in the magic slot
-      expect(
-        () => BackupService.decodeHeader(h),
-        throwsA(predicate((e) =>
-            e is BackupException && e.message.contains('Not a Stonechat backup'))),
+    test('a wrong passphrase is one indistinguishable outcome', () {
+      final c = core;
+      if (c == null) return markTestSkipped('core library unavailable');
+      final sealed = c.vaultSeal(
+        passphrase: 'right',
+        plaintext: Uint8List.fromList([1, 2, 3]),
+        salt: salt,
+        nonce: nonce,
+        mCostKib: mCost,
+        tCost: tCost,
       );
+      expect(c.vaultOpen(passphrase: 'wrong', container: sealed).outcome,
+          VaultOutcome.wrongPassphrase);
+      // The KDF parameters are the AEAD's associated data, so downgrading
+      // them in the header is a loud failure, not a silent weakening.
+      final tampered = Uint8List.fromList(sealed);
+      tampered[6] = 9;
+      expect(c.vaultOpen(passphrase: 'right', container: tampered).outcome,
+          isNot(VaultOutcome.ok));
     });
 
-    test('rejects files shorter than header+body', () {
-      expect(
-        () => BackupService.decodeHeader(
-            BackupService.encodeHeader(salt, 2, 1 << 28)), // header only
-        throwsA(isA<BackupException>()),
+    test('a newer container version is reported as such', () {
+      final c = core;
+      if (c == null) return markTestSkipped('core library unavailable');
+      final sealed = c.vaultSeal(
+        passphrase: 'pw',
+        plaintext: Uint8List.fromList([7]),
+        salt: salt,
+        nonce: nonce,
+        mCostKib: mCost,
+        tCost: tCost,
       );
-      expect(
-        () => BackupService.decodeHeader(Uint8List(10)),
-        throwsA(isA<BackupException>()),
-      );
-    });
-
-    test('rejects a future format version as newer-version', () {
-      final h = withBody(BackupService.encodeHeader(salt, 2, 1 << 28));
-      h[8] = BackupService.formatVersion + 1;
-      expect(
-        () => BackupService.decodeHeader(h),
-        throwsA(predicate((e) =>
-            e is BackupException && e.message.contains('newer version'))),
-      );
-    });
-
-    test('rejects version zero as not-a-backup', () {
-      final h = withBody(BackupService.encodeHeader(salt, 2, 1 << 28));
-      h[8] = 0;
-      expect(
-        () => BackupService.decodeHeader(h),
-        throwsA(predicate((e) =>
-            e is BackupException && e.message.contains('Not a Stonechat backup'))),
-      );
-    });
-
-    test('rejects an unknown kdf id as newer-version', () {
-      final h = withBody(BackupService.encodeHeader(salt, 2, 1 << 28));
-      h[9] = 2;
-      expect(
-        () => BackupService.decodeHeader(h),
-        throwsA(predicate((e) =>
-            e is BackupException && e.message.contains('newer version'))),
-      );
-    });
-
-    test('rejects an unexpected salt length as newer-version', () {
-      final h = withBody(BackupService.encodeHeader(salt, 2, 1 << 28));
-      h[11] = 32;
-      expect(
-        () => BackupService.decodeHeader(h),
-        throwsA(predicate((e) =>
-            e is BackupException && e.message.contains('newer version'))),
-      );
-    });
-  });
-
-  group('buildPayload', () {
-    test('carries counts, version and detached copies of the rows', () {
-      final contactRow = {'stonechat_id': 'z1', 'display_name': 'A'};
-      final payload = BackupService.buildPayload(
-        contacts: [contactRow],
-        groups: [],
-        groupMembers: [],
-        messages: [
-          {'id': 'm1', 'text': 'hi', 'kind': 'text', 'sent_at': 5},
-          {'id': 'm2', 'text': 'yo', 'kind': 'text', 'sent_at': 6},
-        ],
-        reactions: [
-          {'message_id': 'm1', 'peer_id': 'z1', 'emoji': '❤️', 'at': 7},
-        ],
-        nowMs: 1234,
-      );
-      expect(payload['format'], 'stonechat-backup');
-      expect(payload['version'], BackupService.payloadVersion);
-      expect(payload['created_at'], 1234);
-      expect(payload['counts'],
-          {'contacts': 1, 'groups': 0, 'group_members': 0, 'messages': 2, 'reactions': 1});
-      expect((payload['messages'] as List).length, 2);
-
-      // Rows must be copies: the originals may be sqflite's private map type,
-      // and the payload crosses an isolate boundary.
-      final copied = (payload['contacts'] as List).first as Map;
-      expect(copied, contactRow);
-      expect(identical(copied, contactRow), isFalse);
+      final future = Uint8List.fromList(sealed);
+      future[0] = 99;
+      expect(c.vaultOpen(passphrase: 'pw', container: future).outcome,
+          VaultOutcome.newerVersion);
     });
   });
 }

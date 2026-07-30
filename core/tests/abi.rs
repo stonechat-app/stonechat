@@ -256,13 +256,18 @@ fn envelope_helpers_round_trip() {
     let expected: Vec<u8> = (0..32)
         .map(|i| {
             u8::from_str_radix(
-                &"ef97ecd5bf14eddfeed2c5410f605bd104f5f6efbcd2103247d5e8305addbd9b"[i * 2..i * 2 + 2],
+                &"ef97ecd5bf14eddfeed2c5410f605bd104f5f6efbcd2103247d5e8305addbd9b"
+                    [i * 2..i * 2 + 2],
                 16,
             )
             .unwrap()
         })
         .collect();
-    assert_eq!(pq_seed.to_vec(), expected, "must match libsodium-derived pq seed");
+    assert_eq!(
+        pq_seed.to_vec(),
+        expected,
+        "must match libsodium-derived pq seed"
+    );
 
     let pq_pk = pqcore::xwing_pk_from_seed(&pq_seed);
     let sealed = stonechat_core::envelope::seal_to(

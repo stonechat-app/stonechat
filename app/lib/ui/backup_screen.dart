@@ -29,7 +29,7 @@ class _BackupScreenState extends State<BackupScreen> {
 
   BackupService get _service {
     final app = context.read<AppState>();
-    return BackupService(app.crypto.sodium, app.db);
+    return BackupService(app.db);
   }
 
   @override

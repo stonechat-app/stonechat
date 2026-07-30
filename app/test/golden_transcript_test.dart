@@ -27,11 +27,10 @@ void main() {
   CryptoService? alice;
   CryptoService? bob;
 
-  setUpAll(() async {
+  setUpAll(() {
     try {
-      final sodium = await CryptoService.loadSodium();
-      alice = CryptoService.generate(sodium);
-      bob = CryptoService.generate(sodium);
+      alice = CryptoService.generate();
+      bob = CryptoService.generate();
     } catch (_) {
       alice = null;
     }
@@ -51,10 +50,10 @@ void main() {
 
     // -- Bob's prekeys, private halves kept for the fixture ------------------
     final spk = b.newX25519();
-    final spkSec = spk.secretKey.extractBytes();
+    final spkSec = spk.secretKey;
     final spkSig = b.signPrekey(spk.publicKey);
     final opk = b.newX25519();
-    final opkSec = opk.secretKey.extractBytes();
+    final opkSec = opk.secretKey;
     final kspk = b.newMlkemPrekey();
     final kspkSig = b.signKemPrekey(kspk.pub);
     final kopk = b.newMlkemPrekey();

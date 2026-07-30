@@ -1,124 +1,104 @@
-/// Identity + end-to-end encryption primitives. The only place plaintext
-/// meets keys.
+/// Identity and the primitives built on it. Since the stonechat-core
+/// cutover this file holds no cryptography of its own: it is the app's
+/// view of the Rust core (core_ffi.dart), which the iOS notification
+/// extension links too. That is the point — a value two processes derive
+/// separately is a bug waiting, and one already shipped that way (the
+/// extension hashed the 32-byte seed where the app hashed the 64-byte
+/// secret key, and no sealed envelope opened).
 ///
-/// PROTOCOL.md: the identity is an Ed25519 signing keypair; the Stonechat ID is
-/// "SC-" + base32(blake2b20(pubkey) || checksum2). Messages are encrypted
-/// with per-message keys from a PQXDH + double-ratchet session
-/// (session.dart) — this file provides the identity and the shared
-/// primitives. The post-quantum half (ML-KEM-768 prekeys, X-Wing envelope
-/// seal — notes/docs/POST_QUANTUM.md) comes from pqcore; both KEMs are always
-/// hybrid alongside the classical DHs, never a replacement for them.
+/// PROTOCOL.md: the identity is an Ed25519 signing keypair; the Stonechat
+/// ID is "SC-" + base32(blake2b20(pubkey) || checksum2). Messages are
+/// encrypted with per-message keys from a PQXDH + double-ratchet session
+/// (session.dart). The post-quantum halves — ML-KEM-768 prekeys and the
+/// X-Wing envelope seal (notes/docs/POST_QUANTUM.md) — come from pqcore;
+/// both KEMs are always hybrid alongside the classical DHs, never a
+/// replacement for them.
 library;
 
 import 'dart:convert';
+import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:sodium/sodium_sumo.dart';
-
+import 'core_ffi.dart';
 import 'pqcore.dart';
 
-const _b32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-
-String base32Encode(Uint8List bytes) {
-  final out = StringBuffer();
-  int buffer = 0, bits = 0;
-  for (final byte in bytes) {
-    buffer = (buffer << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      out.write(_b32Alphabet[(buffer >> (bits - 5)) & 31]);
-      bits -= 5;
-    }
-  }
-  if (bits > 0) {
-    out.write(_b32Alphabet[(buffer << (5 - bits)) & 31]);
-  }
-  return out.toString();
-}
-
-Uint8List base32Decode(String s) {
-  int buffer = 0, bits = 0;
-  final out = <int>[];
-  for (final ch in s.split('')) {
-    final v = _b32Alphabet.indexOf(ch);
-    if (v < 0) throw const FormatException('invalid base32 character');
-    buffer = (buffer << 5) | v;
-    bits += 5;
-    if (bits >= 8) {
-      out.add((buffer >> (bits - 8)) & 255);
-      bits -= 8;
-    }
-  }
-  return Uint8List.fromList(out);
-}
-
-/// Domain-separation constants — must match scripts/e2e.py, PROTOCOL.md and
-/// stonechat-core (core/src/primitives.rs), which owns the ratchet-side set.
-final hsealKdfKey = utf8.encode(
-  'stonechat-v1-hsealkdf',
-); // 16 bytes, generichash min
-final hsealAd = utf8.encode('stonechat-v1-hseal');
-final pqidSeedKey = utf8.encode('stonechat-v1-pqidseed'); // 16 bytes
+/// Domain-separation constants — must match core/src/primitives.rs,
+/// scripts/e2e.py and PROTOCOL.md.
 final spkSigContext = utf8.encode('stonechat-v1-spk');
 final kspkSigContext = utf8.encode('stonechat-v1-kspk');
-final pqPkSigContext = utf8.encode('stonechat-v1-pqpk');
 final tlsSigContext = utf8.encode('stonechat-v1-tls');
 final recoverSigContext = utf8.encode('stonechat-v1-recover');
-final reportSigContext = utf8.encode('stonechat-v1-report');
+
+/// The app's CSPRNG. `Random.secure()` is the platform generator
+/// (SecRandomCopyBytes / getrandom); the core deliberately draws no
+/// entropy of its own, so every random input is passed in explicitly.
+final _rng = Random.secure();
+
+/// The SC- ID alphabet, kept as a top-level helper because several call
+/// sites (invite links, tests) used it straight from this library.
+String base32Encode(Uint8List bytes) => StonechatCore().base32Encode(bytes);
+
+Uint8List base32Decode(String text) => StonechatCore().base32Decode(text);
+
+Uint8List randomBytes(int n) =>
+    Uint8List.fromList(List<int>.generate(n, (_) => _rng.nextInt(256)));
 
 class CryptoService {
-  final SodiumSumo sodium;
+  final StonechatCore core;
   final PqCore pq;
-  final KeyPair _identity; // Ed25519
-  late final Uint8List _pqSeed; // X-Wing identity seed, derived
-  late final Uint8List pqPublicKey; // X-Wing identity public (directory pq_pk)
 
-  CryptoService._(this.sodium, this._identity, {PqCore? pqCore})
-    : pq = pqCore ?? PqCore() {
-    // The X-Wing identity is *derived* from the Ed25519 secret (domain-
-    // separated KDF), not stored: identity export, recovery and backups
-    // restore it for free, and holding the Ed25519 key already means total
-    // identity compromise, so the derivation adds no new custody risk.
-    final edSk = _identity.secretKey.extractBytes();
-    _pqSeed = _keyedHash(edSk, Uint8List.fromList(pqidSeedKey), 32);
-    edSk.fillRange(0, edSk.length, 0);
-    pqPublicKey = pq.xwingPkFromSeed(_pqSeed);
-  }
+  final Uint8List _secretKey; // 64 bytes: seed || public, libsodium layout
+  final Uint8List publicKey;
+  final Uint8List pqPublicKey; // X-Wing identity public (directory pq_pk)
+  final Uint8List _pqSeed;
+  final String stonechatId;
+  final String _pqPkSig;
 
-  static Future<SodiumSumo> loadSodium() async => SodiumSumoInit.init();
+  CryptoService._(
+    this.core,
+    this.pq,
+    this._secretKey,
+    this.publicKey,
+    this.pqPublicKey,
+    this._pqSeed,
+    this.stonechatId,
+    this._pqPkSig,
+  );
 
-  /// Fresh identity (onboarding).
-  factory CryptoService.generate(SodiumSumo sodium, {PqCore? pqCore}) =>
-      CryptoService._(sodium, sodium.crypto.sign.keyPair(), pqCore: pqCore);
-
-  /// Restore from stored key material.
-  factory CryptoService.fromKeys(
-    SodiumSumo sodium, {
-    required Uint8List publicKey,
-    required Uint8List secretKey,
-    PqCore? pqCore,
-  }) {
+  factory CryptoService._from(Uint8List secretKey, {PqCore? pqCore}) {
+    final core = StonechatCore();
+    final id = core.identity(secretKey: secretKey);
     return CryptoService._(
-      sodium,
-      KeyPair(
-        publicKey: publicKey,
-        secretKey: SecureKey.fromList(sodium, secretKey),
-      ),
-      pqCore: pqCore,
+      core,
+      pqCore ?? PqCore(),
+      id.secret,
+      id.public,
+      id.pqPublic,
+      core.pqSeedFromEdSecret(id.secret),
+      id.stonechatId,
+      id.pqPublicSigB64,
     );
   }
 
-  Uint8List get publicKey => _identity.publicKey;
-  String get publicKeyB64 => base64Encode(_identity.publicKey);
+  /// Fresh identity (onboarding).
+  factory CryptoService.generate({PqCore? pqCore}) {
+    final id = StonechatCore().identity(seed: randomBytes(32));
+    return CryptoService._from(id.secret, pqCore: pqCore);
+  }
+
+  /// Restore from stored key material.
+  factory CryptoService.fromKeys({
+    required Uint8List secretKey,
+    PqCore? pqCore,
+  }) => CryptoService._from(secretKey, pqCore: pqCore);
+
+  String get publicKeyB64 => base64Encode(publicKey);
   String get pqPublicKeyB64 => base64Encode(pqPublicKey);
-  Uint8List exportSecretKey() => _identity.secretKey.extractBytes();
+  Uint8List exportSecretKey() => Uint8List.fromList(_secretKey);
 
-  /// The Ed25519 seed (first half of the libsodium signing key) — what
-  /// stonechat-core expands identities from (core_ffi.dart).
-  Uint8List get identityEdSeed =>
-      Uint8List.sublistView(exportSecretKey(), 0, 32);
-
-  String get stonechatId => deriveStonechatId(_identity.publicKey);
+  /// The Ed25519 seed (first half of the secret key) — what the session
+  /// engine expands identities from (core_ffi.dart).
+  Uint8List get identityEdSeed => Uint8List.sublistView(_secretKey, 0, 32);
 
   // -- sealed envelopes (PROTOCOL.md "Envelope") --------------------------------
 
@@ -126,113 +106,47 @@ class CryptoService {
   /// directory, signature-verified against their Ed25519 key on resolve) —
   /// the wrap that hides the sender (and every other envelope field) from
   /// the recipient's mailbox. X-Wing is X25519 + ML-KEM-768 in one KEM, so
-  /// a recorded envelope stays sealed against a future quantum attacker
-  /// (notes/docs/POST_QUANTUM.md step 2). Wire form:
-  ///
-  ///   kem_ct (1120) || nonce (24) || xchacha20poly1305(inner, ad="stonechat-v1-hseal")
-  ///   with key = H(kem_ss, key="stonechat-v1-hsealkdf", 32)
-  ///
-  /// Like crypto_box_seal, encapsulation is fresh-randomness-per-envelope and
-  /// involves no sender key: nothing on the wire identifies or links senders.
-  Uint8List sealTo(Uint8List recipientPqPk, Uint8List message) {
-    final enc = pq.xwingEncaps(
-      recipientPqPk,
-      sodium.randombytes.buf(xwingEncapsRandomBytes),
-    );
-    final key = _keyedHash(enc.ss, Uint8List.fromList(hsealKdfKey), 32);
-    final sealed = aeadSeal(key, message, Uint8List.fromList(hsealAd));
-    return Uint8List.fromList([
-      ...enc.ct,
-      ...sealed.nonce,
-      ...sealed.ciphertext,
-    ]);
-  }
+  /// a recorded envelope stays sealed against a future quantum attacker.
+  /// Like crypto_box_seal, encapsulation is fresh-randomness-per-envelope
+  /// and involves no sender key: nothing on the wire identifies or links
+  /// senders.
+  Uint8List sealTo(Uint8List recipientPqPk, Uint8List message) => core.sealTo(
+    recipientPqPk,
+    message,
+    randomBytes(xwingEncapsRandomBytes),
+    randomBytes(24),
+  );
 
   /// Returns null when the envelope wasn't sealed to this identity (or is
   /// garbage): a wrong recipient decapsulates to a wrong shared secret and
   /// the AEAD refuses.
-  Uint8List? unseal(Uint8List sealed) {
-    const nonceBytes = 24;
-    if (sealed.length < xwingCiphertextBytes + nonceBytes + 16) return null;
-    try {
-      final kemCt = Uint8List.sublistView(sealed, 0, xwingCiphertextBytes);
-      final nonce = Uint8List.sublistView(
-        sealed,
-        xwingCiphertextBytes,
-        xwingCiphertextBytes + nonceBytes,
-      );
-      final box = Uint8List.sublistView(
-        sealed,
-        xwingCiphertextBytes + nonceBytes,
-      );
-      final ss = pq.xwingDecaps(_pqSeed, kemCt);
-      final key = _keyedHash(ss, Uint8List.fromList(hsealKdfKey), 32);
-      return aeadOpen(key, nonce, box, Uint8List.fromList(hsealAd));
-    } catch (_) {
-      return null;
-    }
-  }
+  Uint8List? unseal(Uint8List sealed) => core.unseal(_pqSeed, sealed);
 
   /// The owner vouching for their X-Wing identity key; published beside it
   /// in the hub directory and verified by every resolver.
-  String signPqPk() => base64Encode(
-    sodium.crypto.sign.detached(
-      message: Uint8List.fromList([...pqPkSigContext, ...pqPublicKey]),
-      secretKey: _identity.secretKey,
-    ),
-  );
+  String signPqPk() => _pqPkSig;
 
-  bool verifyPqPkSig(Uint8List pqPk, Uint8List sig, Uint8List identityEdPub) {
-    try {
-      return sodium.crypto.sign.verifyDetached(
-        message: Uint8List.fromList([...pqPkSigContext, ...pqPk]),
-        signature: sig,
-        publicKey: identityEdPub,
-      );
-    } catch (_) {
-      return false;
-    }
-  }
+  bool verifyPqPkSig(Uint8List pqPk, Uint8List sig, Uint8List identityEdPub) =>
+      core.verify(identityEdPub, utf8.encode('stonechat-v1-pqpk'), pqPk, sig);
 
   // -- Stonechat ID ----------------------------------------------------------------
 
-  String deriveStonechatId(Uint8List pubkey) {
-    final hash = sodium.crypto.genericHash(message: pubkey, outLen: 20);
-    final check = sodium.crypto.genericHash(message: hash, outLen: 16);
-    final payload = Uint8List.fromList([...hash, check[0], check[1]]);
-    final b32 = base32Encode(payload);
-    final groups = <String>[];
-    for (var i = 0; i < b32.length; i += 4) {
-      groups.add(b32.substring(i, i + 4));
-    }
-    return 'SC-${groups.join('-')}';
-  }
+  String deriveStonechatId(Uint8List pubkey) => core.stonechatId(pubkey);
 
-  /// Canonicalize user input; throws [FormatException] with a friendly message.
+  /// Canonicalize user input; throws [FormatException] with a friendly
+  /// message (the core reports one failure for every malformed shape).
   String normalizeStonechatId(String raw) {
-    final compact = raw.trim().toUpperCase().replaceAll(RegExp(r'[\s-]'), '');
-    if (!compact.startsWith('SC')) {
-      throw const FormatException('Stonechat IDs start with SC-');
+    final id = core.normalizeId(raw);
+    if (id == null) {
+      throw const FormatException(
+        "That doesn't look like a Stonechat ID — check for a typo",
+      );
     }
-    final b32 = compact.substring(2);
-    if (b32.length != 36) {
-      throw const FormatException('That ID has the wrong length');
-    }
-    final payload = base32Decode(b32);
-    final hash = Uint8List.sublistView(payload, 0, 20);
-    final check = sodium.crypto.genericHash(message: hash, outLen: 16);
-    if (payload[20] != check[0] || payload[21] != check[1]) {
-      throw const FormatException('Checksum mismatch — mistyped ID?');
-    }
-    final groups = <String>[];
-    for (var i = 0; i < b32.length; i += 4) {
-      groups.add(b32.substring(i, i + 4));
-    }
-    return 'SC-${groups.join('-')}';
+    return id;
   }
 
-  /// Any identity key we're handed (directory, x3dh block, member list) must
-  /// hash back to the ID it claims to be.
+  /// Any identity key we're handed (directory, x3dh block, member list)
+  /// must hash back to the ID it claims to be.
   bool pubkeyMatchesId(String pubkeyB64, String stonechatId) {
     try {
       return deriveStonechatId(base64Decode(pubkeyB64)) == stonechatId;
@@ -242,199 +156,92 @@ class CryptoService {
   }
 
   /// Proof of key possession for POST /v1/recover (identity restore): a
-  /// signature over "stonechat-v1-recover" || the current unix time, so the hub
-  /// can re-issue an account token without ever having stored one.
+  /// signature over the context and the current unix time, so the hub can
+  /// re-issue an account token without ever having stored one.
   String signRecovery(int unixSeconds) => base64Encode(
-    sodium.crypto.sign.detached(
-      message: Uint8List.fromList([
-        ...recoverSigContext,
-        ...utf8.encode('$unixSeconds'),
-      ]),
-      secretKey: _identity.secretKey,
-    ),
+    core.sign(_secretKey, recoverSigContext, utf8.encode('$unixSeconds')),
   );
 
   /// Signs an abuse report (PROTOCOL.md "Reporting", hub/app/report.py).
   ///
-  /// Reports are judged by the hub hosting the *reported* account, which under
-  /// cross-hub resolution is often not ours — and our account token means nothing there.
-  /// A signature does cross that boundary: any hub can check that this key
-  /// hashes to the reporter's Stonechat ID. The body is committed to by digest
-  /// rather than signed directly, because it has to survive a round trip
-  /// through JSON, where field order and whitespace do not.
+  /// Reports are judged by the hub hosting the *reported* account, which
+  /// under cross-hub resolution is often not ours — and our account token
+  /// means nothing there. A signature does cross that boundary: any hub
+  /// can check that this key hashes to the reporter's Stonechat ID.
   String signReport({
     required String reportedId,
     required int unixSeconds,
     required String category,
     required String note,
     required String? evidence,
-  }) {
-    // 0x1f (unit separator) between fields: without it a note ending in what
-    // looks like the next field could collide with a different report.
-    final digest = sodium.crypto.genericHash(
-      message: Uint8List.fromList([
-        ...utf8.encode(category),
-        0x1f,
-        ...utf8.encode(note),
-        0x1f,
-        ...utf8.encode(evidence ?? ''),
-      ]),
-      outLen: 32,
-    );
-    return base64Encode(
-      sodium.crypto.sign.detached(
-        message: Uint8List.fromList([
-          ...reportSigContext,
-          ...utf8.encode(reportedId),
-          ...utf8.encode('$unixSeconds'),
-          ...digest,
-        ]),
-        secretKey: _identity.secretKey,
-      ),
-    );
-  }
+  }) => base64Encode(
+    core.signReport(
+      _secretKey,
+      reportedId: reportedId,
+      unixSeconds: unixSeconds,
+      category: category,
+      note: note,
+      evidence: evidence,
+    ),
+  );
 
   // -- prekeys -----------------------------------------------------------------
 
-  /// New X25519 keypair (signed prekeys, one-time prekeys, ratchet keys).
-  KeyPair newX25519() => sodium.crypto.box.keyPair();
+  /// New X25519 keypair (signed prekeys, one-time prekeys). The secret is
+  /// a random scalar; the public half comes from the core.
+  ({Uint8List publicKey, Uint8List secretKey}) newX25519() {
+    final secret = randomBytes(32);
+    return (publicKey: core.x25519Public(secret), secretKey: secret);
+  }
 
   /// New ML-KEM-768 prekey (signed and one-time KEM prekeys, PQXDH). The
   /// seed is the stored secret half; the pub is what the mailbox serves.
   ({Uint8List seed, Uint8List pub}) newMlkemPrekey() {
-    final seed = sodium.randombytes.buf(mlkemSeedBytes);
+    final seed = randomBytes(mlkemSeedBytes);
     return (seed: seed, pub: pq.mlkemPkFromSeed(seed));
   }
 
-  Uint8List signPrekey(Uint8List spkPub) => sodium.crypto.sign.detached(
-    message: Uint8List.fromList([...spkSigContext, ...spkPub]),
-    secretKey: _identity.secretKey,
-  );
+  Uint8List signPrekey(Uint8List spkPub) =>
+      core.sign(_secretKey, spkSigContext, spkPub);
 
   bool verifyPrekeySig(
     Uint8List spkPub,
     Uint8List sig,
     Uint8List identityEdPub,
-  ) {
-    try {
-      return sodium.crypto.sign.verifyDetached(
-        message: Uint8List.fromList([...spkSigContext, ...spkPub]),
-        signature: sig,
-        publicKey: identityEdPub,
-      );
-    } catch (_) {
-      return false;
-    }
-  }
+  ) => core.verify(identityEdPub, spkSigContext, spkPub, sig);
 
-  Uint8List signKemPrekey(Uint8List kspkPub) => sodium.crypto.sign.detached(
-    message: Uint8List.fromList([...kspkSigContext, ...kspkPub]),
-    secretKey: _identity.secretKey,
-  );
+  Uint8List signKemPrekey(Uint8List kspkPub) =>
+      core.sign(_secretKey, kspkSigContext, kspkPub);
 
   bool verifyKemPrekeySig(
     Uint8List kspkPub,
     Uint8List sig,
     Uint8List identityEdPub,
-  ) {
-    try {
-      return sodium.crypto.sign.verifyDetached(
-        message: Uint8List.fromList([...kspkSigContext, ...kspkPub]),
-        signature: sig,
-        publicKey: identityEdPub,
-      );
-    } catch (_) {
-      return false;
-    }
-  }
+  ) => core.verify(identityEdPub, kspkSigContext, kspkPub, sig);
 
   // -- pinned TLS (PROTOCOL.md "Transport") --------------------------------------
 
   /// What clients pin: BLAKE2b-256 of the relay's DER certificate.
-  String certFingerprint(Uint8List certDer) =>
-      base64Encode(sodium.crypto.genericHash(message: certDer, outLen: 32));
+  String certFingerprint(Uint8List certDer) => core.tlsFingerprintB64(certDer);
 
   /// The owner vouching for their mailbox's TLS key.
-  String signTlsFp(String fpB64) => base64Encode(
-    sodium.crypto.sign.detached(
-      message: Uint8List.fromList([...tlsSigContext, ...base64Decode(fpB64)]),
-      secretKey: _identity.secretKey,
-    ),
-  );
+  String signTlsFp(String fpB64) =>
+      base64Encode(core.sign(_secretKey, tlsSigContext, base64Decode(fpB64)));
 
   bool verifyTlsSig(String fpB64, String sigB64, Uint8List identityEdPub) {
     try {
-      return sodium.crypto.sign.verifyDetached(
-        message: Uint8List.fromList([...tlsSigContext, ...base64Decode(fpB64)]),
-        signature: base64Decode(sigB64),
-        publicKey: identityEdPub,
+      return core.verify(
+        identityEdPub,
+        tlsSigContext,
+        base64Decode(fpB64),
+        base64Decode(sigB64),
       );
     } catch (_) {
       return false;
     }
   }
 
-  // -- AEAD + keyed hash (the hybrid seal above; the ratchet's copies of
-  // these live in stonechat-core since the cutover) -----------------------------
-
-  Uint8List _keyedHash(Uint8List message, Uint8List key, int outLen) {
-    final k = SecureKey.fromList(sodium, key);
-    try {
-      return sodium.crypto.genericHash(
-        message: message,
-        key: k,
-        outLen: outLen,
-      );
-    } finally {
-      k.dispose();
-    }
-  }
-
-  ({Uint8List nonce, Uint8List ciphertext}) aeadSeal(
-    Uint8List key,
-    Uint8List plaintext,
-    Uint8List ad,
-  ) {
-    final aead = sodium.crypto.aeadXChaCha20Poly1305IETF;
-    final nonce = sodium.randombytes.buf(aead.nonceBytes);
-    final k = SecureKey.fromList(sodium, key);
-    try {
-      final ciphertext = aead.encrypt(
-        message: plaintext,
-        nonce: nonce,
-        key: k,
-        additionalData: ad,
-      );
-      return (nonce: nonce, ciphertext: ciphertext);
-    } finally {
-      k.dispose();
-    }
-  }
-
-  /// Returns null on authentication failure.
-  Uint8List? aeadOpen(
-    Uint8List key,
-    Uint8List nonce,
-    Uint8List ciphertext,
-    Uint8List ad,
-  ) {
-    final aead = sodium.crypto.aeadXChaCha20Poly1305IETF;
-    final k = SecureKey.fromList(sodium, key);
-    try {
-      return aead.decrypt(
-        cipherText: ciphertext,
-        nonce: nonce,
-        key: k,
-        additionalData: ad,
-      );
-    } catch (_) {
-      return null;
-    } finally {
-      k.dispose();
-    }
-  }
-
-  // -- media blobs (secretbox: one-off symmetric key per file) ------------------
+  // -- media blobs (one-off symmetric key per file) ------------------------------
 
   /// Encrypt a media file with a fresh random key. The key+nonce travel to
   /// the recipient inside the session-encrypted envelope payload; the blob
@@ -442,16 +249,13 @@ class CryptoService {
   ({Uint8List key, Uint8List nonce, Uint8List ciphertext}) sealBlob(
     Uint8List data,
   ) {
-    final key = sodium.crypto.secretBox.keygen();
-    final nonce = sodium.randombytes.buf(sodium.crypto.secretBox.nonceBytes);
-    final ciphertext = sodium.crypto.secretBox.easy(
-      message: data,
-      nonce: nonce,
+    final key = randomBytes(32);
+    final nonce = randomBytes(24);
+    return (
       key: key,
+      nonce: nonce,
+      ciphertext: core.blobSeal(key, nonce, data),
     );
-    final keyBytes = key.extractBytes();
-    key.dispose();
-    return (key: keyBytes, nonce: nonce, ciphertext: ciphertext);
   }
 
   /// Returns null on tamper/corruption.
@@ -460,17 +264,10 @@ class CryptoService {
     Uint8List keyBytes,
     Uint8List nonce,
   ) {
-    final key = SecureKey.fromList(sodium, keyBytes);
     try {
-      return sodium.crypto.secretBox.openEasy(
-        cipherText: ciphertext,
-        nonce: nonce,
-        key: key,
-      );
+      return core.blobOpen(keyBytes, nonce, ciphertext);
     } catch (_) {
       return null;
-    } finally {
-      key.dispose();
     }
   }
 }

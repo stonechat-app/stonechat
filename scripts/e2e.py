@@ -40,7 +40,6 @@ from nacl.bindings import (
     crypto_scalarmult,
 )
 from nacl.public import PrivateKey, SealedBox
-from nacl.secret import SecretBox
 from nacl.signing import SigningKey, VerifyKey
 from nacl.utils import random as nacl_random
 
@@ -920,7 +919,11 @@ def main():
     print("6d) media blob: upload → envelope → download → decrypt → ack-deletes")
     photo = nacl_random(200_000)  # stand-in for an encrypted JPEG
     blob_key, blob_nonce = nacl_random(32), nacl_random(24)
-    sealed_blob = SecretBox(blob_key).encrypt(photo, blob_nonce).ciphertext
+    # Media blobs use XChaCha20-Poly1305, like every other AEAD in the
+    # protocol since the stonechat-core cutover (crypto.dart sealBlob →
+    # core stonechat_blob_seal); libsodium's secretbox is gone.
+    sealed_blob = crypto_aead_xchacha20poly1305_ietf_encrypt(
+        photo, b"", blob_nonce, blob_key)
     r = MX.post(f"{bob.server['address']}/blob", content=sealed_blob, timeout=30)
     r.raise_for_status()
     blob_id = r.json()["blob_id"]
@@ -942,9 +945,11 @@ def main():
             params={"token": bob.server["server_token"]}, timeout=30,
         )
         dl.raise_for_status()
-        recovered_holder["data"] = SecretBox(
-            base64.b64decode(payload["key"])
-        ).decrypt(dl.content, base64.b64decode(payload["blob_nonce"]))
+        recovered_holder["data"] = crypto_aead_xchacha20poly1305_ietf_decrypt(
+            dl.content, b"",
+            base64.b64decode(payload["blob_nonce"]),
+            base64.b64decode(payload["key"]),
+        )
 
     asyncio.run(bob.receive_one(process=fetch_and_decrypt))
     assert recovered_holder["data"] == photo, "media round-trip corrupted"

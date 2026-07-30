@@ -8,11 +8,11 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:sodium/sodium_sumo.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../core/api.dart';
+import '../core/core_ffi.dart';
 import '../core/crypto.dart';
 import '../core/db.dart';
 import '../core/identity_export.dart';
@@ -108,11 +108,10 @@ class AppState extends ChangeNotifier {
   Future<void> init() async {
     await _clearKeychainOnFreshInstall();
     db = await ChatDb.open(await _databaseKey());
-    final sodium = await CryptoService.loadSodium();
-    _sodium = sodium;
-    // Mailbox TLS pinning (api.dart): fingerprint = BLAKE2b-256 of DER cert.
-    certFingerprinter = (der) =>
-        base64Encode(sodium.crypto.genericHash(message: der, outLen: 32));
+    // Mailbox TLS pinning (api.dart): fingerprint = BLAKE2b-256 of the DER
+    // cert, computed by the core — the same function the notification
+    // extension pins with.
+    certFingerprinter = StonechatCore().tlsFingerprintB64;
 
     sendReadReceipts = await _readPreference('read_receipts', true);
     sendTypingIndicators = await _readPreference('typing_indicators', true);
@@ -128,11 +127,7 @@ class AppState extends ChangeNotifier {
     );
 
     if (secret != null && public != null) {
-      _crypto = CryptoService.fromKeys(
-        sodium,
-        publicKey: base64Decode(public),
-        secretKey: base64Decode(secret),
-      );
+      _crypto = CryptoService.fromKeys(secretKey: base64Decode(secret));
       stonechatId = await _storage.read(key: 'zn_id');
       displayName = await _storage.read(key: 'zn_name');
       pushPrompted = (await _storage.read(key: 'zn_push_prompted')) == '1';
@@ -275,16 +270,12 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  // Set once by init(); createIdentity() needs it whenever onboarding is
-  // (re-)entered — including via Reset identity, which does not re-run init.
-  SodiumSumo? _sodium;
-
   /// Onboarding: generate a keypair, register with the hub, persist.
   Future<void> createIdentity({
     required String name,
     required String hubUrl,
   }) async {
-    final crypto = CryptoService.generate(_sodium!);
+    final crypto = CryptoService.generate();
     api.baseUrl = hubUrl;
 
     final result = await api.register(
@@ -314,7 +305,7 @@ class AppState extends ChangeNotifier {
   /// encodes (identity_export.dart). The one deliberate exception to
   /// "identity dies with the app" — created only on explicit user action.
   Future<String> exportIdentity(String passphrase) =>
-      IdentityCodec(_sodium!).encode(
+      const IdentityCodec().encode(
         secretKey: crypto.exportSecretKey(),
         passphrase: passphrase,
         name: displayName,
@@ -330,14 +321,8 @@ class AppState extends ChangeNotifier {
     required String passphrase,
     required String hubUrl,
   }) async {
-    final sodium = _sodium!;
-    final decoded = await IdentityCodec(sodium).decode(export, passphrase);
-    // An Ed25519 secret key carries its public half in bytes 32..64.
-    final crypto = CryptoService.fromKeys(
-      sodium,
-      publicKey: decoded.secretKey.sublist(32),
-      secretKey: decoded.secretKey,
-    );
+    final decoded = await const IdentityCodec().decode(export, passphrase);
+    final crypto = CryptoService.fromKeys(secretKey: decoded.secretKey);
     api.baseUrl = hubUrl;
 
     ({String stonechatId, String accountToken}) result;

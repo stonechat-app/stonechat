@@ -11,10 +11,9 @@ import 'package:stonechat/core/crypto.dart';
 void main() {
   CryptoService? crypto;
 
-  setUpAll(() async {
+  setUpAll(() {
     try {
-      final sodium = await CryptoService.loadSodium();
-      crypto = CryptoService.generate(sodium);
+      crypto = CryptoService.generate();
     } catch (_) {
       crypto = null;
     }

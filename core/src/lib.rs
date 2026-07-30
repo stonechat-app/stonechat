@@ -33,9 +33,11 @@
 
 pub mod envelope;
 pub mod ffi;
+pub mod identity;
 pub mod ids;
 pub mod primitives;
 pub mod session;
+pub mod vault;
 
 pub use pqcore;
 

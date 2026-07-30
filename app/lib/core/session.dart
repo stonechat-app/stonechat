@@ -8,7 +8,7 @@
 /// the iOS notification extension links, so both processes advance session
 /// state identically by construction. This file is the app-facing wrapper:
 /// it holds the opaque state blob, feeds the core CSPRNG bytes from
-/// libsodium, and keeps the API `chat_state.dart` always used. The retired
+/// the platform CSPRNG, and keeps the API `chat_state.dart` always used. The retired
 /// Dart implementation's behavior is pinned by the golden corpus
 /// (core/tests/fixtures/dart_transcript.json) and by
 /// test/golden_transcript_test.dart, which now exercises this FFI path.
@@ -114,7 +114,7 @@ class RatchetSession {
 
   static StonechatCore get _core => StonechatCore();
 
-  Uint8List _random(int n) => crypto.sodium.randombytes.buf(n);
+  Uint8List _random(int n) => randomBytes(n);
 
   /// PQXDH as the initiator. [peerEdPub] must already be
   /// commitment-verified against the peer's Stonechat ID and [bundle]'s
@@ -129,9 +129,9 @@ class RatchetSession {
       edSeed: crypto.identityEdSeed,
       peerEdPk: peerEdPub,
       bundleJson: jsonEncode(bundle.raw),
-      ekSk: crypto.sodium.randombytes.buf(32),
-      ratchetSk: crypto.sodium.randombytes.buf(32),
-      kemRandom: crypto.sodium.randombytes.buf(32),
+      ekSk: randomBytes(32),
+      ratchetSk: randomBytes(32),
+      kemRandom: randomBytes(32),
     );
     return RatchetSession._(crypto, peerId, state);
   }

@@ -386,3 +386,445 @@ pub unsafe extern "C" fn stonechat_tls_fingerprint(
         OK
     })
 }
+
+// -- identity + vault (the rest of what crypto.dart used to do) ---------------
+
+/// Expand a caller-supplied 32-byte CSPRNG seed into a fresh identity, or
+/// re-expand a stored one: pass the 64-byte secret key with `from_secret`
+/// non-zero. Result JSON: `{"secret":"<b64 64>","public":"<b64 32>",
+/// "pq_pk":"<b64>","pq_pk_sig":"<b64>","stonechat_id":"SC-…"}`.
+///
+/// # Safety
+/// `input`: 32 readable bytes when `from_secret == 0`, 64 when non-zero.
+/// `out_*` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_identity(
+    input: *const u8,
+    from_secret: i32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let keys = if from_secret != 0 {
+            let Some(secret) = (unsafe { arr::<64>(input) }) else {
+                return ERR_INPUT;
+            };
+            crate::identity::IdentityKeys::from_secret(secret)
+        } else {
+            let Some(seed) = (unsafe { arr::<32>(input) }) else {
+                return ERR_INPUT;
+            };
+            crate::identity::IdentityKeys::generate(seed)
+        };
+        let v = json!({
+            "secret": B64.encode(keys.secret),
+            "public": B64.encode(keys.public),
+            "pq_pk": B64.encode(keys.pq_public()),
+            "pq_pk_sig": B64.encode(keys.sign_pq_pk()),
+            "stonechat_id": keys.stonechat_id(),
+        });
+        unsafe { emit_json(&v, out_ptr, out_len) }
+    })
+}
+
+/// Sign `message` with the identity and a domain-separation context
+/// (the `stonechat-v1-*` byte strings in PROTOCOL.md).
+///
+/// # Safety
+/// `ed_secret`: 64 readable. `context`/`message`: their lengths.
+/// `sig_out`: 64 writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_sign(
+    ed_secret: *const u8,
+    context: *const u8,
+    context_len: usize,
+    message: *const u8,
+    message_len: usize,
+    sig_out: *mut u8,
+) -> i32 {
+    ffi_guard!({
+        let (Some(secret), Some(ctx), Some(msg)) = (
+            unsafe { arr::<64>(ed_secret) },
+            unsafe { slice(context, context_len) },
+            unsafe { slice(message, message_len) },
+        ) else {
+            return ERR_INPUT;
+        };
+        let keys = crate::identity::IdentityKeys::from_secret(secret);
+        let sig = keys.sign(ctx, msg);
+        unsafe { sig_out.copy_from_nonoverlapping(sig.as_ptr(), sig.len()) };
+        OK
+    })
+}
+
+/// Verify a context-prefixed signature. Returns `0` when it verifies,
+/// `-3` when it does not (a normal answer, not an error).
+///
+/// # Safety
+/// `ed_pk`: 32 readable. `sig`: 64 readable. Others per their lengths.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_verify(
+    ed_pk: *const u8,
+    context: *const u8,
+    context_len: usize,
+    message: *const u8,
+    message_len: usize,
+    sig: *const u8,
+) -> i32 {
+    ffi_guard!({
+        let (Some(pk), Some(ctx), Some(msg), Some(signature)) = (
+            unsafe { arr::<32>(ed_pk) },
+            unsafe { slice(context, context_len) },
+            unsafe { slice(message, message_len) },
+            unsafe { arr::<64>(sig) },
+        ) else {
+            return ERR_INPUT;
+        };
+        if crate::identity::verify(pk, ctx, msg, signature) {
+            OK
+        } else {
+            ERR_REFUSED
+        }
+    })
+}
+
+/// Sign an abuse report (PROTOCOL.md "Reporting"). Strings are UTF-8
+/// `(ptr, len)` pairs; `evidence` may be NULL.
+///
+/// # Safety
+/// `ed_secret`: 64 readable. `sig_out`: 64 writable. Others per lengths.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn stonechat_sign_report(
+    ed_secret: *const u8,
+    reported_id: *const u8,
+    reported_id_len: usize,
+    unix_seconds: i64,
+    category: *const u8,
+    category_len: usize,
+    note: *const u8,
+    note_len: usize,
+    evidence: *const u8,
+    evidence_len: usize,
+    sig_out: *mut u8,
+) -> i32 {
+    ffi_guard!({
+        let (Some(secret), Some(id), Some(cat), Some(n)) = (
+            unsafe { arr::<64>(ed_secret) },
+            unsafe { slice(reported_id, reported_id_len) },
+            unsafe { slice(category, category_len) },
+            unsafe { slice(note, note_len) },
+        ) else {
+            return ERR_INPUT;
+        };
+        let ev = unsafe { slice(evidence, evidence_len) };
+        let (Ok(id), Ok(cat), Ok(n)) = (
+            std::str::from_utf8(id),
+            std::str::from_utf8(cat),
+            std::str::from_utf8(n),
+        ) else {
+            return ERR_INPUT;
+        };
+        let ev = match ev.map(std::str::from_utf8) {
+            Some(Ok(s)) => Some(s),
+            Some(Err(_)) => return ERR_INPUT,
+            None => None,
+        };
+        let keys = crate::identity::IdentityKeys::from_secret(secret);
+        let sig = keys.sign_report(id, unix_seconds, cat, n, ev);
+        unsafe { sig_out.copy_from_nonoverlapping(sig.as_ptr(), sig.len()) };
+        OK
+    })
+}
+
+/// The SC- ID an Ed25519 identity key commits to, as a NUL-free UTF-8
+/// buffer the caller frees with `stonechat_free`.
+///
+/// # Safety
+/// `ed_pk`: 32 readable. `out_*` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_stonechat_id(
+    ed_pk: *const u8,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let Some(pk) = (unsafe { arr::<32>(ed_pk) }) else {
+            return ERR_INPUT;
+        };
+        unsafe {
+            emit(
+                crate::ids::derive_stonechat_id(pk).into_bytes(),
+                out_ptr,
+                out_len,
+            )
+        };
+        OK
+    })
+}
+
+/// Canonicalize user-typed ID input and verify its checksum. `-3` when it
+/// is not a well-formed Stonechat ID.
+///
+/// # Safety
+/// `raw`: `raw_len` readable. `out_*` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_normalize_id(
+    raw: *const u8,
+    raw_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let Some(bytes) = (unsafe { slice(raw, raw_len) }) else {
+            return ERR_INPUT;
+        };
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return ERR_INPUT;
+        };
+        match crate::ids::normalize_stonechat_id(text) {
+            Ok(id) => {
+                unsafe { emit(id.into_bytes(), out_ptr, out_len) };
+                OK
+            }
+            Err(_) => ERR_REFUSED,
+        }
+    })
+}
+
+/// Seal an envelope to a peer's X-Wing identity (PROTOCOL.md "Envelope").
+///
+/// # Safety
+/// `pq_pk`: 1216 readable. `random`: 64 readable. `nonce`: 24 readable.
+/// `message`: its length. `out_*` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_seal(
+    pq_pk: *const u8,
+    message: *const u8,
+    message_len: usize,
+    random: *const u8,
+    nonce: *const u8,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let (Some(pk), Some(msg), Some(rnd), Some(n)) = (
+            unsafe { arr::<{ pqcore::XWING_PUBLIC_BYTES }>(pq_pk) },
+            unsafe { slice(message, message_len) },
+            unsafe { arr::<{ pqcore::XWING_ENCAPS_RANDOM_BYTES }>(random) },
+            unsafe { arr::<24>(nonce) },
+        ) else {
+            return ERR_INPUT;
+        };
+        match envelope::seal_to(pk, msg, rnd, n) {
+            Some(sealed) => {
+                unsafe { emit(sealed, out_ptr, out_len) };
+                OK
+            }
+            None => ERR_REFUSED,
+        }
+    })
+}
+
+/// Symmetric AEAD for media blobs: the file is encrypted under a fresh
+/// per-file key that travels to the recipient inside the session-encrypted
+/// payload, so the blob is opaque to every server that touches it.
+///
+/// # Safety
+/// `key`: 32 readable. `nonce`: 24 readable. `data`: its length.
+/// `out_*` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_blob_seal(
+    key: *const u8,
+    nonce: *const u8,
+    data: *const u8,
+    data_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let (Some(k), Some(n), Some(d)) = (
+            unsafe { arr::<32>(key) },
+            unsafe { arr::<24>(nonce) },
+            unsafe { slice(data, data_len) },
+        ) else {
+            return ERR_INPUT;
+        };
+        unsafe { emit(crate::primitives::aead_seal(k, n, d, b""), out_ptr, out_len) };
+        OK
+    })
+}
+
+/// `-3` on tamper/corruption.
+///
+/// # Safety
+/// As `stonechat_blob_seal`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_blob_open(
+    key: *const u8,
+    nonce: *const u8,
+    data: *const u8,
+    data_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let (Some(k), Some(n), Some(d)) = (
+            unsafe { arr::<32>(key) },
+            unsafe { arr::<24>(nonce) },
+            unsafe { slice(data, data_len) },
+        ) else {
+            return ERR_INPUT;
+        };
+        match crate::primitives::aead_open(k, n, d, b"") {
+            Some(plain) => {
+                unsafe { emit(plain, out_ptr, out_len) };
+                OK
+            }
+            None => ERR_REFUSED,
+        }
+    })
+}
+
+/// Passphrase container (backups, identity export). Argon2id parameters
+/// ride inside the result — see `vault`.
+///
+/// # Safety
+/// `salt`: 16 readable. `nonce`: 24 readable. Others per their lengths.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn stonechat_vault_seal(
+    passphrase: *const u8,
+    passphrase_len: usize,
+    plaintext: *const u8,
+    plaintext_len: usize,
+    salt: *const u8,
+    nonce: *const u8,
+    m_cost_kib: u32,
+    t_cost: u32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let (Some(pw), Some(plain), Some(s), Some(n)) = (
+            unsafe { slice(passphrase, passphrase_len) },
+            unsafe { slice(plaintext, plaintext_len) },
+            unsafe { arr::<{ crate::vault::SALT_BYTES }>(salt) },
+            unsafe { arr::<24>(nonce) },
+        ) else {
+            return ERR_INPUT;
+        };
+        match crate::vault::seal(pw, plain, s, n, m_cost_kib, t_cost) {
+            Ok(sealed) => {
+                unsafe { emit(sealed, out_ptr, out_len) };
+                OK
+            }
+            Err(_) => ERR_INPUT,
+        }
+    })
+}
+
+/// Open a passphrase container. Distinguishes the outcomes the UI shows:
+/// `-3` wrong passphrase or damaged, `-4` created by a newer version,
+/// `-1` not one of ours.
+///
+/// # Safety
+/// Buffers per their lengths; `out_*` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_vault_open(
+    passphrase: *const u8,
+    passphrase_len: usize,
+    container: *const u8,
+    container_len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let (Some(pw), Some(data)) = (unsafe { slice(passphrase, passphrase_len) }, unsafe {
+            slice(container, container_len)
+        }) else {
+            return ERR_INPUT;
+        };
+        match crate::vault::open(pw, data) {
+            Ok(plain) => {
+                unsafe { emit(plain, out_ptr, out_len) };
+                OK
+            }
+            Err(crate::vault::VaultError::UnsupportedVersion) => -4,
+            Err(crate::vault::VaultError::WrongPassphrase) => ERR_REFUSED,
+            Err(_) => ERR_INPUT,
+        }
+    })
+}
+
+/// `crypto_scalarmult_base`: the public half of an X25519 secret — the
+/// app's prekey generation (crypto.dart `newX25519`).
+///
+/// # Safety
+/// `secret`: 32 readable bytes. `pk_out`: 32 writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_x25519_public(secret: *const u8, pk_out: *mut u8) -> i32 {
+    ffi_guard!({
+        let Some(sk) = (unsafe { arr::<32>(secret) }) else {
+            return ERR_INPUT;
+        };
+        let pk = crate::primitives::x25519_pk(sk);
+        unsafe { pk_out.copy_from_nonoverlapping(pk.as_ptr(), pk.len()) };
+        OK
+    })
+}
+
+/// base32 codec for SC- IDs, exposed so the app has one implementation
+/// (the Dart copy had its own, with its own tests).
+///
+/// # Safety
+/// `bytes`: its length. `out_*` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_base32_encode(
+    bytes: *const u8,
+    len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let Some(data) = (unsafe { slice(bytes, len) }) else {
+            return ERR_INPUT;
+        };
+        unsafe {
+            emit(
+                crate::ids::base32_encode(data).into_bytes(),
+                out_ptr,
+                out_len,
+            )
+        };
+        OK
+    })
+}
+
+/// `-3` on an invalid character.
+///
+/// # Safety
+/// `text`: its length. `out_*` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_base32_decode(
+    text: *const u8,
+    len: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let Some(bytes) = (unsafe { slice(text, len) }) else {
+            return ERR_INPUT;
+        };
+        let Ok(s) = std::str::from_utf8(bytes) else {
+            return ERR_INPUT;
+        };
+        match crate::ids::base32_decode(s) {
+            Ok(out) => {
+                unsafe { emit(out, out_ptr, out_len) };
+                OK
+            }
+            Err(_) => ERR_REFUSED,
+        }
+    })
+}

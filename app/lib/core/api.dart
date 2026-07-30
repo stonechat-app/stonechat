@@ -17,12 +17,15 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models.dart';
 
-/// Set once at startup (needs libsodium): BLAKE2b-256 of a DER certificate.
+/// Set once at startup (app_state wires it to stonechat-core, the same
+/// function the notification extension pins with): BLAKE2b-256 of a DER
+/// certificate.
 String Function(Uint8List der)? certFingerprinter;
 
-HttpClient _pinnedHttpClient(String expectedFpB64) => HttpClient()
-  ..badCertificateCallback = (X509Certificate cert, _, _) =>
-      certFingerprinter!(Uint8List.fromList(cert.der)) == expectedFpB64;
+HttpClient _pinnedHttpClient(String expectedFpB64) =>
+    HttpClient()
+      ..badCertificateCallback = (X509Certificate cert, _, _) =>
+          certFingerprinter!(Uint8List.fromList(cert.der)) == expectedFpB64;
 
 /// An HTTP client that accepts exactly one server certificate: the one whose
 /// fingerprint the mailbox owner signed. Everything else — including
@@ -37,7 +40,9 @@ http.Client pinnedClient(String tlsFpB64) =>
 /// self-hosted mailboxes — never for peers.
 /// Returns `(tlsFp, ownerMatches)`, or null when the box is unreachable.
 Future<({String tlsFp, bool ownerMatches})?> observeMailbox(
-    String address, String expectedStonechatId) async {
+  String address,
+  String expectedStonechatId,
+) async {
   String? seenFp;
   final client = HttpClient()
     ..badCertificateCallback = (cert, _, _) {
@@ -51,8 +56,11 @@ Future<({String tlsFp, bool ownerMatches})?> observeMailbox(
         .timeout(const Duration(seconds: 8));
     if (health.statusCode != 200 || seenFp == null) return null;
     final owner = await io
-        .get(Uri.parse('$address/owner')
-            .replace(queryParameters: {'stonechat_id': expectedStonechatId}))
+        .get(
+          Uri.parse(
+            '$address/owner',
+          ).replace(queryParameters: {'stonechat_id': expectedStonechatId}),
+        )
         .timeout(const Duration(seconds: 8));
     return (tlsFp: seenFp!, ownerMatches: owner.statusCode == 200);
   } catch (_) {
@@ -71,8 +79,7 @@ class ApiException implements Exception {
 
   /// Machine-readable error code (e.g. 'subscription_required'), when the
   /// hub sent a structured detail.
-  String? get code =>
-      detail is Map ? (detail as Map)['code'] as String? : null;
+  String? get code => detail is Map ? (detail as Map)['code'] as String? : null;
 
   @override
   String toString() => message;
@@ -87,14 +94,15 @@ class DirectoryEntry {
   final String? serverTlsFp; // pinned cert fingerprint…
   final String? serverTlsSig; // …vouched for by the owner's identity key
 
-  DirectoryEntry(
-      {required this.stonechatId,
-      required this.pubkeyB64,
-      this.pqPkB64,
-      this.pqSigB64,
-      this.serverAddress,
-      this.serverTlsFp,
-      this.serverTlsSig});
+  DirectoryEntry({
+    required this.stonechatId,
+    required this.pubkeyB64,
+    this.pqPkB64,
+    this.pqSigB64,
+    this.serverAddress,
+    this.serverTlsFp,
+    this.serverTlsSig,
+  });
 }
 
 class ServerRecord {
@@ -110,15 +118,16 @@ class ServerRecord {
   final String? hostAgentAddress;
   final String? hostAgentAdminToken;
 
-  ServerRecord(
-      {required this.status,
-      this.provider,
-      this.address,
-      this.serverToken,
-      this.tlsFp,
-      this.error,
-      this.hostAgentAddress,
-      this.hostAgentAdminToken});
+  ServerRecord({
+    required this.status,
+    this.provider,
+    this.address,
+    this.serverToken,
+    this.tlsFp,
+    this.error,
+    this.hostAgentAddress,
+    this.hostAgentAdminToken,
+  });
 }
 
 /// Talks to the provisioner + directory. Holds the account bearer token.
@@ -129,9 +138,9 @@ class HubApi {
   HubApi({required this.baseUrl, this.accountToken});
 
   Map<String, String> get _auth => {
-        if (accountToken != null) 'Authorization': 'Bearer $accountToken',
-        'Content-Type': 'application/json',
-      };
+    if (accountToken != null) 'Authorization': 'Bearer $accountToken',
+    'Content-Type': 'application/json',
+  };
 
   Future<T> _check<T>(http.Response r, T Function(Map<String, dynamic>) parse) {
     final body = r.body.isEmpty ? <String, dynamic>{} : jsonDecode(r.body);
@@ -148,15 +157,26 @@ class HubApi {
   /// [pqPkB64]/[pqSigB64]: the X-Wing identity key and its Ed25519
   /// signature, published in the directory for the hybrid envelope seal.
   Future<({String stonechatId, String accountToken})> register(
-      String pubkeyB64, String pqPkB64, String pqSigB64) async {
-    final r = await http.post(Uri.parse('$baseUrl/v1/register'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(
-            {'pubkey': pubkeyB64, 'pq_pk': pqPkB64, 'pq_sig': pqSigB64}));
-    return _check(r, (j) => (
-          stonechatId: j['stonechat_id'] as String,
-          accountToken: j['account_token'] as String,
-        ));
+    String pubkeyB64,
+    String pqPkB64,
+    String pqSigB64,
+  ) async {
+    final r = await http.post(
+      Uri.parse('$baseUrl/v1/register'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pubkey': pubkeyB64,
+        'pq_pk': pqPkB64,
+        'pq_sig': pqSigB64,
+      }),
+    );
+    return _check(
+      r,
+      (j) => (
+        stonechatId: j['stonechat_id'] as String,
+        accountToken: j['account_token'] as String,
+      ),
+    );
   }
 
   /// Identity restore: trade a proof of key possession (CryptoService
@@ -167,17 +187,22 @@ class HubApi {
     required int timestamp,
     required String signatureB64,
   }) async {
-    final r = await http.post(Uri.parse('$baseUrl/v1/recover'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'pubkey': pubkeyB64,
-          'timestamp': timestamp,
-          'signature': signatureB64,
-        }));
-    return _check(r, (j) => (
-          stonechatId: j['stonechat_id'] as String,
-          accountToken: j['account_token'] as String,
-        ));
+    final r = await http.post(
+      Uri.parse('$baseUrl/v1/recover'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'pubkey': pubkeyB64,
+        'timestamp': timestamp,
+        'signature': signatureB64,
+      }),
+    );
+    return _check(
+      r,
+      (j) => (
+        stonechatId: j['stonechat_id'] as String,
+        accountToken: j['account_token'] as String,
+      ),
+    );
   }
 
   /// Resolves a full SC- Stonechat ID to its directory record. Lookup is by ID
@@ -185,8 +210,9 @@ class HubApi {
   /// (cross-hub): the answer is verified by the caller exactly like one from
   /// our own hub, so the foreign hub is trusted for availability only.
   Future<DirectoryEntry> directory(String stonechatId, {String? hubUrl}) async {
-    final r =
-        await http.get(Uri.parse('${hubUrl ?? baseUrl}/v1/directory/$stonechatId'));
+    final r = await http.get(
+      Uri.parse('${hubUrl ?? baseUrl}/v1/directory/$stonechatId'),
+    );
     return _check(r, (j) {
       final server = j['server'] as Map<String, dynamic>?;
       return DirectoryEntry(
@@ -207,16 +233,18 @@ class HubApi {
     required String region,
     int diskGb = 10,
   }) async {
-    final r = await http.post(Uri.parse('$baseUrl/v1/server'),
-        headers: _auth,
-        body: jsonEncode({
-          'provider': provider,
-          'machine': {
-            'machine_type': machineType,
-            'region': region,
-            'disk_gb': diskGb,
-          },
-        }));
+    final r = await http.post(
+      Uri.parse('$baseUrl/v1/server'),
+      headers: _auth,
+      body: jsonEncode({
+        'provider': provider,
+        'machine': {
+          'machine_type': machineType,
+          'region': region,
+          'disk_gb': diskGb,
+        },
+      }),
+    );
     await _check(r, (_) => null);
   }
 
@@ -240,31 +268,40 @@ class HubApi {
   /// Owner vouches for their mailbox's TLS key: publish the identity-key
   /// signature over its fingerprint so peers can pin it via the directory.
   Future<void> publishTlsSig(String tlsFp, String tlsSig) async {
-    final r = await http.post(Uri.parse('$baseUrl/v1/server/tls'),
-        headers: _auth,
-        body: jsonEncode({'tls_fp': tlsFp, 'tls_sig': tlsSig}));
+    final r = await http.post(
+      Uri.parse('$baseUrl/v1/server/tls'),
+      headers: _auth,
+      body: jsonEncode({'tls_fp': tlsFp, 'tls_sig': tlsSig}),
+    );
     await _check(r, (_) => null);
   }
 
   Future<void> deleteServer() async {
-    final r =
-        await http.delete(Uri.parse('$baseUrl/v1/server'), headers: _auth);
+    final r = await http.delete(
+      Uri.parse('$baseUrl/v1/server'),
+      headers: _auth,
+    );
     await _check(r, (_) => null);
   }
 
   /// Free tier: list a self-provisioned relay in the directory. The relay's
   /// token never goes to the hub — only the address does.
   Future<void> registerExternalServer(String address) async {
-    final r = await http.post(Uri.parse('$baseUrl/v1/server/external'),
-        headers: _auth, body: jsonEncode({'address': address}));
+    final r = await http.post(
+      Uri.parse('$baseUrl/v1/server/external'),
+      headers: _auth,
+      body: jsonEncode({'address': address}),
+    );
     await _check(r, (_) => null);
   }
 
   /// The account's live plan, or null (PROTOCOL.md "Billing").
   Future<({String plan, String status, String? currentPeriodEnd})?>
-      getEntitlement() async {
-    final r = await http.get(Uri.parse('$baseUrl/v1/billing/entitlement'),
-        headers: _auth);
+  getEntitlement() async {
+    final r = await http.get(
+      Uri.parse('$baseUrl/v1/billing/entitlement'),
+      headers: _auth,
+    );
     return _check(r, (j) {
       final plan = j['plan'] as String?;
       if (plan == null) return null;
@@ -279,12 +316,15 @@ class HubApi {
   /// Redeem an activation code from a landing-page purchase (or a comp
   /// grant), binding its subscription to this account.
   Future<({String plan, String status})> redeemCode(String code) async {
-    final r = await http.post(Uri.parse('$baseUrl/v1/billing/redeem'),
-        headers: _auth, body: jsonEncode({'code': code}));
-    return _check(r, (j) => (
-          plan: j['plan'] as String,
-          status: j['status'] as String,
-        ));
+    final r = await http.post(
+      Uri.parse('$baseUrl/v1/billing/redeem'),
+      headers: _auth,
+      body: jsonEncode({'code': code}),
+    );
+    return _check(
+      r,
+      (j) => (plan: j['plan'] as String, status: j['status'] as String),
+    );
   }
 }
 
@@ -310,17 +350,19 @@ Future<String> fileReport({
   required String signatureB64,
 }) async {
   final r = await http
-      .post(Uri.parse('$hubUrl/v1/report'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'reported_id': reportedId,
-            'reporter_pubkey': reporterPubkeyB64,
-            'timestamp': timestamp,
-            'category': category,
-            'note': note,
-            'evidence': evidence,
-            'signature': signatureB64,
-          }))
+      .post(
+        Uri.parse('$hubUrl/v1/report'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'reported_id': reportedId,
+          'reporter_pubkey': reporterPubkeyB64,
+          'timestamp': timestamp,
+          'category': category,
+          'note': note,
+          'evidence': evidence,
+          'signature': signatureB64,
+        }),
+      )
       .timeout(const Duration(seconds: 20));
   final body = r.body.isEmpty ? <String, dynamic>{} : jsonDecode(r.body);
   if (r.statusCode >= 400) {
@@ -337,14 +379,19 @@ Future<String> fileReport({
 /// prekey server-side). The caller must verify the SPK signature against the
 /// peer's directory identity key.
 Future<Map<String, dynamic>> fetchPrekeyBundle(
-    String serverAddress, String tlsFp) async {
+  String serverAddress,
+  String tlsFp,
+) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
         .get(Uri.parse('$serverAddress/prekeys/bundle'))
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
-      throw ApiException('prekey bundle unavailable (${r.statusCode})', r.statusCode);
+      throw ApiException(
+        'prekey bundle unavailable (${r.statusCode})',
+        r.statusCode,
+      );
     }
     return jsonDecode(r.body) as Map<String, dynamic>;
   } finally {
@@ -356,23 +403,33 @@ Future<Map<String, dynamic>> fetchPrekeyBundle(
 /// Carries both halves of PQXDH: X25519 (spk/opks) and ML-KEM-768
 /// (kspk/kopks).
 Future<void> uploadPrekeys(
-    String serverAddress,
-    String token,
-    String tlsFp,
-    Map<String, Object?> spk,
-    List<Map<String, Object?>> opks,
-    Map<String, Object?> kspk,
-    List<Map<String, Object?>> kopks) async {
+  String serverAddress,
+  String token,
+  String tlsFp,
+  Map<String, Object?> spk,
+  List<Map<String, Object?>> opks,
+  Map<String, Object?> kspk,
+  List<Map<String, Object?>> kopks,
+) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .post(Uri.parse('$serverAddress/prekeys?token=$token'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(
-                {'spk': spk, 'opks': opks, 'kspk': kspk, 'kopks': kopks}))
+        .post(
+          Uri.parse('$serverAddress/prekeys?token=$token'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'spk': spk,
+            'opks': opks,
+            'kspk': kspk,
+            'kopks': kopks,
+          }),
+        )
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
-      throw ApiException('prekey upload failed (${r.statusCode})', r.statusCode);
+      throw ApiException(
+        'prekey upload failed (${r.statusCode})',
+        r.statusCode,
+      );
     }
   } finally {
     client.close();
@@ -381,16 +438,23 @@ Future<void> uploadPrekeys(
 
 /// Our own mailbox's prekey inventory, from the owner-authenticated /status.
 Future<({bool spk, int opks, bool kspk, int kopks})?> mailboxPrekeyStatus(
-    String address, String tlsFp, String token) async {
+  String address,
+  String tlsFp,
+  String token,
+) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$address/status')
-            .replace(queryParameters: {'token': token}))
+        .get(
+          Uri.parse(
+            '$address/status',
+          ).replace(queryParameters: {'token': token}),
+        )
         .timeout(const Duration(seconds: 8));
     if (r.statusCode != 200) return null;
     final prekeys =
-        (jsonDecode(r.body) as Map<String, dynamic>)['prekeys'] as Map<String, dynamic>?;
+        (jsonDecode(r.body) as Map<String, dynamic>)['prekeys']
+            as Map<String, dynamic>?;
     if (prekeys == null) return null;
     return (
       spk: prekeys['spk'] as bool,
@@ -424,7 +488,8 @@ class HostInvite {
     }
     var b64 = s.substring(prefix.length);
     b64 += '=' * ((4 - b64.length % 4) % 4);
-    final j = jsonDecode(utf8.decode(base64Url.decode(b64))) as Map<String, dynamic>;
+    final j =
+        jsonDecode(utf8.decode(base64Url.decode(b64))) as Map<String, dynamic>;
     return HostInvite(j['u'] as String, j['f'] as String, j['t'] as String);
   }
 }
@@ -440,13 +505,17 @@ String _detail(http.Response r) {
 /// Redeem a host invite → a mailbox for [ownerId] on that host. Pinned to the
 /// host agent fingerprint carried in the invite (no CA, no MITM).
 Future<({String address, String serverToken, String tlsFp})> redeemHostInvite(
-    HostInvite invite, String ownerId) async {
+  HostInvite invite,
+  String ownerId,
+) async {
   final client = pinnedClient(invite.fp);
   try {
     final r = await client
-        .post(Uri.parse('${invite.url}/v1/redeem'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'invite': invite.token, 'owner_id': ownerId}))
+        .post(
+          Uri.parse('${invite.url}/v1/redeem'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'invite': invite.token, 'owner_id': ownerId}),
+        )
         .timeout(const Duration(seconds: 90));
     if (r.statusCode >= 400) throw ApiException(_detail(r), r.statusCode);
     final j = jsonDecode(r.body) as Map<String, dynamic>;
@@ -470,9 +539,9 @@ Future<String?> observeCertFingerprint(String url) async {
       return true;
     };
   try {
-    final r = await IOClient(client)
-        .get(Uri.parse('$url/health'))
-        .timeout(const Duration(seconds: 8));
+    final r = await IOClient(
+      client,
+    ).get(Uri.parse('$url/health')).timeout(const Duration(seconds: 8));
     return r.statusCode == 200 ? seen : null;
   } catch (_) {
     return null;
@@ -483,17 +552,23 @@ Future<String?> observeCertFingerprint(String url) async {
 
 /// Host-owner mints an invite through their host agent's admin API (pinned).
 Future<String> createHostInvite(
-    String agentUrl, String agentFp, String adminToken,
-    {int uses = 1, int ttlHours = 72}) async {
+  String agentUrl,
+  String agentFp,
+  String adminToken, {
+  int uses = 1,
+  int ttlHours = 72,
+}) async {
   final client = pinnedClient(agentFp);
   try {
     final r = await client
-        .post(Uri.parse('$agentUrl/v1/invite'),
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer $adminToken',
-            },
-            body: jsonEncode({'uses': uses, 'ttl_hours': ttlHours}))
+        .post(
+          Uri.parse('$agentUrl/v1/invite'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $adminToken',
+          },
+          body: jsonEncode({'uses': uses, 'ttl_hours': ttlHours}),
+        )
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) throw ApiException(_detail(r), r.statusCode);
     return (jsonDecode(r.body) as Map<String, dynamic>)['invite'] as String;
@@ -526,12 +601,18 @@ class HostInviteStatus {
 
 /// Host-owner lists every invite they've minted, with redemption status.
 Future<List<HostInviteStatus>> listHostInvites(
-    String agentUrl, String agentFp, String adminToken) async {
+  String agentUrl,
+  String agentFp,
+  String adminToken,
+) async {
   final client = pinnedClient(agentFp);
   try {
-    final r = await client.get(Uri.parse('$agentUrl/v1/invites'), headers: {
-      'Authorization': 'Bearer $adminToken',
-    }).timeout(const Duration(seconds: 10));
+    final r = await client
+        .get(
+          Uri.parse('$agentUrl/v1/invites'),
+          headers: {'Authorization': 'Bearer $adminToken'},
+        )
+        .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) throw ApiException(_detail(r), r.statusCode);
     final j = jsonDecode(r.body) as Map<String, dynamic>;
     return [
@@ -541,7 +622,8 @@ Future<List<HostInviteStatus>> listHostInvites(
           uses: e['uses'] as int,
           usesLeft: e['uses_left'] as int,
           expiresAt: DateTime.fromMillisecondsSinceEpoch(
-              ((e['expires_at'] as num) * 1000).round()),
+            ((e['expires_at'] as num) * 1000).round(),
+          ),
           createdAt: DateTime.parse(e['created_at'] as String).toLocal(),
           redeemedBy: (e['redeemed_by'] as List).cast<String>(),
         ),
@@ -555,8 +637,11 @@ Future<List<HostInviteStatus>> listHostInvites(
 /// Returns null when the mailbox runs no TURN — callers fall back to
 /// STUN-only.
 Future<({List<String> urls, String username, String credential})?>
-    fetchTurnCredentials(
-        String serverAddress, String ownerToken, String tlsFp) async {
+fetchTurnCredentials(
+  String serverAddress,
+  String ownerToken,
+  String tlsFp,
+) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
@@ -564,7 +649,10 @@ Future<({List<String> urls, String username, String credential})?>
         .timeout(const Duration(seconds: 8));
     if (r.statusCode == 404) return null;
     if (r.statusCode >= 400) {
-      throw ApiException('turn credentials failed (${r.statusCode})', r.statusCode);
+      throw ApiException(
+        'turn credentials failed (${r.statusCode})',
+        r.statusCode,
+      );
     }
     final j = jsonDecode(r.body) as Map<String, dynamic>;
     return (
@@ -581,14 +669,21 @@ Future<({List<String> urls, String username, String credential})?>
 
 /// Register this device's push token with our OWN mailbox (owner token +
 /// pinned TLS). The mailbox will ping the push gateway when we're offline.
-Future<void> setPushConfig(String serverAddress, String ownerToken,
-    String deviceToken, String platform, String tlsFp) async {
+Future<void> setPushConfig(
+  String serverAddress,
+  String ownerToken,
+  String deviceToken,
+  String platform,
+  String tlsFp,
+) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .post(Uri.parse('$serverAddress/push-config?token=$ownerToken'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'device_token': deviceToken, 'platform': platform}))
+        .post(
+          Uri.parse('$serverAddress/push-config?token=$ownerToken'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'device_token': deviceToken, 'platform': platform}),
+        )
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
       throw ApiException('push-config failed (${r.statusCode})', r.statusCode);
@@ -601,12 +696,18 @@ Future<void> setPushConfig(String serverAddress, String ownerToken,
 /// Upload an encrypted media blob to a peer's mailbox. Returns the blob id
 /// to reference from the media envelope.
 Future<String> uploadBlob(
-    String serverAddress, List<int> bytes, String tlsFp) async {
+  String serverAddress,
+  List<int> bytes,
+  String tlsFp,
+) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .post(Uri.parse('$serverAddress/blob'),
-            headers: {'Content-Type': 'application/octet-stream'}, body: bytes)
+        .post(
+          Uri.parse('$serverAddress/blob'),
+          headers: {'Content-Type': 'application/octet-stream'},
+          body: bytes,
+        )
         .timeout(const Duration(seconds: 60));
     if (r.statusCode >= 400) {
       throw ApiException('blob upload failed (${r.statusCode})', r.statusCode);
@@ -619,14 +720,21 @@ Future<String> uploadBlob(
 
 /// Download a blob from *your own* mailbox (owner token required).
 Future<List<int>> downloadBlob(
-    String serverAddress, String blobId, String token, String tlsFp) async {
+  String serverAddress,
+  String blobId,
+  String token,
+  String tlsFp,
+) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
         .get(Uri.parse('$serverAddress/blob/$blobId?token=$token'))
         .timeout(const Duration(seconds: 60));
     if (r.statusCode >= 400) {
-      throw ApiException('blob download failed (${r.statusCode})', r.statusCode);
+      throw ApiException(
+        'blob download failed (${r.statusCode})',
+        r.statusCode,
+      );
     }
     return r.bodyBytes;
   } finally {
@@ -637,13 +745,18 @@ Future<List<int>> downloadBlob(
 /// Delivers a sealed envelope to a peer's routing server. Throws on failure —
 /// callers keep the message in the pending outbox and retry later.
 Future<void> deliverEnvelope(
-    String serverAddress, SealedEnvelope envelope, String tlsFp) async {
+  String serverAddress,
+  SealedEnvelope envelope,
+  String tlsFp,
+) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .post(Uri.parse('$serverAddress/inbox'),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(envelope.toJson()))
+        .post(
+          Uri.parse('$serverAddress/inbox'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(envelope.toJson()),
+        )
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
       throw ApiException('delivery failed (${r.statusCode})', r.statusCode);
@@ -676,23 +789,25 @@ class MailboxSocket {
 
   void connect() {
     if (_closed) return;
-    final wsUrl =
-        '${address.replaceFirst('http', 'ws')}/ws?token=$token';
+    final wsUrl = '${address.replaceFirst('http', 'ws')}/ws?token=$token';
     try {
       final channel = IOWebSocketChannel.connect(
         Uri.parse(wsUrl),
         customClient: _pinnedHttpClient(tlsFp),
       );
       _channel = channel;
-      channel.ready.then((_) {
-        _retrySeconds = 1;
-        onStateChange?.call(true);
-      }).catchError((_) {});
+      channel.ready
+          .then((_) {
+            _retrySeconds = 1;
+            onStateChange?.call(true);
+          })
+          .catchError((_) {});
       channel.stream.listen(
         (raw) async {
           try {
             final envelope = SealedEnvelope.fromJson(
-                jsonDecode(raw as String) as Map<String, dynamic>);
+              jsonDecode(raw as String) as Map<String, dynamic>,
+            );
             await onEnvelope(envelope);
             channel.sink.add(jsonEncode({'ack': envelope.id}));
           } catch (_) {

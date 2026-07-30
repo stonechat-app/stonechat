@@ -730,8 +730,7 @@ class ChatState extends ChangeNotifier {
     var spkRow = await app.db.currentSpk();
     if (spkRow == null || now - (spkRow['created_at'] as int) > _spkRotateMs) {
       final kp = app.crypto.newX25519();
-      final sec = kp.secretKey.extractBytes();
-      kp.secretKey.dispose();
+      final sec = kp.secretKey;
       final id = await app.db.insertPrekey(
         'spk',
         base64Encode(kp.publicKey),
@@ -759,8 +758,7 @@ class ChatState extends ChangeNotifier {
     final existing = await app.db.opks();
     for (var i = existing.length; i < _opkTarget; i++) {
       final kp = app.crypto.newX25519();
-      final sec = kp.secretKey.extractBytes();
-      kp.secretKey.dispose();
+      final sec = kp.secretKey;
       await app.db.insertPrekey(
         'opk',
         base64Encode(kp.publicKey),

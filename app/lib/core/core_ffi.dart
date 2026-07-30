@@ -36,6 +36,214 @@ typedef _PqSeed = int Function(Pointer<Uint8>, Pointer<Uint8>);
 typedef _TlsFpNative = Int32 Function(Pointer<Uint8>, Size, Pointer<Uint8>);
 typedef _TlsFp = int Function(Pointer<Uint8>, int, Pointer<Uint8>);
 
+typedef _IdentityNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Int32,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _Identity =
+    int Function(Pointer<Uint8>, int, Pointer<Pointer<Uint8>>, Pointer<Size>);
+
+typedef _SignNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+    );
+typedef _Sign =
+    int Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+    );
+
+typedef _VerifyNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+    );
+typedef _Verify =
+    int Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+    );
+
+typedef _SignReportNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Size,
+      Int64,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+    );
+typedef _SignReport =
+    int Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      int,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+    );
+
+typedef _IdNative =
+    Int32 Function(Pointer<Uint8>, Pointer<Pointer<Uint8>>, Pointer<Size>);
+typedef _Id =
+    int Function(Pointer<Uint8>, Pointer<Pointer<Uint8>>, Pointer<Size>);
+
+typedef _NormalizeNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Size,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _Normalize =
+    int Function(Pointer<Uint8>, int, Pointer<Pointer<Uint8>>, Pointer<Size>);
+
+typedef _SealNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _Seal =
+    int Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+
+typedef _UnsealNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _Unseal =
+    int Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      int,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+
+typedef _BlobNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _Blob =
+    int Function(
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      int,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+
+typedef _VaultSealNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      Uint32,
+      Uint32,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _VaultSeal =
+    int Function(
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      Pointer<Uint8>,
+      int,
+      int,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+
+typedef _VaultOpenNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Size,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _VaultOpen =
+    int Function(
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+
+typedef _X25519Native = Int32 Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _X25519 = int Function(Pointer<Uint8>, Pointer<Uint8>);
+
+typedef _B32Native =
+    Int32 Function(
+      Pointer<Uint8>,
+      Size,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _B32 =
+    int Function(Pointer<Uint8>, int, Pointer<Pointer<Uint8>>, Pointer<Size>);
+
 typedef _FreeNative = Void Function(Pointer<Uint8>, Size);
 typedef _Free = void Function(Pointer<Uint8>, int);
 
@@ -151,6 +359,21 @@ class StonechatCore {
   final _Free _free;
   final _PqSeed _pqSeed;
   final _TlsFp _tlsFp;
+  final _Identity _identity;
+  final _Sign _sign;
+  final _Verify _verify;
+  final _SignReport _signReport;
+  final _Id _id;
+  final _Normalize _normalize;
+  final _Seal _seal;
+  final _Unseal _unseal;
+  final _Blob _blobSeal;
+  final _Blob _blobOpen;
+  final _VaultSeal _vaultSeal;
+  final _VaultOpen _vaultOpen;
+  final _X25519 _x25519;
+  final _B32 _b32Encode;
+  final _B32 _b32Decode;
   final _Initiate _initiate;
   final _Respond _respond;
   final _Encrypt _encrypt;
@@ -163,6 +386,37 @@ class StonechatCore {
       ),
       _tlsFp = lib.lookupFunction<_TlsFpNative, _TlsFp>(
         'stonechat_tls_fingerprint',
+      ),
+      _identity = lib.lookupFunction<_IdentityNative, _Identity>(
+        'stonechat_identity',
+      ),
+      _sign = lib.lookupFunction<_SignNative, _Sign>('stonechat_sign'),
+      _verify = lib.lookupFunction<_VerifyNative, _Verify>('stonechat_verify'),
+      _signReport = lib.lookupFunction<_SignReportNative, _SignReport>(
+        'stonechat_sign_report',
+      ),
+      _id = lib.lookupFunction<_IdNative, _Id>('stonechat_stonechat_id'),
+      _normalize = lib.lookupFunction<_NormalizeNative, _Normalize>(
+        'stonechat_normalize_id',
+      ),
+      _seal = lib.lookupFunction<_SealNative, _Seal>('stonechat_seal'),
+      _unseal = lib.lookupFunction<_UnsealNative, _Unseal>('stonechat_unseal'),
+      _blobSeal = lib.lookupFunction<_BlobNative, _Blob>('stonechat_blob_seal'),
+      _blobOpen = lib.lookupFunction<_BlobNative, _Blob>('stonechat_blob_open'),
+      _vaultSeal = lib.lookupFunction<_VaultSealNative, _VaultSeal>(
+        'stonechat_vault_seal',
+      ),
+      _vaultOpen = lib.lookupFunction<_VaultOpenNative, _VaultOpen>(
+        'stonechat_vault_open',
+      ),
+      _x25519 = lib.lookupFunction<_X25519Native, _X25519>(
+        'stonechat_x25519_public',
+      ),
+      _b32Encode = lib.lookupFunction<_B32Native, _B32>(
+        'stonechat_base32_encode',
+      ),
+      _b32Decode = lib.lookupFunction<_B32Native, _B32>(
+        'stonechat_base32_decode',
       ),
       _initiate = lib.lookupFunction<_InitiateNative, _Initiate>(
         'stonechat_session_initiate',
@@ -445,4 +699,389 @@ class StonechatCore {
       calloc.free(out);
     }
   }
+
+  // -- identity, signatures, IDs (PROTOCOL.md "Identity") ---------------------
+
+  /// Expand a fresh 32-byte CSPRNG seed, or re-expand a stored 64-byte
+  /// secret key, into the full identity: keys, published `pq_pk` with its
+  /// signature, and the SC- ID.
+  ({
+    Uint8List secret,
+    Uint8List public,
+    Uint8List pqPublic,
+    String pqPublicSigB64,
+    String stonechatId,
+  })
+  identity({Uint8List? seed, Uint8List? secretKey}) {
+    final input = secretKey ?? seed!;
+    final p = _in(
+      input,
+      'identity input',
+      expected: secretKey != null ? 64 : 32,
+    );
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _identity(p, secretKey != null ? 1 : 0, outPtr, outLen);
+      if (rc != 0) throw StateError('stonechat-core identity failed ($rc)');
+      final json =
+          jsonDecode(utf8.decode(outPtr.value.asTypedList(outLen.value)))
+              as Map<String, dynamic>;
+      _free(outPtr.value, outLen.value);
+      return (
+        secret: base64Decode(json['secret'] as String),
+        public: base64Decode(json['public'] as String),
+        pqPublic: base64Decode(json['pq_pk'] as String),
+        pqPublicSigB64: json['pq_pk_sig'] as String,
+        stonechatId: json['stonechat_id'] as String,
+      );
+    } finally {
+      calloc.free(p);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// Sign with one of the protocol's domain-separation contexts.
+  Uint8List sign(Uint8List secretKey, List<int> context, List<int> message) {
+    final sk = _in(secretKey, 'secretKey', expected: 64);
+    final ctx = _in(Uint8List.fromList(context), 'context');
+    final msg = _in(Uint8List.fromList(message), 'message');
+    final out = calloc<Uint8>(64);
+    try {
+      final rc = _sign(sk, ctx, context.length, msg, message.length, out);
+      if (rc != 0) throw StateError('stonechat-core sign failed ($rc)');
+      return Uint8List.fromList(out.asTypedList(64));
+    } finally {
+      calloc.free(sk);
+      calloc.free(ctx);
+      calloc.free(msg);
+      calloc.free(out);
+    }
+  }
+
+  bool verify(
+    Uint8List edPublic,
+    List<int> context,
+    List<int> message,
+    Uint8List signature,
+  ) {
+    if (edPublic.length != 32 || signature.length != 64) return false;
+    final pk = _in(edPublic, 'edPublic', expected: 32);
+    final ctx = _in(Uint8List.fromList(context), 'context');
+    final msg = _in(Uint8List.fromList(message), 'message');
+    final sig = _in(signature, 'signature', expected: 64);
+    try {
+      return _verify(pk, ctx, context.length, msg, message.length, sig) == 0;
+    } finally {
+      calloc.free(pk);
+      calloc.free(ctx);
+      calloc.free(msg);
+      calloc.free(sig);
+    }
+  }
+
+  /// Abuse report signature — the body is committed to by digest inside
+  /// the core, so field order and whitespace can change in transit.
+  Uint8List signReport(
+    Uint8List secretKey, {
+    required String reportedId,
+    required int unixSeconds,
+    required String category,
+    required String note,
+    String? evidence,
+  }) {
+    final sk = _in(secretKey, 'secretKey', expected: 64);
+    final id = utf8.encode(reportedId);
+    final idP = _in(id, 'reportedId');
+    final cat = utf8.encode(category);
+    final catP = _in(cat, 'category');
+    final n = utf8.encode(note);
+    final nP = _in(n, 'note');
+    final ev = evidence == null ? null : utf8.encode(evidence);
+    final evP = ev == null ? nullptr : _in(ev, 'evidence');
+    final out = calloc<Uint8>(64);
+    try {
+      final rc = _signReport(
+        sk,
+        idP,
+        id.length,
+        unixSeconds,
+        catP,
+        cat.length,
+        nP,
+        n.length,
+        evP,
+        ev?.length ?? 0,
+        out,
+      );
+      if (rc != 0) throw StateError('stonechat-core sign_report failed ($rc)');
+      return Uint8List.fromList(out.asTypedList(64));
+    } finally {
+      calloc.free(sk);
+      calloc.free(idP);
+      calloc.free(catP);
+      calloc.free(nP);
+      if (evP != nullptr) calloc.free(evP);
+      calloc.free(out);
+    }
+  }
+
+  /// The SC- ID an identity key commits to.
+  String stonechatId(Uint8List edPublic) {
+    final pk = _in(edPublic, 'edPublic', expected: 32);
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _id(pk, outPtr, outLen);
+      if (rc != 0) throw StateError('stonechat-core id failed ($rc)');
+      final text = utf8.decode(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return text;
+    } finally {
+      calloc.free(pk);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// Canonicalize typed input; null when it is not a well-formed ID.
+  String? normalizeId(String raw) {
+    final bytes = utf8.encode(raw);
+    final p = _in(bytes, 'raw');
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _normalize(p, bytes.length, outPtr, outLen);
+      if (rc == -3) return null;
+      if (rc != 0) throw StateError('stonechat-core normalize failed ($rc)');
+      final text = utf8.decode(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return text;
+    } finally {
+      calloc.free(p);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  // -- envelope seal + media blobs --------------------------------------------
+
+  Uint8List sealTo(
+    Uint8List pqPublic,
+    Uint8List message,
+    Uint8List random,
+    Uint8List nonce,
+  ) {
+    final pk = _in(pqPublic, 'pqPublic', expected: 1216);
+    final msg = _in(message, 'message');
+    final rnd = _in(random, 'random', expected: 64);
+    final n = _in(nonce, 'nonce', expected: 24);
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _seal(pk, msg, message.length, rnd, n, outPtr, outLen);
+      if (rc != 0) throw StateError('stonechat-core seal failed ($rc)');
+      final sealed = Uint8List.fromList(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return sealed;
+    } finally {
+      calloc.free(pk);
+      calloc.free(msg);
+      calloc.free(rnd);
+      calloc.free(n);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// Null when the envelope was not sealed to this identity.
+  Uint8List? unseal(Uint8List pqSeed, Uint8List sealed) {
+    final seed = _in(pqSeed, 'pqSeed', expected: 32);
+    final data = _in(sealed, 'sealed');
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _unseal(seed, data, sealed.length, outPtr, outLen);
+      if (rc == -3) return null;
+      if (rc != 0) throw StateError('stonechat-core unseal failed ($rc)');
+      final plain = Uint8List.fromList(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return plain;
+    } finally {
+      calloc.free(seed);
+      calloc.free(data);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  Uint8List? _blob(
+    _Blob fn,
+    Uint8List key,
+    Uint8List nonce,
+    Uint8List data,
+    String op,
+  ) {
+    final k = _in(key, 'key', expected: 32);
+    final n = _in(nonce, 'nonce', expected: 24);
+    final d = _in(data, 'data');
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = fn(k, n, d, data.length, outPtr, outLen);
+      if (rc == -3) return null;
+      if (rc != 0) throw StateError('stonechat-core $op failed ($rc)');
+      final out = Uint8List.fromList(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return out;
+    } finally {
+      calloc.free(k);
+      calloc.free(n);
+      calloc.free(d);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  Uint8List blobSeal(Uint8List key, Uint8List nonce, Uint8List data) =>
+      _blob(_blobSeal, key, nonce, data, 'blob_seal')!;
+
+  /// Null on tamper/corruption.
+  Uint8List? blobOpen(Uint8List key, Uint8List nonce, Uint8List data) =>
+      _blob(_blobOpen, key, nonce, data, 'blob_open');
+
+  // -- passphrase containers (backup file, identity export) -------------------
+
+  /// Argon2id + XChaCha20-Poly1305, parameters carried inside the result.
+  /// Slow by design — run it off the UI isolate.
+  Uint8List vaultSeal({
+    required String passphrase,
+    required Uint8List plaintext,
+    required Uint8List salt,
+    required Uint8List nonce,
+    int mCostKib = 256 * 1024,
+    int tCost = 3,
+  }) {
+    final pw = utf8.encode(passphrase);
+    final pwP = _in(pw, 'passphrase');
+    final plain = _in(plaintext, 'plaintext');
+    final s = _in(salt, 'salt', expected: 16);
+    final n = _in(nonce, 'nonce', expected: 24);
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _vaultSeal(
+        pwP,
+        pw.length,
+        plain,
+        plaintext.length,
+        s,
+        n,
+        mCostKib,
+        tCost,
+        outPtr,
+        outLen,
+      );
+      if (rc != 0) throw StateError('stonechat-core vault_seal failed ($rc)');
+      final out = Uint8List.fromList(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return out;
+    } finally {
+      calloc.free(pwP);
+      calloc.free(plain);
+      calloc.free(s);
+      calloc.free(n);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// Outcomes the UI distinguishes: [VaultOutcome.wrongPassphrase],
+  /// [VaultOutcome.newerVersion], [VaultOutcome.malformed].
+  ({Uint8List? plaintext, VaultOutcome outcome}) vaultOpen({
+    required String passphrase,
+    required Uint8List container,
+  }) {
+    final pw = utf8.encode(passphrase);
+    final pwP = _in(pw, 'passphrase');
+    final data = _in(container, 'container');
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _vaultOpen(
+        pwP,
+        pw.length,
+        data,
+        container.length,
+        outPtr,
+        outLen,
+      );
+      switch (rc) {
+        case 0:
+          final plain = Uint8List.fromList(
+            outPtr.value.asTypedList(outLen.value),
+          );
+          _free(outPtr.value, outLen.value);
+          return (plaintext: plain, outcome: VaultOutcome.ok);
+        case -3:
+          return (plaintext: null, outcome: VaultOutcome.wrongPassphrase);
+        case -4:
+          return (plaintext: null, outcome: VaultOutcome.newerVersion);
+        default:
+          return (plaintext: null, outcome: VaultOutcome.malformed);
+      }
+    } finally {
+      calloc.free(pwP);
+      calloc.free(data);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// Public half of an X25519 secret (prekeys, ratchet keys).
+  Uint8List x25519Public(Uint8List secret) {
+    final sk = _in(secret, 'secret', expected: 32);
+    final out = calloc<Uint8>(32);
+    try {
+      final rc = _x25519(sk, out);
+      if (rc != 0) throw StateError('stonechat-core x25519 failed ($rc)');
+      return Uint8List.fromList(out.asTypedList(32));
+    } finally {
+      calloc.free(sk);
+      calloc.free(out);
+    }
+  }
+
+  Uint8List? _b32(_B32 fn, Uint8List input, String op) {
+    final p = _in(input, 'input');
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = fn(p, input.length, outPtr, outLen);
+      if (rc == -3) return null;
+      if (rc != 0) throw StateError('stonechat-core $op failed ($rc)');
+      final out = Uint8List.fromList(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return out;
+    } finally {
+      calloc.free(p);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// The SC- ID alphabet (RFC 4648 without padding), one implementation
+  /// for the app and every other client.
+  String base32Encode(Uint8List bytes) =>
+      utf8.decode(_b32(_b32Encode, bytes, 'base32_encode')!);
+
+  /// Throws [FormatException] on an invalid character.
+  Uint8List base32Decode(String text) {
+    final out = _b32(_b32Decode, utf8.encode(text), 'base32_decode');
+    if (out == null) throw const FormatException('invalid base32 character');
+    return out;
+  }
 }
+
+enum VaultOutcome { ok, wrongPassphrase, newerVersion, malformed }

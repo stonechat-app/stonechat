@@ -24,6 +24,8 @@ pub const SPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-spk";
 pub const KSPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-kspk";
 pub const PQPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-pqpk";
 pub const TLS_SIG_CONTEXT: &[u8] = b"stonechat-v1-tls";
+pub const RECOVER_SIG_CONTEXT: &[u8] = b"stonechat-v1-recover";
+pub const REPORT_SIG_CONTEXT: &[u8] = b"stonechat-v1-report";
 
 /// `crypto_generichash(msg, key, 32)`. Key must be 16–64 bytes.
 pub fn keyed_hash_32(msg: &[u8], key: &[u8]) -> [u8; 32] {

@@ -5,37 +5,24 @@
 /// messages, reactions — see ChatDb's backup queries for what is excluded;
 /// identity keys, ratchet sessions and prekeys never leave the device).
 ///
-/// File layout (integers little-endian):
-/// ```
-/// offset  size  field
-/// 0       8     magic "SC-BAK-1"
-/// 8       1     format version (1)
-/// 9       1     kdf id (1 = Argon2id13)
-/// 10      1     reserved (0)
-/// 11      1     salt length (16)
-/// 12      16    Argon2id salt
-/// 28      4     opslimit
-/// 32      8     memlimit
-/// 40      —     libsodium secretstream output verbatim: 24-byte stream
-///               header, then 64 KiB chunks (+17 tag bytes each), FINAL tag
-///               on the last
-/// ```
-/// Restore derives the key from the header's salt/limits, never from current
-/// constants, so the parameters can change without a format bump. The header
-/// is not AAD-authenticated (pushChunked has no AAD hook); tampering with it
-/// changes the derived key, so the first chunk fails Poly1305 — the same
-/// failure as a wrong passphrase, which is acceptable.
+/// File layout: an 8-byte magic "SC-BAK-2", then stonechat-core's
+/// passphrase container (core/src/vault.rs) — Argon2id with its
+/// parameters inside, authenticated as the AEAD's associated data, so a
+/// downgraded header is a decryption failure rather than a silent
+/// weakening. The magic is checked before the expensive KDF runs, so
+/// "not a backup" fails instantly.
 library;
 
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:intl/intl.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:sodium/sodium_sumo.dart';
-
+import 'core_ffi.dart';
+import 'crypto.dart' show randomBytes;
 import 'db.dart';
 
 class BackupException implements Exception {
@@ -54,17 +41,14 @@ typedef RestoreSummary = ({
 });
 
 class BackupService {
-  final SodiumSumo sodium;
   final ChatDb db;
 
-  BackupService(this.sodium, this.db);
+  BackupService(this.db);
 
-  static const magic = 'SC-BAK-1';
-  static const formatVersion = 1;
-  static const kdfArgon2id13 = 1;
+  static const magic = 'SC-BAK-2';
   static const saltLength = 16;
-  static const headerLength = 40;
-  static const chunkSize = 64 * 1024;
+  static const nonceLength = 24;
+  static const headerLength = 8; // just the magic; the vault carries its own
   static const payloadVersion = 1;
   static const minPassphraseChars = 8;
 
@@ -76,41 +60,16 @@ class BackupService {
 
   // -- format helpers (pure, unit-tested) -------------------------------------
 
-  static Uint8List encodeHeader(Uint8List salt, int opsLimit, int memLimit) {
-    assert(salt.length == saltLength);
-    final header = Uint8List(headerLength);
-    header.setAll(0, ascii.encode(magic));
-    header[8] = formatVersion;
-    header[9] = kdfArgon2id13;
-    header[11] = saltLength;
-    header.setAll(12, salt);
-    ByteData.sublistView(header)
-      ..setUint32(28, opsLimit, Endian.little)
-      ..setUint64(32, memLimit, Endian.little);
-    return header;
-  }
+  static Uint8List encodeHeader() => Uint8List.fromList(ascii.encode(magic));
 
-  static ({Uint8List salt, int opsLimit, int memLimit}) decodeHeader(
-      Uint8List file) {
+  /// Throws [BackupException] when this is not one of our files. Runs
+  /// before the KDF, so a wrong file fails instantly.
+  static void checkMagic(Uint8List file) {
     final magicBytes = ascii.encode(magic);
     if (file.length <= headerLength) throw const BackupException(_notABackup);
     for (var i = 0; i < magicBytes.length; i++) {
       if (file[i] != magicBytes[i]) throw const BackupException(_notABackup);
     }
-    if (file[8] < 1) throw const BackupException(_notABackup);
-    // A version bump, an unknown KDF or a different salt size all mean a
-    // layout this build doesn't know how to read.
-    if (file[8] > formatVersion ||
-        file[9] != kdfArgon2id13 ||
-        file[11] != saltLength) {
-      throw const BackupException(_newerVersion);
-    }
-    final bd = ByteData.sublistView(file);
-    return (
-      salt: file.sublist(12, 12 + saltLength),
-      opsLimit: bd.getUint32(28, Endian.little),
-      memLimit: bd.getUint64(32, Endian.little),
-    );
   }
 
   static Map<String, Object?> buildPayload({
@@ -123,8 +82,9 @@ class BackupService {
   }) {
     // Plain map copies: sqflite rows are library-private map types, and the
     // payload must cross an isolate boundary.
-    List<Map<String, Object?>> copy(List<Map<String, Object?>> rows) =>
-        [for (final r in rows) Map<String, Object?>.from(r)];
+    List<Map<String, Object?>> copy(List<Map<String, Object?>> rows) => [
+      for (final r in rows) Map<String, Object?>.from(r),
+    ];
     return {
       'format': 'stonechat-backup',
       'version': payloadVersion,
@@ -159,37 +119,29 @@ class BackupService {
       reactions: await db.backupReactions(nowMs),
       nowMs: nowMs,
     );
-    // The whole payload lives in RAM — fine for text-only (tens of MB even at
-    // 100k messages). Argon2id + gzip + jsonEncode would jank the UI, so they
-    // run in a worker isolate. The closure is sent across, so it must capture
-    // only sendable locals: the sodium FFI handle is, `this`/ChatDb is not —
-    // never reference the service or the DB inside it.
-    final sodium = this.sodium;
-    final salt = sodium.randombytes.buf(saltLength);
-    final opsLimit = sodium.crypto.pwhash.opsLimitModerate;
-    final memLimit = sodium.crypto.pwhash.memLimitModerate;
-    final bytes = await sodium.runIsolated((_, _) async {
+    // The whole payload lives in RAM — fine for text-only (tens of MB even
+    // at 100k messages). gzip + JSON + Argon2id would jank the UI, so they
+    // run in a worker isolate; the closure captures only sendable locals.
+    final salt = randomBytes(saltLength);
+    final nonce = randomBytes(nonceLength);
+    final bytes = await Isolate.run(() {
       final plain = gzip.encode(utf8.encode(jsonEncode(payload)));
-      final key = _deriveKey(sodium, passphrase, salt, opsLimit, memLimit);
-      try {
-        final out = BytesBuilder(copy: false)
-          ..add(encodeHeader(salt, opsLimit, memLimit));
-        await sodium.crypto.secretStream
-            .pushChunked(
-              messageStream: Stream.value(plain),
-              key: key,
-              chunkSize: chunkSize,
-            )
-            .forEach(out.add);
-        return out.takeBytes();
-      } finally {
-        key.dispose();
-      }
+      final container = StonechatCore().vaultSeal(
+        passphrase: passphrase,
+        plaintext: Uint8List.fromList(plain),
+        salt: salt,
+        nonce: nonce,
+      );
+      return Uint8List.fromList([...encodeHeader(), ...container]);
     });
 
     final date = DateFormat('yyyy-MM-dd').format(DateTime.now());
-    final file = File(p.join(
-        (await getTemporaryDirectory()).path, 'stonechat-backup-$date.stonechatbackup'));
+    final file = File(
+      p.join(
+        (await getTemporaryDirectory()).path,
+        'stonechat-backup-$date.stonechatbackup',
+      ),
+    );
     await file.writeAsBytes(bytes, flush: true);
     return file;
   }
@@ -200,37 +152,31 @@ class BackupService {
   /// Throws [BackupException] with a user-facing message on any failure.
   Future<RestoreSummary> restoreBackup(File file, String passphrase) async {
     final bytes = await file.readAsBytes();
-    // Header checks run before the expensive KDF: "not a backup" and "newer
-    // version" fail instantly.
-    final header = decodeHeader(bytes);
-    final body = bytes.sublist(headerLength);
+    checkMagic(bytes); // cheap rejection before the expensive KDF
+    final container = Uint8List.sublistView(bytes, headerLength);
 
-    final sodium = this.sodium; // See createBackup: sendable locals only.
+    final opened = await Isolate.run(
+      () => StonechatCore().vaultOpen(
+        passphrase: passphrase,
+        container: container,
+      ),
+    );
+    switch (opened.outcome) {
+      case VaultOutcome.newerVersion:
+        throw const BackupException(_newerVersion);
+      case VaultOutcome.malformed:
+        throw const BackupException(_notABackup);
+      case VaultOutcome.wrongPassphrase:
+        throw const BackupException(_wrongPassphrase);
+      case VaultOutcome.ok:
+        break;
+    }
     Object? decoded;
     try {
-      decoded = await sodium.runIsolated((_, _) async {
-        final key = _deriveKey(
-            sodium, passphrase, header.salt, header.opsLimit, header.memLimit);
-        try {
-          final out = BytesBuilder(copy: false);
-          await sodium.crypto.secretStream
-              .pullChunked(
-                cipherStream: Stream.value(body),
-                key: key,
-                chunkSize: chunkSize,
-              )
-              .forEach(out.add);
-          return jsonDecode(utf8.decode(gzip.decode(out.takeBytes())));
-        } finally {
-          key.dispose();
-        }
-      });
-    } on BackupException {
-      rethrow;
+      decoded = jsonDecode(utf8.decode(gzip.decode(opened.plaintext!)));
     } catch (_) {
-      // SodiumException (bad key), truncated stream, gzip/JSON garbage — all
-      // indistinguishable from a wrong passphrase without the right key.
-      throw const BackupException(_wrongPassphrase);
+      // Right passphrase but garbage inside: truncated file, or not ours.
+      throw const BackupException(_notABackup);
     }
 
     // `decoded` is assigned inside try/catch, so it never promotes — pin the
@@ -262,17 +208,6 @@ class BackupService {
       nowMs: DateTime.now().millisecondsSinceEpoch,
     );
   }
-
-  static SecureKey _deriveKey(SodiumSumo sodium, String passphrase,
-          Uint8List salt, int opsLimit, int memLimit) =>
-      sodium.crypto.pwhash(
-        outLen: sodium.crypto.secretStream.keyBytes,
-        password: Int8List.fromList(utf8.encode(passphrase)),
-        salt: salt,
-        opsLimit: opsLimit,
-        memLimit: memLimit,
-        alg: CryptoPwhashAlgorithm.argon2id13,
-      );
 
   /// Remove exports left in the temp dir (share aborted mid-way, crash).
   Future<void> cleanupTempBackups() async {

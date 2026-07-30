@@ -2,12 +2,26 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
 import '../core/api.dart';
 import '../models.dart';
 import 'app_state.dart';
+
+/// kv key holding the outage clock across launches (see [ServerState]'s
+/// "unplanned outage" section).
+const _outageKey = 'mailbox_outage';
+
+/// Coarse, human "how long has this been broken" — minutes below an hour,
+/// then hours, then days. Deliberately imprecise: the number is context for
+/// a decision ("is this a blip or is my box gone?"), not a measurement.
+String formatOutage(Duration d) {
+  if (d.inMinutes < 60) return '${d.inMinutes}m';
+  if (d.inHours < 48) return '${d.inHours}h';
+  return '${d.inDays}d';
+}
 
 class ServerState extends ChangeNotifier {
   final AppState app;
@@ -17,6 +31,10 @@ class ServerState extends ChangeNotifier {
       onMailbox; // own mailbox coordinates, for blob downloads + prekeys
   final void Function(bool ok)?
       onProvisioningDone; // provisioning finished: running (true) or error
+
+  /// The mailbox has been unreachable-though-not-turned-off for long enough
+  /// to be worth interrupting the user about. Fires once per outage.
+  final void Function(Duration down)? onOutage;
 
   ServerRecord record = ServerRecord(status: 'none');
   bool socketConnected = false;
@@ -28,15 +46,25 @@ class ServerState extends ChangeNotifier {
   DateTime? _downSince; // socket down continuously since — null when up
   String? _vouchedTlsFp; // fingerprint we already signed + published
 
+  DateTime? _outageSince; // confirmed unplanned outage began — persisted
+  bool _outageNotified = false; // notice already posted for THIS outage
+
   /// How long the socket must stay down before we stop calling it a blip.
   /// The socket's own backoff caps at 30s, so by now we've failed ~5 attempts.
   static const _unreachableAfter = Duration(seconds: 30);
+
+  /// How long a confirmed outage must last before we interrupt the user. A
+  /// rebooting VM or a provider migration is back inside a few minutes;
+  /// hours means something is actually wrong and nobody but the owner can
+  /// fix it — we deliberately never restart a mailbox on their behalf.
+  static const outageNoticeAfter = Duration(hours: 2);
 
   ServerState(this.app,
       {required this.onEnvelope,
       required this.onConnected,
       this.onMailbox,
-      this.onProvisioningDone});
+      this.onProvisioningDone,
+      this.onOutage});
 
   bool get isRunning => record.status == 'running';
   bool get isProvisioning => record.status == 'provisioning';
@@ -50,6 +78,99 @@ class ServerState extends ChangeNotifier {
     final since = _downSince;
     if (since == null || _socket == null) return false;
     return DateTime.now().difference(since) >= _unreachableAfter;
+  }
+
+  // -- unplanned outage -------------------------------------------------------
+  //
+  // "Turned off" and "died" must never be confused: turning a mailbox off
+  // deletes the hub row (DELETE /v1/server), so `record.status` drops to
+  // 'none' and nothing below ever arms. An outage is therefore, by
+  // construction, something the user did NOT ask for.
+  //
+  // We only ever *tell* them. Nothing here restarts or re-provisions a
+  // mailbox — for a product whose whole promise is that the user owns the
+  // one server their messages touch, quietly resurrecting a box they may
+  // have destroyed themselves (in their own cloud console, out of band)
+  // would break the promise far worse than an outage does.
+
+  /// How long the mailbox has been confirmed down, or null when it's fine.
+  /// Survives backgrounding and app restarts — unlike [mailboxUnreachable],
+  /// whose 30s clock resets every time we drop the socket on the way out.
+  Duration? get mailboxDownFor {
+    final since = _outageSince;
+    return since == null ? null : DateTime.now().difference(since);
+  }
+
+  /// Restore the outage clock from a previous launch. Call once at startup,
+  /// before [refresh].
+  Future<void> loadOutage() async {
+    try {
+      final raw = await app.db.kvGet(_outageKey);
+      if (raw == null) return;
+      final j = jsonDecode(utf8.decode(raw)) as Map<String, dynamic>;
+      final since = j['since'] as int?;
+      _outageSince =
+          since == null ? null : DateTime.fromMillisecondsSinceEpoch(since);
+      _outageNotified = j['notified'] as bool? ?? false;
+    } catch (_) {
+      // Unreadable clock is not worth failing a launch over — worst case we
+      // re-detect the outage and re-notify once.
+    }
+  }
+
+  Future<void> _persistOutage() async {
+    try {
+      final since = _outageSince;
+      await app.db.kvPut(
+        _outageKey,
+        since == null
+            ? null
+            : Uint8List.fromList(utf8.encode(jsonEncode({
+                'since': since.millisecondsSinceEpoch,
+                'notified': _outageNotified,
+              }))),
+      );
+    } catch (_) {
+      // best-effort; the in-memory clock still works for this session
+    }
+  }
+
+  /// A dead socket alone can't tell "my mailbox is down" from "my phone has
+  /// no network" — both look identical from here. The hub is the oracle: if
+  /// it answers, our network is fine, so the silence is the mailbox's. Only
+  /// then does the outage clock start.
+  Future<void> _confirmOutage() async {
+    if (!isRunning || _socket == null || socketConnected) return;
+    if (_outageSince != null) return; // already counting
+    try {
+      final probe = await app.api.getServer();
+      // Turned off elsewhere, or rebuilt — either way not an outage.
+      if (probe.status != 'running') return;
+    } on Exception {
+      return; // hub unreachable too: most likely we are the offline party
+    }
+    if (socketConnected || _socket == null) return; // recovered mid-probe
+    _outageSince = DateTime.now();
+    await _persistOutage();
+    notifyListeners();
+  }
+
+  /// Post the one-shot notice once the outage has run long enough. Re-arms
+  /// only after an actual recovery, so a long outage interrupts once, not
+  /// on every foreground.
+  Future<void> _maybeAnnounceOutage() async {
+    final down = mailboxDownFor;
+    if (down == null || _outageNotified || down < outageNoticeAfter) return;
+    _outageNotified = true;
+    await _persistOutage();
+    onOutage?.call(down);
+  }
+
+  Future<void> _clearOutage() async {
+    if (_outageSince == null && !_outageNotified) return;
+    _outageSince = null;
+    _outageNotified = false;
+    await _persistOutage();
   }
 
   Future<void> refresh() async {
@@ -80,7 +201,13 @@ class ServerState extends ChangeNotifier {
       await _vouchForTls(tlsFp);
       onMailbox?.call(record.address, token, tlsFp);
       _ensureSocket(record.address!, token, tlsFp);
+      // Whatever the socket is doing, a persisted outage may have crossed
+      // the notice threshold while the app was away.
+      await _maybeAnnounceOutage();
     } else {
+      // No running record = nothing to be down. Turning the mailbox off is
+      // the main way here, and it must never read as an outage.
+      await _clearOutage();
       onMailbox?.call(null, null, null);
       _dropSocket();
     }
@@ -129,6 +256,7 @@ class ServerState extends ChangeNotifier {
       await app.api.registerExternalServer(address);
       await app.setExternalMailbox(token.trim(), probe.tlsFp,
           friendHosted: friendHosted);
+      await _clearOutage(); // different mailbox — the old clock is meaningless
       await refresh();
     } finally {
       busy = false;
@@ -170,6 +298,7 @@ class ServerState extends ChangeNotifier {
         region: region,
         diskGb: diskGb,
       );
+      await _clearOutage(); // different mailbox — the old clock is meaningless
       await refresh();
     } finally {
       busy = false;
@@ -184,6 +313,8 @@ class ServerState extends ChangeNotifier {
       await app.api.deleteServer();
       await app.setExternalMailbox(null, null);
       _vouchedTlsFp = null;
+      // Deliberate: from here on, silence from this address is expected.
+      await _clearOutage();
       _dropSocket();
       await refresh();
     } finally {
@@ -200,6 +331,7 @@ class ServerState extends ChangeNotifier {
     _pollTimer?.cancel();
     _pollTimer = null;
     _dropSocket();
+    unawaited(_clearOutage());
     record = ServerRecord(status: 'none');
     _vouchedTlsFp = null;
     busy = false;
@@ -266,11 +398,14 @@ class ServerState extends ChangeNotifier {
       _downSince = null;
       _unreachableTimer?.cancel();
       _unreachableTimer = null;
+      unawaited(_clearOutage()); // recovered: stop counting, re-arm the notice
     } else {
       _downSince ??= DateTime.now();
       _unreachableTimer ??= Timer(_unreachableAfter, () {
         _unreachableTimer = null;
         notifyListeners();
+        // Past a blip now — ask the hub whether this is us or the mailbox.
+        unawaited(_confirmOutage().then((_) => _maybeAnnounceOutage()));
       });
     }
   }

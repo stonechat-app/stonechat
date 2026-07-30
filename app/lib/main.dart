@@ -66,10 +66,19 @@ Future<void> main() async {
             : 'Open Stonechat to see what happened and retry.',
       );
     },
+    // Your mailbox stopped answering and you didn't turn it off. We only
+    // ever tell you — restarting or rebuilding it is always your call.
+    onOutage: (down) => notices.show(
+      "Your mailbox isn't answering",
+      "It's been unreachable for ${formatOutage(down)}. People can't reach "
+          'you until it’s back — open Stonechat to check on it.',
+      id: 1,
+    ),
   );
 
   if (app.hasIdentity) {
     await chat.load();
+    await server.loadOutage();
     await server.refresh();
   }
 

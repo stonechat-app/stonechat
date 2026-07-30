@@ -448,6 +448,11 @@ class _StatusCard extends StatelessWidget {
         ),
       // The record says running, but nothing has answered at that address for
       // a while — trust the socket, not the hub.
+      'running' when server.mailboxDownFor != null => (
+          Zn.danger,
+          "Your mailbox isn't answering · "
+              '${formatOutage(server.mailboxDownFor!)}'
+        ),
       'running' when server.mailboxUnreachable => (
           Zn.danger,
           "Can't reach your mailbox"
@@ -493,12 +498,26 @@ class _StatusCard extends StatelessWidget {
             if (r.status == 'running')
               _kv(
                   'Phone link',
-                  server.mailboxUnreachable
+                  server.mailboxUnreachable || server.mailboxDownFor != null
                       ? 'Unreachable'
                       : server.socketConnected
                           ? 'Connected'
                           : 'Reconnecting…'),
             if (r.error != null) _kv('Details', r.error!),
+            // Say plainly that nothing happens automatically. The kill switch
+            // is the product's promise; a mailbox that restarts itself — or
+            // that we restart for you — would quietly break it.
+            if (r.status == 'running' && server.mailboxDownFor != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                "You didn't turn this off, so something else stopped it — a "
+                'reboot, a crash, or the machine being removed. Nobody '
+                'restarts it but you. Messages sent to you meanwhile are '
+                'held by your contacts and arrive once it’s back.',
+                style: const TextStyle(
+                    fontSize: 12.5, color: Zn.muted, height: 1.45),
+              ),
+            ],
           ],
         ],
       ),

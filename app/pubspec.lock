@@ -440,14 +440,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.5.2"
-  freezed_annotation:
-    dependency: transitive
-    description:
-      name: freezed_annotation
-      sha256: "7294967ff0a6d98638e7acb774aac3af2550777accd8149c90af5b014e6d44d8"
-      url: "https://pub.dev"
-    source: hosted
-    version: "3.1.0"
   glob:
     dependency: transitive
     description:
@@ -1101,14 +1093,6 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  sodium:
-    dependency: "direct main"
-    description:
-      name: sodium
-      sha256: "19e3153ef4d1d10087d78d551d78e56909d159047a578ec692814c65ca450dfc"
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.0.2+1"
   source_span:
     dependency: transitive
     description:

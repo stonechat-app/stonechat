@@ -12,7 +12,6 @@ dependencies:
     sdk: flutter
 
   cupertino_icons: ^1.0.8
-  sodium: ^4.0.2
   ffi: ^2.2.0
   # 10.x needs win32 ^6, which share_plus 12.x/file_picker 11.x cap at ^5 —
   # bump alongside those two (see the share_plus note below).

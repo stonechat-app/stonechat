@@ -1,90 +1,65 @@
-// The ZID1 identity-export container. Restore must parse containers written
-// by any past build, so the layout is pinned here byte-by-byte — a failing
-// round-trip means old exports can no longer be opened, not just that a
-// constant moved. Crypto itself (pwhash/secretbox) is FFI and exercised in
-// the manual on-device checklist instead.
-import 'dart:convert';
+// The identity export string — the one artifact that makes a Stonechat ID
+// survive the phone. The container's crypto is the core's passphrase vault
+// (unit-tested in Rust); this covers the string framing and a full
+// encode → decode round trip, including the failure messages the UI shows.
+//
+// Run: STONECHAT_CORE_LIB=../core/target/release/libstonechat_core.dylib flutter test
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stonechat/core/identity_export.dart';
 
 void main() {
-  final salt = Uint8List.fromList(List.generate(16, (i) => i + 1));
-  final nonce = Uint8List.fromList(List.generate(24, (i) => 100 + i));
-  final cipher = Uint8List.fromList(List.generate(40, (i) => 200 - i));
+  const codec = IdentityCodec();
+  // A plausible 64-byte Ed25519 secret key (seed || public).
+  final secretKey = Uint8List.fromList(List.generate(64, (i) => (i * 3) % 256));
 
-  group('encodeContainer', () {
-    test('lays out all fields at their pinned offsets', () {
-      final s = IdentityCodec.encodeContainer(salt, 3, 268435456, nonce, cipher);
-      expect(s.startsWith('ZID1.'), isTrue);
-      final bytes = base64Url.decode(base64.normalize(s.substring(5)));
-      expect(bytes[0], 1); // format version
-      expect(bytes[1], 1); // kdf id
-      expect(bytes.sublist(2, 18), salt);
-      final bd = ByteData.sublistView(bytes);
-      expect(bd.getUint32(18, Endian.little), 3);
-      expect(bd.getUint64(22, Endian.little), 268435456);
-      expect(bytes.sublist(30, 54), nonce);
-      expect(bytes.sublist(54), cipher);
+  group('string framing', () {
+    test('round-trips the container bytes', () {
+      final container = Uint8List.fromList([1, 2, 3, 250, 251]);
+      final text = IdentityCodec.encodeContainer(container);
+      expect(text, startsWith(IdentityCodec.prefix));
+      expect(IdentityCodec.decodeContainer(text), container);
+    });
+
+    test('tolerates whitespace a QR scan or a paste can introduce', () {
+      final container = Uint8List.fromList(List.generate(40, (i) => i));
+      final text = IdentityCodec.encodeContainer(container);
+      final mangled = '  ${text.substring(0, 10)}\n ${text.substring(10)}  ';
+      expect(IdentityCodec.decodeContainer(mangled), container);
+    });
+
+    test('rejects anything that is not one of ours', () {
+      expect(() => IdentityCodec.decodeContainer('hello'),
+          throwsA(isA<IdentityExportException>()));
+      expect(() => IdentityCodec.decodeContainer('ZID1.abc'),
+          throwsA(isA<IdentityExportException>()),
+          reason: 'the pre-core format is not readable any more');
+      expect(() => IdentityCodec.decodeContainer('${IdentityCodec.prefix}!!!'),
+          throwsA(isA<IdentityExportException>()));
     });
   });
 
-  group('decodeContainer', () {
-    test('round-trips what encodeContainer wrote', () {
-      final decoded = IdentityCodec.decodeContainer(
-          IdentityCodec.encodeContainer(salt, 2, 1 << 28, nonce, cipher));
-      expect(decoded.salt, salt);
-      expect(decoded.opsLimit, 2);
-      expect(decoded.memLimit, 1 << 28);
-      expect(decoded.nonce, nonce);
-      expect(decoded.cipher, cipher);
-    });
+  group('encode and decode', () {
+    // Real Argon2id at production parameters: slow on purpose, so one
+    // round trip covers it rather than one per assertion.
+    test('an export decodes back to the same identity', () async {
+      late final String export;
+      try {
+        export = await codec.encode(
+            secretKey: secretKey, passphrase: 'a good long passphrase', name: 'Julio');
+      } catch (_) {
+        return markTestSkipped('core library unavailable');
+      }
+      final decoded = await codec.decode(export, 'a good long passphrase');
+      expect(decoded.secretKey, secretKey);
+      expect(decoded.name, 'Julio');
 
-    test('tolerates surrounding and embedded whitespace (hand-typed code)',
-        () {
-      final s = IdentityCodec.encodeContainer(salt, 2, 1 << 28, nonce, cipher);
-      final mangled = '  ${s.substring(0, 20)}\n${s.substring(20)} ';
-      final decoded = IdentityCodec.decodeContainer(mangled);
-      expect(decoded.cipher, cipher);
-    });
-
-    test('rejects a missing prefix as not-an-export', () {
-      final s = IdentityCodec.encodeContainer(salt, 2, 1 << 28, nonce, cipher);
-      expect(
-        () => IdentityCodec.decodeContainer(s.substring(5)),
-        throwsA(predicate((e) =>
-            e is IdentityExportException &&
-            e.message.contains('Not a Stonechat identity export'))),
-      );
-    });
-
-    test('rejects a future format version as newer-version', () {
-      final s = IdentityCodec.encodeContainer(salt, 2, 1 << 28, nonce, cipher);
-      final bytes = base64Url.decode(base64.normalize(s.substring(5)));
-      bytes[0] = 2;
-      expect(
-        () => IdentityCodec.decodeContainer('ZID1.${base64UrlEncode(bytes)}'),
-        throwsA(predicate((e) =>
-            e is IdentityExportException &&
-            e.message.contains('newer version'))),
-      );
-    });
-
-    test('rejects header-only input', () {
-      final s = IdentityCodec.encodeContainer(
-          salt, 2, 1 << 28, nonce, Uint8List(0));
-      expect(
-        () => IdentityCodec.decodeContainer(s),
+      // The failure the UI has a message for.
+      await expectLater(
+        codec.decode(export, 'not the passphrase'),
         throwsA(isA<IdentityExportException>()),
       );
-    });
-
-    test('rejects garbage base64', () {
-      expect(
-        () => IdentityCodec.decodeContainer('ZID1.@@@not-base64@@@'),
-        throwsA(isA<IdentityExportException>()),
-      );
-    });
+    }, timeout: const Timeout(Duration(minutes: 2)));
   });
 }

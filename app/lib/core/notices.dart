@@ -36,11 +36,14 @@ class LocalNotices {
     }
   }
 
-  Future<void> show(String title, String body) async {
+  /// [id] separates notice kinds: posting the same id replaces the previous
+  /// notification, so an outage warning must not reuse the setup channel's
+  /// slot (and re-posting an outage update should replace, not stack).
+  Future<void> show(String title, String body, {int id = 0}) async {
     if (!_ready) return;
     try {
       await _plugin.show(
-        id: 0,
+        id: id,
         title: title,
         body: body,
         notificationDetails: const NotificationDetails(

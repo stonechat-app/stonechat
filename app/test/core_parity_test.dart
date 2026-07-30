@@ -18,9 +18,9 @@ import 'package:stonechat/core/pqcore.dart';
 void main() {
   CryptoService? crypto;
 
-  setUpAll(() async {
+  setUpAll(() {
     try {
-      crypto = CryptoService.generate(await CryptoService.loadSodium());
+      crypto = CryptoService.generate();
     } catch (_) {
       crypto = null;
     }
