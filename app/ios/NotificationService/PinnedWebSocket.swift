@@ -20,6 +20,12 @@ final class PinnedWebSocket: NSObject, URLSessionDelegate {
     self.tlsFp = tlsFp
   }
 
+  /// Opens the socket. Deliberately does NOT round-trip a ping first: the
+  /// relay splits its socket (relay/src/ws.rs), so tungstenite's automatic
+  /// Pong is queued on a write half that is only flushed when the relay
+  /// has envelopes to send — a ping can go unanswered on a perfectly
+  /// healthy connection. Readiness is proven by the first frame instead,
+  /// and a dead connection surfaces as a receive error.
   func connect(timeout: TimeInterval) -> Bool {
     let ws = address
       .replacingOccurrences(of: "https://", with: "wss://")
@@ -32,37 +38,31 @@ final class PinnedWebSocket: NSObject, URLSessionDelegate {
     let task = session.webSocketTask(with: url)
     self.task = task
     task.resume()
-    // The relay drains the queue immediately on attach; readiness shows up
-    // as either a first frame or a clean open. sendPing round-trips the
-    // handshake so we know the pinned connection actually stood up.
-    let opened = DispatchSemaphore(value: 0)
-    var ok = false
-    task.sendPing { error in
-      ok = error == nil
-      if let error {
-        // The reason matters: ATS refusals, pin mismatches and plain
-        // offline all look identical from the outside otherwise.
-        nseLog.error("mailbox ping failed: \(error.localizedDescription, privacy: .public)")
-      }
-      opened.signal()
-    }
-    if opened.wait(timeout: .now() + timeout) == .timedOut {
-      nseLog.error("mailbox ping timed out after \(timeout, privacy: .public)s")
-    }
-    return ok
+    return true
   }
 
-  /// Next text frame, or nil on timeout/close — timeout doubles as the
-  /// "queue is drained" signal (the relay has no end marker).
-  func receive(timeout: TimeInterval) -> String? {
-    guard let task else { return nil }
+  enum Frame {
+    case text(String)
+    /// Nothing arrived in the window — with no end marker from the relay,
+    /// this is what "the queue is drained" looks like.
+    case idle
+    /// The connection failed (TLS pin, auth, network). Carries the reason.
+    case failed(String)
+  }
+
+  func receive(timeout: TimeInterval) -> Frame {
+    guard let task else { return .failed("no socket") }
     let done = DispatchSemaphore(value: 0)
-    var frame: String?
+    var frame = Frame.idle
     task.receive { result in
-      if case .success(.string(let text)) = result { frame = text }
+      switch result {
+      case .success(.string(let text)): frame = .text(text)
+      case .success: frame = .idle  // binary/unknown — the relay sends text
+      case .failure(let error): frame = .failed(error.localizedDescription)
+      }
       done.signal()
     }
-    guard done.wait(timeout: .now() + timeout) == .success else { return nil }
+    guard done.wait(timeout: .now() + timeout) == .success else { return .idle }
     return frame
   }
 

@@ -124,24 +124,36 @@ final class Drainer {
     }
 
     let socket = PinnedWebSocket(address: address, token: token, tlsFp: tlsFp)
-    guard socket.connect(timeout: 6) else {
-      nseLog.error("mailbox socket did not open (pin mismatch, offline, or timeout)")
+    guard socket.connect(timeout: 8) else {
+      nseLog.error("could not build the mailbox URL")
       return nil
     }
     defer { socket.close() }
 
     var summary = DrainSummary()
     var frames = 0
-    // The relay pushes the whole queue on attach; there is no end marker,
-    // so idle (no frame for a beat) means drained.
+    // The relay pushes the whole queue on attach and sends no end marker,
+    // so an idle window means drained. The first frame doubles as proof
+    // the pinned connection stood up — hence the longer window for it
+    // (TLS handshake + queue read) and a short one after.
+    var window: TimeInterval = 8
     while Date() < deadline {
-      guard let frame = socket.receive(timeout: 1.5) else { break }
-      frames += 1
-      if let shown = process(frame: frame, socket: socket) {
-        summary.shown.append(shown)
+      switch socket.receive(timeout: window) {
+      case .text(let frame):
+        frames += 1
+        window = 1.5
+        if let shown = process(frame: frame, socket: socket) {
+          summary.shown.append(shown)
+        }
+      case .idle:
+        nseLog.info("mailbox idle after \(frames) frame(s) — drained")
+        return summary.shown.isEmpty ? nil : summary
+      case .failed(let reason):
+        nseLog.error("mailbox socket failed: \(reason, privacy: .public)")
+        return summary.shown.isEmpty ? nil : summary
       }
     }
-    nseLog.info("drained \(frames) envelope(s), \(summary.shown.count) shown")
+    nseLog.info("deadline reached after \(frames) frame(s), \(summary.shown.count) shown")
     return summary.shown.isEmpty ? nil : summary
   }
 
