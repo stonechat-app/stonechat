@@ -25,7 +25,25 @@ fn detail(status: StatusCode, msg: &str) -> Response {
 }
 
 fn owner_only(state: &AppState, q: &HashMap<String, String>) -> Result<(), Response> {
-    if q.get("token").map(String::as_str) != Some(state.cfg.owner_token.as_str()) {
+    let given = q.get("token").map(String::as_str).unwrap_or("");
+    if !blobs::secret_eq(given, &state.cfg.owner_token) {
+        return Err(detail(StatusCode::UNAUTHORIZED, "owner only"));
+    }
+    Ok(())
+}
+
+/// Read access to one blob: the owner token, or that blob's derived fetch
+/// token. Same 401 body either way — a caller holding neither learns nothing
+/// about which of the two it failed.
+fn blob_reader_only(
+    state: &AppState,
+    q: &HashMap<String, String>,
+    blob_id: &str,
+) -> Result<(), Response> {
+    let given = q.get("token").map(String::as_str).unwrap_or("");
+    let owner = blobs::secret_eq(given, &state.cfg.owner_token);
+    let shared = blobs::secret_eq(given, &blobs::fetch_token(&state.cfg.owner_token, blob_id));
+    if !(owner || shared) {
         return Err(detail(StatusCode::UNAUTHORIZED, "owner only"));
     }
     Ok(())
@@ -295,14 +313,27 @@ fn host_from_headers(headers: &HeaderMap) -> Option<String> {
 
 // -- blobs --------------------------------------------------------------------
 
-pub async fn blob_upload(State(state): State<Arc<AppState>>, body: Bytes) -> Response {
+/// Unauthenticated, like `/inbox`: anyone may park ciphertext for this box's
+/// owner. `?shared=1` additionally returns the blob's fetch token — the group
+/// -media path, where the uploader is the owner and the readers are their
+/// fellow members (PROTOCOL.md "Groups").
+pub async fn blob_upload(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
     if body.is_empty() {
         return detail(StatusCode::BAD_REQUEST, "empty blob");
     }
     if body.len() > MAX_BLOB_BYTES {
         return detail(StatusCode::PAYLOAD_TOO_LARGE, "blob too large");
     }
+    let shared = matches!(q.get("shared").map(String::as_str), Some("1" | "true"));
     match state.blobs.put(&body) {
+        Ok(blob_id) if shared => {
+            let token = blobs::fetch_token(&state.cfg.owner_token, &blob_id);
+            Json(json!({"blob_id": blob_id, "fetch_token": token})).into_response()
+        }
         Ok(blob_id) => Json(json!({"blob_id": blob_id})).into_response(),
         Err(blobs::PutError::StorageFull) => {
             detail(StatusCode::INSUFFICIENT_STORAGE, "blob storage full")
@@ -310,12 +341,15 @@ pub async fn blob_upload(State(state): State<Arc<AppState>>, body: Bytes) -> Res
     }
 }
 
+/// Accepts the owner token (the DM path: you fetching your own queued media)
+/// or *this blob's* fetch token (the group path: a fellow member fetching the
+/// single copy the sender parked here).
 pub async fn blob_download(
     State(state): State<Arc<AppState>>,
     Path(blob_id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = owner_only(&state, &q) {
+    if let Err(r) = blob_reader_only(&state, &q, &blob_id) {
         return r;
     }
     if !blobs::valid_blob_id(&blob_id) {
@@ -329,6 +363,25 @@ pub async fn blob_download(
             .into_response(),
         None => detail(StatusCode::NOT_FOUND, "no such blob"),
     }
+}
+
+/// Owner-only: reclaim the space a shared group blob holds once every member
+/// has fetched it. Without this a group photo would sit out the full BLOB_TTL
+/// against the sender's own storage cap. Idempotent — deleting a blob that is
+/// already gone is a success, so a retried cleanup never errors.
+pub async fn blob_delete(
+    State(state): State<Arc<AppState>>,
+    Path(blob_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = owner_only(&state, &q) {
+        return r;
+    }
+    if !blobs::valid_blob_id(&blob_id) {
+        return detail(StatusCode::BAD_REQUEST, "bad blob id");
+    }
+    state.blobs.delete(&blob_id);
+    Json(json!({"status": "ok"})).into_response()
 }
 
 #[cfg(test)]

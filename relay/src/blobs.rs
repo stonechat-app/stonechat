@@ -12,11 +12,48 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
+
 use crate::{BLOB_TTL, MAX_TOTAL_BLOB_BYTES};
+
+type Blake2b256 = Blake2b<U32>;
 
 pub fn valid_blob_id(id: &str) -> bool {
     // Python: ^[a-f0-9-]{36}$
     id.len() == 36 && id.bytes().all(|b| matches!(b, b'a'..=b'f' | b'0'..=b'9' | b'-'))
+}
+
+/// Per-blob read capability, for group media (PROTOCOL.md "Groups").
+///
+/// A group sender parks *one* ciphertext on their own mailbox and hands every
+/// member this token inside the (already encrypted) envelope. It grants read
+/// on exactly one blob and nothing else — members never see the owner token,
+/// and knowing one blob's token says nothing about another's.
+///
+/// Blake2b is not length-extendable, so `H(key || msg)` is a sound MAC and we
+/// avoid pulling in HMAC/SHA-2 for it. Derived, never stored: the relay keeps
+/// no per-blob row, and a token stays valid exactly as long as the blob does.
+pub fn fetch_token(owner_token: &str, blob_id: &str) -> String {
+    let mut h = Blake2b256::new();
+    h.update(owner_token.as_bytes());
+    h.update(b"|stonechat-blob-fetch|");
+    h.update(blob_id.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Length-independent, byte-constant-time string compare — token checks must
+/// not leak a prefix through timing.
+pub fn secret_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 pub enum PutError {
@@ -100,7 +137,30 @@ impl BlobStore {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_blob_id;
+    use super::{fetch_token, secret_eq, valid_blob_id};
+
+    #[test]
+    fn fetch_token_is_derived_and_scoped() {
+        let a = "123e4567-e89b-42d3-a456-426614174000";
+        let b = "223e4567-e89b-42d3-a456-426614174000";
+        // Deterministic: no per-blob state to lose across restarts.
+        assert_eq!(fetch_token("tok-secret", a), fetch_token("tok-secret", a));
+        assert_eq!(fetch_token("tok-secret", a).len(), 64);
+        // One blob's token opens nothing else, and no mailbox's token opens another's.
+        assert_ne!(fetch_token("tok-secret", a), fetch_token("tok-secret", b));
+        assert_ne!(fetch_token("tok-secret", a), fetch_token("tok-other", a));
+        // Never equal to the owner token it is derived from.
+        assert_ne!(fetch_token("tok-secret", a), "tok-secret");
+    }
+
+    #[test]
+    fn secret_eq_matches_plain_eq() {
+        assert!(secret_eq("abc", "abc"));
+        assert!(!secret_eq("abc", "abd"));
+        assert!(!secret_eq("abc", "ab")); // length mismatch, no panic
+        assert!(!secret_eq("", "x"));
+        assert!(secret_eq("", ""));
+    }
 
     #[test]
     fn blob_id_shape() {

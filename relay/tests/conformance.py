@@ -33,13 +33,18 @@ def req(base, method, path, body=None):
                                else json.dumps(body).encode())
     try:
         with urllib.request.urlopen(r, context=CTX, timeout=10) as resp:
-            return resp.status, json.loads(resp.read() or b"null")
+            return resp.status, _body(resp.read())
     except urllib.error.HTTPError as e:
-        raw = e.read()
-        try:
-            return e.code, json.loads(raw)
-        except json.JSONDecodeError:
-            return e.code, {"_nonjson": raw.decode(errors="replace")[:100]}
+        return e.code, _body(e.read())
+
+
+def _body(raw):
+    """JSON where the relay speaks JSON; a short marker otherwise — a blob
+    download returns opaque ciphertext, not an object."""
+    try:
+        return json.loads(raw or b"null")
+    except json.JSONDecodeError:
+        return {"_nonjson": raw.decode(errors="replace")[:100]}
 
 
 ENV_OK = {"v": 1, "id": "e-0001", "to": OWNER, "sealed": "aGVsbG8="}
@@ -102,16 +107,45 @@ CORPUS = [
     ("blob-get-noauth", "GET", "/blob/123e4567-e89b-42d3-a456-426614174000", None, None),
     ("blob-get-badid", "GET", f"/blob/notanid?token={TOKEN}", None, None),
     ("blob-get-missing", "GET", f"/blob/123e4567-e89b-42d3-a456-426614174000?token={TOKEN}", None, None),
+    # Group media (PROTOCOL.md "Groups"): one shared blob on the sender's own
+    # mailbox, read by fellow members with a per-blob capability token.
+    ("blob-shared-ok", "POST", "/blob?shared=1", b"group-photo-ciphertext",
+     lambda b: {"blob_id": "X", "fetch_token": "X" if b.get("fetch_token") else None}),
+    # ...the token the upload just handed out actually opens that blob...
+    ("blob-shared-get", "GET",
+     lambda r: f"/blob/{r['blob-shared-ok']['blob_id']}?token={r['blob-shared-ok']['fetch_token']}",
+     None, None),
+    # ...and opens nothing else: the token is bound to its own blob id.
+    ("blob-shared-token-wrong-blob", "GET",
+     lambda r: f"/blob/{r['blob-ok']['blob_id']}?token={r['blob-shared-ok']['fetch_token']}",
+     None, None),
+    ("blob-shared-token-not-owner", "GET",
+     lambda r: f"/status?token={r['blob-shared-ok']['fetch_token']}", None, None),
+    # A plain (non-shared) upload hands out no token at all.
+    ("blob-plain-has-no-token", "GET",
+     lambda r: f"/blob/{r['blob-ok']['blob_id']}?token=deadbeef", None, None),
+    ("blob-delete-noauth", "DELETE", "/blob/123e4567-e89b-42d3-a456-426614174000", None, None),
+    ("blob-delete-badid", "DELETE", f"/blob/notanid?token={TOKEN}", None, None),
+    ("blob-delete-missing", "DELETE",
+     f"/blob/123e4567-e89b-42d3-a456-426614174000?token={TOKEN}", None, None),
+    ("blob-delete-ok", "DELETE",
+     lambda r: f"/blob/{r['blob-shared-ok']['blob_id']}?token={TOKEN}", None, None),
+    # Deleted means gone — the capability token outlives nothing.
+    ("blob-shared-get-after-delete", "GET",
+     lambda r: f"/blob/{r['blob-shared-ok']['blob_id']}?token={r['blob-shared-ok']['fetch_token']}",
+     None, None),
 ]
 
 
 def run(base):
-    out = {}
+    out, raw = {}, {}
     for label, method, path, body, norm in CORPUS:
-        status, resp = req(base, method, path, body)
-        if norm:
-            resp = norm(resp)
-        out[label] = [status, resp]
+        # A callable path reads earlier *un-normalized* responses: the blob id
+        # and fetch token are random per run, so the capability round trip can
+        # only be expressed by chaining, while the golden records the shape.
+        status, resp = req(base, method, path(raw) if callable(path) else path, body)
+        raw[label] = resp if isinstance(resp, dict) else {}
+        out[label] = [status, norm(resp) if norm else resp]
     return out
 
 

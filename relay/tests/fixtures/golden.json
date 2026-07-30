@@ -319,5 +319,66 @@
     {
       "detail": "no such blob"
     }
+  ],
+  "blob-shared-ok": [
+    200,
+    {
+      "blob_id": "X",
+      "fetch_token": "X"
+    }
+  ],
+  "blob-shared-get": [
+    200,
+    {
+      "_nonjson": "group-photo-ciphertext"
+    }
+  ],
+  "blob-shared-token-wrong-blob": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "blob-shared-token-not-owner": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "blob-plain-has-no-token": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "blob-delete-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "blob-delete-badid": [
+    400,
+    {
+      "detail": "bad blob id"
+    }
+  ],
+  "blob-delete-missing": [
+    200,
+    {
+      "status": "ok"
+    }
+  ],
+  "blob-delete-ok": [
+    200,
+    {
+      "status": "ok"
+    }
+  ],
+  "blob-shared-get-after-delete": [
+    404,
+    {
+      "detail": "no such blob"
+    }
   ]
 }

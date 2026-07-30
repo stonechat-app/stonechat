@@ -960,6 +960,73 @@ def main():
                   params={"token": bob.server["server_token"]})
     assert gone.status_code == 404, "blob should be deleted after ack"
 
+    print("6e) group media: one shared blob on the sender's box, fetched by token")
+    # Group media inverts the DM path (PROTOCOL.md "Group media"): Alice
+    # uploads ONE ciphertext to her OWN mailbox and hands every member a
+    # per-blob capability, instead of parking a copy on each of their boxes.
+    clip = nacl_random(150_000)
+    g_key, g_nonce = nacl_random(32), nacl_random(24)
+    g_sealed = crypto_aead_xchacha20poly1305_ietf_encrypt(clip, b"", g_nonce, g_key)
+    r = MX.post(f"{alice.server['address']}/blob", params={"shared": "1"},
+                content=g_sealed, timeout=30)
+    r.raise_for_status()
+    g_blob_id, g_token = r.json()["blob_id"], r.json()["fetch_token"]
+    assert g_token and g_token != alice.server["server_token"], \
+        "the fetch token must not be (or reveal) the owner token"
+
+    gmedia = alice.seal(bob, "group_media", {
+        "group_id": group_id,
+        "blob_id": g_blob_id,
+        "key": base64.b64encode(g_key).decode(),
+        "blob_nonce": base64.b64encode(g_nonce).decode(),
+        "fetch_token": g_token,
+        "blob_host": alice.server["address"],
+        "blob_tls_fp": alice.server["tls_fp"],
+        "mime": "video/mp4", "kind": "video", "size": len(clip),
+    })
+    # No blob_id on the outer envelope: the blob lives on Alice's mailbox, so
+    # Bob's ack must not try to garbage-collect it from his.
+    assert "blob_id" not in gmedia, "group media must not hint blob_id to a member's mailbox"
+    alice.deliver_to(bob, gmedia)
+
+    shared_holder = {}
+
+    def fetch_shared(envelope):
+        payload = bob.open_envelope(envelope, alice)
+        assert payload["blob_tls_fp"] == live_cert_fp(payload["blob_host"]), \
+            "the quoted fingerprint must be the one the sender's box presents"
+        dl = MX.get(f"{payload['blob_host']}/blob/{payload['blob_id']}",
+                    params={"token": payload["fetch_token"]}, timeout=30)
+        dl.raise_for_status()
+        shared_holder["data"] = crypto_aead_xchacha20poly1305_ietf_decrypt(
+            dl.content, b"",
+            base64.b64decode(payload["blob_nonce"]),
+            base64.b64decode(payload["key"]),
+        )
+
+    asyncio.run(bob.receive_one(process=fetch_shared))
+    assert shared_holder["data"] == clip, "group media round-trip corrupted"
+
+    # The capability is scoped: it opens that one blob, and it is not an
+    # owner token for anything else on Alice's mailbox.
+    assert MX.get(f"{alice.server['address']}/blob/{g_blob_id}").status_code == 401
+    assert MX.get(f"{alice.server['address']}/status",
+                  params={"token": g_token}).status_code == 401
+
+    # A member's ack must NOT collect the sender's blob — she still owes it to
+    # every member who hasn't fetched yet.
+    time.sleep(0.5)
+    assert MX.get(f"{alice.server['address']}/blob/{g_blob_id}",
+                  params={"token": g_token}).status_code == 200, \
+        "a member's ack must not GC the sender's shared blob"
+
+    # She reclaims it herself once everyone has it.
+    assert MX.delete(f"{alice.server['address']}/blob/{g_blob_id}",
+                     params={"token": alice.server["server_token"]}).status_code == 200
+    assert MX.get(f"{alice.server['address']}/blob/{g_blob_id}",
+                  params={"token": g_token}).status_code == 404, \
+        "the capability must not outlive the blob"
+
     print("7) wrong recipient rejected by mailbox")
     r = MX.post(
         f"{bob.server['address']}/inbox",

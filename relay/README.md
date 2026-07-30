@@ -72,10 +72,12 @@ python3 tests/conformance.py https://127.0.0.1:<port> --record   # after intenti
 python3 tests/ws_test.py https://127.0.0.1:<port>   # needs `websockets`
 ```
 
-Status at last run: 42/42 HTTP corpus identical to the goldens (status
+Status at last run: 52/52 HTTP corpus identical to the goldens (status
 codes + bodies, including the FastAPI-style `{"detail": …}` error shapes
 inherited from the Python era), WS suite pass (drain order, ack-delete +
 blob GC, close 4000 replacement, 403 bad token). Provenance: the live
 Python↔Rust diff passed 40/40 pre-PQXDH (2026-07-19); the PQXDH prekey
 surface was then added to both relays in lockstep, and the goldens were
-recorded from the Rust relay at cutover (2026-07-27).
+recorded from the Rust relay at cutover (2026-07-27). The last ten
+expectations are the group-media surface — shared blob upload, capability
+scoping, owner delete — added 2026-07-30 with the original 42 unchanged.

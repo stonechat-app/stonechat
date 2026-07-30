@@ -163,7 +163,10 @@ async fn main() {
         .route("/push-config", post(routes::push_config))
         .route("/turn-credentials", get(routes::turn_credentials))
         .route("/blob", post(routes::blob_upload))
-        .route("/blob/{blob_id}", get(routes::blob_download))
+        .route(
+            "/blob/{blob_id}",
+            get(routes::blob_download).delete(routes::blob_delete),
+        )
         .route("/ws", get(ws::ws_owner))
         .layer(DefaultBodyLimit::max(MAX_BLOB_BYTES + 1024))
         .with_state(state.clone());
