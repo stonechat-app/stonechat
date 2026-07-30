@@ -92,7 +92,7 @@ final class Drainer {
       let dbKey = Keychain.read("zn_db_key"),
       let ownId = Keychain.read("zn_id"),
       let secretB64 = Keychain.read("zn_secret"),
-      let secret = Data(base64Encoded: secretB64), secret.count >= 32
+      let secret = Data(base64Encoded: secretB64), secret.count == 64
     else {
       nseLog.error("no identity in the shared keychain — nothing to drain")
       return nil
@@ -104,7 +104,7 @@ final class Drainer {
     self.db = db
     self.ownId = ownId
     self.edSeed = secret.prefix(32)
-    guard let pq = Core.pqSeed(fromEdSeed: edSeed) else {
+    guard let pq = Core.pqSeed(fromEdSecret: secret) else {
       nseLog.error("core: pq seed derivation failed")
       return nil
     }

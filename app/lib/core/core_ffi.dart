@@ -30,6 +30,12 @@ DynamicLibrary openCoreLibrary() {
   return DynamicLibrary.open('libstonechat_core.so');
 }
 
+typedef _PqSeedNative = Int32 Function(Pointer<Uint8>, Pointer<Uint8>);
+typedef _PqSeed = int Function(Pointer<Uint8>, Pointer<Uint8>);
+
+typedef _TlsFpNative = Int32 Function(Pointer<Uint8>, Size, Pointer<Uint8>);
+typedef _TlsFp = int Function(Pointer<Uint8>, int, Pointer<Uint8>);
+
 typedef _FreeNative = Void Function(Pointer<Uint8>, Size);
 typedef _Free = void Function(Pointer<Uint8>, int);
 
@@ -143,6 +149,8 @@ typedef _Decrypt =
 
 class StonechatCore {
   final _Free _free;
+  final _PqSeed _pqSeed;
+  final _TlsFp _tlsFp;
   final _Initiate _initiate;
   final _Respond _respond;
   final _Encrypt _encrypt;
@@ -150,6 +158,12 @@ class StonechatCore {
 
   StonechatCore._(DynamicLibrary lib)
     : _free = lib.lookupFunction<_FreeNative, _Free>('stonechat_free'),
+      _pqSeed = lib.lookupFunction<_PqSeedNative, _PqSeed>(
+        'stonechat_pq_seed_from_ed_secret',
+      ),
+      _tlsFp = lib.lookupFunction<_TlsFpNative, _TlsFp>(
+        'stonechat_tls_fingerprint',
+      ),
       _initiate = lib.lookupFunction<_InitiateNative, _Initiate>(
         'stonechat_session_initiate',
       ),
@@ -395,6 +409,40 @@ class StonechatCore {
       calloc.free(ctP);
       calloc.free(adP);
       calloc.free(fresh);
+    }
+  }
+
+  /// The X-Wing identity seed derived from the full 64-byte libsodium
+  /// secret key — the same KDF crypto.dart applies. Exposed so the app
+  /// and the notification extension can be proven to agree
+  /// (test/core_parity_test.dart); the app itself still derives its own.
+  Uint8List pqSeedFromEdSecret(Uint8List edSecret) {
+    final secret = _in(edSecret, 'edSecret', expected: 64);
+    final out = calloc<Uint8>(32);
+    try {
+      final rc = _pqSeed(secret, out);
+      if (rc != 0) throw StateError('stonechat-core pq seed failed ($rc)');
+      return Uint8List.fromList(out.asTypedList(32));
+    } finally {
+      calloc.free(secret);
+      calloc.free(out);
+    }
+  }
+
+  /// What clients pin: base64(BLAKE2b-256(cert DER)) — the extension's
+  /// copy of api.dart's check, kept honest by test/core_parity_test.dart.
+  String tlsFingerprintB64(Uint8List certDer) {
+    final der = _in(certDer, 'certDer');
+    final out = calloc<Uint8>(32);
+    try {
+      final rc = _tlsFp(der, certDer.length, out);
+      if (rc != 0) {
+        throw StateError('stonechat-core tls fingerprint failed ($rc)');
+      }
+      return base64Encode(out.asTypedList(32));
+    } finally {
+      calloc.free(der);
+      calloc.free(out);
     }
   }
 }

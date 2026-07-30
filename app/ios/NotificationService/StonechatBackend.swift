@@ -44,12 +44,15 @@ enum Keychain {
 // MARK: - stonechat-core wrappers
 
 enum Core {
-  static func pqSeed(fromEdSeed edSeed: Data) -> Data? {
+  /// `edSecret` is the full 64-byte libsodium secret key (what the app
+  /// hashes — crypto.dart `_pqSeed`), not the 32-byte seed.
+  static func pqSeed(fromEdSecret edSecret: Data) -> Data? {
+    guard edSecret.count == 64 else { return nil }
     var out = Data(count: 32)
-    let rc = edSeed.withUnsafeBytes { seed in
+    let rc = edSecret.withUnsafeBytes { secret in
       out.withUnsafeMutableBytes { o in
-        stonechat_pq_seed_from_ed_seed(
-          seed.bindMemory(to: UInt8.self).baseAddress,
+        stonechat_pq_seed_from_ed_secret(
+          secret.bindMemory(to: UInt8.self).baseAddress,
           o.bindMemory(to: UInt8.self).baseAddress)
       }
     }

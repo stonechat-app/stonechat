@@ -312,21 +312,24 @@ pub unsafe extern "C" fn stonechat_session_decrypt(
 
 // -- envelope + identity helpers (the NSE's non-session needs) -----------------
 
-/// Derive the X-Wing identity seed from the Ed25519 seed — the same
-/// domain-separated KDF the app uses (crypto.dart `_pqSeed`).
+/// Derive the X-Wing identity seed the same way the app does
+/// (crypto.dart `_pqSeed`): a domain-separated hash of the **full
+/// 64-byte libsodium Ed25519 secret key** (seed || public half), NOT of
+/// the 32-byte seed. Hashing the seed alone yields a different identity
+/// and every sealed envelope silently fails to open.
 ///
 /// # Safety
-/// `ed_seed`: 32 readable bytes. `pq_seed_out`: 32 writable bytes.
+/// `ed_secret`: 64 readable bytes. `pq_seed_out`: 32 writable bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn stonechat_pq_seed_from_ed_seed(
-    ed_seed: *const u8,
+pub unsafe extern "C" fn stonechat_pq_seed_from_ed_secret(
+    ed_secret: *const u8,
     pq_seed_out: *mut u8,
 ) -> i32 {
     ffi_guard!({
-        let Some(seed) = (unsafe { arr::<32>(ed_seed) }) else {
+        let Some(secret) = (unsafe { arr::<64>(ed_secret) }) else {
             return ERR_INPUT;
         };
-        let pq = keyed_hash_32(seed, PQID_SEED_KEY);
+        let pq = keyed_hash_32(secret, PQID_SEED_KEY);
         unsafe { pq_seed_out.copy_from_nonoverlapping(pq.as_ptr(), pq.len()) };
         OK
     })

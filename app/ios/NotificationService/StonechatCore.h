@@ -21,8 +21,9 @@ int32_t stonechat_session_decrypt(
     const uint8_t *fresh_ratchet_sk,            // 32 bytes CSPRNG
     uint8_t **out_ptr, size_t *out_len);        // {"state":…,"plaintext":"<b64>"}
 
-int32_t stonechat_pq_seed_from_ed_seed(const uint8_t *ed_seed,   // 32 bytes
-                                       uint8_t *pq_seed_out);    // 32 bytes
+// Takes the FULL 64-byte libsodium secret key, as crypto.dart does.
+int32_t stonechat_pq_seed_from_ed_secret(const uint8_t *ed_secret, // 64 bytes
+                                         uint8_t *pq_seed_out);    // 32 bytes
 
 int32_t stonechat_unseal(const uint8_t *pq_seed,                 // 32 bytes
                          const uint8_t *sealed, size_t sealed_len,
