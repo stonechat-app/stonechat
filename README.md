@@ -150,6 +150,14 @@ STONECHAT_FLEET_HOSTS="local=|127.0.0.1" STONECHAT_ADMIN_TOKEN=test-admin STONEC
 
 # app unit tests + static analysis (pqcore lib enables the FFI vector tests)
 cd app && STONECHAT_CORE_LIB=$PWD/../core/target/release/libstonechat_core.dylib flutter test && flutter analyze
+
+# fan-out latency: serial vs bounded-concurrent group sends, against a real
+# relay over TLS with an in-process delay proxy so handshakes pay real round
+# trips. Answers "how big can a group get" with numbers instead of arithmetic.
+# Start a relay first (see the conformance instructions in relay/README.md).
+python3 scripts/bench_fanout.py 127.0.0.1 <relay_port>
+python3 scripts/bench_devices.py 127.0.0.1 <relay_port>   # multi-device: does
+                                                          # connection reuse pay?
 ```
 
 ## Honest limitations (v1)
