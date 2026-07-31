@@ -57,6 +57,71 @@ String? sendAgeLabel(int ms) {
   return '${hours ~/ 24}d';
 }
 
+// -- fan-out concurrency ------------------------------------------------------
+
+/// How many member deliveries may be in flight at once.
+///
+/// A group message is N independent HTTPS posts to N different mailboxes,
+/// and they were serial: a 25-member group costs 25 round trips end to end.
+/// Multi-device multiplies that by the recipient's device count
+/// (MULTIDEVICE.md), which is why this had to stop being a loop before
+/// per-device fan-out lands. Bounded rather than unbounded so a large group
+/// can't open dozens of sockets at once on a phone radio.
+const fanOutConcurrency = 6;
+
+/// Serializes async work per key: two operations sharing a key never overlap,
+/// operations on different keys run in parallel.
+///
+/// Exists for the ratchet. A double ratchet is mutable state — two concurrent
+/// encrypts on one session derive the same message key, and two concurrent
+/// loads of a cold session build two independent objects from one DB row and
+/// then both encrypt from message 0. Fan-out only ever touches distinct
+/// peers, but a retry sweep can overlap a live send to the same peer, and
+/// that overlap became far likelier the moment fan-out stopped being serial.
+class KeyedSerializer {
+  final Map<String, Future<void>> _chain = {};
+
+  /// One entry per key ever used. Bounded by the contact list here, so it is
+  /// left to grow rather than reference-counted.
+  int get trackedKeys => _chain.length;
+
+  Future<T> run<T>(String key, Future<T> Function() body) {
+    final prior = _chain[key] ?? Future<void>.value();
+    final result = prior.then((_) => body());
+    // The chain must survive a failed body, or one unreachable peer would
+    // wedge every later message to them.
+    _chain[key] = result.then((_) {}, onError: (_) {});
+    return result;
+  }
+}
+
+/// Run [tasks] with at most [limit] in flight, returning results in the
+/// order the tasks were given (not the order they finished).
+///
+/// Tasks must not throw — a fan-out records per-recipient failures rather
+/// than aborting its siblings, so callers wrap their own body in try/catch
+/// and return the outcome instead.
+Future<List<T>> runBounded<T>(int limit, List<Future<T> Function()> tasks) async {
+  if (tasks.isEmpty) return <T>[];
+  final results = List<T?>.filled(tasks.length, null);
+  var next = 0;
+  // `next++` has no await between read and increment, so the single-threaded
+  // event loop makes this a safe work queue without a lock.
+  Future<void> worker() async {
+    while (true) {
+      final i = next++;
+      if (i >= tasks.length) return;
+      results[i] = await tasks[i]();
+    }
+  }
+
+  final workers = <Future<void>>[
+    for (var w = 0; w < limit.clamp(1, tasks.length); w++) worker(),
+  ];
+  await Future.wait(workers);
+  return results.cast<T>();
+}
+
 class ChatState extends ChangeNotifier {
   final AppState app;
 
@@ -537,6 +602,10 @@ class ChatState extends ChangeNotifier {
 
   // -- forward-secret sessions (PROTOCOL.md "Session crypto") --------------------
 
+  /// One writer per ratchet — see [KeyedSerializer]. Different peers still
+  /// encrypt in parallel, which is what makes concurrent fan-out safe.
+  final _peerLock = KeyedSerializer();
+
   Future<RatchetSession?> _loadSession(String peerId) async {
     final cached = _sessions[peerId];
     if (cached != null) return cached;
@@ -625,31 +694,35 @@ class ChatState extends ChangeNotifier {
     String? serverAddress,
     String? serverTlsFp,
     String? blobId,
-  }) async {
-    final session = await _sessionFor(
-      toStonechatId,
-      toPubkeyB64,
-      serverAddress: serverAddress,
-      serverTlsFp: serverTlsFp,
-    );
-    final adPrefix = 'stonechat/v1|${app.stonechatId}|$toStonechatId|$type';
-    final sealed = session.encrypt(jsonEncode(payload), adPrefix);
-    final x3dh = session.pendingX3dh?.toJson();
-    // Persist the advanced chain before the envelope can leave: a crash after
-    // send must never reuse a message key.
-    await _saveSession(session);
-    return Envelope(
-      id: envelopeId ?? _uuid.v4(),
-      type: type,
-      from: app.stonechatId!,
-      to: toStonechatId,
-      sentAt: DateTime.now().toUtc().toIso8601String(),
-      ratchet: sealed.ratchet,
-      x3dh: x3dh,
-      nonceB64: base64Encode(sealed.nonce),
-      ciphertextB64: base64Encode(sealed.ciphertext),
-      blobId: blobId,
-    );
+  }) {
+    // Establish-then-encrypt-then-persist is one indivisible step per peer:
+    // interleaving two of these on one ratchet reuses a message key.
+    return _peerLock.run(toStonechatId, () async {
+      final session = await _sessionFor(
+        toStonechatId,
+        toPubkeyB64,
+        serverAddress: serverAddress,
+        serverTlsFp: serverTlsFp,
+      );
+      final adPrefix = 'stonechat/v1|${app.stonechatId}|$toStonechatId|$type';
+      final sealed = session.encrypt(jsonEncode(payload), adPrefix);
+      final x3dh = session.pendingX3dh?.toJson();
+      // Persist the advanced chain before the envelope can leave: a crash
+      // after send must never reuse a message key.
+      await _saveSession(session);
+      return Envelope(
+        id: envelopeId ?? _uuid.v4(),
+        type: type,
+        from: app.stonechatId!,
+        to: toStonechatId,
+        sentAt: DateTime.now().toUtc().toIso8601String(),
+        ratchet: sealed.ratchet,
+        x3dh: x3dh,
+        nonceB64: base64Encode(sealed.nonce),
+        ciphertextB64: base64Encode(sealed.ciphertext),
+        blobId: blobId,
+      );
+    });
   }
 
   /// Decrypt an incoming envelope on the sender's session, establishing a
@@ -853,6 +926,36 @@ class ChatState extends ChangeNotifier {
       ],
     );
   }
+
+  /// Deliver to every member concurrently, swallowing per-member failures the
+  /// way each of these call sites already did individually. Returns true only
+  /// if every member's mailbox took its copy — the "reached everyone" answer
+  /// that edit and delete-for-everyone report to the user.
+  ///
+  /// Everything group-shaped goes through here: a 25-member reaction used to
+  /// be 25 sequential round trips, same as a message.
+  Future<bool> _fanOutToMembers(
+    Iterable<GroupMember> members,
+    Future<void> Function(GroupMember member) send,
+  ) async {
+    var reachedEveryone = true;
+    await runBounded(fanOutConcurrency, [
+      for (final member in members)
+        () async {
+          try {
+            await send(member);
+          } catch (_) {
+            reachedEveryone = false;
+          }
+        },
+    ]);
+    return reachedEveryone;
+  }
+
+  /// Every member of [groupId] except us — the fan-out target set.
+  Iterable<GroupMember> _othersIn(String groupId) =>
+      (groupMembers[groupId] ?? const <GroupMember>[])
+          .where((m) => m.stonechatId != app.stonechatId);
 
   /// Resolve + deliver to a group member (same trust-but-verify as contacts).
   Future<void> _deliverToMember(
@@ -1109,24 +1212,22 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
 
     final payload = _membershipPayload(group, members);
-    for (final m in members.where((m) => m.stonechatId != app.stonechatId)) {
-      try {
-        await _deliverToMember(
-          m,
-          await _sealFor(
-            EnvelopeType.groupCreate,
-            m.stonechatId,
-            m.pubkeyB64,
-            payload,
-            serverAddress: m.serverAddress,
-            serverTlsFp: m.tlsFp,
-          ),
-        );
-      } catch (_) {
-        // unreachable member hears about the group via the next groupUpdate
-        // or message retry; eventual delivery is accepted
-      }
-    }
+    // An unreachable member hears about the group via the next groupUpdate or
+    // message retry; eventual delivery is accepted.
+    await _fanOutToMembers(
+      members.where((m) => m.stonechatId != app.stonechatId),
+      (m) async => _deliverToMember(
+        m,
+        await _sealFor(
+          EnvelopeType.groupCreate,
+          m.stonechatId,
+          m.pubkeyB64,
+          payload,
+          serverAddress: m.serverAddress,
+          serverTlsFp: m.tlsFp,
+        ),
+      ),
+    );
     return group;
   }
 
@@ -1227,23 +1328,21 @@ class ChatState extends ChangeNotifier {
       ...members.where((m) => m.stonechatId != app.stonechatId),
       ...removed,
     ];
-    for (final m in recipients) {
-      try {
-        await _deliverToMember(
-          m,
-          await _sealFor(
-            EnvelopeType.groupUpdate,
-            m.stonechatId,
-            m.pubkeyB64,
-            payload,
-            serverAddress: m.serverAddress,
-            serverTlsFp: m.tlsFp,
-          ),
-        );
-      } catch (_) {
-        // unreachable member keeps the old view until the next update
-      }
-    }
+    // An unreachable member keeps the old view until the next update.
+    await _fanOutToMembers(
+      recipients,
+      (m) async => _deliverToMember(
+        m,
+        await _sealFor(
+          EnvelopeType.groupUpdate,
+          m.stonechatId,
+          m.pubkeyB64,
+          payload,
+          serverAddress: m.serverAddress,
+          serverTlsFp: m.tlsFp,
+        ),
+      ),
+    );
   }
 
   Future<Message> sendGroupMessage(
@@ -1386,27 +1485,35 @@ class ChatState extends ChangeNotifier {
     // a member's ack must not try to garbage-collect it from theirs.
     final type = isMedia ? EnvelopeType.groupMedia : EnvelopeType.groupMsg;
     Object? lastError; // one member's failure shouldn't hide behind the others
-    for (final member in members) {
-      try {
-        // Envelope id == message id for every copy: mailboxes are per-member
-        // so ids never collide, and both mailbox and receiver dedupe retries.
-        await _deliverToMember(
-          member,
-          await _sealFor(
-            type,
-            member.stonechatId,
-            member.pubkeyB64,
-            payload,
-            envelopeId: message.id,
-            serverAddress: member.serverAddress,
-            serverTlsFp: member.tlsFp,
-          ),
-        );
-        await app.db.clearOutbox(message.id, member.stonechatId);
-      } catch (e) {
-        lastError = e; // stays in outbox; retryPending re-attempts this member
-      }
-    }
+    // Members are independent mailboxes, so their deliveries overlap. Serial
+    // was one round trip per member end to end; _sealFor still serializes per
+    // peer, which is the only ordering that matters.
+    await runBounded(fanOutConcurrency, [
+      for (final member in members)
+        () async {
+          try {
+            // Envelope id == message id for every copy: mailboxes are
+            // per-member so ids never collide, and both mailbox and receiver
+            // dedupe retries.
+            await _deliverToMember(
+              member,
+              await _sealFor(
+                type,
+                member.stonechatId,
+                member.pubkeyB64,
+                payload,
+                envelopeId: message.id,
+                serverAddress: member.serverAddress,
+                serverTlsFp: member.tlsFp,
+              ),
+            );
+            await app.db.clearOutbox(message.id, member.stonechatId);
+          } catch (e) {
+            // stays in outbox; retryPending re-attempts this member
+            lastError = e;
+          }
+        },
+    ]);
     await _settleFanOut(message, lastError);
   }
 
@@ -1506,24 +1613,22 @@ class ChatState extends ChangeNotifier {
 
   /// Leave: announce to everyone, then delete locally.
   Future<void> leaveGroup(Group group) async {
-    final members = (groupMembers[group.id] ?? [])
-        .where((m) => m.stonechatId != app.stonechatId)
-        .toList();
-    for (final m in members) {
-      try {
-        await _deliverToMember(
-          m,
-          await _sealFor(
-            EnvelopeType.groupLeave,
-            m.stonechatId,
-            m.pubkeyB64,
-            {'group_id': group.id},
-            serverAddress: m.serverAddress,
-            serverTlsFp: m.tlsFp,
-          ),
-        );
-      } catch (_) {}
-    }
+    // Courtesy only — removal becomes authoritative with the admin's next
+    // group_update, so a member we can't reach costs nothing.
+    await _fanOutToMembers(
+      _othersIn(group.id),
+      (m) async => _deliverToMember(
+        m,
+        await _sealFor(
+          EnvelopeType.groupLeave,
+          m.stonechatId,
+          m.pubkeyB64,
+          {'group_id': group.id},
+          serverAddress: m.serverAddress,
+          serverTlsFp: m.tlsFp,
+        ),
+      ),
+    );
     await app.db.deleteGroup(group.id);
     groups.removeWhere((g) => g.id == group.id);
     groupMembers.remove(group.id);
@@ -2227,27 +2332,23 @@ class ChatState extends ChangeNotifier {
         );
       } else {
         final payload = {'group_id': group.id, 'state': state};
-        for (final m in (groupMembers[group.id] ?? []).where(
-          (m) => m.stonechatId != app.stonechatId,
-        )) {
-          if (!((await _loadSession(m.stonechatId))?.canSend ?? false)) {
-            continue;
-          }
-          try {
-            await _deliverToMember(
-              m,
-              await _sealFor(
-                EnvelopeType.typing,
-                m.stonechatId,
-                m.pubkeyB64,
-                payload,
-                serverAddress: m.serverAddress,
-                serverTlsFp: m.tlsFp,
-              ),
-              transient: true,
-            );
-          } catch (_) {} // per-member fire-and-forget
-        }
+        await _fanOutToMembers(_othersIn(group.id), (m) async {
+          // Only rides existing sessions — a typing hint is never worth an
+          // X3DH, so members we've never spoken to are skipped.
+          if (!((await _loadSession(m.stonechatId))?.canSend ?? false)) return;
+          await _deliverToMember(
+            m,
+            await _sealFor(
+              EnvelopeType.typing,
+              m.stonechatId,
+              m.pubkeyB64,
+              payload,
+              serverAddress: m.serverAddress,
+              serverTlsFp: m.tlsFp,
+            ),
+            transient: true,
+          );
+        });
       }
     } catch (_) {
       // fire-and-forget: a lost typing signal costs nothing
@@ -2348,25 +2449,20 @@ class ChatState extends ChangeNotifier {
       }
     } else {
       final payload = {'group_id': group.id, 'id': message.id, 'text': text};
-      for (final m in (groupMembers[group.id] ?? []).where(
-        (m) => m.stonechatId != app.stonechatId,
-      )) {
-        try {
-          await _deliverToMember(
-            m,
-            await _sealFor(
-              EnvelopeType.groupMsgEdit,
-              m.stonechatId,
-              m.pubkeyB64,
-              payload,
-              serverAddress: m.serverAddress,
-              serverTlsFp: m.tlsFp,
-            ),
-          );
-        } catch (_) {
-          reachedEveryone = false;
-        }
-      }
+      reachedEveryone = await _fanOutToMembers(
+        _othersIn(group.id),
+        (m) async => _deliverToMember(
+          m,
+          await _sealFor(
+            EnvelopeType.groupMsgEdit,
+            m.stonechatId,
+            m.pubkeyB64,
+            payload,
+            serverAddress: m.serverAddress,
+            serverTlsFp: m.tlsFp,
+          ),
+        ),
+      );
     }
     return reachedEveryone;
   }
@@ -2396,25 +2492,20 @@ class ChatState extends ChangeNotifier {
       }
     } else {
       final payload = {'group_id': group.id, 'id': message.id};
-      for (final m in (groupMembers[group.id] ?? []).where(
-        (m) => m.stonechatId != app.stonechatId,
-      )) {
-        try {
-          await _deliverToMember(
-            m,
-            await _sealFor(
-              EnvelopeType.groupMsgDelete,
-              m.stonechatId,
-              m.pubkeyB64,
-              payload,
-              serverAddress: m.serverAddress,
-              serverTlsFp: m.tlsFp,
-            ),
-          );
-        } catch (_) {
-          reachedEveryone = false;
-        }
-      }
+      reachedEveryone = await _fanOutToMembers(
+        _othersIn(group.id),
+        (m) async => _deliverToMember(
+          m,
+          await _sealFor(
+            EnvelopeType.groupMsgDelete,
+            m.stonechatId,
+            m.pubkeyB64,
+            payload,
+            serverAddress: m.serverAddress,
+            serverTlsFp: m.tlsFp,
+          ),
+        ),
+      );
     }
     return reachedEveryone;
   }
@@ -2491,23 +2582,20 @@ class ChatState extends ChangeNotifier {
 
     if (group != null) {
       final payload = {'group_id': group.id, 'expire_ms': expireMs};
-      for (final m in (groupMembers[group.id] ?? []).where(
-        (m) => m.stonechatId != app.stonechatId,
-      )) {
-        try {
-          await _deliverToMember(
-            m,
-            await _sealFor(
-              EnvelopeType.groupTimerUpdate,
-              m.stonechatId,
-              m.pubkeyB64,
-              payload,
-              serverAddress: m.serverAddress,
-              serverTlsFp: m.tlsFp,
-            ),
-          );
-        } catch (_) {}
-      }
+      await _fanOutToMembers(
+        _othersIn(group.id),
+        (m) async => _deliverToMember(
+          m,
+          await _sealFor(
+            EnvelopeType.groupTimerUpdate,
+            m.stonechatId,
+            m.pubkeyB64,
+            payload,
+            serverAddress: m.serverAddress,
+            serverTlsFp: m.tlsFp,
+          ),
+        ),
+      );
     } else {
       try {
         await _deliver(
@@ -2679,23 +2767,21 @@ class ChatState extends ChangeNotifier {
         );
       } else {
         final groupPayload = {...payload, 'group_id': group.id};
-        for (final m in (groupMembers[group.id] ?? []).where(
-          (m) => m.stonechatId != app.stonechatId,
-        )) {
-          try {
-            await _deliverToMember(
-              m,
-              await _sealFor(
-                EnvelopeType.groupReaction,
-                m.stonechatId,
-                m.pubkeyB64,
-                groupPayload,
-                serverAddress: m.serverAddress,
-                serverTlsFp: m.tlsFp,
-              ),
-            );
-          } catch (_) {} // best-effort, like receipts
-        }
+        // Best-effort, like receipts.
+        await _fanOutToMembers(
+          _othersIn(group.id),
+          (m) async => _deliverToMember(
+            m,
+            await _sealFor(
+              EnvelopeType.groupReaction,
+              m.stonechatId,
+              m.pubkeyB64,
+              groupPayload,
+              serverAddress: m.serverAddress,
+              serverTlsFp: m.tlsFp,
+            ),
+          ),
+        );
       }
     } catch (_) {
       // unreachable peer keeps the stale (or no) reaction — best-effort tier
