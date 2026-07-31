@@ -30,6 +30,7 @@ mod routes;
 mod tls;
 mod ws;
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -73,17 +74,30 @@ pub struct AppState {
     pub cfg: Config,
     pub mailbox: db::Mailbox,
     pub blobs: blobs::BlobStore,
-    pub link: link::OwnerLink,
+    pub link: link::DeviceLinks,
     pub tls_fp: String,
     pub http: reqwest::Client,
-    pub last_gateway_ping: Mutex<Option<Instant>>,
+    pub last_gateway_ping: Mutex<HashMap<i64, Instant>>,
 }
 
 impl AppState {
-    /// Delete an acked envelope — and its blob, if it referenced one.
-    pub fn delete_envelope(&self, envelope_id: &str) {
-        if let Some(blob_id) = self.mailbox.delete(envelope_id) {
-            self.blobs.delete(&blob_id);
+    /// Delete one device's copy of an acked envelope, and release its blob if
+    /// that was the last copy owed to anyone.
+    ///
+    /// Refcounted rather than deleted outright: with per-device fan-out the
+    /// same `blob_id` is referenced by one envelope per device, and the first
+    /// device to ack must not pull the file out from under its siblings
+    /// (MULTIDEVICE.md "Sending: per-device envelopes").
+    ///
+    /// Blobs with *no* referencing envelope are untouched here — that is the
+    /// token-shared mode group media uses, where the ciphertext sits on the
+    /// sender's own mailbox and is read by capability token. Those live out
+    /// their TTL or die by explicit DELETE.
+    pub fn delete_envelope(&self, device: i64, envelope_id: &str) {
+        if let Some(blob_id) = self.mailbox.delete(device, envelope_id) {
+            if self.mailbox.blob_refcount(&blob_id) == 0 {
+                self.blobs.delete(&blob_id);
+            }
         }
     }
 }
@@ -129,15 +143,15 @@ async fn main() {
 
     let tls = tls::Tls::load_or_generate(&tls_dir).expect("TLS setup failed");
     let state = Arc::new(AppState {
-        mailbox: db::Mailbox::open(&db_path).expect("mailbox db"),
+        mailbox: db::Mailbox::open(&db_path, &cfg.owner_token).expect("mailbox db"),
         blobs: blobs::BlobStore::open(&blob_dir).expect("blob store"),
-        link: link::OwnerLink::new(),
+        link: link::DeviceLinks::new(),
         tls_fp: tls.fingerprint_b64.clone(),
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
             .expect("http client"),
-        last_gateway_ping: Mutex::new(None),
+        last_gateway_ping: Mutex::new(HashMap::new()),
         cfg,
     });
 
@@ -159,6 +173,9 @@ async fn main() {
         .route("/owner", get(routes::owner_check))
         .route("/prekeys", post(routes::upload_prekeys))
         .route("/prekeys/bundle", get(routes::prekey_bundle))
+        .route("/prekeys/devices", get(routes::prekey_devices))
+        .route("/devices", get(routes::list_devices).post(routes::mint_device))
+        .route("/devices/{device_id}", axum::routing::delete(routes::revoke_device))
         .route("/inbox", post(routes::inbox))
         .route("/push-config", post(routes::push_config))
         .route("/turn-credentials", get(routes::turn_credentials))

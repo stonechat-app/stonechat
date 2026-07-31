@@ -12,6 +12,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use base64::engine::general_purpose::STANDARD as B64;
+use blake2::Digest;
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
@@ -24,12 +25,38 @@ fn detail(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"detail": msg}))).into_response()
 }
 
-fn owner_only(state: &AppState, q: &HashMap<String, String>) -> Result<(), Response> {
+/// Which device is calling. Any device token authenticates; device 1's token
+/// is `STONECHAT_OWNER_TOKEN`, so every existing client keeps working
+/// unchanged (MULTIDEVICE.md "Device model"). The 401 body is the historical
+/// "owner only" either way — a caller holding no valid token learns nothing
+/// about how many devices exist.
+fn auth_device(state: &AppState, q: &HashMap<String, String>) -> Result<i64, Response> {
     let given = q.get("token").map(String::as_str).unwrap_or("");
-    if !blobs::secret_eq(given, &state.cfg.owner_token) {
-        return Err(detail(StatusCode::UNAUTHORIZED, "owner only"));
+    state
+        .mailbox
+        .device_for_token(given)
+        .ok_or_else(|| detail(StatusCode::UNAUTHORIZED, "owner only"))
+}
+
+/// The derived per-mailbox capability that lets an established contact list
+/// devices without being able to do anything else here. Not the owner token,
+/// and it consumes no prekeys — see MULTIDEVICE.md "Why the device list is
+/// gated".
+fn bundle_token(owner_token: &str) -> String {
+    let mut h = blake2::Blake2b::<blake2::digest::consts::U32>::new();
+    h.update(owner_token.as_bytes());
+    h.update(b"|stonechat-bundle|");
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn bundle_reader_only(state: &AppState, q: &HashMap<String, String>) -> Result<(), Response> {
+    let given = q.get("token").map(String::as_str).unwrap_or("");
+    if blobs::secret_eq(given, &bundle_token(&state.cfg.owner_token))
+        || state.mailbox.device_for_token(given).is_some()
+    {
+        return Ok(());
     }
-    Ok(())
+    Err(detail(StatusCode::UNAUTHORIZED, "owner only"))
 }
 
 /// Read access to one blob: the owner token, or that blob's derived fetch
@@ -41,12 +68,11 @@ fn blob_reader_only(
     blob_id: &str,
 ) -> Result<(), Response> {
     let given = q.get("token").map(String::as_str).unwrap_or("");
-    let owner = blobs::secret_eq(given, &state.cfg.owner_token);
     let shared = blobs::secret_eq(given, &blobs::fetch_token(&state.cfg.owner_token, blob_id));
-    if !(owner || shared) {
-        return Err(detail(StatusCode::UNAUTHORIZED, "owner only"));
+    if shared || state.mailbox.device_for_token(given).is_some() {
+        return Ok(());
     }
-    Ok(())
+    Err(detail(StatusCode::UNAUTHORIZED, "owner only"))
 }
 
 // -- liveness / identity ------------------------------------------------------
@@ -64,14 +90,17 @@ pub async fn status(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = owner_only(&state, &q) {
-        return r;
-    }
+    let device = match auth_device(&state, &q) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
     Json(json!({
         "status": "ok",
         "v": WIRE_VERSION,
-        "queued": state.mailbox.depth(),
-        "prekeys": state.mailbox.prekey_status(),
+        "queued": state.mailbox.device_depth(device),
+        "prekeys": state.mailbox.prekey_status(device),
+        "device_id": device,
+        "devices_v": state.mailbox.devices_v(),
     }))
     .into_response()
 }
@@ -99,9 +128,10 @@ pub async fn upload_prekeys(
     Query(q): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = owner_only(&state, &q) {
-        return r;
-    }
+    let device = match auth_device(&state, &q) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
     // A full ML-KEM restock is ~55 KB of base64 — prekey uploads get their
     // own cap instead of the envelope one.
     if body.len() > MAX_PREKEY_UPLOAD_BYTES {
@@ -115,8 +145,8 @@ pub async fn upload_prekeys(
     };
     let Ok(parsed) = serde_json::from_slice::<Value>(&body) else { return bad() };
     let Some((spk, opks, kspk, kopks)) = parse_prekey_upload(&parsed) else { return bad() };
-    state.mailbox.set_prekeys(&spk, &opks, &kspk, &kopks);
-    Json(json!({"status": "ok", "prekeys": state.mailbox.prekey_status()})).into_response()
+    state.mailbox.set_prekeys(device, &spk, &opks, &kspk, &kopks);
+    Json(json!({"status": "ok", "prekeys": state.mailbox.prekey_status(device)})).into_response()
 }
 
 fn parse_signed(v: &Value) -> Option<SpkUpload> {
@@ -155,8 +185,28 @@ fn parse_prekey_upload(body: &Value) -> Option<PrekeyUpload> {
 
 /// Anyone may start a session (like /inbox). Consumes the returned OPK; a
 /// drained pool returns opk=null and senders fall back to 3-DH.
-pub async fn prekey_bundle(State(state): State<Arc<AppState>>) -> Response {
-    match state.mailbox.take_bundle() {
+///
+/// Unauthenticated it serves **device 1 only**, in exactly the shape and at
+/// exactly the cost it always did — one request, one OPK. `?device=` selects
+/// a sibling and requires the bundle token, so no single open call can burn a
+/// prekey per device (MULTIDEVICE.md "Why the device list is gated").
+pub async fn prekey_bundle(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    let device = match q.get("device") {
+        None => crate::db::PRIMARY_DEVICE,
+        Some(raw) => {
+            if let Err(r) = bundle_reader_only(&state, &q) {
+                return r;
+            }
+            match raw.parse::<i64>() {
+                Ok(d) => d,
+                Err(_) => return detail(StatusCode::BAD_REQUEST, "bad device"),
+            }
+        }
+    };
+    match state.mailbox.take_bundle(device) {
         Some(bundle) => Json(bundle).into_response(),
         None => detail(StatusCode::NOT_FOUND, "owner has not published prekeys yet"),
     }
@@ -212,33 +262,159 @@ pub async fn inbox(State(state): State<Arc<AppState>>, body: Bytes) -> Response 
     if envelope["to"].as_str() != Some(state.cfg.owner_id.as_str()) {
         return detail(StatusCode::FORBIDDEN, "not this mailbox's owner");
     }
+    // Which device this copy is for. Absent means device 1, so a sender that
+    // has never heard of devices addresses the primary exactly as before.
+    let devices_v = state.mailbox.devices_v();
+    let device = match envelope.get("device") {
+        None | Some(Value::Null) => crate::db::PRIMARY_DEVICE,
+        Some(v) => match v.as_i64() {
+            Some(d) if v.is_i64() => d,
+            _ => return detail(StatusCode::BAD_REQUEST, "bad device"),
+        },
+    };
+    // A revoked or never-minted device is a permanent failure for this copy,
+    // not a retry: 410 carries the current devices_v so the sender re-fetches
+    // the bundle and stops encrypting to a device that no longer exists.
+    if !state.mailbox.devices().iter().any(|d| d.device_id == device) {
+        return (
+            StatusCode::GONE,
+            Json(json!({"detail": "no such device", "devices_v": devices_v})),
+        )
+            .into_response();
+    }
     let envelope_json = serde_json::to_string(&envelope).unwrap();
 
     // Transient envelopes (typing indicators) are only worth anything live:
-    // never queued, never woken for. If the owner isn't connected they vanish.
+    // never queued, never woken for. If the device isn't connected they vanish.
     if envelope.get("transient") == Some(&Value::Bool(true)) {
-        let delivered = state.link.push(&envelope_json).await;
-        return Json(json!({"status": if delivered { "delivered" } else { "dropped" }}))
-            .into_response();
+        let delivered = state.link.push(device, &envelope_json).await;
+        return Json(json!({
+            "status": if delivered { "delivered" } else { "dropped" },
+            "devices_v": devices_v,
+        }))
+        .into_response();
     }
 
-    if !state.mailbox.put(&envelope) {
+    if !state.mailbox.put(device, &envelope) {
         return detail(StatusCode::SERVICE_UNAVAILABLE, "mailbox full");
     }
     // Best-effort immediate push; the row is only removed when the device acks.
-    let delivered_live = state.link.push(&envelope_json).await;
+    let delivered_live = state.link.push(device, &envelope_json).await;
     if envelope.get("push") != Some(&Value::Bool(false)) {
         // push: false (receipts) → deliver on the next connect, don't wake the
         // phone. ring: true (call offers) → always ping, skipping the debounce.
         let ring = envelope.get("ring") == Some(&Value::Bool(true));
         if delivered_live {
             let id = envelope["id"].as_str().unwrap().to_string();
-            tokio::spawn(push::ping_gateway_if_unacked(state.clone(), id, ring));
+            tokio::spawn(push::ping_gateway_if_unacked(state.clone(), device, id, ring));
         } else {
-            tokio::spawn(push::ping_gateway(state.clone(), ring));
+            tokio::spawn(push::ping_gateway(state.clone(), device, ring));
         }
     }
-    Json(json!({"status": "queued"})).into_response()
+    Json(json!({"status": "queued", "devices_v": devices_v})).into_response()
+}
+
+// -- devices (MULTIDEVICE.md "Device model") ----------------------------------
+
+/// List this mailbox's devices. Any device token: a linked desktop should be
+/// able to show the same device list the phone shows, including to revoke
+/// from.
+pub async fn list_devices(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = auth_device(&state, &q) {
+        return r;
+    }
+    Json(json!({
+        "devices_v": state.mailbox.devices_v(),
+        "devices": state.mailbox.devices().iter().map(|d| json!({
+            "device_id": d.device_id,
+            "created_at": d.created_at,
+            "last_seen": d.last_seen,
+        })).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+/// Mint a device on behalf of the one being linked. The caller supplies the
+/// token it is about to seal into the link grant, so the new device's secret
+/// is chosen by a device the user already trusts and never transits this
+/// handler's response in a form the relay could correlate later — the relay
+/// stores only its hash.
+pub async fn mint_device(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    if let Err(r) = auth_device(&state, &q) {
+        return r;
+    }
+    let parsed: Option<Value> = serde_json::from_slice(&body).ok();
+    let Some(token) = parsed
+        .as_ref()
+        .and_then(|b| b.get("device_token"))
+        .and_then(Value::as_str)
+        .filter(|t| t.len() >= 32)
+    else {
+        return detail(
+            StatusCode::BAD_REQUEST,
+            "expected {device_token} of at least 32 chars",
+        );
+    };
+    if state.mailbox.device_for_token(token).is_some() {
+        return detail(StatusCode::CONFLICT, "token already in use");
+    }
+    let device_id = state.mailbox.add_device(token);
+    Json(json!({"device_id": device_id, "devices_v": state.mailbox.devices_v()})).into_response()
+}
+
+/// Revoke a device: its queue, prekeys and push registration go, and its
+/// socket is cut now rather than at the next reconnect. Any device may revoke
+/// any device including itself — a stolen phone is revoked *from* the laptop.
+///
+/// Honest limit, restated from MULTIDEVICE.md: this is a delivery cut, not a
+/// cryptographic excision. The revoked device still holds the identity secret.
+pub async fn revoke_device(
+    State(state): State<Arc<AppState>>,
+    Path(device_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = auth_device(&state, &q) {
+        return r;
+    }
+    let Ok(device_id) = device_id.parse::<i64>() else {
+        return detail(StatusCode::BAD_REQUEST, "bad device");
+    };
+    let (existed, blob_ids) = state.mailbox.remove_device(device_id);
+    if !existed {
+        return detail(StatusCode::NOT_FOUND, "no such device");
+    }
+    // Blobs the dropped envelopes referenced may still be owed to a sibling.
+    for blob_id in blob_ids {
+        if state.mailbox.blob_refcount(&blob_id) == 0 {
+            state.blobs.delete(&blob_id);
+        }
+    }
+    state.link.disconnect(device_id).await;
+    Json(json!({"status": "ok", "devices_v": state.mailbox.devices_v()})).into_response()
+}
+
+/// Every device's signed prekeys, consuming **no** one-time keys. The free
+/// listing half of the bundle split: a sender learns the device set here and
+/// then pays exactly one OPK per device it actually needs to X3DH with.
+pub async fn prekey_devices(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if let Err(r) = bundle_reader_only(&state, &q) {
+        return r;
+    }
+    Json(json!({
+        "devices_v": state.mailbox.devices_v(),
+        "devices": state.mailbox.device_prekeys(),
+    }))
+    .into_response()
 }
 
 // -- push config / TURN -------------------------------------------------------
@@ -248,9 +424,10 @@ pub async fn push_config(
     Query(q): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = owner_only(&state, &q) {
-        return r;
-    }
+    let device = match auth_device(&state, &q) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
     let parsed: Option<Value> = serde_json::from_slice(&body).ok();
     let Some((device_token, platform)) = parsed.as_ref().and_then(|b| {
         Some((b.get("device_token")?.clone(), b.get("platform")?.clone()))
@@ -263,7 +440,7 @@ pub async fn push_config(
     if !matches!(platform, "ios" | "android") {
         return detail(StatusCode::BAD_REQUEST, "bad platform or token");
     }
-    state.mailbox.set_push_config(device_token, platform);
+    state.mailbox.set_push_config(device, device_token, platform);
     Json(json!({"status": "ok"})).into_response()
 }
 
@@ -275,7 +452,7 @@ pub async fn turn_credentials(
     Query(q): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(r) = owner_only(&state, &q) {
+    if let Err(r) = auth_device(&state, &q) {
         return r;
     }
     if state.cfg.turn_secret.is_empty() {
@@ -374,7 +551,7 @@ pub async fn blob_delete(
     Path(blob_id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = owner_only(&state, &q) {
+    if let Err(r) = auth_device(&state, &q) {
         return r;
     }
     if !blobs::valid_blob_id(&blob_id) {

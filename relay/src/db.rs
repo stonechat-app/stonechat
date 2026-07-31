@@ -1,16 +1,42 @@
 //! SQLite-backed envelope queue + prekey/push-config store. Rows die on ack.
 //!
-//! Schema is byte-identical to the retired Python relay's — the cutover
-//! guarantee (RUST_PORT.md) was that a Rust relay pointed at a volume
-//! Python wrote serves the queued mail it left there; keep it true for any
-//! long-lived volumes.
+//! Schema started byte-identical to the retired Python relay's — the cutover
+//! guarantee (RUST_PORT.md) was that a Rust relay pointed at a volume Python
+//! wrote serves the queued mail it left there. Multi-device phase 1
+//! (MULTIDEVICE.md) adds a device dimension to almost every table, so that
+//! guarantee is now upheld by `migrate()` rather than by sameness: an old
+//! volume is rewritten in place, and everything it held becomes device 1's.
 
 use std::sync::Mutex;
 
+use blake2::digest::consts::U32;
+use blake2::{Blake2b, Digest};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 use crate::{MAX_KOPKS, MAX_OPKS, MAX_QUEUE_DEPTH};
+
+type Blake2b256 = Blake2b<U32>;
+
+/// The bootstrap device. `STONECHAT_OWNER_TOKEN` is its token, which is what
+/// keeps provisioning, the hub's `server_token` handoff, and every existing
+/// client working unchanged through this migration.
+pub const PRIMARY_DEVICE: i64 = 1;
+
+/// Device tokens are stored hashed, never in the clear: the DB file is the
+/// one artifact a snapshot or a backup of the VM would carry off.
+pub fn token_hash(token: &str) -> String {
+    let mut h = Blake2b256::new();
+    h.update(b"stonechat-device-token|");
+    h.update(token.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+pub struct Device {
+    pub device_id: i64,
+    pub created_at: String,
+    pub last_seen: Option<String>,
+}
 
 pub struct SpkUpload {
     pub id: i64,
@@ -28,43 +54,302 @@ pub struct Mailbox {
 }
 
 impl Mailbox {
-    pub fn open(path: &str) -> rusqlite::Result<Self> {
+    pub fn open(path: &str, owner_token: &str) -> rusqlite::Result<Self> {
         let db = Connection::open(path)?;
         db.execute_batch(
             "CREATE TABLE IF NOT EXISTS envelopes (
-               id TEXT PRIMARY KEY,
+               id TEXT NOT NULL,
+               device INTEGER NOT NULL DEFAULT 1,
                body TEXT NOT NULL,
-               received_at TEXT NOT NULL);
+               received_at TEXT NOT NULL,
+               PRIMARY KEY (id, device));
              CREATE TABLE IF NOT EXISTS push_config (
-               id INTEGER PRIMARY KEY CHECK (id = 1),
+               device INTEGER PRIMARY KEY,
                device_token TEXT NOT NULL,
                platform TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS signed_prekey (
-               row INTEGER PRIMARY KEY CHECK (row = 1),
+               device INTEGER PRIMARY KEY,
                id INTEGER NOT NULL,
                pub TEXT NOT NULL,
                sig TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS one_time_prekeys (
-               id INTEGER PRIMARY KEY,
-               pub TEXT NOT NULL);
+               device INTEGER NOT NULL,
+               id INTEGER NOT NULL,
+               pub TEXT NOT NULL,
+               PRIMARY KEY (device, id));
              CREATE TABLE IF NOT EXISTS kem_signed_prekey (
-               row INTEGER PRIMARY KEY CHECK (row = 1),
+               device INTEGER PRIMARY KEY,
                id INTEGER NOT NULL,
                pub TEXT NOT NULL,
                sig TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS kem_one_time_prekeys (
-               id INTEGER PRIMARY KEY,
-               pub TEXT NOT NULL);",
+               device INTEGER NOT NULL,
+               id INTEGER NOT NULL,
+               pub TEXT NOT NULL,
+               PRIMARY KEY (device, id));
+             CREATE TABLE IF NOT EXISTS devices (
+               device_id INTEGER PRIMARY KEY,
+               token_hash TEXT NOT NULL UNIQUE,
+               created_at TEXT NOT NULL,
+               last_seen TEXT);
+             CREATE TABLE IF NOT EXISTS meta (
+               key TEXT PRIMARY KEY,
+               value TEXT NOT NULL);",
         )?;
-        Ok(Self { db: Mutex::new(db) })
+        let mailbox = Self { db: Mutex::new(db) };
+        mailbox.migrate_pre_device_schema()?;
+        mailbox.seed_primary_device(owner_token);
+        Ok(mailbox)
+    }
+
+    /// A volume written before phase 1 has the single-drainer schema: no
+    /// `device` column anywhere, `row = 1` singletons for the signed prekeys.
+    /// Rewrite those tables in place and let everything they held become
+    /// device 1's — which is exactly what it was.
+    ///
+    /// SQLite cannot alter a primary key, so each table is rebuilt. Detection
+    /// is by column presence rather than a schema-version counter, so this is
+    /// idempotent and safe to run against an already-migrated volume.
+    fn migrate_pre_device_schema(&self) -> rusqlite::Result<()> {
+        let db = self.db.lock().unwrap();
+        let has_device_column = |table: &str| -> bool {
+            let mut stmt = db
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("pragma");
+            let names: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))
+                .expect("pragma rows")
+                .map(|r| r.unwrap())
+                .collect();
+            names.iter().any(|n| n == "device")
+        };
+
+        if !has_device_column("envelopes") {
+            log::info!("migrating envelopes to the per-device schema");
+            db.execute_batch(
+                "ALTER TABLE envelopes RENAME TO envelopes_old;
+                 CREATE TABLE envelopes (
+                   id TEXT NOT NULL,
+                   device INTEGER NOT NULL DEFAULT 1,
+                   body TEXT NOT NULL,
+                   received_at TEXT NOT NULL,
+                   PRIMARY KEY (id, device));
+                 INSERT INTO envelopes (id, device, body, received_at)
+                   SELECT id, 1, body, received_at FROM envelopes_old;
+                 DROP TABLE envelopes_old;",
+            )?;
+        }
+        if !has_device_column("push_config") {
+            db.execute_batch(
+                "ALTER TABLE push_config RENAME TO push_config_old;
+                 CREATE TABLE push_config (
+                   device INTEGER PRIMARY KEY,
+                   device_token TEXT NOT NULL,
+                   platform TEXT NOT NULL);
+                 INSERT INTO push_config (device, device_token, platform)
+                   SELECT 1, device_token, platform FROM push_config_old;
+                 DROP TABLE push_config_old;",
+            )?;
+        }
+        for table in ["signed_prekey", "kem_signed_prekey"] {
+            if has_device_column(table) {
+                continue;
+            }
+            db.execute_batch(&format!(
+                "ALTER TABLE {table} RENAME TO {table}_old;
+                 CREATE TABLE {table} (
+                   device INTEGER PRIMARY KEY,
+                   id INTEGER NOT NULL,
+                   pub TEXT NOT NULL,
+                   sig TEXT NOT NULL);
+                 INSERT INTO {table} (device, id, pub, sig)
+                   SELECT 1, id, pub, sig FROM {table}_old;
+                 DROP TABLE {table}_old;"
+            ))?;
+        }
+        for table in ["one_time_prekeys", "kem_one_time_prekeys"] {
+            if has_device_column(table) {
+                continue;
+            }
+            db.execute_batch(&format!(
+                "ALTER TABLE {table} RENAME TO {table}_old;
+                 CREATE TABLE {table} (
+                   device INTEGER NOT NULL,
+                   id INTEGER NOT NULL,
+                   pub TEXT NOT NULL,
+                   PRIMARY KEY (device, id));
+                 INSERT INTO {table} (device, id, pub)
+                   SELECT 1, id, pub FROM {table}_old;
+                 DROP TABLE {table}_old;"
+            ))?;
+        }
+        Ok(())
+    }
+
+    /// Device 1 is `STONECHAT_OWNER_TOKEN`. Re-seeded on every boot so that
+    /// rotating the env var rotates the primary's token rather than locking
+    /// the owner out of their own mailbox.
+    fn seed_primary_device(&self, owner_token: &str) {
+        let db = self.db.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
+        db.execute(
+            "INSERT INTO devices (device_id, token_hash, created_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(device_id) DO UPDATE SET token_hash = excluded.token_hash",
+            params![PRIMARY_DEVICE, token_hash(owner_token), now],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('devices_v', '1')",
+            [],
+        )
+        .unwrap();
+    }
+
+    // -- devices (MULTIDEVICE.md "Device model") ------------------------------
+
+    /// Which device is presenting this token, if any. The only authentication
+    /// the relay has: possession of a device token is being that device.
+    pub fn device_for_token(&self, token: &str) -> Option<i64> {
+        if token.is_empty() {
+            return None;
+        }
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT device_id FROM devices WHERE token_hash = ?1",
+            params![token_hash(token)],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    pub fn devices(&self) -> Vec<Device> {
+        let db = self.db.lock().unwrap();
+        let mut stmt = db
+            .prepare("SELECT device_id, created_at, last_seen FROM devices ORDER BY device_id")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Device {
+                    device_id: r.get(0)?,
+                    created_at: r.get(1)?,
+                    last_seen: r.get(2)?,
+                })
+            })
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
+    /// Monotonic version of the device set. Contacts watch it to know when to
+    /// re-fetch a bundle; it never decreases, even if a device is removed.
+    pub fn devices_v(&self) -> i64 {
+        let db = self.db.lock().unwrap();
+        db.query_row("SELECT value FROM meta WHERE key = 'devices_v'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()
+        .unwrap()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+    }
+
+    fn bump_devices_v(db: &Connection) {
+        db.execute(
+            "UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+             WHERE key = 'devices_v'",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// Mint a device. Ids are never reused — a revoked device's id stays
+    /// spent so a stale envelope addressed to it can never land in a new
+    /// device's queue.
+    pub fn add_device(&self, token: &str) -> i64 {
+        let db = self.db.lock().unwrap();
+        let next: i64 = db
+            .query_row("SELECT IFNULL(MAX(device_id), 0) + 1 FROM devices", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
+        db.execute(
+            "INSERT INTO devices (device_id, token_hash, created_at) VALUES (?1, ?2, ?3)",
+            params![next, token_hash(token), now],
+        )
+        .unwrap();
+        Self::bump_devices_v(&db);
+        next
+    }
+
+    /// Revoke: the device's queue, prekeys and push registration all go with
+    /// it. Returns the blob ids its dropped envelopes referenced so the caller
+    /// can release them, and false if there was no such device.
+    ///
+    /// Device 1 is revocable like any other — MULTIDEVICE.md treats devices
+    /// uniformly and "primary" is a bootstrap distinction only. Losing it
+    /// costs the mailbox its `STONECHAT_OWNER_TOKEN` login until the next
+    /// boot re-seeds it, which is the honest consequence of asking for it.
+    pub fn remove_device(&self, device_id: i64) -> (bool, Vec<String>) {
+        let db = self.db.lock().unwrap();
+        let existed = db
+            .execute("DELETE FROM devices WHERE device_id = ?1", params![device_id])
+            .unwrap()
+            > 0;
+        if !existed {
+            return (false, Vec::new());
+        }
+        let blob_ids = {
+            let mut stmt = db
+                .prepare("SELECT body FROM envelopes WHERE device = ?1")
+                .unwrap();
+            let rows = stmt.query_map(params![device_id], |r| r.get::<_, String>(0)).unwrap();
+            rows.filter_map(|body| {
+                serde_json::from_str::<Value>(&body.ok()?)
+                    .ok()?
+                    .get("blob_id")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect()
+        };
+        for table in [
+            "envelopes",
+            "push_config",
+            "signed_prekey",
+            "kem_signed_prekey",
+            "one_time_prekeys",
+            "kem_one_time_prekeys",
+        ] {
+            db.execute(
+                &format!("DELETE FROM {table} WHERE device = ?1"),
+                params![device_id],
+            )
+            .unwrap();
+        }
+        Self::bump_devices_v(&db);
+        (true, blob_ids)
+    }
+
+    pub fn touch_device(&self, device_id: i64) {
+        let db = self.db.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
+        db.execute(
+            "UPDATE devices SET last_seen = ?1 WHERE device_id = ?2",
+            params![now, device_id],
+        )
+        .unwrap();
     }
 
     /// Owner upload: replace the SPK/KSPK and the whole OPK/KOPK stock. The
     /// owner is the source of truth for which private halves it still holds
     /// — merge semantics kept keys from a previous install alive forever,
     /// handing senders bundles the owner could no longer decrypt.
+    /// Replacement is scoped to the authenticated device: one device
+    /// restocking must never clear a sibling's pool.
     pub fn set_prekeys(
         &self,
+        device: i64,
         spk: &SpkUpload,
         opks: &[OpkUpload],
         kspk: &SpkUpload,
@@ -74,27 +359,32 @@ impl Mailbox {
         for (table, signed) in [("signed_prekey", spk), ("kem_signed_prekey", kspk)] {
             db.execute(
                 &format!(
-                    "INSERT INTO {table} (row, id, pub, sig) VALUES (1, ?1, ?2, ?3)
-                     ON CONFLICT(row) DO UPDATE SET id=excluded.id,
+                    "INSERT INTO {table} (device, id, pub, sig) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(device) DO UPDATE SET id=excluded.id,
                      pub=excluded.pub, sig=excluded.sig"
                 ),
-                params![signed.id, signed.pub_key, signed.sig],
+                params![device, signed.id, signed.pub_key, signed.sig],
             )
             .unwrap();
         }
-        db.execute("DELETE FROM one_time_prekeys", []).unwrap();
+        db.execute("DELETE FROM one_time_prekeys WHERE device = ?1", params![device])
+            .unwrap();
         for opk in opks.iter().take(MAX_OPKS) {
             db.execute(
-                "INSERT OR IGNORE INTO one_time_prekeys (id, pub) VALUES (?1, ?2)",
-                params![opk.id, opk.pub_key],
+                "INSERT OR IGNORE INTO one_time_prekeys (device, id, pub) VALUES (?1, ?2, ?3)",
+                params![device, opk.id, opk.pub_key],
             )
             .unwrap();
         }
-        db.execute("DELETE FROM kem_one_time_prekeys", []).unwrap();
+        db.execute(
+            "DELETE FROM kem_one_time_prekeys WHERE device = ?1",
+            params![device],
+        )
+        .unwrap();
         for kopk in kopks.iter().take(MAX_KOPKS) {
             db.execute(
-                "INSERT OR IGNORE INTO kem_one_time_prekeys (id, pub) VALUES (?1, ?2)",
-                params![kopk.id, kopk.pub_key],
+                "INSERT OR IGNORE INTO kem_one_time_prekeys (device, id, pub) VALUES (?1, ?2, ?3)",
+                params![device, kopk.id, kopk.pub_key],
             )
             .unwrap();
         }
@@ -104,12 +394,12 @@ impl Mailbox {
     /// returned one-time prekeys (X25519 and ML-KEM independently) — each
     /// is handed out at most once. No bundle until both signed halves are
     /// published: PQXDH has no classical-only fallback.
-    pub fn take_bundle(&self) -> Option<Value> {
+    pub fn take_bundle(&self, device: i64) -> Option<Value> {
         let db = self.db.lock().unwrap();
         let signed = |table: &str| -> Option<(i64, String, String)> {
             db.query_row(
-                &format!("SELECT id, pub, sig FROM {table} WHERE row = 1"),
-                [],
+                &format!("SELECT id, pub, sig FROM {table} WHERE device = ?1"),
+                params![device],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
@@ -120,15 +410,18 @@ impl Mailbox {
         let take_one = |table: &str| -> Option<(i64, String)> {
             let one: Option<(i64, String)> = db
                 .query_row(
-                    &format!("SELECT id, pub FROM {table} ORDER BY id LIMIT 1"),
-                    [],
+                    &format!("SELECT id, pub FROM {table} WHERE device = ?1 ORDER BY id LIMIT 1"),
+                    params![device],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()
                 .unwrap();
             if let Some((id, _)) = &one {
-                db.execute(&format!("DELETE FROM {table} WHERE id = ?1"), params![id])
-                    .unwrap();
+                db.execute(
+                    &format!("DELETE FROM {table} WHERE device = ?1 AND id = ?2"),
+                    params![device, id],
+                )
+                .unwrap();
             }
             one
         };
@@ -142,32 +435,70 @@ impl Mailbox {
         }))
     }
 
-    pub fn prekey_status(&self) -> Value {
+    /// Every device's SPK/KSPK, no one-time keys consumed — the free listing
+    /// half of the bundle split (MULTIDEVICE.md "Prekeys per device"). A
+    /// device with no published signed prekeys is omitted: a sender has
+    /// nothing to X3DH against there.
+    pub fn device_prekeys(&self) -> Vec<Value> {
         let db = self.db.lock().unwrap();
-        let count = |sql: &str| -> i64 { db.query_row(sql, [], |r| r.get(0)).unwrap() };
-        let has_spk = count("SELECT COUNT(*) FROM signed_prekey") > 0;
-        let opks = count("SELECT COUNT(*) FROM one_time_prekeys");
-        let has_kspk = count("SELECT COUNT(*) FROM kem_signed_prekey") > 0;
-        let kopks = count("SELECT COUNT(*) FROM kem_one_time_prekeys");
-        serde_json::json!({"spk": has_spk, "opks": opks, "kspk": has_kspk, "kopks": kopks})
+        let mut stmt = db
+            .prepare(
+                "SELECT s.device, s.id, s.pub, s.sig, k.id, k.pub, k.sig
+                 FROM signed_prekey s
+                 JOIN kem_signed_prekey k ON k.device = s.device
+                 ORDER BY s.device",
+            )
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(serde_json::json!({
+                    "device_id": r.get::<_, i64>(0)?,
+                    "spk": {"id": r.get::<_, i64>(1)?, "pub": r.get::<_, String>(2)?,
+                            "sig": r.get::<_, String>(3)?},
+                    "kspk": {"id": r.get::<_, i64>(4)?, "pub": r.get::<_, String>(5)?,
+                             "sig": r.get::<_, String>(6)?},
+                }))
+            })
+            .unwrap();
+        rows.map(|r| r.unwrap()).collect()
     }
 
-    pub fn set_push_config(&self, device_token: &str, platform: &str) {
+    /// Prekey inventory for the authenticated device only — /status is that
+    /// device's view of its own mailbox.
+    pub fn prekey_status(&self, device: i64) -> Value {
+        let db = self.db.lock().unwrap();
+        let count = |table: &str| -> i64 {
+            db.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE device = ?1"),
+                params![device],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        serde_json::json!({
+            "spk": count("signed_prekey") > 0,
+            "opks": count("one_time_prekeys"),
+            "kspk": count("kem_signed_prekey") > 0,
+            "kopks": count("kem_one_time_prekeys"),
+        })
+    }
+
+    pub fn set_push_config(&self, device: i64, device_token: &str, platform: &str) {
         let db = self.db.lock().unwrap();
         db.execute(
-            "INSERT INTO push_config (id, device_token, platform) VALUES (1, ?1, ?2)
-             ON CONFLICT(id) DO UPDATE SET device_token=excluded.device_token,
+            "INSERT INTO push_config (device, device_token, platform) VALUES (?1, ?2, ?3)
+             ON CONFLICT(device) DO UPDATE SET device_token=excluded.device_token,
              platform=excluded.platform",
-            params![device_token, platform],
+            params![device, device_token, platform],
         )
         .unwrap();
     }
 
-    pub fn push_config(&self) -> Option<(String, String)> {
+    pub fn push_config(&self, device: i64) -> Option<(String, String)> {
         let db = self.db.lock().unwrap();
         db.query_row(
-            "SELECT device_token, platform FROM push_config WHERE id = 1",
-            [],
+            "SELECT device_token, platform FROM push_config WHERE device = ?1",
+            params![device],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
@@ -176,18 +507,27 @@ impl Mailbox {
 
     /// Queue an envelope. `false` means the mailbox is full. Duplicate ids
     /// are silently ignored (INSERT OR IGNORE) — idempotent delivery.
-    pub fn put(&self, envelope: &Value) -> bool {
+    /// Queue an envelope for one device. The depth cap meters *delivery*, so
+    /// it is per device (MULTIDEVICE.md "Relay changes") — one device that
+    /// stops draining must not stop the others receiving mail.
+    pub fn put(&self, device: i64, envelope: &Value) -> bool {
         let db = self.db.lock().unwrap();
         let depth: i64 = db
-            .query_row("SELECT COUNT(*) FROM envelopes", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM envelopes WHERE device = ?1",
+                params![device],
+                |r| r.get(0),
+            )
             .unwrap();
         if depth >= MAX_QUEUE_DEPTH {
             return false;
         }
         db.execute(
-            "INSERT OR IGNORE INTO envelopes (id, body, received_at) VALUES (?1, ?2, ?3)",
+            "INSERT OR IGNORE INTO envelopes (id, device, body, received_at)
+             VALUES (?1, ?2, ?3, ?4)",
             params![
                 envelope["id"].as_str().unwrap(),
+                device,
                 serde_json::to_string(envelope).unwrap(),
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
             ],
@@ -196,21 +536,23 @@ impl Mailbox {
         true
     }
 
-    /// All queued envelope bodies, oldest first (the /ws drain order).
-    pub fn all(&self) -> Vec<String> {
+    /// One device's queued envelope bodies, oldest first (its /ws drain order).
+    pub fn all(&self, device: i64) -> Vec<String> {
         let db = self.db.lock().unwrap();
         let mut stmt = db
-            .prepare("SELECT body FROM envelopes ORDER BY received_at")
+            .prepare("SELECT body FROM envelopes WHERE device = ?1 ORDER BY received_at")
             .unwrap();
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        let rows = stmt
+            .query_map(params![device], |r| r.get::<_, String>(0))
+            .unwrap();
         rows.map(|r| r.unwrap()).collect()
     }
 
-    pub fn has(&self, envelope_id: &str) -> bool {
+    pub fn has(&self, device: i64, envelope_id: &str) -> bool {
         let db = self.db.lock().unwrap();
         db.query_row(
-            "SELECT 1 FROM envelopes WHERE id = ?1",
-            params![envelope_id],
+            "SELECT 1 FROM envelopes WHERE id = ?1 AND device = ?2",
+            params![envelope_id, device],
             |_| Ok(()),
         )
         .optional()
@@ -218,20 +560,25 @@ impl Mailbox {
         .is_some()
     }
 
-    /// Delete an acked envelope; returns its blob_id if it referenced one
-    /// (the caller deletes the blob file — AppState::delete_envelope).
-    pub fn delete(&self, envelope_id: &str) -> Option<String> {
+    /// Delete one device's copy of an acked envelope; returns its blob_id if
+    /// it referenced one. The blob may still be owed to a sibling device, so
+    /// the caller refcounts rather than deleting outright
+    /// (AppState::delete_envelope).
+    pub fn delete(&self, device: i64, envelope_id: &str) -> Option<String> {
         let db = self.db.lock().unwrap();
         let body: Option<String> = db
             .query_row(
-                "SELECT body FROM envelopes WHERE id = ?1",
-                params![envelope_id],
+                "SELECT body FROM envelopes WHERE id = ?1 AND device = ?2",
+                params![envelope_id, device],
                 |r| r.get(0),
             )
             .optional()
             .unwrap();
-        db.execute("DELETE FROM envelopes WHERE id = ?1", params![envelope_id])
-            .unwrap();
+        db.execute(
+            "DELETE FROM envelopes WHERE id = ?1 AND device = ?2",
+            params![envelope_id, device],
+        )
+        .unwrap();
         let body = body?;
         serde_json::from_str::<Value>(&body)
             .ok()?
@@ -240,9 +587,33 @@ impl Mailbox {
             .map(str::to_string)
     }
 
+    /// How many queued envelopes still reference this blob, across every
+    /// device. Zero means the last reader acked and the file can go.
+    pub fn blob_refcount(&self, blob_id: &str) -> i64 {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM envelopes WHERE body LIKE '%' || ?1 || '%'",
+            params![blob_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Total queued across all devices — what /status reports and the boot
+    /// log prints.
     pub fn depth(&self) -> i64 {
         let db = self.db.lock().unwrap();
         db.query_row("SELECT COUNT(*) FROM envelopes", [], |r| r.get(0))
             .unwrap()
+    }
+
+    pub fn device_depth(&self, device: i64) -> i64 {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM envelopes WHERE device = ?1",
+            params![device],
+            |r| r.get(0),
+        )
+        .unwrap()
     }
 }

@@ -24,7 +24,9 @@
         "opks": 0,
         "kspk": false,
         "kopks": 0
-      }
+      },
+      "device_id": 1,
+      "devices_v": 1
     }
   ],
   "owner-missing": [
@@ -219,25 +221,29 @@
   "inbox-ok": [
     200,
     {
-      "status": "queued"
+      "status": "queued",
+      "devices_v": 1
     }
   ],
   "inbox-dup": [
     200,
     {
-      "status": "queued"
+      "status": "queued",
+      "devices_v": 1
     }
   ],
   "inbox-push-false": [
     200,
     {
-      "status": "queued"
+      "status": "queued",
+      "devices_v": 1
     }
   ],
   "inbox-transient-offline": [
     200,
     {
-      "status": "dropped"
+      "status": "dropped",
+      "devices_v": 1
     }
   ],
   "status-after": [
@@ -251,7 +257,9 @@
         "opks": 0,
         "kspk": true,
         "kopks": 0
-      }
+      },
+      "device_id": 1,
+      "devices_v": 1
     }
   ],
   "push-config-noauth": [
@@ -379,6 +387,287 @@
     404,
     {
       "detail": "no such blob"
+    }
+  ],
+  "devices-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "devices-list": [
+    200,
+    {
+      "devices_v": 1,
+      "devices": [
+        {
+          "device_id": 1,
+          "created_at": "X",
+          "last_seen": null
+        }
+      ]
+    }
+  ],
+  "devices-mint-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "devices-mint-short": [
+    400,
+    {
+      "detail": "expected {device_token} of at least 32 chars"
+    }
+  ],
+  "devices-mint-ok": [
+    200,
+    {
+      "device_id": 2,
+      "devices_v": 2
+    }
+  ],
+  "devices-mint-dup-token": [
+    409,
+    {
+      "detail": "token already in use"
+    }
+  ],
+  "devices-list-after": [
+    200,
+    {
+      "devices_v": 2,
+      "devices": [
+        {
+          "device_id": 1,
+          "created_at": "X",
+          "last_seen": null
+        },
+        {
+          "device_id": 2,
+          "created_at": "X",
+          "last_seen": null
+        }
+      ]
+    }
+  ],
+  "status-device2": [
+    200,
+    {
+      "status": "ok",
+      "v": 1,
+      "queued": 0,
+      "prekeys": {
+        "spk": false,
+        "opks": 0,
+        "kspk": false,
+        "kopks": 0
+      },
+      "device_id": 2,
+      "devices_v": 2
+    }
+  ],
+  "prekeys-device2": [
+    200,
+    {
+      "status": "ok",
+      "prekeys": {
+        "spk": true,
+        "opks": 1,
+        "kspk": true,
+        "kopks": 1
+      }
+    }
+  ],
+  "status-device1-unaffected": [
+    200,
+    {
+      "status": "ok",
+      "v": 1,
+      "queued": 2,
+      "prekeys": {
+        "spk": true,
+        "opks": 0,
+        "kspk": true,
+        "kopks": 0
+      },
+      "device_id": 1,
+      "devices_v": 2
+    }
+  ],
+  "prekey-devices-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "prekey-devices-wrongtoken": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "prekey-devices-bundletoken": [
+    200,
+    {
+      "devices_v": 2,
+      "devices": [
+        {
+          "device_id": 1,
+          "spk": {
+            "id": 7,
+            "pub": "spk-pub",
+            "sig": "spk-sig"
+          },
+          "kspk": {
+            "id": 8,
+            "pub": "kspk-pub",
+            "sig": "kspk-sig"
+          }
+        },
+        {
+          "device_id": 2,
+          "spk": {
+            "id": 70,
+            "pub": "d2-spk",
+            "sig": "d2-sig"
+          },
+          "kspk": {
+            "id": 80,
+            "pub": "d2-kspk",
+            "sig": "d2-ksig"
+          }
+        }
+      ]
+    }
+  ],
+  "bundle-device-needs-token": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "bundle-device2": [
+    200,
+    {
+      "spk": {
+        "id": 70,
+        "pub": "d2-spk",
+        "sig": "d2-sig"
+      },
+      "opk": {
+        "id": 71,
+        "pub": "d2-opk"
+      },
+      "kspk": {
+        "id": 80,
+        "pub": "d2-kspk",
+        "sig": "d2-ksig"
+      },
+      "kopk": {
+        "id": 81,
+        "pub": "d2-kopk"
+      }
+    }
+  ],
+  "bundle-device-bad": [
+    400,
+    {
+      "detail": "bad device"
+    }
+  ],
+  "inbox-device2": [
+    200,
+    {
+      "status": "queued",
+      "devices_v": 2
+    }
+  ],
+  "inbox-device-unknown": [
+    410,
+    {
+      "detail": "no such device",
+      "devices_v": 2
+    }
+  ],
+  "inbox-device-bad-type": [
+    400,
+    {
+      "detail": "bad device"
+    }
+  ],
+  "inbox-same-id-device1": [
+    200,
+    {
+      "status": "queued",
+      "devices_v": 2
+    }
+  ],
+  "status-device2-queued": [
+    200,
+    {
+      "status": "ok",
+      "v": 1,
+      "queued": 1,
+      "prekeys": {
+        "spk": true,
+        "opks": 0,
+        "kspk": true,
+        "kopks": 0
+      },
+      "device_id": 2,
+      "devices_v": 2
+    }
+  ],
+  "revoke-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "revoke-missing": [
+    404,
+    {
+      "detail": "no such device"
+    }
+  ],
+  "revoke-bad-id": [
+    400,
+    {
+      "detail": "bad device"
+    }
+  ],
+  "revoke-ok": [
+    200,
+    {
+      "status": "ok",
+      "devices_v": 3
+    }
+  ],
+  "status-revoked-token": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "inbox-revoked-device": [
+    410,
+    {
+      "detail": "no such device",
+      "devices_v": 3
+    }
+  ],
+  "devices-list-after-revoke": [
+    200,
+    {
+      "devices_v": 3,
+      "devices": [
+        {
+          "device_id": 1,
+          "created_at": "X",
+          "last_seen": null
+        }
+      ]
     }
   ]
 }

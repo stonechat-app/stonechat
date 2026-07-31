@@ -12,6 +12,7 @@ Usage:
     python conformance.py <base_url>            # check against golden.json
     python conformance.py <base_url> --record   # regenerate golden.json
 """
+import hashlib
 import json
 import pathlib
 import ssl
@@ -48,6 +49,24 @@ def _body(raw):
 
 
 ENV_OK = {"v": 1, "id": "e-0001", "to": OWNER, "sealed": "aGVsbG8="}
+
+# A second device's token, and the derived bundle token that gates the device
+# list (MULTIDEVICE.md "Why the device list is gated"). Derived here rather
+# than hardcoded so the corpus pins the derivation, not just a constant.
+DEV2 = "dev2-token-0123456789abcdef0123456789"
+BUNDLE = hashlib.blake2b(
+    TOKEN.encode() + b"|stonechat-bundle|", digest_size=32
+).hexdigest()
+
+
+def norm_devices(b):
+    """created_at/last_seen are wall-clock; keep their presence, not values."""
+    if "devices" not in b:
+        return b
+    return {**b, "devices": [
+        {**d, "created_at": "X", "last_seen": "X" if d.get("last_seen") else None}
+        for d in b["devices"]
+    ]}
 
 # (label, method, path, body, normalizer)
 CORPUS = [
@@ -134,6 +153,52 @@ CORPUS = [
     ("blob-shared-get-after-delete", "GET",
      lambda r: f"/blob/{r['blob-shared-ok']['blob_id']}?token={r['blob-shared-ok']['fetch_token']}",
      None, None),
+    # -- devices (MULTIDEVICE.md phase 1) -------------------------------------
+    # Device 1's token IS the owner token, which is what lets every
+    # expectation above stay byte-identical through this change.
+    ("devices-noauth", "GET", "/devices", None, None),
+    ("devices-list", "GET", f"/devices?token={TOKEN}", None, norm_devices),
+    ("devices-mint-noauth", "POST", "/devices", {"device_token": DEV2}, None),
+    ("devices-mint-short", "POST", f"/devices?token={TOKEN}",
+     {"device_token": "too-short"}, None),
+    ("devices-mint-ok", "POST", f"/devices?token={TOKEN}", {"device_token": DEV2}, None),
+    ("devices-mint-dup-token", "POST", f"/devices?token={TOKEN}",
+     {"device_token": DEV2}, None),
+    ("devices-list-after", "GET", f"/devices?token={TOKEN}", None, norm_devices),
+    # The new device's token authenticates as itself, with its own queue.
+    ("status-device2", "GET", f"/status?token={DEV2}", None, None),
+    # ...and its prekey pool is its own: device 1's stock is untouched.
+    ("prekeys-device2", "POST", f"/prekeys?token={DEV2}",
+     {"spk": {"id": 70, "pub": "d2-spk", "sig": "d2-sig"},
+      "opks": [{"id": 71, "pub": "d2-opk"}],
+      "kspk": {"id": 80, "pub": "d2-kspk", "sig": "d2-ksig"},
+      "kopks": [{"id": 81, "pub": "d2-kopk"}]}, None),
+    ("status-device1-unaffected", "GET", f"/status?token={TOKEN}", None, None),
+    # -- bundle split ---------------------------------------------------------
+    # Listing is gated and free; the open bundle keeps device 1's exact shape.
+    ("prekey-devices-noauth", "GET", "/prekeys/devices", None, None),
+    ("prekey-devices-wrongtoken", "GET", "/prekeys/devices?token=nope", None, None),
+    ("prekey-devices-bundletoken", "GET", f"/prekeys/devices?token={BUNDLE}", None, None),
+    ("bundle-device-needs-token", "GET", "/prekeys/bundle?device=2", None, None),
+    ("bundle-device2", "GET", f"/prekeys/bundle?device=2&token={BUNDLE}", None, None),
+    ("bundle-device-bad", "GET", f"/prekeys/bundle?device=x&token={BUNDLE}", None, None),
+    # -- per-device routing ---------------------------------------------------
+    ("inbox-device2", "POST", "/inbox", {**ENV_OK, "id": "e-d2-1", "device": 2}, None),
+    ("inbox-device-unknown", "POST", "/inbox", {**ENV_OK, "id": "e-d9", "device": 99}, None),
+    ("inbox-device-bad-type", "POST", "/inbox", {**ENV_OK, "id": "e-dx", "device": "2"}, None),
+    # Same envelope id to two devices is two rows, not a duplicate.
+    ("inbox-same-id-device1", "POST", "/inbox", {**ENV_OK, "id": "e-d2-1"}, None),
+    ("status-device2-queued", "GET", f"/status?token={DEV2}", None, None),
+    # -- revocation -----------------------------------------------------------
+    ("revoke-noauth", "DELETE", "/devices/2", None, None),
+    ("revoke-missing", "DELETE", f"/devices/99?token={TOKEN}", None, None),
+    ("revoke-bad-id", "DELETE", f"/devices/xx?token={TOKEN}", None, None),
+    ("revoke-ok", "DELETE", f"/devices/2?token={TOKEN}", None, None),
+    # Revoked means gone: its token stops authenticating, its queue is dropped,
+    # and posting to it is a permanent 410 carrying the new devices_v.
+    ("status-revoked-token", "GET", f"/status?token={DEV2}", None, None),
+    ("inbox-revoked-device", "POST", "/inbox", {**ENV_OK, "id": "e-d2-2", "device": 2}, None),
+    ("devices-list-after-revoke", "GET", f"/devices?token={TOKEN}", None, norm_devices),
 ]
 
 

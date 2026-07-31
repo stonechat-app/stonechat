@@ -73,7 +73,9 @@ async def main():
         st, r = http("POST", "/inbox", {"v": 1, "id": "w-4", "to": "SC-TEST-OWNER",
                                         "sealed": "ZA==", "transient": True})
         env = json.loads(await asyncio.wait_for(ws.recv(), 5))
-        good = r == {"status": "delivered"} and env["id"] == "w-4"
+        # devices_v rides every /inbox response since multi-device phase 1, so
+        # match the status rather than the whole body.
+        good = r.get("status") == "delivered" and env["id"] == "w-4"
         print(f"  {'ok  ' if good else 'FAIL'} transient live: {r}")
         ok = ok and good
         await ws.send(json.dumps({"ack": "w-3"}))

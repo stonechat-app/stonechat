@@ -10,33 +10,44 @@ use crate::{AppState, PUSH_ACK_GRACE, PUSH_ACK_GRACE_RING, PUSH_DEBOUNCE};
 /// never reads it and never acks. If the envelope hasn't been acked
 /// (deleted) after a grace window, treat the owner as offline and wake the
 /// device.
-pub async fn ping_gateway_if_unacked(state: Arc<AppState>, envelope_id: String, ring: bool) {
+pub async fn ping_gateway_if_unacked(
+    state: Arc<AppState>,
+    device: i64,
+    envelope_id: String,
+    ring: bool,
+) {
     tokio::time::sleep(if ring { PUSH_ACK_GRACE_RING } else { PUSH_ACK_GRACE }).await;
-    if state.mailbox.has(&envelope_id) {
-        ping_gateway(state, ring).await;
+    if state.mailbox.has(device, &envelope_id) {
+        ping_gateway(state, device, ring).await;
     }
 }
 
-/// Owner is offline — ask the push gateway to wake their device.
+/// The addressed device is offline — ask the push gateway to wake it. Only
+/// the device the envelope was routed to is woken: a desktop that registered
+/// no token simply drains on next launch, and a sibling phone is not lit up
+/// for mail it was never sent (MULTIDEVICE.md "Relay changes").
+///
 /// ring=true marks a call offer: never debounced, and flagged to the gateway
 /// so it can escalate to a VoIP/high-priority push.
-pub async fn ping_gateway(state: Arc<AppState>, ring: bool) {
+pub async fn ping_gateway(state: Arc<AppState>, device: i64, ring: bool) {
     if state.cfg.push_gateway.is_empty() {
         return;
     }
-    let Some((device_token, platform)) = state.mailbox.push_config() else {
+    let Some((device_token, platform)) = state.mailbox.push_config(device) else {
         return;
     };
     {
+        // Debounce per device: a burst to one device must not suppress the
+        // wake-up another device is owed.
         let mut last = state.last_gateway_ping.lock().unwrap();
         if !ring {
-            if let Some(t) = *last {
+            if let Some(t) = last.get(&device) {
                 if t.elapsed() < PUSH_DEBOUNCE {
                     return;
                 }
             }
         }
-        *last = Some(Instant::now());
+        last.insert(device, Instant::now());
     }
     let mut req = state
         .http
