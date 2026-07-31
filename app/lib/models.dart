@@ -28,6 +28,15 @@ class Contact {
   int? archivedAt; // ms epoch when the user archived this conversation
   Uint8List? avatar; // their profile photo (PROTOCOL.md "Profiles")
   int profileAt; // sent_at ms of the last applied profile (last-writer-wins)
+  /// The peer's device-set version, as last seen on an /inbox response. A bump
+  /// means re-fetch their device list, X3DH to anything new, and drop sessions
+  /// for anything gone (MULTIDEVICE.md "Sending: per-device envelopes").
+  /// 0 = never observed, so the first send learns it.
+  int devicesV;
+  /// The capability that lets us list their devices at all. Handed to us in
+  /// their contact_request/contact_accept; without it we can only reach their
+  /// primary device, which is exactly what a stranger gets.
+  String? bundleToken;
 
   Contact({
     required this.stonechatId,
@@ -47,6 +56,8 @@ class Contact {
     this.archivedAt,
     this.avatar,
     this.profileAt = 0,
+    this.devicesV = 0,
+    this.bundleToken,
   });
 
   bool get isAccepted => status == ContactStatus.accepted;
@@ -74,6 +85,8 @@ class Contact {
         'archived_at': archivedAt,
         'avatar': avatar,
         'profile_at': profileAt,
+        'devices_v': devicesV,
+        'bundle_token': bundleToken,
       };
 
   factory Contact.fromRow(Map<String, Object?> r) => Contact(
@@ -96,6 +109,8 @@ class Contact {
             ? null
             : Uint8List.fromList(r['avatar'] as List<int>),
         profileAt: r['profile_at'] as int,
+        devicesV: (r['devices_v'] as int?) ?? 0,
+        bundleToken: r['bundle_token'] as String?,
       );
 }
 

@@ -13,6 +13,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/api.dart';
+import '../core/db.dart';
 import '../core/links.dart';
 import '../core/session.dart';
 import '../models.dart';
@@ -602,27 +603,40 @@ class ChatState extends ChangeNotifier {
 
   // -- forward-secret sessions (PROTOCOL.md "Session crypto") --------------------
 
-  /// One writer per ratchet — see [KeyedSerializer]. Different peers still
-  /// encrypt in parallel, which is what makes concurrent fan-out safe.
+  /// One writer per ratchet — see [KeyedSerializer]. Different ratchets still
+  /// encrypt in parallel, which is what makes concurrent fan-out safe. Keyed
+  /// by (peer, device) now that one peer has several independent ratchets:
+  /// locking a whole peer would serialize a fan-out to their own devices for
+  /// no reason.
   final _peerLock = KeyedSerializer();
 
-  Future<RatchetSession?> _loadSession(String peerId) async {
-    final cached = _sessions[peerId];
+  /// The ratchet cache key. Sessions are per (peer, device) because a double
+  /// ratchet is mutable state that advances on every message — two devices
+  /// cannot share one, which is the constraint the entire multi-device design
+  /// is built around (MULTIDEVICE.md).
+  static String _sessionKey(String peerId, int deviceId) => '$peerId#$deviceId';
+
+  Future<RatchetSession?> _loadSession(String peerId, int deviceId) async {
+    final cached = _sessions[_sessionKey(peerId, deviceId)];
     if (cached != null) return cached;
-    final stateJson = await app.db.sessionState(peerId);
+    final stateJson = await app.db.sessionState(peerId, deviceId);
     if (stateJson == null) return null;
     final session = RatchetSession.fromJson(
       app.crypto,
       peerId,
       jsonDecode(stateJson) as Map<String, dynamic>,
     );
-    _sessions[peerId] = session;
+    _sessions[_sessionKey(peerId, deviceId)] = session;
     return session;
   }
 
-  Future<void> _saveSession(RatchetSession session) async {
-    _sessions[session.peerId] = session;
-    await app.db.saveSession(session.peerId, jsonEncode(session.toJson()));
+  Future<void> _saveSession(RatchetSession session, int deviceId) async {
+    _sessions[_sessionKey(session.peerId, deviceId)] = session;
+    await app.db.saveSession(
+      session.peerId,
+      deviceId,
+      jsonEncode(session.toJson()),
+    );
   }
 
   /// The session for an outgoing message, establishing one via the peer's
@@ -630,10 +644,11 @@ class ChatState extends ChangeNotifier {
   Future<RatchetSession> _sessionFor(
     String peerId,
     String peerPubkeyB64, {
+    int deviceId = ChatDb.primaryDevice,
     String? serverAddress,
     String? serverTlsFp,
   }) async {
-    final existing = await _loadSession(peerId);
+    final existing = await _loadSession(peerId, deviceId);
     if (existing != null && existing.canSend) return existing;
 
     Future<PrekeyBundle> fetchFrom(String address, String tlsFp) async =>
@@ -668,7 +683,7 @@ class ChatState extends ChangeNotifier {
       );
     }
     final session = RatchetSession.initiate(app.crypto, peerId, peerEd, bundle);
-    await _saveSession(session);
+    await _saveSession(session, deviceId);
     return session;
   }
 
@@ -694,13 +709,17 @@ class ChatState extends ChangeNotifier {
     String? serverAddress,
     String? serverTlsFp,
     String? blobId,
+    int deviceId = ChatDb.primaryDevice,
   }) {
-    // Establish-then-encrypt-then-persist is one indivisible step per peer:
-    // interleaving two of these on one ratchet reuses a message key.
-    return _peerLock.run(toStonechatId, () async {
+    // Establish-then-encrypt-then-persist is one indivisible step per ratchet:
+    // interleaving two of these on one session reuses a message key. Locked
+    // per (peer, device) so a fan-out across one peer's devices still runs in
+    // parallel.
+    return _peerLock.run(_sessionKey(toStonechatId, deviceId), () async {
       final session = await _sessionFor(
         toStonechatId,
         toPubkeyB64,
+        deviceId: deviceId,
         serverAddress: serverAddress,
         serverTlsFp: serverTlsFp,
       );
@@ -709,7 +728,7 @@ class ChatState extends ChangeNotifier {
       final x3dh = session.pendingX3dh?.toJson();
       // Persist the advanced chain before the envelope can leave: a crash
       // after send must never reuse a message key.
-      await _saveSession(session);
+      await _saveSession(session, deviceId);
       return Envelope(
         id: envelopeId ?? _uuid.v4(),
         type: type,
@@ -735,7 +754,11 @@ class ChatState extends ChangeNotifier {
     final nonce = Uint8List.fromList(base64Decode(envelope.nonceB64));
     final ciphertext = Uint8List.fromList(base64Decode(envelope.ciphertextB64));
     final block = X3dhBlock.fromJson(envelope.x3dh?.cast<String, dynamic>());
-    final session = await _loadSession(envelope.from);
+    // Which of the sender's devices wrote this. `from_device` is not on the
+    // wire yet, so every incoming envelope is device 1's for now; the field
+    // lands with the AD-v2 change, and this is the one place that reads it.
+    final fromDevice = ChatDb.primaryDevice;
+    final session = await _loadSession(envelope.from, fromDevice);
 
     if (session != null) {
       // Simultaneous add: both sides initiated. The lower Stonechat ID's session
@@ -748,7 +771,7 @@ class ChatState extends ChangeNotifier {
       if (!theirsWins) {
         final plain = session.decrypt(header, nonce, ciphertext, adPrefix);
         if (plain != null) {
-          await _saveSession(session);
+          await _saveSession(session, fromDevice);
           return plain;
         }
         if (block == null) {
@@ -813,7 +836,8 @@ class ChatState extends ChangeNotifier {
     if (block.kemOneTime) {
       await app.db.deletePrekey(block.kemId); // one-time means one time
     }
-    await _saveSession(fresh); // replaces any prior session with this peer
+    // Replaces any prior session with this peer's sending device.
+    await _saveSession(fresh, fromDevice);
     return plain;
   }
 
@@ -2322,7 +2346,9 @@ class ChatState extends ChangeNotifier {
         if (contact == null || !contact.isAccepted || contact.isBlocked) {
           return;
         }
-        if (!((await _loadSession(contact.stonechatId))?.canSend ?? false)) {
+        if (!((await _loadSession(contact.stonechatId, ChatDb.primaryDevice))
+                ?.canSend ??
+            false)) {
           return;
         }
         await _deliver(
@@ -2335,7 +2361,11 @@ class ChatState extends ChangeNotifier {
         await _fanOutToMembers(_othersIn(group.id), (m) async {
           // Only rides existing sessions — a typing hint is never worth an
           // X3DH, so members we've never spoken to are skipped.
-          if (!((await _loadSession(m.stonechatId))?.canSend ?? false)) return;
+          if (!((await _loadSession(m.stonechatId, ChatDb.primaryDevice))
+                  ?.canSend ??
+              false)) {
+            return;
+          }
           await _deliverToMember(
             m,
             await _sealFor(

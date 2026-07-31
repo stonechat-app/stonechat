@@ -828,21 +828,77 @@ Future<void> deliverEnvelope(
   SealedEnvelope envelope,
   String tlsFp,
 ) async {
-  final client = pinnedClient(tlsFp);
+  final link = MailboxLink(serverAddress, tlsFp);
   try {
-    final r = await client
+    await link.deliver(envelope);
+  } finally {
+    link.close();
+  }
+}
+
+/// A pinned connection to one mailbox, held open across several deliveries.
+///
+/// Worth its own type because of what a delivery actually costs: measured at
+/// ~2.6 round trips, of which roughly two are TCP+TLS setup
+/// (`scripts/bench_fanout.py`). Paying that once per envelope is fine when a
+/// recipient is one envelope — but a recipient's devices all live on **one**
+/// mailbox, so a per-device fan-out would otherwise handshake k times to the
+/// same host. Reusing the connection across a recipient's devices measured
+/// 31% faster at 30ms RTT and 35% at 80ms (`scripts/bench_devices.py`).
+///
+/// Callers that deliver exactly once should use [deliverEnvelope], which
+/// wraps this and closes it.
+class MailboxLink {
+  final String address;
+  final http.Client _client;
+
+  MailboxLink(this.address, String tlsFp) : _client = pinnedClient(tlsFp);
+
+  /// Post one envelope. Returns the mailbox's current `devices_v` when it
+  /// reports one, so a sender can notice a device-set change without polling
+  /// (MULTIDEVICE.md "Sending: per-device envelopes"). Null from a relay that
+  /// predates the device model.
+  ///
+  /// A 410 means the addressed device is revoked or never existed: permanent
+  /// for this copy, not something a retry fixes. It is thrown with the parsed
+  /// body as `detail`, so callers can read the `devices_v` that came with it
+  /// and re-resolve the recipient's devices.
+  Future<int?> deliver(SealedEnvelope envelope) async {
+    final r = await _client
         .post(
-          Uri.parse('$serverAddress/inbox'),
+          Uri.parse('$address/inbox'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode(envelope.toJson()),
         )
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
-      throw ApiException('delivery failed (${r.statusCode})', r.statusCode);
+      Object? detail;
+      try {
+        detail = jsonDecode(r.body);
+      } catch (_) {
+        detail = null;
+      }
+      throw ApiException(
+        'delivery failed (${r.statusCode})',
+        r.statusCode,
+        detail,
+      );
     }
-  } finally {
-    client.close();
+    try {
+      return (jsonDecode(r.body) as Map<String, dynamic>)['devices_v'] as int?;
+    } catch (_) {
+      return null; // older relay, or a body we don't recognise
+    }
   }
+
+  void close() => _client.close();
+}
+
+/// The device this envelope was addressed to is gone (revoked, or never
+/// minted). Carries the mailbox's current `devices_v` when it sent one.
+int? devicesVOf(ApiException e) {
+  final detail = e.detail;
+  return detail is Map ? detail['devices_v'] as int? : null;
 }
 
 /// Persistent WebSocket to *your own* mailbox. Reconnects with backoff and

@@ -54,7 +54,7 @@ class ChatDb {
     final db = await openDatabase(
       path,
       password: password,
-      version: 4,
+      version: 5,
       onUpgrade: (db, from, _) async {
         if (from < 2) {
           // v2: a contact's home hub for cross-hub resolution.
@@ -73,6 +73,41 @@ class ChatDb {
           await db.execute(
             'ALTER TABLE messages ADD COLUMN last_attempt_at INTEGER',
           );
+        }
+        if (from < 5) {
+          // v5: multi-device (MULTIDEVICE.md phase 2). A ratchet is per
+          // (peer, device) — two devices cannot share one session — so the
+          // sessions table gains a device column and every existing row
+          // becomes that peer's device 1, which is what it was.
+          //
+          // SQLite cannot alter a primary key, so the table is rebuilt.
+          await db.execute('ALTER TABLE sessions RENAME TO sessions_old');
+          await db.execute(_createSessions);
+          await db.execute(
+            'INSERT INTO sessions (peer_id, device_id, state) '
+            'SELECT peer_id, $primaryDevice, state FROM sessions_old',
+          );
+          await db.execute('DROP TABLE sessions_old');
+          // Per-contact device-set tracking: devices_v tells us when to
+          // re-fetch, the bundle token is what lets us list at all.
+          await db.execute(
+            'ALTER TABLE contacts ADD COLUMN devices_v INTEGER NOT NULL DEFAULT 0',
+          );
+          await db.execute('ALTER TABLE contacts ADD COLUMN bundle_token TEXT');
+          // The outbox becomes per (message, member, device): multi-device
+          // makes every DM a fan-out too, and one mechanism must serve both
+          // (MULTIDEVICE.md "Send tracking"). Rebuilt rather than ALTERed —
+          // the device has to be *in the primary key* or a second device's
+          // row would collide with its sibling's instead of being owed
+          // separately, which is the whole point of the table.
+          await db.execute('ALTER TABLE group_outbox RENAME TO group_outbox_old');
+          await db.execute(_createGroupOutbox);
+          await db.execute(
+            'INSERT INTO group_outbox (message_id, group_id, member_id, device_id) '
+            'SELECT message_id, group_id, member_id, $primaryDevice '
+            'FROM group_outbox_old',
+          );
+          await db.execute('DROP TABLE group_outbox_old');
         }
       },
       onCreate: (db, _) async {
@@ -176,17 +211,24 @@ class ChatDb {
       message_id TEXT NOT NULL,
       group_id   TEXT NOT NULL,
       member_id  TEXT NOT NULL,
-      PRIMARY KEY (message_id, member_id)
+      device_id  INTEGER NOT NULL DEFAULT $primaryDevice,
+      PRIMARY KEY (message_id, member_id, device_id)
     )
   ''';
 
   // One forward-secret ratchet session per peer (PROTOCOL.md). The state
   // JSON holds the session's secret keys; it lives beside the plaintext
   // history it protects, on this phone only.
+  /// The device a peer had before anyone had more than one. Existing rows —
+  /// sessions, outbox entries — migrate to it, because that is what they were.
+  static const primaryDevice = 1;
+
   static const _createSessions = '''
     CREATE TABLE sessions (
-      peer_id TEXT PRIMARY KEY,
-      state   TEXT NOT NULL
+      peer_id   TEXT NOT NULL,
+      device_id INTEGER NOT NULL DEFAULT $primaryDevice,
+      state     TEXT NOT NULL,
+      PRIMARY KEY (peer_id, device_id)
     )
   ''';
 
@@ -688,25 +730,44 @@ class ChatDb {
 
   // -- ratchet sessions -------------------------------------------------------
 
-  Future<String?> sessionState(String peerId) async {
+  Future<String?> sessionState(String peerId, int deviceId) async {
     final rows = await _db.query(
       'sessions',
-      where: 'peer_id = ?',
-      whereArgs: [peerId],
+      where: 'peer_id = ? AND device_id = ?',
+      whereArgs: [peerId, deviceId],
       limit: 1,
     );
     return rows.isEmpty ? null : rows.first['state'] as String;
   }
 
-  Future<void> saveSession(String peerId, String stateJson) async {
+  Future<void> saveSession(String peerId, int deviceId, String stateJson) async {
     await _db.insert('sessions', {
       'peer_id': peerId,
+      'device_id': deviceId,
       'state': stateJson,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<void> deleteSession(String peerId) async {
-    await _db.delete('sessions', where: 'peer_id = ?', whereArgs: [peerId]);
+  /// Drop one device's session, or every device's when [deviceId] is null —
+  /// the latter for blocking or removing a contact outright.
+  Future<void> deleteSession(String peerId, {int? deviceId}) async {
+    await _db.delete(
+      'sessions',
+      where: deviceId == null ? 'peer_id = ?' : 'peer_id = ? AND device_id = ?',
+      whereArgs: deviceId == null ? [peerId] : [peerId, deviceId],
+    );
+  }
+
+  /// Devices we hold a session with for this peer — the set to drop from when
+  /// their devices_v bumps and a device has vanished.
+  Future<List<int>> sessionDevices(String peerId) async {
+    final rows = await _db.query(
+      'sessions',
+      columns: ['device_id'],
+      where: 'peer_id = ?',
+      whereArgs: [peerId],
+    );
+    return rows.map((r) => r['device_id'] as int).toList();
   }
 
   // -- prekey private halves ----------------------------------------------------
