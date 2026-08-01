@@ -26,7 +26,8 @@
         "kopks": 0
       },
       "device_id": 1,
-      "devices_v": 1
+      "devices_v": 1,
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
     }
   ],
   "owner-missing": [
@@ -265,7 +266,8 @@
         "kopks": 0
       },
       "device_id": 1,
-      "devices_v": 1
+      "devices_v": 1,
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
     }
   ],
   "push-config-noauth": [
@@ -470,7 +472,8 @@
         "kopks": 0
       },
       "device_id": 2,
-      "devices_v": 2
+      "devices_v": 2,
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
     }
   ],
   "prekeys-device2": [
@@ -498,7 +501,8 @@
         "kopks": 0
       },
       "device_id": 1,
-      "devices_v": 2
+      "devices_v": 2,
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
     }
   ],
   "prekey-devices-noauth": [
@@ -622,7 +626,8 @@
         "kopks": 0
       },
       "device_id": 2,
-      "devices_v": 2
+      "devices_v": 2,
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
     }
   ],
   "revoke-noauth": [

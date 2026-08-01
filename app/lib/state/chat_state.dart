@@ -152,6 +152,11 @@ class ChatState extends ChangeNotifier {
   /// everything we send, so it must be right before we send anything.
   int myDeviceId = ChatDb.primaryDevice;
 
+  /// The capability we hand peers so they can list our devices. Learned from
+  /// our own mailbox's /status — a linked device cannot derive it, since that
+  /// needs the owner token it deliberately does not hold.
+  String? myBundleToken;
+
   // Forward-secret ratchet sessions, one per peer, cached over the DB copy.
   final Map<String, RatchetSession> _sessions = {};
 
@@ -220,6 +225,9 @@ class ChatState extends ChangeNotifier {
     mailboxToken = token;
     mailboxTlsFp = tlsFp;
     if (deviceId != null) myDeviceId = deviceId;
+    if (address != null && token != null && tlsFp != null) {
+      unawaited(_learnOwnDevice(address, token, tlsFp));
+    }
     _registeredPushToken = null; // new mailbox → re-register the token
     _registerPush();
     // Mirror the coordinates into the shared DB: the iOS notification
@@ -731,6 +739,36 @@ class ChatState extends ChangeNotifier {
     }
   }
 
+  /// Remember a peer's bundle token, wherever we know them from. A sender may
+  /// be a contact, a fellow group member, both, or neither.
+  Future<void> _noteBundleToken(String peerId, String? token) async {
+    if (token == null || token.isEmpty) return;
+    final contact = contactById(peerId);
+    if (contact != null && contact.bundleToken != token) {
+      contact.bundleToken = token;
+      _peerDevices.remove(peerId); // re-list with the new capability
+      await app.db.upsertContact(contact);
+    }
+    for (final members in groupMembers.values) {
+      for (final m in members) {
+        if (m.stonechatId != peerId || m.bundleToken == token) continue;
+        m.bundleToken = token;
+        _peerDevices.remove(peerId);
+        await app.db.updateMember(m);
+      }
+    }
+  }
+
+  /// Ask our own mailbox which device we are and what token to hand peers.
+  /// Best-effort: without it we still send, we just cannot tell anyone how to
+  /// reach our siblings.
+  Future<void> _learnOwnDevice(String address, String token, String tlsFp) async {
+    final status = await mailboxStatus(address, tlsFp, token);
+    if (status == null) return;
+    myDeviceId = status.deviceId;
+    myBundleToken = status.bundleToken;
+  }
+
   // -- forward-secret sessions (PROTOCOL.md "Session crypto") --------------------
 
   /// One writer per ratchet — see [KeyedSerializer]. Different ratchets still
@@ -882,6 +920,7 @@ class ChatState extends ChangeNotifier {
         nonceB64: base64Encode(sealed.nonce),
         ciphertextB64: base64Encode(sealed.ciphertext),
         blobId: blobId,
+        bundleToken: myBundleToken,
       );
     });
   }
@@ -1127,11 +1166,10 @@ class ChatState extends ChangeNotifier {
   /// Resolve + deliver to a group member (same trust-but-verify as contacts),
   /// fanning out to their devices exactly as [_deliver] does.
   ///
-  /// Members reach only the primary device for now: a bundle token arrives in
-  /// a contact_request/contact_accept, and a fellow group member need never
-  /// have been a contact. Distributing it to non-contact members is an open
-  /// question that belongs with linking — until then nobody has a second
-  /// device, so nothing is lost.
+  /// A member's bundle token is learned from anything they have sent us
+  /// ([_noteBundleToken]), which is what lets a fellow member who was never a
+  /// contact still be reached on all their devices. Until they have said
+  /// anything we know only their primary.
   Future<void> _deliverToMember(
     GroupMember member,
     String type,
@@ -1159,7 +1197,7 @@ class ChatState extends ChangeNotifier {
       pqPkB64: member.pqPkB64!,
       address: address,
       tlsFp: member.tlsFp!,
-      bundleToken: null,
+      bundleToken: member.bundleToken,
       type: type,
       payload: payload,
       envelopeId: envelopeId,
@@ -2981,6 +3019,10 @@ class ChatState extends ChangeNotifier {
     if (plaintext == null) return; // forged, corrupted, or no session — drop
 
     final payload = jsonDecode(plaintext) as Map<String, dynamic>;
+
+    // Anything they send tells us how to list their devices. Recorded before
+    // the type switch so it is learned even from traffic we go on to drop.
+    await _noteBundleToken(envelope.from, envelope.bundleToken);
 
     // Blocked senders: their DM traffic and calls stop at the door. Decrypt
     // first (above) so the ratchet stays current for a later unblock; group

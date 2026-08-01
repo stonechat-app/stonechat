@@ -512,8 +512,14 @@ Future<void> uploadPrekeys(
   }
 }
 
-/// Our own mailbox's prekey inventory, from the owner-authenticated /status.
-Future<({bool spk, int opks, bool kspk, int kopks})?> mailboxPrekeyStatus(
+/// Our own mailbox's view of *this* device: which device we are, the current
+/// device-set version, our prekey inventory, and the bundle token we hand to
+/// peers so they can list our devices.
+///
+/// The token cannot be derived client-side by anyone but device 1 (it comes
+/// from the owner token), so the relay tells every authenticated device what
+/// it is.
+Future<MailboxStatus?> mailboxStatus(
   String address,
   String tlsFp,
   String token,
@@ -528,21 +534,40 @@ Future<({bool spk, int opks, bool kspk, int kopks})?> mailboxPrekeyStatus(
         )
         .timeout(const Duration(seconds: 8));
     if (r.statusCode != 200) return null;
-    final prekeys =
-        (jsonDecode(r.body) as Map<String, dynamic>)['prekeys']
-            as Map<String, dynamic>?;
-    if (prekeys == null) return null;
-    return (
-      spk: prekeys['spk'] as bool,
-      opks: prekeys['opks'] as int,
-      kspk: prekeys['kspk'] as bool? ?? false,
-      kopks: prekeys['kopks'] as int? ?? 0,
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    final prekeys = j['prekeys'] as Map<String, dynamic>?;
+    return MailboxStatus(
+      deviceId: (j['device_id'] as int?) ?? 1,
+      devicesV: (j['devices_v'] as int?) ?? 0,
+      bundleToken: j['bundle_token'] as String?,
+      prekeys: prekeys == null
+          ? null
+          : (
+              spk: prekeys['spk'] as bool,
+              opks: prekeys['opks'] as int,
+              kspk: prekeys['kspk'] as bool? ?? false,
+              kopks: prekeys['kopks'] as int? ?? 0,
+            ),
     );
   } catch (_) {
     return null;
   } finally {
     client.close();
   }
+}
+
+class MailboxStatus {
+  final int deviceId;
+  final int devicesV;
+  final String? bundleToken;
+  final ({bool spk, int opks, bool kspk, int kopks})? prekeys;
+
+  const MailboxStatus({
+    required this.deviceId,
+    required this.devicesV,
+    required this.bundleToken,
+    required this.prekeys,
+  });
 }
 
 // -- invite-hosted mailboxes ("host your circle") -----------------------------

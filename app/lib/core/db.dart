@@ -150,6 +150,7 @@ class ChatDb {
       display_name   TEXT NOT NULL,
       server_address TEXT,
       tls_fp         TEXT,
+      bundle_token   TEXT,
       PRIMARY KEY (group_id, stonechat_id)
     )
   ''';

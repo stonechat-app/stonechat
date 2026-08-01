@@ -456,6 +456,10 @@ class GroupMember {
   String displayName;
   String? serverAddress; // cached, refreshed on delivery failure
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
+  /// Learned from any envelope they send us — a fellow member need never
+  /// have been a contact, so this is the only way we get it. Null until then,
+  /// which means we can reach only their primary device.
+  String? bundleToken;
 
   GroupMember({
     required this.groupId,
@@ -465,6 +469,7 @@ class GroupMember {
     required this.displayName,
     this.serverAddress,
     this.tlsFp,
+    this.bundleToken,
   });
 
   Map<String, Object?> toRow() => {
@@ -475,6 +480,7 @@ class GroupMember {
         'display_name': displayName,
         'server_address': serverAddress,
         'tls_fp': tlsFp,
+        'bundle_token': bundleToken,
       };
 
   factory GroupMember.fromRow(Map<String, Object?> r) => GroupMember(
@@ -485,6 +491,7 @@ class GroupMember {
         displayName: r['display_name'] as String,
         serverAddress: r['server_address'] as String?,
         tlsFp: r['tls_fp'] as String?,
+        bundleToken: r['bundle_token'] as String?,
       );
 }
 
@@ -512,6 +519,16 @@ class Envelope {
   final String nonceB64;
   final String ciphertextB64;
   final String? blobId;
+  /// Our own mailbox's bundle token, so the recipient can list our devices
+  /// and encrypt to all of them.
+  ///
+  /// Rides every envelope rather than a dedicated announcement: it is inside
+  /// the seal, so only the recipient reads it; it is ~64 bytes against a
+  /// 64 KB cap; and it makes the audience exactly "people who have received
+  /// something from us", which is the boundary MULTIDEVICE.md already
+  /// accepts. A dedicated distribution would have needed one mechanism for
+  /// contacts and another for group members who were never contacts.
+  final String? bundleToken;
 
   Envelope({
     this.v = 1,
@@ -527,6 +544,7 @@ class Envelope {
     required this.nonceB64,
     required this.ciphertextB64,
     this.blobId,
+    this.bundleToken,
   });
 
   Map<String, Object?> toJson() => {
@@ -543,6 +561,7 @@ class Envelope {
         'nonce': nonceB64,
         'ciphertext': ciphertextB64,
         if (blobId != null) 'blob_id': blobId,
+        if (bundleToken != null) 'bundle_token': bundleToken,
       };
 
   factory Envelope.fromJson(Map<String, dynamic> j) => Envelope(
@@ -559,6 +578,7 @@ class Envelope {
         nonceB64: j['nonce'] as String,
         ciphertextB64: j['ciphertext'] as String,
         blobId: j['blob_id'] as String?,
+        bundleToken: j['bundle_token'] as String?,
       );
 }
 

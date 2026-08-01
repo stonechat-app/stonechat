@@ -101,6 +101,11 @@ pub async fn status(
         "prekeys": state.mailbox.prekey_status(device),
         "device_id": device,
         "devices_v": state.mailbox.devices_v(),
+        // Handed to every authenticated device, not just device 1: a linked
+        // device has to be able to tell its own contacts how to list this
+        // mailbox's devices, and it cannot derive the token itself (that
+        // needs the owner token, which it deliberately does not hold).
+        "bundle_token": bundle_token(&state.cfg.owner_token),
     }))
     .into_response()
 }
