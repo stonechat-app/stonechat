@@ -102,7 +102,10 @@ class KeyedSerializer {
 /// Tasks must not throw — a fan-out records per-recipient failures rather
 /// than aborting its siblings, so callers wrap their own body in try/catch
 /// and return the outcome instead.
-Future<List<T>> runBounded<T>(int limit, List<Future<T> Function()> tasks) async {
+Future<List<T>> runBounded<T>(
+  int limit,
+  List<Future<T> Function()> tasks,
+) async {
   if (tasks.isEmpty) return <T>[];
   final results = List<T?>.filled(tasks.length, null);
   var next = 0;
@@ -207,7 +210,12 @@ class ChatState extends ChangeNotifier {
 
   ChatState(this.app);
 
-  void setMailbox(String? address, String? token, String? tlsFp, {int? deviceId}) {
+  void setMailbox(
+    String? address,
+    String? token,
+    String? tlsFp, {
+    int? deviceId,
+  }) {
     mailboxAddress = address;
     mailboxToken = token;
     mailboxTlsFp = tlsFp;
@@ -575,38 +583,151 @@ class ChatState extends ChangeNotifier {
     ring: ring,
   );
 
+  /// Which of a peer's devices to encrypt for.
+  ///
+  /// Without their bundle token we can only reach the primary — which is
+  /// exactly what a stranger sending a contact request gets, and what
+  /// everyone is until linking ships. Listing is an optimisation, never a
+  /// precondition: if it fails we still send to the primary rather than
+  /// failing the message.
+  final Map<String, List<int>> _peerDevices = {};
+
+  Future<List<int>> _devicesFor(
+    String peerId,
+    String? bundleToken,
+    String address,
+    String tlsFp,
+  ) async {
+    final cached = _peerDevices[peerId];
+    if (cached != null) return cached;
+    if (bundleToken == null) return const [ChatDb.primaryDevice];
+    try {
+      final listed = await fetchDeviceList(address, bundleToken, tlsFp);
+      if (listed.devices.isEmpty) return const [ChatDb.primaryDevice];
+      return _peerDevices[peerId] = listed.devices;
+    } catch (_) {
+      return const [ChatDb.primaryDevice];
+    }
+  }
+
+  /// A peer's device set changed — drop the cached list so the next send
+  /// re-reads it, and remember the version we saw.
+  void _noteDevicesV(Contact contact, int devicesV) {
+    if (devicesV <= contact.devicesV) return;
+    contact.devicesV = devicesV;
+    _peerDevices.remove(contact.stonechatId);
+    unawaited(app.db.upsertContact(contact));
+  }
+
+  /// Send one logical message to every device a peer has: k envelopes, each
+  /// on its own ratchet with its own associated data — and all of them over
+  /// **one** connection, because a peer's devices share one mailbox and the
+  /// handshake is ~2 of the ~2.6 round trips a delivery costs
+  /// (`scripts/bench_devices.py` measured 31–35%).
+  ///
+  /// Throws if no device accepted its copy; a partial fan-out counts as sent,
+  /// because the devices that did take it will show the message.
+  Future<void> _fanOutToDevices({
+    required String peerId,
+    required String pubkeyB64,
+    required String pqPkB64,
+    required String address,
+    required String tlsFp,
+    required String? bundleToken,
+    required String type,
+    required Map<String, Object?> payload,
+    void Function(int devicesV)? onDevicesV,
+    String? envelopeId,
+    String? blobId,
+    bool transient = false,
+    bool noPush = false,
+    bool ring = false,
+  }) async {
+    final devices = await _devicesFor(peerId, bundleToken, address, tlsFp);
+    final link = MailboxLink(address, tlsFp);
+    var accepted = 0;
+    Object? lastError;
+    try {
+      for (final device in devices) {
+        try {
+          final envelope = await _sealFor(
+            type,
+            peerId,
+            pubkeyB64,
+            payload,
+            envelopeId: envelopeId,
+            serverAddress: address,
+            serverTlsFp: tlsFp,
+            blobId: blobId,
+            deviceId: device,
+            bundleToken: bundleToken,
+          );
+          final devicesV = await link.deliver(
+            _wireSeal(
+              envelope,
+              pqPkB64,
+              transient: transient,
+              noPush: noPush,
+              ring: ring,
+            ),
+          );
+          accepted++;
+          if (devicesV != null) onDevicesV?.call(devicesV);
+        } on ApiException catch (e) {
+          lastError = e;
+          if (e.status != 410) rethrow;
+          // That device is revoked or never existed. Forget it and its
+          // ratchet, and keep going — its siblings are still owed a copy.
+          _peerDevices.remove(peerId);
+          await app.db.deleteSession(peerId, deviceId: device);
+          final devicesV = devicesVOf(e);
+          if (devicesV != null) onDevicesV?.call(devicesV);
+        }
+      }
+    } finally {
+      link.close();
+    }
+    if (accepted == 0) {
+      throw lastError is ApiException
+          ? lastError
+          : ApiException('no device accepted the message');
+    }
+  }
+
   Future<void> _deliver(
     Contact contact,
-    Envelope envelope, {
+    String type,
+    Map<String, Object?> payload, {
+    String? envelopeId,
+    String? blobId,
     bool transient = false,
     bool noPush = false,
     bool ring = false,
   }) async {
     // _addressFor also backfills pq_pk for contacts saved before a resolve
     // (e.g. a pending_in row built from an x3dh block alone).
-    var address = await _addressFor(contact);
-    var wire = _wireSeal(
-      envelope,
-      contact.pqPkB64!,
+    Future<void> attempt(String address) => _fanOutToDevices(
+      peerId: contact.stonechatId,
+      pubkeyB64: contact.pubkeyB64,
+      pqPkB64: contact.pqPkB64!,
+      address: address,
+      tlsFp: contact.tlsFp!,
+      bundleToken: contact.bundleToken,
+      onDevicesV: (v) => _noteDevicesV(contact, v),
+      type: type,
+      payload: payload,
+      envelopeId: envelopeId,
+      blobId: blobId,
       transient: transient,
       noPush: noPush,
       ring: ring,
     );
     try {
-      await deliverEnvelope(address, wire, contact.tlsFp!);
+      await attempt(await _addressFor(contact));
     } on Exception {
       // Their server may have been recreated at a new IP (or with a new TLS
-      // key) — refresh everything and retry once, re-sealing in case their
-      // directory entry rotated.
-      address = await _addressFor(contact, refresh: true);
-      wire = _wireSeal(
-        envelope,
-        contact.pqPkB64!,
-        transient: transient,
-        noPush: noPush,
-        ring: ring,
-      );
-      await deliverEnvelope(address, wire, contact.tlsFp!);
+      // key) — refresh everything and retry once.
+      await attempt(await _addressFor(contact, refresh: true));
     }
   }
 
@@ -654,14 +775,29 @@ class ChatState extends ChangeNotifier {
     String peerId,
     String peerPubkeyB64, {
     int deviceId = ChatDb.primaryDevice,
+    String? bundleToken,
     String? serverAddress,
     String? serverTlsFp,
   }) async {
     final existing = await _loadSession(peerId, deviceId);
     if (existing != null && existing.canSend) return existing;
 
-    Future<PrekeyBundle> fetchFrom(String address, String tlsFp) async =>
-        PrekeyBundle.fromJson(await fetchPrekeyBundle(address, tlsFp));
+    // X3DH must run against *that device's* prekeys. The unauthenticated
+    // bundle is device 1's by design, so anything else needs the token —
+    // without it we have no business claiming to reach a sibling device.
+    Future<PrekeyBundle> fetchFrom(String address, String tlsFp) async {
+      if (deviceId == ChatDb.primaryDevice) {
+        return PrekeyBundle.fromJson(await fetchPrekeyBundle(address, tlsFp));
+      }
+      if (bundleToken == null) {
+        throw ApiException.refusing(
+          'No bundle token for device $deviceId — cannot start a session.',
+        );
+      }
+      return PrekeyBundle.fromJson(
+        await fetchDeviceBundle(address, deviceId, bundleToken, tlsFp),
+      );
+    }
 
     PrekeyBundle bundle;
     try {
@@ -696,19 +832,6 @@ class ChatState extends ChangeNotifier {
     return session;
   }
 
-  Future<Envelope> _seal(
-    String type,
-    Contact contact,
-    Map<String, Object?> payload,
-  ) => _sealFor(
-    type,
-    contact.stonechatId,
-    contact.pubkeyB64,
-    payload,
-    serverAddress: contact.serverAddress,
-    serverTlsFp: contact.tlsFp,
-  );
-
   Future<Envelope> _sealFor(
     String type,
     String toStonechatId,
@@ -719,6 +842,7 @@ class ChatState extends ChangeNotifier {
     String? serverTlsFp,
     String? blobId,
     int deviceId = ChatDb.primaryDevice,
+    String? bundleToken,
   }) {
     // Establish-then-encrypt-then-persist is one indivisible step per ratchet:
     // interleaving two of these on one session reuses a message key. Locked
@@ -729,6 +853,7 @@ class ChatState extends ChangeNotifier {
         toStonechatId,
         toPubkeyB64,
         deviceId: deviceId,
+        bundleToken: bundleToken,
         serverAddress: serverAddress,
         serverTlsFp: serverTlsFp,
       );
@@ -995,13 +1120,24 @@ class ChatState extends ChangeNotifier {
 
   /// Every member of [groupId] except us — the fan-out target set.
   Iterable<GroupMember> _othersIn(String groupId) =>
-      (groupMembers[groupId] ?? const <GroupMember>[])
-          .where((m) => m.stonechatId != app.stonechatId);
+      (groupMembers[groupId] ?? const <GroupMember>[]).where(
+        (m) => m.stonechatId != app.stonechatId,
+      );
 
-  /// Resolve + deliver to a group member (same trust-but-verify as contacts).
+  /// Resolve + deliver to a group member (same trust-but-verify as contacts),
+  /// fanning out to their devices exactly as [_deliver] does.
+  ///
+  /// Members reach only the primary device for now: a bundle token arrives in
+  /// a contact_request/contact_accept, and a fellow group member need never
+  /// have been a contact. Distributing it to non-contact members is an open
+  /// question that belongs with linking — until then nobody has a second
+  /// device, so nothing is lost.
   Future<void> _deliverToMember(
     GroupMember member,
-    Envelope envelope, {
+    String type,
+    Map<String, Object?> payload, {
+    String? envelopeId,
+    String? blobId,
     bool transient = false,
     bool noPush = false,
   }) async {
@@ -1017,29 +1153,29 @@ class ChatState extends ChangeNotifier {
       return entry.serverAddress!;
     }
 
-    var address =
-        (member.serverAddress != null &&
-            member.tlsFp != null &&
-            member.pqPkB64 != null)
-        ? member.serverAddress!
-        : await resolve();
-    var wire = _wireSeal(
-      envelope,
-      member.pqPkB64!,
+    Future<void> attempt(String address) => _fanOutToDevices(
+      peerId: member.stonechatId,
+      pubkeyB64: member.pubkeyB64,
+      pqPkB64: member.pqPkB64!,
+      address: address,
+      tlsFp: member.tlsFp!,
+      bundleToken: null,
+      type: type,
+      payload: payload,
+      envelopeId: envelopeId,
+      blobId: blobId,
       transient: transient,
       noPush: noPush,
     );
+
+    final known =
+        member.serverAddress != null &&
+        member.tlsFp != null &&
+        member.pqPkB64 != null;
     try {
-      await deliverEnvelope(address, wire, member.tlsFp!);
+      await attempt(known ? member.serverAddress! : await resolve());
     } on Exception {
-      address = await resolve(); // their mailbox may have moved
-      wire = _wireSeal(
-        envelope,
-        member.pqPkB64!,
-        transient: transient,
-        noPush: noPush,
-      );
-      await deliverEnvelope(address, wire, member.tlsFp!);
+      await attempt(await resolve()); // their mailbox may have moved
     }
   }
 
@@ -1082,7 +1218,8 @@ class ChatState extends ChangeNotifier {
       try {
         await _deliver(
           contact,
-          await _seal(EnvelopeType.profileUpdate, contact, payload),
+          EnvelopeType.profileUpdate,
+          payload,
           noPush: true,
         ); // nobody's phone wakes for a photo swap
       } catch (_) {
@@ -1159,30 +1296,21 @@ class ChatState extends ChangeNotifier {
     contacts.add(contact);
     notifyListeners();
 
-    await _deliver(
-      contact,
-      await _seal(EnvelopeType.contactRequest, contact, _profilePayload()),
-    );
+    await _deliver(contact, EnvelopeType.contactRequest, _profilePayload());
     return contact;
   }
 
   /// Re-send a still-pending contact request (manual nudge from the
   /// Requests list; receivers dedupe by sender, so this is always safe).
   Future<void> resendRequest(Contact contact) async {
-    await _deliver(
-      contact,
-      await _seal(EnvelopeType.contactRequest, contact, _profilePayload()),
-    );
+    await _deliver(contact, EnvelopeType.contactRequest, _profilePayload());
   }
 
   Future<void> acceptContact(Contact contact) async {
     contact.status = ContactStatus.accepted;
     await app.db.upsertContact(contact);
     notifyListeners();
-    await _deliver(
-      contact,
-      await _seal(EnvelopeType.contactAccept, contact, _profilePayload()),
-    );
+    await _deliver(contact, EnvelopeType.contactAccept, _profilePayload());
   }
 
   Future<void> declineContact(Contact contact) async {
@@ -1257,17 +1385,7 @@ class ChatState extends ChangeNotifier {
     // message retry; eventual delivery is accepted.
     await _fanOutToMembers(
       members.where((m) => m.stonechatId != app.stonechatId),
-      (m) async => _deliverToMember(
-        m,
-        await _sealFor(
-          EnvelopeType.groupCreate,
-          m.stonechatId,
-          m.pubkeyB64,
-          payload,
-          serverAddress: m.serverAddress,
-          serverTlsFp: m.tlsFp,
-        ),
-      ),
+      (m) async => _deliverToMember(m, EnvelopeType.groupCreate, payload),
     );
     return group;
   }
@@ -1372,17 +1490,7 @@ class ChatState extends ChangeNotifier {
     // An unreachable member keeps the old view until the next update.
     await _fanOutToMembers(
       recipients,
-      (m) async => _deliverToMember(
-        m,
-        await _sealFor(
-          EnvelopeType.groupUpdate,
-          m.stonechatId,
-          m.pubkeyB64,
-          payload,
-          serverAddress: m.serverAddress,
-          serverTlsFp: m.tlsFp,
-        ),
-      ),
+      (m) async => _deliverToMember(m, EnvelopeType.groupUpdate, payload),
     );
   }
 
@@ -1538,15 +1646,9 @@ class ChatState extends ChangeNotifier {
             // dedupe retries.
             await _deliverToMember(
               member,
-              await _sealFor(
-                type,
-                member.stonechatId,
-                member.pubkeyB64,
-                payload,
-                envelopeId: message.id,
-                serverAddress: member.serverAddress,
-                serverTlsFp: member.tlsFp,
-              ),
+              type,
+              payload,
+              envelopeId: message.id,
             );
             await app.db.clearOutbox(message.id, member.stonechatId);
           } catch (e) {
@@ -1603,7 +1705,9 @@ class ChatState extends ChangeNotifier {
     final host = mailboxAddress;
     final tlsFp = mailboxTlsFp;
     if (host == null || tlsFp == null) {
-      throw ApiException("Your mailbox isn't ready — this will send once it is");
+      throw ApiException(
+        "Your mailbox isn't ready — this will send once it is",
+      );
     }
     final path = message.mediaPath ?? '';
     final file = File(path);
@@ -1658,17 +1762,8 @@ class ChatState extends ChangeNotifier {
     // group_update, so a member we can't reach costs nothing.
     await _fanOutToMembers(
       _othersIn(group.id),
-      (m) async => _deliverToMember(
-        m,
-        await _sealFor(
-          EnvelopeType.groupLeave,
-          m.stonechatId,
-          m.pubkeyB64,
-          {'group_id': group.id},
-          serverAddress: m.serverAddress,
-          serverTlsFp: m.tlsFp,
-        ),
-      ),
+      (m) async =>
+          _deliverToMember(m, EnvelopeType.groupLeave, {'group_id': group.id}),
     );
     await app.db.deleteGroup(group.id);
     groups.removeWhere((g) => g.id == group.id);
@@ -1801,10 +1896,25 @@ class ChatState extends ChangeNotifier {
     String? mime,
   }) async {
     try {
-      final envelope = message.kind == MessageKind.text
-          ? await _sealMessage(contact, message)
-          : await _sealMedia(contact, message, mime: mime);
-      await _deliver(contact, envelope);
+      if (message.kind == MessageKind.text) {
+        // envelope id == message id → dedupe on the other side, and one id
+        // names the message across every device copy.
+        await _deliver(
+          contact,
+          EnvelopeType.msg,
+          _textPayload(message),
+          envelopeId: message.id,
+        );
+      } else {
+        final media = await _sealMedia(contact, message, mime: mime);
+        await _deliver(
+          contact,
+          EnvelopeType.media,
+          media.payload,
+          envelopeId: message.id,
+          blobId: media.blobId,
+        );
+      }
       await _recordSendSuccess(message);
     } catch (e) {
       await _recordSendFailure(message, e);
@@ -1823,7 +1933,9 @@ class ChatState extends ChangeNotifier {
     if (error is ApiException) return error.message;
     // A media retry whose local copy is gone: no amount of network fixes it,
     // and "check your connection" would send the user down the wrong path.
-    if (error is FileSystemException) return 'The file is no longer on this phone';
+    if (error is FileSystemException) {
+      return 'The file is no longer on this phone';
+    }
     return "Couldn't send — check your connection";
   }
 
@@ -1846,6 +1958,7 @@ class ChatState extends ChangeNotifier {
   Future<void> _recordSendFailure(
     Message message,
     Object error, {
+
     /// False for a partly-delivered group fan-out: one member refusing must
     /// not condemn a message four others already have. Only the give-up
     /// window fails those.
@@ -1937,10 +2050,14 @@ class ChatState extends ChangeNotifier {
     await _trySend(contact, message);
   }
 
-
-  /// Media path: encrypt file with a one-off key, park the ciphertext on the
-  /// recipient's mailbox, reference it from a small normal envelope.
-  Future<Envelope> _sealMedia(
+  /// Media path: encrypt the file with a one-off key, park the ciphertext on
+  /// the recipient's mailbox, and describe it in a small normal payload.
+  ///
+  /// Returns the payload rather than a sealed envelope: with per-device
+  /// fan-out the same payload is sealed once per device, on that device's own
+  /// ratchet. The blob is uploaded once regardless — every device envelope
+  /// references the same `blob_id`, and the relay refcounts.
+  Future<({Map<String, Object?> payload, String blobId})> _sealMedia(
     Contact contact,
     Message message, {
     String? mime,
@@ -1964,16 +2081,7 @@ class ChatState extends ChangeNotifier {
       if (_replyPayloadOf(message) != null)
         'reply_to': _replyPayloadOf(message),
     };
-    return _sealFor(
-      EnvelopeType.media,
-      contact.stonechatId,
-      contact.pubkeyB64,
-      payload,
-      envelopeId: message.id,
-      serverAddress: address,
-      serverTlsFp: contact.tlsFp,
-      blobId: blobId,
-    );
+    return (payload: payload, blobId: blobId);
   }
 
   static String _mimeFromPath(String path) =>
@@ -2092,22 +2200,12 @@ class ChatState extends ChangeNotifier {
     _ => '.bin',
   };
 
-  Future<Envelope> _sealMessage(Contact contact, Message message) => _sealFor(
-    EnvelopeType.msg,
-    contact.stonechatId,
-    contact.pubkeyB64,
-    {
-      'text': message.text,
-      if (message.expiresAt != null)
-        'expire_after_ms': message.expiresAt! - message.sentAt,
-      if (_replyPayloadOf(message) != null)
-        'reply_to': _replyPayloadOf(message),
-    },
-    // envelope id == message id → dedupe on the other side
-    envelopeId: message.id,
-    serverAddress: contact.serverAddress,
-    serverTlsFp: contact.tlsFp,
-  );
+  Map<String, Object?> _textPayload(Message message) => {
+    'text': message.text,
+    if (message.expiresAt != null)
+      'expire_after_ms': message.expiresAt! - message.sentAt,
+    if (_replyPayloadOf(message) != null) 'reply_to': _replyPayloadOf(message),
+  };
 
   /// Re-attempt everything in the pending outbox (app resume, reconnect, …).
   Future<void> retryPending() async {
@@ -2120,10 +2218,7 @@ class ChatState extends ChangeNotifier {
       (c) => c.status == ContactStatus.pendingOut,
     )) {
       try {
-        await _deliver(
-          contact,
-          await _seal(EnvelopeType.contactRequest, contact, _profilePayload()),
-        );
+        await _deliver(contact, EnvelopeType.contactRequest, _profilePayload());
       } catch (_) {
         // still unreachable — next retry will try again
       }
@@ -2234,7 +2329,8 @@ class ChatState extends ChangeNotifier {
     if (contact != null) {
       await _deliver(
         contact,
-        await _seal(type, contact, payload),
+        type,
+        payload,
         transient: transient,
         noPush: noPush,
       );
@@ -2245,14 +2341,8 @@ class ChatState extends ChangeNotifier {
         if (m.stonechatId != stonechatId) continue;
         await _deliverToMember(
           m,
-          await _sealFor(
-            type,
-            m.stonechatId,
-            m.pubkeyB64,
-            payload,
-            serverAddress: m.serverAddress,
-            serverTlsFp: m.tlsFp,
-          ),
+          type,
+          payload,
           transient: transient,
           noPush: noPush,
         );
@@ -2363,36 +2453,32 @@ class ChatState extends ChangeNotifier {
         if (contact == null || !contact.isAccepted || contact.isBlocked) {
           return;
         }
-        if (!((await _loadSession(contact.stonechatId, ChatDb.primaryDevice))
-                ?.canSend ??
+        if (!((await _loadSession(
+              contact.stonechatId,
+              ChatDb.primaryDevice,
+            ))?.canSend ??
             false)) {
           return;
         }
-        await _deliver(
-          contact,
-          await _seal(EnvelopeType.typing, contact, {'state': state}),
-          transient: true,
-        );
+        await _deliver(contact, EnvelopeType.typing, {
+          'state': state,
+        }, transient: true);
       } else {
         final payload = {'group_id': group.id, 'state': state};
         await _fanOutToMembers(_othersIn(group.id), (m) async {
           // Only rides existing sessions — a typing hint is never worth an
           // X3DH, so members we've never spoken to are skipped.
-          if (!((await _loadSession(m.stonechatId, ChatDb.primaryDevice))
-                  ?.canSend ??
+          if (!((await _loadSession(
+                m.stonechatId,
+                ChatDb.primaryDevice,
+              ))?.canSend ??
               false)) {
             return;
           }
           await _deliverToMember(
             m,
-            await _sealFor(
-              EnvelopeType.typing,
-              m.stonechatId,
-              m.pubkeyB64,
-              payload,
-              serverAddress: m.serverAddress,
-              serverTlsFp: m.tlsFp,
-            ),
+            EnvelopeType.typing,
+            payload,
             transient: true,
           );
         });
@@ -2484,13 +2570,10 @@ class ChatState extends ChangeNotifier {
       final contact = contactById(message.contactId);
       if (contact == null) return false;
       try {
-        await _deliver(
-          contact,
-          await _seal(EnvelopeType.msgEdit, contact, {
-            'id': message.id,
-            'text': text,
-          }),
-        );
+        await _deliver(contact, EnvelopeType.msgEdit, {
+          'id': message.id,
+          'text': text,
+        });
       } catch (_) {
         reachedEveryone = false;
       }
@@ -2498,17 +2581,7 @@ class ChatState extends ChangeNotifier {
       final payload = {'group_id': group.id, 'id': message.id, 'text': text};
       reachedEveryone = await _fanOutToMembers(
         _othersIn(group.id),
-        (m) async => _deliverToMember(
-          m,
-          await _sealFor(
-            EnvelopeType.groupMsgEdit,
-            m.stonechatId,
-            m.pubkeyB64,
-            payload,
-            serverAddress: m.serverAddress,
-            serverTlsFp: m.tlsFp,
-          ),
-        ),
+        (m) async => _deliverToMember(m, EnvelopeType.groupMsgEdit, payload),
       );
     }
     return reachedEveryone;
@@ -2530,10 +2603,7 @@ class ChatState extends ChangeNotifier {
       final contact = contactById(message.contactId);
       if (contact == null) return false;
       try {
-        await _deliver(
-          contact,
-          await _seal(EnvelopeType.msgDelete, contact, {'id': message.id}),
-        );
+        await _deliver(contact, EnvelopeType.msgDelete, {'id': message.id});
       } catch (_) {
         reachedEveryone = false;
       }
@@ -2541,17 +2611,7 @@ class ChatState extends ChangeNotifier {
       final payload = {'group_id': group.id, 'id': message.id};
       reachedEveryone = await _fanOutToMembers(
         _othersIn(group.id),
-        (m) async => _deliverToMember(
-          m,
-          await _sealFor(
-            EnvelopeType.groupMsgDelete,
-            m.stonechatId,
-            m.pubkeyB64,
-            payload,
-            serverAddress: m.serverAddress,
-            serverTlsFp: m.tlsFp,
-          ),
-        ),
+        (m) async => _deliverToMember(m, EnvelopeType.groupMsgDelete, payload),
       );
     }
     return reachedEveryone;
@@ -2631,26 +2691,14 @@ class ChatState extends ChangeNotifier {
       final payload = {'group_id': group.id, 'expire_ms': expireMs};
       await _fanOutToMembers(
         _othersIn(group.id),
-        (m) async => _deliverToMember(
-          m,
-          await _sealFor(
-            EnvelopeType.groupTimerUpdate,
-            m.stonechatId,
-            m.pubkeyB64,
-            payload,
-            serverAddress: m.serverAddress,
-            serverTlsFp: m.tlsFp,
-          ),
-        ),
+        (m) async =>
+            _deliverToMember(m, EnvelopeType.groupTimerUpdate, payload),
       );
     } else {
       try {
-        await _deliver(
-          contact!,
-          await _seal(EnvelopeType.timerUpdate, contact, {
-            'expire_ms': expireMs,
-          }),
-        );
+        await _deliver(contact!, EnvelopeType.timerUpdate, {
+          'expire_ms': expireMs,
+        });
       } catch (_) {}
     }
   }
@@ -2808,26 +2856,14 @@ class ChatState extends ChangeNotifier {
       if (group == null) {
         final contact = contactById(message.contactId);
         if (contact == null) return;
-        await _deliver(
-          contact,
-          await _seal(EnvelopeType.reaction, contact, payload),
-        );
+        await _deliver(contact, EnvelopeType.reaction, payload);
       } else {
         final groupPayload = {...payload, 'group_id': group.id};
         // Best-effort, like receipts.
         await _fanOutToMembers(
           _othersIn(group.id),
-          (m) async => _deliverToMember(
-            m,
-            await _sealFor(
-              EnvelopeType.groupReaction,
-              m.stonechatId,
-              m.pubkeyB64,
-              groupPayload,
-              serverAddress: m.serverAddress,
-              serverTlsFp: m.tlsFp,
-            ),
-          ),
+          (m) async =>
+              _deliverToMember(m, EnvelopeType.groupReaction, groupPayload),
         );
       }
     } catch (_) {
@@ -2882,12 +2918,7 @@ class ChatState extends ChangeNotifier {
     bool transient = false,
     bool ring = false,
   }) async {
-    await _deliver(
-      contact,
-      await _seal(type, contact, payload),
-      transient: transient,
-      ring: ring,
-    );
+    await _deliver(contact, type, payload, transient: transient, ring: ring);
   }
 
   /// A call's epitaph in the conversation ("Missed voice call",
@@ -2993,11 +3024,8 @@ class ChatState extends ChangeNotifier {
             await app.db.upsertContact(contact);
             await _deliver(
               contact,
-              await _seal(
-                EnvelopeType.contactAccept,
-                contact,
-                _profilePayload(),
-              ),
+              EnvelopeType.contactAccept,
+              _profilePayload(),
             );
             break;
           }

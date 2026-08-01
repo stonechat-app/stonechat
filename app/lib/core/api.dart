@@ -81,18 +81,13 @@ class ApiException implements Exception {
   /// callers fail the message immediately instead of queueing it forever.
   final bool refused;
 
-  ApiException(
-    this.message, [
-    this.status,
-    this.detail,
-    this.refused = false,
-  ]);
+  ApiException(this.message, [this.status, this.detail, this.refused = false]);
 
   /// A refusal: unusable now and unusable on every retry.
   ApiException.refusing(this.message)
-      : status = null,
-        detail = null,
-        refused = true;
+    : status = null,
+      detail = null,
+      refused = true;
 
   /// Machine-readable error code (e.g. 'subscription_required'), when the
   /// hub sent a structured detail.
@@ -403,6 +398,70 @@ Future<Map<String, dynamic>> fetchPrekeyBundle(
   try {
     final r = await client
         .get(Uri.parse('$serverAddress/prekeys/bundle'))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode >= 400) {
+      throw ApiException(
+        'prekey bundle unavailable (${r.statusCode})',
+        r.statusCode,
+      );
+    }
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  } finally {
+    client.close();
+  }
+}
+
+/// A peer's device list plus their current `devices_v`, from their mailbox.
+///
+/// Consumes **no** one-time prekeys — listing and consuming are separate
+/// calls precisely so no single request can burn a prekey per device
+/// (MULTIDEVICE.md "Why the device list is gated"). Needs the peer's bundle
+/// token; without it a sender can only reach their primary device, which is
+/// what a stranger sending a contact request gets.
+Future<({int devicesV, List<int> devices})> fetchDeviceList(
+  String serverAddress,
+  String bundleToken,
+  String tlsFp,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .get(Uri.parse('$serverAddress/prekeys/devices?token=$bundleToken'))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode >= 400) {
+      throw ApiException(
+        'device list unavailable (${r.statusCode})',
+        r.statusCode,
+      );
+    }
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return (
+      devicesV: (j['devices_v'] as int?) ?? 0,
+      devices: [
+        for (final d in (j['devices'] as List? ?? const []))
+          (d as Map<String, dynamic>)['device_id'] as int,
+      ],
+    );
+  } finally {
+    client.close();
+  }
+}
+
+/// One device's prekey bundle. Costs exactly one OPK, for one named device.
+Future<Map<String, dynamic>> fetchDeviceBundle(
+  String serverAddress,
+  int deviceId,
+  String bundleToken,
+  String tlsFp,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .get(
+          Uri.parse(
+            '$serverAddress/prekeys/bundle?device=$deviceId&token=$bundleToken',
+          ),
+        )
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
       throw ApiException(
