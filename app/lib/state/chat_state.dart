@@ -466,13 +466,52 @@ class ChatState extends ChangeNotifier {
   /// Everything on screen counts as read. Local state moves regardless of the
   /// privacy setting; the receipt only leaves the phone when it's on.
   Future<void> _markConversationRead(String conversationId) async {
+    final read = <String>[];
     for (final m in _messages[conversationId] ?? const <Message>[]) {
       if (m.outgoing || m.status == MessageStatus.read) continue;
       m.status = MessageStatus.read;
       await app.db.setMessageStatus(m.id, MessageStatus.read);
+      read.add(m.id);
       if (app.sendReadReceipts) {
         _queueReceipt(m.senderId ?? conversationId, ReceiptKind.read, m.id);
       }
+    }
+    if (read.isEmpty) return;
+    // Read on this device is read everywhere — it is also what stops a
+    // sibling notifying about a message we have already seen. Unconditional,
+    // unlike the peer-facing receipt: sendReadReceipts is about what the
+    // *peer* learns, not about our own devices agreeing with each other.
+    unawaited(
+      _syncToSiblings(EnvelopeType.syncRead, {
+        if (groupById(conversationId) != null)
+          'group_id': conversationId
+        else
+          'peer': conversationId,
+        'ids': read,
+      }),
+    );
+  }
+
+  /// A sibling read these; catch up locally without re-receipting the peer —
+  /// they already got a receipt from the device that did the reading.
+  Future<void> _applySyncRead(Map<String, dynamic> payload) async {
+    final conversationId =
+        (payload['group_id'] ?? payload['peer']) as String? ?? '';
+    final ids = (payload['ids'] as List?)?.whereType<String>() ?? const [];
+    var touched = false;
+    for (final id in ids) {
+      final message = await app.db.messageById(id);
+      if (message == null || message.outgoing) continue;
+      if (MessageStatus.rank(MessageStatus.read) <=
+          MessageStatus.rank(message.status)) {
+        continue;
+      }
+      await _setStatusEverywhere(message, MessageStatus.read);
+      touched = true;
+    }
+    if (touched) {
+      lastMessage[conversationId] = await app.db.lastMessageFor(conversationId);
+      notifyListeners();
     }
   }
 
@@ -736,6 +775,187 @@ class ChatState extends ChangeNotifier {
       // Their server may have been recreated at a new IP (or with a new TLS
       // key) — refresh everything and retry once.
       await attempt(await _addressFor(contact, refresh: true));
+    }
+  }
+
+  // -- self-sync (MULTIDEVICE.md "Self-sync") ---------------------------------
+
+  /// Our own other devices. Empty until something is linked, which is why
+  /// every sync path below costs nothing today.
+  Future<List<int>> _siblingDevices() async {
+    final address = mailboxAddress;
+    final tlsFp = mailboxTlsFp;
+    final token = myBundleToken;
+    if (address == null || tlsFp == null || token == null) return const [];
+    try {
+      final listed = await fetchDeviceList(address, token, tlsFp);
+      return listed.devices.where((d) => d != myDeviceId).toList();
+    } catch (_) {
+      return const []; // sync is convergence, never a precondition for sending
+    }
+  }
+
+  /// Mirror something to our own other devices.
+  ///
+  /// Siblings are peers like any other: ordinary pairwise sessions,
+  /// bootstrapped from our own mailbox's per-device bundles. `push: false`
+  /// throughout — our own laptop catching up is never worth lighting up our
+  /// own phone.
+  Future<void> _syncToSiblings(String type, Map<String, Object?> payload) async {
+    final devices = await _siblingDevices();
+    if (devices.isEmpty) return;
+    final address = mailboxAddress!;
+    final tlsFp = mailboxTlsFp!;
+    for (final device in devices) {
+      try {
+        final envelope = await _sealFor(
+          type,
+          app.stonechatId!,
+          app.crypto.publicKeyB64,
+          payload,
+          serverAddress: address,
+          serverTlsFp: tlsFp,
+          deviceId: device,
+          bundleToken: myBundleToken,
+        );
+        await deliverEnvelope(
+          address,
+          _wireSeal(envelope, app.crypto.pqPublicKeyB64, noPush: true),
+          tlsFp,
+        );
+      } catch (_) {
+        // Best-effort, like receipts: a lost sync costs a stale view on one
+        // device, and the next message re-converges it.
+      }
+    }
+  }
+
+  /// A message we just sent should appear on our other devices too. Incoming
+  /// messages need no sync — every device gets its own copy from the sender.
+  Future<void> _syncSent(Message message, String type, Map<String, Object?> payload) async {
+    await _syncToSiblings(EnvelopeType.syncSent, {
+      if (groupById(message.contactId) != null)
+        'group_id': message.contactId
+      else
+        'peer': message.contactId,
+      'type': type,
+      'payload': payload,
+      'id': message.id,
+      'sent_at': message.sentAt,
+    });
+  }
+
+  /// Media we sent, mirrored to our own devices.
+  ///
+  /// The payload cannot always be replayed verbatim: DM media parks its
+  /// ciphertext on the *recipient's* mailbox, where a sibling holds no token
+  /// at all, so every photo we sent would render as unavailable everywhere
+  /// else. Group media already sits on our own mailbox behind a capability
+  /// token, so that payload *is* reusable — and re-pointing the DM case at
+  /// the same mechanism is the whole fix.
+  Future<void> _syncSentMedia(
+    Message message,
+    String type,
+    Map<String, Object?> payload,
+  ) async {
+    if ((await _siblingDevices()).isEmpty) return;
+    var forSiblings = payload;
+    if (message.blob == null) {
+      final SharedBlob shared;
+      try {
+        shared = await _shareBlobFor(message);
+      } catch (_) {
+        return; // no sibling copy, no sync — the text of it is not worth a lie
+      }
+      forSiblings = {
+        ...payload,
+        'blob_id': shared.id,
+        'key': shared.keyB64,
+        'blob_nonce': shared.nonceB64,
+        'fetch_token': shared.fetchToken,
+        'blob_host': shared.host,
+        'blob_tls_fp': shared.tlsFp,
+      };
+    }
+    await _syncSent(message, type, forSiblings);
+  }
+
+  /// One of our own devices sent something. Render it here too.
+  ///
+  /// Authenticated by the session: only our own identity key could have
+  /// produced this, and [handleIncoming] additionally checks `from`.
+  Future<void> _applySyncSent(
+    Envelope envelope,
+    Map<String, dynamic> payload,
+  ) async {
+    final conversationId =
+        (payload['group_id'] ?? payload['peer']) as String? ?? '';
+    if (conversationId.isEmpty) return;
+    final inner = (payload['payload'] as Map?)?.cast<String, dynamic>();
+    final id = payload['id'] as String?;
+    if (inner == null || id == null) return;
+    final sentAt = (payload['sent_at'] as int?) ??
+        DateTime.now().millisecondsSinceEpoch;
+    final type = payload['type'] as String? ?? EnvelopeType.msg;
+
+    String? mediaPath;
+    final isMedia =
+        type == EnvelopeType.media || type == EnvelopeType.groupMedia;
+    if (isMedia) {
+      // Same shared-blob path as group media, pointed at our own mailbox.
+      mediaPath = await _fetchSyncedMedia(id, inner);
+    }
+    final (replyId, replySender, replyPreview) = _replyFrom(inner);
+    final message = Message(
+      id: id,
+      contactId: conversationId,
+      outgoing: true,
+      text: isMedia ? '' : ((inner['text'] as String?) ?? ''),
+      kind: isMedia ? _mediaKindOf(inner) : MessageKind.text,
+      mediaPath: mediaPath,
+      durationMs: inner['duration_ms'] as int?,
+      fileName: _mediaNameOf(inner),
+      sentAt: sentAt,
+      // It left our other device; whether the peer has it is their receipt to
+      // tell us, and receipts reach every device.
+      status: MessageStatus.sent,
+      expiresAt: _expiresAtFrom(envelope, inner),
+      replyToId: replyId,
+      replyToSender: replySender,
+      replyToPreview: replyPreview,
+    );
+    await app.db.insertMessage(message);
+    final cache = _messages[conversationId];
+    if (cache != null && !cache.any((m) => m.id == message.id)) {
+      cache.add(message);
+      cache.sort((a, b) => a.sentAt.compareTo(b.sentAt));
+    }
+    lastMessage[conversationId] = message;
+    if (message.expiresAt != null) _scheduleExpirySweep();
+    notifyListeners();
+  }
+
+  /// Fetch a sibling's copy of media from our own mailbox. Null when it is
+  /// gone or unreadable — the message still renders, without the file.
+  Future<String?> _fetchSyncedMedia(
+    String messageId,
+    Map<String, dynamic> payload,
+  ) async {
+    final host = payload['blob_host'] as String?;
+    final tlsFp = payload['blob_tls_fp'] as String?;
+    final blobId = payload['blob_id'] as String?;
+    final token = payload['fetch_token'] as String? ?? mailboxToken;
+    if (host == null || tlsFp == null || blobId == null || token == null) {
+      return null;
+    }
+    try {
+      return await _persistMedia(
+        messageId,
+        await downloadBlob(host, blobId, token, tlsFp),
+        payload,
+      );
+    } catch (_) {
+      return null;
     }
   }
 
@@ -1695,7 +1915,7 @@ class ChatState extends ChangeNotifier {
           }
         },
     ]);
-    await _settleFanOut(message, lastError);
+    await _settleFanOut(message, lastError, (type: type, payload: payload));
   }
 
   /// A fan-out pass is over. The message counts as sent once no member is
@@ -1703,11 +1923,22 @@ class ChatState extends ChangeNotifier {
   /// gave, so the bubble can say "sent to 3 of 5" and why the other two
   /// missed out. A group is never failed by one dead mailbox — only by the
   /// give-up window, or a refusal, closing over the whole thing.
-  Future<void> _settleFanOut(Message message, [Object? lastError]) async {
+  Future<void> _settleFanOut(
+    Message message, [
+    Object? lastError,
+    ({String type, Map<String, Object?> payload})? sync,
+  ]) async {
     final owed = await app.db.outboxRemaining(message.id);
     _groupOwed[message.id] = owed;
     if (owed == 0) {
       await _recordSendSuccess(message);
+      if (sync != null) {
+        unawaited(
+          message.kind == MessageKind.text
+              ? _syncSent(message, sync.type, sync.payload)
+              : _syncSentMedia(message, sync.type, sync.payload),
+        );
+      }
     } else if (lastError != null) {
       await _recordSendFailure(message, lastError, mayBeTerminal: false);
     }
@@ -1937,12 +2168,15 @@ class ChatState extends ChangeNotifier {
       if (message.kind == MessageKind.text) {
         // envelope id == message id → dedupe on the other side, and one id
         // names the message across every device copy.
+        final payload = _textPayload(message);
         await _deliver(
           contact,
           EnvelopeType.msg,
-          _textPayload(message),
+          payload,
           envelopeId: message.id,
         );
+        await _recordSendSuccess(message);
+        unawaited(_syncSent(message, EnvelopeType.msg, payload));
       } else {
         final media = await _sealMedia(contact, message, mime: mime);
         await _deliver(
@@ -1952,8 +2186,9 @@ class ChatState extends ChangeNotifier {
           envelopeId: message.id,
           blobId: media.blobId,
         );
+        await _recordSendSuccess(message);
+        unawaited(_syncSentMedia(message, EnvelopeType.media, media.payload));
       }
-      await _recordSendSuccess(message);
     } catch (e) {
       await _recordSendFailure(message, e);
     }
@@ -3290,6 +3525,23 @@ class ChatState extends ChangeNotifier {
 
       case EnvelopeType.receipt:
         await _applyReceipt(envelope, payload);
+
+      // Self-sync only ever comes from us. The session already proves the
+      // sender holds our identity key, and every one of our devices does —
+      // so this check is what keeps a *peer* from writing our history.
+      case EnvelopeType.syncSent:
+        if (envelope.from != app.stonechatId) {
+          _dropLog(envelope, 'sync from someone else\'s identity');
+          return;
+        }
+        await _applySyncSent(envelope, payload);
+
+      case EnvelopeType.syncRead:
+        if (envelope.from != app.stonechatId) {
+          _dropLog(envelope, 'sync from someone else\'s identity');
+          return;
+        }
+        await _applySyncRead(payload);
 
       case EnvelopeType.typing:
         _applyTyping(envelope, payload);

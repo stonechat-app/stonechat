@@ -383,6 +383,12 @@ class EnvelopeType {
   static const callAnswer = 'call_answer';
   static const callIce = 'call_ice'; // transient, like typing
   static const callEnd = 'call_end';
+
+  // Self-sync (MULTIDEVICE.md "Self-sync"): state mirrored between one
+  // user's own devices over ordinary pairwise sessions. Applied only when
+  // `from` is our own identity, which the session already authenticates.
+  static const syncSent = 'sync_sent'; // a copy of an outgoing message
+  static const syncRead = 'sync_read'; // read-state convergence
 }
 
 class ReceiptKind {
