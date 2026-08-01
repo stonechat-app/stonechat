@@ -411,6 +411,151 @@ Future<Map<String, dynamic>> fetchPrekeyBundle(
   }
 }
 
+/// Mint a device on our own mailbox for one being linked. The caller supplies
+/// the token it is about to seal into the grant; the relay stores only its
+/// hash (MULTIDEVICE.md "Device model").
+///
+/// [expiresInSeconds] bounds the new device's authority — set for a browser
+/// session, whose whole defence is that it ends on its own.
+Future<({int deviceId, String kind, String? expiresAt})> mintDevice(
+  String serverAddress,
+  String token,
+  String tlsFp,
+  String newDeviceToken, {
+  String kind = 'linked',
+  int? expiresInSeconds,
+}) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .post(
+          Uri.parse('$serverAddress/devices').replace(
+            queryParameters: {'token': token},
+          ),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'device_token': newDeviceToken,
+            'kind': kind,
+            if (expiresInSeconds != null) 'expires_in_s': expiresInSeconds,
+          }),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (r.statusCode >= 400) {
+      throw ApiException('could not add the device (${r.statusCode})', r.statusCode);
+    }
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return (
+      deviceId: j['device_id'] as int,
+      kind: j['kind'] as String? ?? kind,
+      expiresAt: j['expires_at'] as String?,
+    );
+  } finally {
+    client.close();
+  }
+}
+
+/// The devices on our own mailbox, for the management screen.
+Future<({int devicesV, List<Map<String, dynamic>> devices})> listDevices(
+  String serverAddress,
+  String token,
+  String tlsFp,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .get(Uri.parse('$serverAddress/devices').replace(
+          queryParameters: {'token': token},
+        ))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode >= 400) {
+      throw ApiException('could not list devices (${r.statusCode})', r.statusCode);
+    }
+    final j = jsonDecode(r.body) as Map<String, dynamic>;
+    return (
+      devicesV: (j['devices_v'] as int?) ?? 0,
+      devices: [
+        for (final d in (j['devices'] as List? ?? const []))
+          (d as Map<String, dynamic>),
+      ],
+    );
+  } finally {
+    client.close();
+  }
+}
+
+/// Revoke a device. A delivery cut, not a cryptographic excision — the
+/// revoked device still holds the identity secret (MULTIDEVICE.md
+/// "Revocation and threat notes").
+Future<void> revokeDevice(
+  String serverAddress,
+  String token,
+  String tlsFp,
+  int deviceId,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .delete(Uri.parse('$serverAddress/devices/$deviceId').replace(
+          queryParameters: {'token': token},
+        ))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode >= 400) {
+      throw ApiException('could not revoke (${r.statusCode})', r.statusCode);
+    }
+  } finally {
+    client.close();
+  }
+}
+
+/// Park a sealed link grant on our own mailbox.
+Future<void> putLinkGrant(
+  String serverAddress,
+  String token,
+  String tlsFp,
+  String key,
+  String sealedB64,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .post(
+          Uri.parse('$serverAddress/link').replace(
+            queryParameters: {'token': token},
+          ),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({'key': key, 'sealed': sealedB64}),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (r.statusCode >= 400) {
+      throw ApiException('could not park the grant (${r.statusCode})', r.statusCode);
+    }
+  } finally {
+    client.close();
+  }
+}
+
+/// Collect a parked grant. Unauthenticated — the new device has no credential
+/// yet, and possession of the QR is the credential. Null while the existing
+/// device has not parked it (or once someone already collected it).
+Future<String?> takeLinkGrant(
+  String serverAddress,
+  String tlsFp,
+  String key,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .get(Uri.parse('$serverAddress/link/$key'))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode != 200) return null;
+    return (jsonDecode(r.body) as Map<String, dynamic>)['sealed'] as String?;
+  } catch (_) {
+    return null;
+  } finally {
+    client.close();
+  }
+}
+
 /// A peer's device list plus their current `devices_v`, from their mailbox.
 ///
 /// Consumes **no** one-time prekeys — listing and consuming are separate

@@ -224,6 +224,16 @@ class CryptoService {
   /// What clients pin: BLAKE2b-256 of the relay's DER certificate.
   String certFingerprint(Uint8List certDer) => core.tlsFingerprintB64(certDer);
 
+  /// BLAKE2b-256 of arbitrary bytes, lowercase hex.
+  ///
+  /// The core exposes this under the TLS-fingerprint symbol because that was
+  /// its first caller; the function is a plain keyless hash. Used to derive a
+  /// link grant's parking key from the QR's lookup secret, which is why the
+  /// hex form matters: the relay validates keys as 64 lowercase hex digits.
+  String blake2bHex(Uint8List data) => base64Decode(core.tlsFingerprintB64(data))
+      .map((b) => b.toRadixString(16).padLeft(2, '0'))
+      .join();
+
   /// The owner vouching for their mailbox's TLS key.
   String signTlsFp(String fpB64) =>
       base64Encode(core.sign(_secretKey, tlsSigContext, base64Decode(fpB64)));
