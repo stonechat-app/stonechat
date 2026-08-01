@@ -436,7 +436,9 @@ Future<({int deviceId, String kind, String? expiresAt})> mintDevice(
           body: jsonEncode({
             'device_token': newDeviceToken,
             'kind': kind,
-            if (expiresInSeconds != null) 'expires_in_s': expiresInSeconds,
+            // Omitted entirely when unbounded — the relay reads absent as
+            // "lives until revoked", which is not the same as a null value.
+            'expires_in_s': ?expiresInSeconds,
           }),
         )
         .timeout(const Duration(seconds: 15));
