@@ -410,7 +410,9 @@
       "devices": [
         {
           "device_id": 1,
+          "kind": "primary",
           "created_at": "X",
+          "expires_at": null,
           "last_seen": null
         }
       ]
@@ -432,6 +434,8 @@
     200,
     {
       "device_id": 2,
+      "kind": "linked",
+      "expires_at": null,
       "devices_v": 2
     }
   ],
@@ -448,12 +452,16 @@
       "devices": [
         {
           "device_id": 1,
+          "kind": "primary",
           "created_at": "X",
+          "expires_at": null,
           "last_seen": null
         },
         {
           "device_id": 2,
+          "kind": "linked",
           "created_at": "X",
+          "expires_at": null,
           "last_seen": null
         }
       ]
@@ -675,10 +683,170 @@
       "devices": [
         {
           "device_id": 1,
+          "kind": "primary",
           "created_at": "X",
+          "expires_at": null,
           "last_seen": null
         }
       ]
+    }
+  ],
+  "devices-mint-bad-kind": [
+    400,
+    {
+      "detail": "bad kind"
+    }
+  ],
+  "devices-mint-bad-expiry": [
+    400,
+    {
+      "detail": "bad expires_in_s"
+    }
+  ],
+  "devices-mint-web": [
+    200,
+    {
+      "device_id": 3,
+      "kind": "web",
+      "expires_at": "X",
+      "devices_v": 4
+    }
+  ],
+  "devices-list-kinds": [
+    200,
+    {
+      "devices_v": 4,
+      "devices": [
+        {
+          "device_id": 1,
+          "kind": "primary",
+          "created_at": "X",
+          "expires_at": null,
+          "last_seen": null
+        },
+        {
+          "device_id": 3,
+          "kind": "web",
+          "created_at": "X",
+          "expires_at": "X",
+          "last_seen": null
+        }
+      ]
+    }
+  ],
+  "devices-mint-expiring": [
+    200,
+    {
+      "device_id": 4,
+      "kind": "web",
+      "expires_at": "X",
+      "devices_v": 5
+    }
+  ],
+  "status-expiring-device": [
+    200,
+    {
+      "status": "ok",
+      "v": 1,
+      "queued": 0,
+      "prekeys": {
+        "spk": false,
+        "opks": 0,
+        "kspk": false,
+        "kopks": 0
+      },
+      "device_id": 4,
+      "devices_v": 5,
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
+    }
+  ],
+  "sleep-past-expiry": [
+    0,
+    {
+      "slept": "1.5"
+    }
+  ],
+  "status-expired-device": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "inbox-expired-device": [
+    410,
+    {
+      "detail": "no such device",
+      "devices_v": 5
+    }
+  ],
+  "devices-list-hides-expired": [
+    200,
+    {
+      "devices_v": 5,
+      "devices": [
+        {
+          "device_id": 1,
+          "kind": "primary",
+          "created_at": "X",
+          "expires_at": null,
+          "last_seen": null
+        },
+        {
+          "device_id": 3,
+          "kind": "web",
+          "created_at": "X",
+          "expires_at": "X",
+          "last_seen": null
+        }
+      ]
+    }
+  ],
+  "link-put-noauth": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "link-put-badshape": [
+    400,
+    {
+      "detail": "expected {key, sealed}"
+    }
+  ],
+  "link-put-badkey": [
+    400,
+    {
+      "detail": "expected {key, sealed}"
+    }
+  ],
+  "link-put-ok": [
+    200,
+    {
+      "status": "ok"
+    }
+  ],
+  "link-take-badkey": [
+    400,
+    {
+      "detail": "bad key"
+    }
+  ],
+  "link-take-missing": [
+    404,
+    {
+      "detail": "no such grant"
+    }
+  ],
+  "link-take-ok": [
+    200,
+    {
+      "sealed": "c2VhbGVkLWdyYW50"
+    }
+  ],
+  "link-take-again": [
+    404,
+    {
+      "detail": "no such grant"
     }
   ]
 }

@@ -60,6 +60,12 @@ pub const PUSH_DEBOUNCE: Duration = Duration::from_secs(5);
 pub const PUSH_ACK_GRACE: Duration = Duration::from_secs(10);
 pub const PUSH_ACK_GRACE_RING: Duration = Duration::from_secs(2);
 pub const TURN_TTL_S: u64 = 6 * 3600;
+/// A parked link grant is a bootstrap secret in flight — short-lived on
+/// purpose, and single-use besides (MULTIDEVICE.md "Linking a device").
+pub const LINK_TTL: Duration = Duration::from_secs(10 * 60);
+pub const MAX_LINK_BYTES: usize = 64 * 1024;
+/// Bounded so a mailbox cannot be filled with grants nobody will collect.
+pub const MAX_PENDING_LINKS: i64 = 8;
 
 pub struct Config {
     pub owner_id: String,
@@ -163,6 +169,19 @@ async fn main() {
             loop {
                 tokio::time::sleep(Duration::from_secs(3600)).await;
                 st.blobs.collect_garbage();
+                // A bounded device ends by itself. Revoking rather than just
+                // hiding it drops its queue and bumps devices_v, so contacts
+                // stop encrypting to a session that is over.
+                for device in st.mailbox.expired_devices() {
+                    let (_, blob_ids) = st.mailbox.remove_device(device);
+                    for blob_id in blob_ids {
+                        if st.mailbox.blob_refcount(&blob_id) == 0 {
+                            st.blobs.delete(&blob_id);
+                        }
+                    }
+                    st.link.disconnect(device).await;
+                    log::info!("device {device} expired and was revoked");
+                }
             }
         });
     }
@@ -176,6 +195,8 @@ async fn main() {
         .route("/prekeys/devices", get(routes::prekey_devices))
         .route("/devices", get(routes::list_devices).post(routes::mint_device))
         .route("/devices/{device_id}", axum::routing::delete(routes::revoke_device))
+        .route("/link", post(routes::link_put))
+        .route("/link/{key}", get(routes::link_take))
         .route("/inbox", post(routes::inbox))
         .route("/push-config", post(routes::push_config))
         .route("/turn-credentials", get(routes::turn_credentials))

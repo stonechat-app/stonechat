@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 
 use crate::db::{OpkUpload, SpkUpload};
-use crate::{blobs, push, AppState, MAX_BLOB_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
+use crate::{blobs, push, AppState, MAX_BLOB_BYTES, MAX_LINK_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
 
 fn detail(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"detail": msg}))).into_response()
@@ -336,7 +336,9 @@ pub async fn list_devices(
         "devices_v": state.mailbox.devices_v(),
         "devices": state.mailbox.devices().iter().map(|d| json!({
             "device_id": d.device_id,
+            "kind": d.kind,
             "created_at": d.created_at,
+            "expires_at": d.expires_at,
             "last_seen": d.last_seen,
         })).collect::<Vec<_>>(),
     }))
@@ -371,8 +373,35 @@ pub async fn mint_device(
     if state.mailbox.device_for_token(token).is_some() {
         return detail(StatusCode::CONFLICT, "token already in use");
     }
-    let device_id = state.mailbox.add_device(token);
-    Json(json!({"device_id": device_id, "devices_v": state.mailbox.devices_v()})).into_response()
+    let body = parsed.as_ref().unwrap();
+    let kind = match body.get("kind").and_then(Value::as_str) {
+        None => "linked",
+        Some(k @ ("linked" | "web")) => k,
+        // "primary" is not mintable: device 1 is whoever holds the owner
+        // token, and a second claimant to that role would be a lie.
+        Some(_) => return detail(StatusCode::BAD_REQUEST, "bad kind"),
+    };
+    // A bounded session ends by itself. WEB_CLIENT.md's whole defence is that
+    // a browser's authority is short-lived and revocable, so the lifetime is
+    // set here, at mint time, by the device doing the authorising.
+    let expires_at = match body.get("expires_in_s") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_i64().filter(|s| *s > 0 && *s <= 365 * 24 * 3600) {
+            Some(secs) => Some(
+                (chrono::Utc::now() + chrono::Duration::seconds(secs))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
+            ),
+            None => return detail(StatusCode::BAD_REQUEST, "bad expires_in_s"),
+        },
+    };
+    let device_id = state.mailbox.add_device(token, kind, expires_at.as_deref());
+    Json(json!({
+        "device_id": device_id,
+        "kind": kind,
+        "expires_at": expires_at,
+        "devices_v": state.mailbox.devices_v(),
+    }))
+    .into_response()
 }
 
 /// Revoke a device: its queue, prekeys and push registration go, and its
@@ -655,4 +684,63 @@ mod tests {
         h.insert(header::HOST, "[::1]:8080".parse().unwrap());
         assert_eq!(host_from_headers(&h).unwrap(), "::1");
     }
+}
+
+// -- link grants (MULTIDEVICE.md "Linking a device") --------------------------
+
+/// Park a sealed link grant for a device being linked.
+///
+/// Authenticated: only an existing device may authorise a new one. What is
+/// stored is opaque — sealed to an ephemeral key that exists only on the new
+/// device, carried there by the user pointing a camera at a screen.
+pub async fn link_put(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<HashMap<String, String>>,
+    body: Bytes,
+) -> Response {
+    if let Err(r) = auth_device(&state, &q) {
+        return r;
+    }
+    if body.len() > MAX_LINK_BYTES {
+        return detail(StatusCode::PAYLOAD_TOO_LARGE, "grant too large");
+    }
+    let parsed: Option<Value> = serde_json::from_slice(&body).ok();
+    let (Some(key), Some(sealed)) = (
+        parsed.as_ref().and_then(|b| b.get("key")).and_then(Value::as_str),
+        parsed.as_ref().and_then(|b| b.get("sealed")).and_then(Value::as_str),
+    ) else {
+        return detail(StatusCode::BAD_REQUEST, "expected {key, sealed}");
+    };
+    if !valid_link_key(key) || sealed.is_empty() {
+        return detail(StatusCode::BAD_REQUEST, "expected {key, sealed}");
+    }
+    if !state.mailbox.put_grant(key, sealed) {
+        return detail(StatusCode::SERVICE_UNAVAILABLE, "too many pending links");
+    }
+    Json(json!({"status": "ok"})).into_response()
+}
+
+/// Collect a grant. Unauthenticated by necessity — the new device has no
+/// credential yet; possession of the QR *is* the credential.
+///
+/// Returns and deletes: single-use, so a replayed fetch gets nothing. The
+/// parking key is derived from a random secret in the QR rather than from the
+/// ephemeral public key, so someone who merely glimpses the screen cannot
+/// compute it and race the legitimate device to destroy the grant.
+pub async fn link_take(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> Response {
+    if !valid_link_key(&key) {
+        return detail(StatusCode::BAD_REQUEST, "bad key");
+    }
+    match state.mailbox.take_grant(&key) {
+        Some(sealed) => Json(json!({"sealed": sealed})).into_response(),
+        None => detail(StatusCode::NOT_FOUND, "no such grant"),
+    }
+}
+
+/// blake2b-256 hex, like every other derived key on this box.
+fn valid_link_key(key: &str) -> bool {
+    key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }

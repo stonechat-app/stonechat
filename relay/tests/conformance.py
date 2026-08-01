@@ -17,6 +17,7 @@ import json
 import pathlib
 import ssl
 import sys
+import time
 import urllib.request
 
 OWNER = "SC-TEST-OWNER"
@@ -56,17 +57,28 @@ ENV_OK = {"v": 1, "id": "e-0001", "to": OWNER, "sealed": "aGVsbG8=", "device": 1
 # list (MULTIDEVICE.md "Why the device list is gated"). Derived here rather
 # than hardcoded so the corpus pins the derivation, not just a constant.
 DEV2 = "dev2-token-0123456789abcdef0123456789"
+DEV3 = "dev3-token-0123456789abcdef0123456789"
+DEV4 = "dev4-token-0123456789abcdef0123456789"
+LINK_KEY = hashlib.blake2b(b"lookup-secret", digest_size=32).hexdigest()
+OTHER_KEY = hashlib.blake2b(b"other-secret", digest_size=32).hexdigest()
 BUNDLE = hashlib.blake2b(
     TOKEN.encode() + b"|stonechat-bundle|", digest_size=32
 ).hexdigest()
 
 
 def norm_devices(b):
-    """created_at/last_seen are wall-clock; keep their presence, not values."""
+    """created_at/expires_at/last_seen are wall-clock; keep their presence and
+    their null-ness, not their values. expires_at null vs set IS the contract
+    (a bounded device from an unbounded one), so it is preserved as a flag."""
     if "devices" not in b:
         return b
     return {**b, "devices": [
-        {**d, "created_at": "X", "last_seen": "X" if d.get("last_seen") else None}
+        {
+            **d,
+            "created_at": "X",
+            "expires_at": "X" if d.get("expires_at") else None,
+            "last_seen": "X" if d.get("last_seen") else None,
+        }
         for d in b["devices"]
     ]}
 
@@ -203,6 +215,38 @@ CORPUS = [
     ("status-revoked-token", "GET", f"/status?token={DEV2}", None, None),
     ("inbox-revoked-device", "POST", "/inbox", {**ENV_OK, "id": "e-d2-2", "device": 2}, None),
     ("devices-list-after-revoke", "GET", f"/devices?token={TOKEN}", None, norm_devices),
+    # -- device lifetime (WEB_CLIENT.md: a browser session must end by itself)
+    ("devices-mint-bad-kind", "POST", f"/devices?token={TOKEN}",
+     {"device_token": DEV3, "kind": "primary"}, None),
+    ("devices-mint-bad-expiry", "POST", f"/devices?token={TOKEN}",
+     {"device_token": DEV3, "kind": "web", "expires_in_s": 0}, None),
+    ("devices-mint-web", "POST", f"/devices?token={TOKEN}",
+     {"device_token": DEV3, "kind": "web", "expires_in_s": 3600},
+     lambda b: {**b, "expires_at": "X" if b.get("expires_at") else None}),
+    ("devices-list-kinds", "GET", f"/devices?token={TOKEN}", None, norm_devices),
+    # An already-expired device authenticates as nobody, before any sweep runs.
+    ("devices-mint-expiring", "POST", f"/devices?token={TOKEN}",
+     {"device_token": DEV4, "kind": "web", "expires_in_s": 1},
+     lambda b: {**b, "expires_at": "X" if b.get("expires_at") else None}),
+    ("status-expiring-device", "GET", f"/status?token={DEV4}", None, None),
+    ("sleep-past-expiry", "SLEEP", "1.5", None, None),
+    ("status-expired-device", "GET", f"/status?token={DEV4}", None, None),
+    ("inbox-expired-device", "POST", "/inbox", {**ENV_OK, "id": "e-exp", "device": 4}, None),
+    ("devices-list-hides-expired", "GET", f"/devices?token={TOKEN}", None, norm_devices),
+    # -- link grants (MULTIDEVICE.md "Linking a device") ----------------------
+    ("link-put-noauth", "POST", "/link", {"key": LINK_KEY, "sealed": "c2VhbGVk"}, None),
+    ("link-put-badshape", "POST", f"/link?token={TOKEN}", {"key": LINK_KEY}, None),
+    ("link-put-badkey", "POST", f"/link?token={TOKEN}",
+     {"key": "not-a-hash", "sealed": "c2VhbGVk"}, None),
+    ("link-put-ok", "POST", f"/link?token={TOKEN}",
+     {"key": LINK_KEY, "sealed": "c2VhbGVkLWdyYW50"}, None),
+    ("link-take-badkey", "GET", "/link/nope", None, None),
+    ("link-take-missing", "GET", f"/link/{OTHER_KEY}", None, None),
+    # Unauthenticated on purpose: the new device has no credential yet, and
+    # possession of the QR is the credential.
+    ("link-take-ok", "GET", f"/link/{LINK_KEY}", None, None),
+    # Single-use: a replayed fetch gets nothing.
+    ("link-take-again", "GET", f"/link/{LINK_KEY}", None, None),
 ]
 
 
@@ -212,6 +256,10 @@ def run(base):
         # A callable path reads earlier *un-normalized* responses: the blob id
         # and fetch token are random per run, so the capability round trip can
         # only be expressed by chaining, while the golden records the shape.
+        if method == "SLEEP":
+            time.sleep(float(path))
+            out[label] = [0, {"slept": path}]
+            continue
         status, resp = req(base, method, path(raw) if callable(path) else path, body)
         raw[label] = resp if isinstance(resp, dict) else {}
         out[label] = [status, norm(resp) if norm else resp]

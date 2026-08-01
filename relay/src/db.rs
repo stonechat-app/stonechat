@@ -33,7 +33,16 @@ pub fn token_hash(token: &str) -> String {
 
 pub struct Device {
     pub device_id: i64,
+    /// `primary` (provisioned the mailbox), `linked` (another of the owner's
+    /// apps) or `web` (a browser session). Advisory — the protocol treats
+    /// devices uniformly; this exists so a device list can be shown honestly
+    /// and so a browser session can be given a lifetime.
+    pub kind: String,
     pub created_at: String,
+    /// RFC-3339, or null for a device that lives until revoked. A web session
+    /// is bounded on purpose (WEB_CLIENT.md): the browser is a bad place for
+    /// long-lived authority, so its authority expires on its own.
+    pub expires_at: Option<String>,
     pub last_seen: Option<String>,
 }
 
@@ -89,8 +98,14 @@ impl Mailbox {
              CREATE TABLE IF NOT EXISTS devices (
                device_id INTEGER PRIMARY KEY,
                token_hash TEXT NOT NULL UNIQUE,
+               kind TEXT NOT NULL DEFAULT 'primary',
                created_at TEXT NOT NULL,
+               expires_at TEXT,
                last_seen TEXT);
+             CREATE TABLE IF NOT EXISTS link_grants (
+               key TEXT PRIMARY KEY,
+               sealed TEXT NOT NULL,
+               created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS meta (
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL);",
@@ -119,18 +134,97 @@ impl Mailbox {
         .unwrap();
     }
 
+    // -- link grants (MULTIDEVICE.md "Linking a device") ----------------------
+
+    /// Park a sealed grant for a device being linked. Returns false when too
+    /// many are already pending.
+    ///
+    /// The relay stores ciphertext it cannot open: the grant is sealed to an
+    /// ephemeral key that exists only on the new device, and was carried
+    /// there by the user pointing a camera at a screen.
+    pub fn put_grant(&self, key: &str, sealed: &str) -> bool {
+        let db = self.db.lock().unwrap();
+        Self::drop_stale_grants(&db);
+        let pending: i64 = db
+            .query_row("SELECT COUNT(*) FROM link_grants", [], |r| r.get(0))
+            .unwrap();
+        if pending >= crate::MAX_PENDING_LINKS {
+            return false;
+        }
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
+        db.execute(
+            "INSERT INTO link_grants (key, sealed, created_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET sealed = excluded.sealed,
+             created_at = excluded.created_at",
+            params![key, sealed, now],
+        )
+        .unwrap();
+        true
+    }
+
+    /// Return a grant **and delete it**: single-use, so a replayed fetch gets
+    /// nothing and the window for a stolen QR closes the moment it is used.
+    pub fn take_grant(&self, key: &str) -> Option<String> {
+        let db = self.db.lock().unwrap();
+        Self::drop_stale_grants(&db);
+        let sealed: Option<String> = db
+            .query_row(
+                "SELECT sealed FROM link_grants WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        if sealed.is_some() {
+            db.execute("DELETE FROM link_grants WHERE key = ?1", params![key])
+                .unwrap();
+        }
+        sealed
+    }
+
+    fn drop_stale_grants(db: &Connection) {
+        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(crate::LINK_TTL).unwrap();
+        db.execute(
+            "DELETE FROM link_grants WHERE created_at < ?1",
+            params![cutoff.to_rfc3339_opts(chrono::SecondsFormat::Micros, false)],
+        )
+        .unwrap();
+    }
+
+    /// Devices whose lifetime has run out. Revoking them is the caller's job
+    /// (it drops queues and bumps devices_v), which is what makes a web
+    /// session end by itself rather than merely stop being shown.
+    pub fn expired_devices(&self) -> Vec<i64> {
+        let db = self.db.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
+        let mut stmt = db
+            .prepare(
+                "SELECT device_id FROM devices
+                 WHERE expires_at IS NOT NULL AND expires_at < ?1",
+            )
+            .unwrap();
+        let rows = stmt.query_map(params![now], |r| r.get(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    }
+
     // -- devices (MULTIDEVICE.md "Device model") ------------------------------
 
     /// Which device is presenting this token, if any. The only authentication
     /// the relay has: possession of a device token is being that device.
+    ///
+    /// An expired device authenticates as nobody. The timed sweep revokes it
+    /// properly (queues, prekeys, devices_v), but authority has to end at the
+    /// deadline rather than at the next sweep.
     pub fn device_for_token(&self, token: &str) -> Option<i64> {
         if token.is_empty() {
             return None;
         }
         let db = self.db.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
         db.query_row(
-            "SELECT device_id FROM devices WHERE token_hash = ?1",
-            params![token_hash(token)],
+            "SELECT device_id FROM devices
+             WHERE token_hash = ?1 AND (expires_at IS NULL OR expires_at > ?2)",
+            params![token_hash(token), now],
             |r| r.get(0),
         )
         .optional()
@@ -139,15 +233,22 @@ impl Mailbox {
 
     pub fn devices(&self) -> Vec<Device> {
         let db = self.db.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
         let mut stmt = db
-            .prepare("SELECT device_id, created_at, last_seen FROM devices ORDER BY device_id")
+            .prepare(
+                "SELECT device_id, kind, created_at, expires_at, last_seen FROM devices
+                 WHERE expires_at IS NULL OR expires_at > ?1
+                 ORDER BY device_id",
+            )
             .unwrap();
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params![now], |r| {
                 Ok(Device {
                     device_id: r.get(0)?,
-                    created_at: r.get(1)?,
-                    last_seen: r.get(2)?,
+                    kind: r.get(1)?,
+                    created_at: r.get(2)?,
+                    expires_at: r.get(3)?,
+                    last_seen: r.get(4)?,
                 })
             })
             .unwrap();
@@ -179,17 +280,37 @@ impl Mailbox {
     /// Mint a device. Ids are never reused — a revoked device's id stays
     /// spent so a stale envelope addressed to it can never land in a new
     /// device's queue.
-    pub fn add_device(&self, token: &str) -> i64 {
+    pub fn add_device(&self, token: &str, kind: &str, expires_at: Option<&str>) -> i64 {
         let db = self.db.lock().unwrap();
-        let next: i64 = db
-            .query_row("SELECT IFNULL(MAX(device_id), 0) + 1 FROM devices", [], |r| {
-                r.get(0)
-            })
+        // Monotonic, NOT max(device_id)+1: revoking device 2 and minting the
+        // next one would otherwise hand the new device the old one's id, and
+        // an envelope still in flight to the revoked device would land in the
+        // new device's queue — addressed to a session it cannot open, from a
+        // sender who thinks it arrived.
+        let highest: i64 = db
+            .query_row(
+                "SELECT IFNULL(MAX(CAST(value AS INTEGER)), 0) FROM meta WHERE key = 'devices_high'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+            .unwrap_or(0);
+        let existing_max: i64 = db
+            .query_row("SELECT IFNULL(MAX(device_id), 0) FROM devices", [], |r| r.get(0))
             .unwrap();
+        let next = highest.max(existing_max) + 1;
+        db.execute(
+            "INSERT INTO meta (key, value) VALUES ('devices_high', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![next.to_string()],
+        )
+        .unwrap();
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
         db.execute(
-            "INSERT INTO devices (device_id, token_hash, created_at) VALUES (?1, ?2, ?3)",
-            params![next, token_hash(token), now],
+            "INSERT INTO devices (device_id, token_hash, kind, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![next, token_hash(token), kind, now, expires_at],
         )
         .unwrap();
         Self::bump_devices_v(&db);
