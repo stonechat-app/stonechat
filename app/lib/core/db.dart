@@ -607,28 +607,26 @@ class ChatDb {
 
   // -- group outbox ---------------------------------------------------------------
 
+  /// Record that [memberIds] are owed a copy of this message. Seeded against
+  /// the primary device — the fan-out is the only thing that knows a peer's
+  /// real device list, and reconciles these rows once it does
+  /// ([owedDevices]).
   Future<void> addOutbox(
     String messageId,
     String groupId,
-    List<String> memberIds,
-  ) async {
+    List<String> memberIds, {
+    int deviceId = primaryDevice,
+  }) async {
     await _db.transaction((tx) async {
       for (final memberId in memberIds) {
         await tx.insert('group_outbox', {
           'message_id': messageId,
           'group_id': groupId,
           'member_id': memberId,
+          'device_id': deviceId,
         }, conflictAlgorithm: ConflictAlgorithm.ignore);
       }
     });
-  }
-
-  Future<void> clearOutbox(String messageId, String memberId) async {
-    await _db.delete(
-      'group_outbox',
-      where: 'message_id = ? AND member_id = ?',
-      whereArgs: [messageId, memberId],
-    );
   }
 
   /// Stop owing every remaining copy (the message was deleted).
@@ -640,6 +638,19 @@ class ChatDb {
     );
   }
 
+  /// Distinct *members* still owed, not rows: the bubble says "sent to 3 of
+  /// 4" about people, and a member with two outstanding devices is one person
+  /// waiting, not two.
+  Future<int> outboxMembersRemaining(String messageId) async {
+    final rows = await _db.query(
+      'group_outbox',
+      columns: ['member_id'],
+      where: 'message_id = ?',
+      whereArgs: [messageId],
+    );
+    return rows.map((r) => r['member_id'] as String).toSet().length;
+  }
+
   Future<int> outboxRemaining(String messageId) async {
     final rows = await _db.query(
       'group_outbox',
@@ -649,13 +660,45 @@ class ChatDb {
     return rows.length;
   }
 
+  /// Replace what a peer is owed for one message with the exact devices that
+  /// did not take it. Called by the fan-out, which is the only place that
+  /// knows both the device list and the per-device outcome — a peer whose
+  /// phone accepted but whose laptop did not is still owed, and only at that
+  /// granularity can a retry tell the difference.
+  Future<void> setOwedDevices(
+    String messageId,
+    String conversationId,
+    String memberId,
+    List<int> devices,
+  ) async {
+    await _db.transaction((tx) async {
+      await tx.delete(
+        'group_outbox',
+        where: 'message_id = ? AND member_id = ?',
+        whereArgs: [messageId, memberId],
+      );
+      for (final device in devices) {
+        await tx.insert('group_outbox', {
+          'message_id': messageId,
+          'group_id': conversationId,
+          'member_id': memberId,
+          'device_id': device,
+        }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+    });
+  }
+
+  /// Messages still owed to someone: message id → the members owed, each
+  /// listed once however many of their devices are outstanding. The retry
+  /// re-sends to the member and the fan-out re-derives which of their devices
+  /// still need it, so member granularity is all this has to carry.
   Future<Map<String, List<String>>> pendingOutbox() async {
     final rows = await _db.query('group_outbox');
     final byMessage = <String, List<String>>{};
     for (final r in rows) {
-      (byMessage[r['message_id'] as String] ??= []).add(
-        r['member_id'] as String,
-      );
+      final members = byMessage[r['message_id'] as String] ??= [];
+      final memberId = r['member_id'] as String;
+      if (!members.contains(memberId)) members.add(memberId);
     }
     return byMessage;
   }

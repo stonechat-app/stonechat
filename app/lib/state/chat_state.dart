@@ -689,10 +689,16 @@ class ChatState extends ChangeNotifier {
     bool transient = false,
     bool noPush = false,
     bool ring = false,
+    /// Set for real messages: the fan-out then records exactly which of this
+    /// peer's devices are still owed a copy. A peer whose phone took it but
+    /// whose laptop did not is *not* delivered, and only per-device rows can
+    /// tell a retry the difference.
+    ({String messageId, String conversationId})? outbox,
   }) async {
     final devices = await _devicesFor(peerId, bundleToken, address, tlsFp);
     final link = MailboxLink(address, tlsFp);
-    var accepted = 0;
+    final accepted = <int>{};
+    final gone = <int>{}; // revoked: nobody is owed a copy for these
     Object? lastError;
     try {
       for (final device in devices) {
@@ -718,23 +724,36 @@ class ChatState extends ChangeNotifier {
               ring: ring,
             ),
           );
-          accepted++;
+          accepted.add(device);
           if (devicesV != null) onDevicesV?.call(devicesV);
-        } on ApiException catch (e) {
+        } catch (e) {
           lastError = e;
-          if (e.status != 410) rethrow;
-          // That device is revoked or never existed. Forget it and its
-          // ratchet, and keep going — its siblings are still owed a copy.
-          _peerDevices.remove(peerId);
-          await app.db.deleteSession(peerId, deviceId: device);
-          final devicesV = devicesVOf(e);
-          if (devicesV != null) onDevicesV?.call(devicesV);
+          if (e is ApiException && e.status == 410) {
+            // Revoked or never existed. Forget it and its ratchet; nobody is
+            // owed a copy for a device that is gone.
+            gone.add(device);
+            _peerDevices.remove(peerId);
+            await app.db.deleteSession(peerId, deviceId: device);
+            final devicesV = devicesVOf(e);
+            if (devicesV != null) onDevicesV?.call(devicesV);
+            continue;
+          }
+          // One device being unreachable must not stop its siblings getting
+          // their copy — the same rule groups already follow for members.
         }
       }
     } finally {
       link.close();
+      if (outbox != null) {
+        await app.db.setOwedDevices(
+          outbox.messageId,
+          outbox.conversationId,
+          peerId,
+          devices.where((d) => !accepted.contains(d) && !gone.contains(d)).toList(),
+        );
+      }
     }
-    if (accepted == 0) {
+    if (accepted.isEmpty) {
       throw lastError is ApiException
           ? lastError
           : ApiException('no device accepted the message');
@@ -750,6 +769,7 @@ class ChatState extends ChangeNotifier {
     bool transient = false,
     bool noPush = false,
     bool ring = false,
+    ({String messageId, String conversationId})? outbox,
   }) async {
     // _addressFor also backfills pq_pk for contacts saved before a resolve
     // (e.g. a pending_in row built from an x3dh block alone).
@@ -768,6 +788,7 @@ class ChatState extends ChangeNotifier {
       transient: transient,
       noPush: noPush,
       ring: ring,
+      outbox: outbox,
     );
     try {
       await attempt(await _addressFor(contact));
@@ -1398,6 +1419,7 @@ class ChatState extends ChangeNotifier {
     String? blobId,
     bool transient = false,
     bool noPush = false,
+    ({String messageId, String conversationId})? outbox,
   }) async {
     Future<String> resolve() async {
       final entry = await _resolve(member.stonechatId);
@@ -1412,6 +1434,7 @@ class ChatState extends ChangeNotifier {
     }
 
     Future<void> attempt(String address) => _fanOutToDevices(
+      outbox: outbox,
       peerId: member.stonechatId,
       pubkeyB64: member.pubkeyB64,
       pqPkB64: member.pqPkB64!,
@@ -1907,8 +1930,8 @@ class ChatState extends ChangeNotifier {
               type,
               payload,
               envelopeId: message.id,
+              outbox: (messageId: message.id, conversationId: group.id),
             );
-            await app.db.clearOutbox(message.id, member.stonechatId);
           } catch (e) {
             // stays in outbox; retryPending re-attempts this member
             lastError = e;
@@ -1916,6 +1939,30 @@ class ChatState extends ChangeNotifier {
         },
     ]);
     await _settleFanOut(message, lastError, (type: type, payload: payload));
+  }
+
+  /// A DM send is over. Sent only once no device is still owed a copy —
+  /// otherwise it stays pending and the retry sweep comes back for the ones
+  /// that missed out.
+  Future<void> _settleSend(
+    Message message,
+    String type,
+    Map<String, Object?> payload,
+  ) async {
+    if (await app.db.outboxRemaining(message.id) > 0) {
+      await _recordSendFailure(
+        message,
+        ApiException('Some of their devices are unreachable right now'),
+        mayBeTerminal: false,
+      );
+      return;
+    }
+    await _recordSendSuccess(message);
+    unawaited(
+      message.kind == MessageKind.text
+          ? _syncSent(message, type, payload)
+          : _syncSentMedia(message, type, payload),
+    );
   }
 
   /// A fan-out pass is over. The message counts as sent once no member is
@@ -1929,7 +1976,7 @@ class ChatState extends ChangeNotifier {
     ({String type, Map<String, Object?> payload})? sync,
   ]) async {
     final owed = await app.db.outboxRemaining(message.id);
-    _groupOwed[message.id] = owed;
+    _groupOwed[message.id] = await app.db.outboxMembersRemaining(message.id);
     if (owed == 0) {
       await _recordSendSuccess(message);
       if (sync != null) {
@@ -2164,6 +2211,13 @@ class ChatState extends ChangeNotifier {
     Message message, {
     String? mime,
   }) async {
+    // A DM is a fan-out too now, so it needs the same per-device bookkeeping
+    // groups have: one of the recipient's three devices accepting is not the
+    // message being delivered.
+    final outbox = (
+      messageId: message.id,
+      conversationId: contact.stonechatId,
+    );
     try {
       if (message.kind == MessageKind.text) {
         // envelope id == message id → dedupe on the other side, and one id
@@ -2174,9 +2228,9 @@ class ChatState extends ChangeNotifier {
           EnvelopeType.msg,
           payload,
           envelopeId: message.id,
+          outbox: outbox,
         );
-        await _recordSendSuccess(message);
-        unawaited(_syncSent(message, EnvelopeType.msg, payload));
+        await _settleSend(message, EnvelopeType.msg, payload);
       } else {
         final media = await _sealMedia(contact, message, mime: mime);
         await _deliver(
@@ -2185,9 +2239,9 @@ class ChatState extends ChangeNotifier {
           media.payload,
           envelopeId: message.id,
           blobId: media.blobId,
+          outbox: outbox,
         );
-        await _recordSendSuccess(message);
-        unawaited(_syncSentMedia(message, EnvelopeType.media, media.payload));
+        await _settleSend(message, EnvelopeType.media, media.payload);
       }
     } catch (e) {
       await _recordSendFailure(message, e);
