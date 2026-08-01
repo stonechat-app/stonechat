@@ -48,7 +48,9 @@ def _body(raw):
         return {"_nonjson": raw.decode(errors="replace")[:100]}
 
 
-ENV_OK = {"v": 1, "id": "e-0001", "to": OWNER, "sealed": "aGVsbG8="}
+# `device` is required on every envelope: the AEAD binds it, so there is no
+# implicit value for sender and receiver to disagree about.
+ENV_OK = {"v": 1, "id": "e-0001", "to": OWNER, "sealed": "aGVsbG8=", "device": 1}
 
 # A second device's token, and the derived bundle token that gates the device
 # list (MULTIDEVICE.md "Why the device list is gated"). Derived here rather
@@ -107,6 +109,8 @@ CORPUS = [
     ("inbox-bad-sealed", "POST", "/inbox", {**ENV_OK, "sealed": ""}, None),
     ("inbox-bad-blobid", "POST", "/inbox", {**ENV_OK, "blob_id": "../x"}, None),
     ("inbox-bad-hint", "POST", "/inbox", {**ENV_OK, "transient": "yes"}, None),
+    ("inbox-no-device", "POST", "/inbox",
+     {k: v for k, v in ENV_OK.items() if k != "device"}, None),
     ("inbox-wrong-owner", "POST", "/inbox", {**ENV_OK, "to": "SC-SOMEONE-ELSE"}, None),
     ("inbox-ok", "POST", "/inbox", ENV_OK, None),
     ("inbox-dup", "POST", "/inbox", ENV_OK, None),
@@ -187,7 +191,7 @@ CORPUS = [
     ("inbox-device-unknown", "POST", "/inbox", {**ENV_OK, "id": "e-d9", "device": 99}, None),
     ("inbox-device-bad-type", "POST", "/inbox", {**ENV_OK, "id": "e-dx", "device": "2"}, None),
     # Same envelope id to two devices is two rows, not a duplicate.
-    ("inbox-same-id-device1", "POST", "/inbox", {**ENV_OK, "id": "e-d2-1"}, None),
+    ("inbox-same-id-device1", "POST", "/inbox", {**ENV_OK, "id": "e-d2-1", "device": 1}, None),
     ("status-device2-queued", "GET", f"/status?token={DEV2}", None, None),
     # -- revocation -----------------------------------------------------------
     ("revoke-noauth", "DELETE", "/devices/2", None, None),

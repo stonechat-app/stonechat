@@ -1,11 +1,9 @@
 //! SQLite-backed envelope queue + prekey/push-config store. Rows die on ack.
 //!
-//! Schema started byte-identical to the retired Python relay's — the cutover
-//! guarantee (RUST_PORT.md) was that a Rust relay pointed at a volume Python
-//! wrote serves the queued mail it left there. Multi-device phase 1
-//! (MULTIDEVICE.md) adds a device dimension to almost every table, so that
-//! guarantee is now upheld by `migrate()` rather than by sameness: an old
-//! volume is rewritten in place, and everything it held becomes device 1's.
+//! The device dimension runs through almost every table: one queue, one
+//! prekey pool and one push registration per device (MULTIDEVICE.md).
+//! Pre-launch, so there is no schema migration — the tables are created as
+//! they are meant to be, and an older volume is wiped rather than upgraded.
 
 use std::sync::Mutex;
 
@@ -18,9 +16,10 @@ use crate::{MAX_KOPKS, MAX_OPKS, MAX_QUEUE_DEPTH};
 
 type Blake2b256 = Blake2b<U32>;
 
-/// The bootstrap device. `STONECHAT_OWNER_TOKEN` is its token, which is what
-/// keeps provisioning, the hub's `server_token` handoff, and every existing
-/// client working unchanged through this migration.
+/// The bootstrap device: provisioning mints one credential, and the device
+/// holding it is device 1. `STONECHAT_OWNER_TOKEN` is its token, which is what
+/// makes the hub's `server_token` handoff a device login without needing a
+/// second concept.
 pub const PRIMARY_DEVICE: i64 = 1;
 
 /// Device tokens are stored hashed, never in the clear: the DB file is the
@@ -97,93 +96,8 @@ impl Mailbox {
                value TEXT NOT NULL);",
         )?;
         let mailbox = Self { db: Mutex::new(db) };
-        mailbox.migrate_pre_device_schema()?;
         mailbox.seed_primary_device(owner_token);
         Ok(mailbox)
-    }
-
-    /// A volume written before phase 1 has the single-drainer schema: no
-    /// `device` column anywhere, `row = 1` singletons for the signed prekeys.
-    /// Rewrite those tables in place and let everything they held become
-    /// device 1's — which is exactly what it was.
-    ///
-    /// SQLite cannot alter a primary key, so each table is rebuilt. Detection
-    /// is by column presence rather than a schema-version counter, so this is
-    /// idempotent and safe to run against an already-migrated volume.
-    fn migrate_pre_device_schema(&self) -> rusqlite::Result<()> {
-        let db = self.db.lock().unwrap();
-        let has_device_column = |table: &str| -> bool {
-            let mut stmt = db
-                .prepare(&format!("PRAGMA table_info({table})"))
-                .expect("pragma");
-            let names: Vec<String> = stmt
-                .query_map([], |r| r.get::<_, String>(1))
-                .expect("pragma rows")
-                .map(|r| r.unwrap())
-                .collect();
-            names.iter().any(|n| n == "device")
-        };
-
-        if !has_device_column("envelopes") {
-            log::info!("migrating envelopes to the per-device schema");
-            db.execute_batch(
-                "ALTER TABLE envelopes RENAME TO envelopes_old;
-                 CREATE TABLE envelopes (
-                   id TEXT NOT NULL,
-                   device INTEGER NOT NULL DEFAULT 1,
-                   body TEXT NOT NULL,
-                   received_at TEXT NOT NULL,
-                   PRIMARY KEY (id, device));
-                 INSERT INTO envelopes (id, device, body, received_at)
-                   SELECT id, 1, body, received_at FROM envelopes_old;
-                 DROP TABLE envelopes_old;",
-            )?;
-        }
-        if !has_device_column("push_config") {
-            db.execute_batch(
-                "ALTER TABLE push_config RENAME TO push_config_old;
-                 CREATE TABLE push_config (
-                   device INTEGER PRIMARY KEY,
-                   device_token TEXT NOT NULL,
-                   platform TEXT NOT NULL);
-                 INSERT INTO push_config (device, device_token, platform)
-                   SELECT 1, device_token, platform FROM push_config_old;
-                 DROP TABLE push_config_old;",
-            )?;
-        }
-        for table in ["signed_prekey", "kem_signed_prekey"] {
-            if has_device_column(table) {
-                continue;
-            }
-            db.execute_batch(&format!(
-                "ALTER TABLE {table} RENAME TO {table}_old;
-                 CREATE TABLE {table} (
-                   device INTEGER PRIMARY KEY,
-                   id INTEGER NOT NULL,
-                   pub TEXT NOT NULL,
-                   sig TEXT NOT NULL);
-                 INSERT INTO {table} (device, id, pub, sig)
-                   SELECT 1, id, pub, sig FROM {table}_old;
-                 DROP TABLE {table}_old;"
-            ))?;
-        }
-        for table in ["one_time_prekeys", "kem_one_time_prekeys"] {
-            if has_device_column(table) {
-                continue;
-            }
-            db.execute_batch(&format!(
-                "ALTER TABLE {table} RENAME TO {table}_old;
-                 CREATE TABLE {table} (
-                   device INTEGER NOT NULL,
-                   id INTEGER NOT NULL,
-                   pub TEXT NOT NULL,
-                   PRIMARY KEY (device, id));
-                 INSERT INTO {table} (device, id, pub)
-                   SELECT 1, id, pub FROM {table}_old;
-                 DROP TABLE {table}_old;"
-            ))?;
-        }
-        Ok(())
     }
 
     /// Device 1 is `STONECHAT_OWNER_TOKEN`. Re-seeded on every boot so that

@@ -212,6 +212,12 @@
       "detail": "bad transient flag"
     }
   ],
+  "inbox-no-device": [
+    400,
+    {
+      "detail": "bad device"
+    }
+  ],
   "inbox-wrong-owner": [
     403,
     {

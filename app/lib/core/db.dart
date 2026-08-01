@@ -54,62 +54,10 @@ class ChatDb {
     final db = await openDatabase(
       path,
       password: password,
-      version: 5,
-      onUpgrade: (db, from, _) async {
-        if (from < 2) {
-          // v2: a contact's home hub for cross-hub resolution.
-          await db.execute('ALTER TABLE contacts ADD COLUMN hub TEXT');
-        }
-        if (from < 3) {
-          // v3: the shared blob behind an outgoing group-media fan-out.
-          await db.execute('ALTER TABLE messages ADD COLUMN blob TEXT');
-        }
-        if (from < 4) {
-          // v4: why a send didn't land, and the backoff bookkeeping behind it.
-          await db.execute('ALTER TABLE messages ADD COLUMN fail_reason TEXT');
-          await db.execute(
-            'ALTER TABLE messages ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
-          );
-          await db.execute(
-            'ALTER TABLE messages ADD COLUMN last_attempt_at INTEGER',
-          );
-        }
-        if (from < 5) {
-          // v5: multi-device (MULTIDEVICE.md phase 2). A ratchet is per
-          // (peer, device) — two devices cannot share one session — so the
-          // sessions table gains a device column and every existing row
-          // becomes that peer's device 1, which is what it was.
-          //
-          // SQLite cannot alter a primary key, so the table is rebuilt.
-          await db.execute('ALTER TABLE sessions RENAME TO sessions_old');
-          await db.execute(_createSessions);
-          await db.execute(
-            'INSERT INTO sessions (peer_id, device_id, state) '
-            'SELECT peer_id, $primaryDevice, state FROM sessions_old',
-          );
-          await db.execute('DROP TABLE sessions_old');
-          // Per-contact device-set tracking: devices_v tells us when to
-          // re-fetch, the bundle token is what lets us list at all.
-          await db.execute(
-            'ALTER TABLE contacts ADD COLUMN devices_v INTEGER NOT NULL DEFAULT 0',
-          );
-          await db.execute('ALTER TABLE contacts ADD COLUMN bundle_token TEXT');
-          // The outbox becomes per (message, member, device): multi-device
-          // makes every DM a fan-out too, and one mechanism must serve both
-          // (MULTIDEVICE.md "Send tracking"). Rebuilt rather than ALTERed —
-          // the device has to be *in the primary key* or a second device's
-          // row would collide with its sibling's instead of being owed
-          // separately, which is the whole point of the table.
-          await db.execute('ALTER TABLE group_outbox RENAME TO group_outbox_old');
-          await db.execute(_createGroupOutbox);
-          await db.execute(
-            'INSERT INTO group_outbox (message_id, group_id, member_id, device_id) '
-            'SELECT message_id, group_id, member_id, $primaryDevice '
-            'FROM group_outbox_old',
-          );
-          await db.execute('DROP TABLE group_outbox_old');
-        }
-      },
+      // Pre-launch: no installed base, so there is no migration chain. The
+      // schema below is simply the schema. An older database is wiped
+      // (deleteDatabaseFiles) rather than upgraded.
+      version: 1,
       onCreate: (db, _) async {
         await db.execute('''
           CREATE TABLE contacts (
@@ -129,7 +77,9 @@ class ChatDb {
             muted_until    INTEGER,
             archived_at    INTEGER,
             avatar         BLOB,
-            profile_at     INTEGER NOT NULL DEFAULT 0
+            profile_at     INTEGER NOT NULL DEFAULT 0,
+            devices_v      INTEGER NOT NULL DEFAULT 0,
+            bundle_token   TEXT
           )
         ''');
         await db.execute('''
@@ -216,12 +166,14 @@ class ChatDb {
     )
   ''';
 
-  // One forward-secret ratchet session per peer (PROTOCOL.md). The state
-  // JSON holds the session's secret keys; it lives beside the plaintext
-  // history it protects, on this phone only.
-  /// The device a peer had before anyone had more than one. Existing rows —
-  /// sessions, outbox entries — migrate to it, because that is what they were.
+  /// The device every peer has: provisioning mints one credential and its
+  /// holder is device 1. Linked devices are numbered from 2.
   static const primaryDevice = 1;
+
+  // One forward-secret ratchet session per (peer, device) — PROTOCOL.md. A
+  // double ratchet is mutable state that advances on every message, so two
+  // devices cannot share one. The state JSON holds the session's secret keys;
+  // it lives beside the plaintext history it protects, on this phone only.
 
   static const _createSessions = '''
     CREATE TABLE sessions (

@@ -262,15 +262,16 @@ pub async fn inbox(State(state): State<Arc<AppState>>, body: Bytes) -> Response 
     if envelope["to"].as_str() != Some(state.cfg.owner_id.as_str()) {
         return detail(StatusCode::FORBIDDEN, "not this mailbox's owner");
     }
-    // Which device this copy is for. Absent means device 1, so a sender that
-    // has never heard of devices addresses the primary exactly as before.
+    // Which device this copy is for. Required, not defaulted: the AEAD's
+    // associated data binds this number, so an implicit value would mean
+    // sender and receiver having to agree on what "absent" meant.
     let devices_v = state.mailbox.devices_v();
-    let device = match envelope.get("device") {
-        None | Some(Value::Null) => crate::db::PRIMARY_DEVICE,
-        Some(v) => match v.as_i64() {
-            Some(d) if v.is_i64() => d,
-            _ => return detail(StatusCode::BAD_REQUEST, "bad device"),
-        },
+    let device = match envelope
+        .get("device")
+        .and_then(|v| v.as_i64().filter(|_| v.is_i64()))
+    {
+        Some(d) => d,
+        None => return detail(StatusCode::BAD_REQUEST, "bad device"),
     };
     // A revoked or never-minted device is a permanent failure for this copy,
     // not a retry: 410 carries the current devices_v so the sender re-fetches
