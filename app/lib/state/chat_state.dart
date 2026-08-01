@@ -143,6 +143,12 @@ class ChatState extends ChangeNotifier {
   String? mailboxToken;
   String? mailboxTlsFp;
 
+  /// Which device *we* are on our own mailbox. The token we hold names it;
+  /// the relay tells us which one it is on /status. Device 1 until a linked
+  /// device learns otherwise from its grant, and it is bound into the AEAD of
+  /// everything we send, so it must be right before we send anything.
+  int myDeviceId = ChatDb.primaryDevice;
+
   // Forward-secret ratchet sessions, one per peer, cached over the DB copy.
   final Map<String, RatchetSession> _sessions = {};
 
@@ -201,10 +207,11 @@ class ChatState extends ChangeNotifier {
 
   ChatState(this.app);
 
-  void setMailbox(String? address, String? token, String? tlsFp) {
+  void setMailbox(String? address, String? token, String? tlsFp, {int? deviceId}) {
     mailboxAddress = address;
     mailboxToken = token;
     mailboxTlsFp = tlsFp;
+    if (deviceId != null) myDeviceId = deviceId;
     _registeredPushToken = null; // new mailbox → re-register the token
     _registerPush();
     // Mirror the coordinates into the shared DB: the iOS notification
@@ -221,6 +228,7 @@ class ChatState extends ChangeNotifier {
                     'address': address,
                     'token': token,
                     'tls_fp': tlsFp,
+                    'device_id': myDeviceId,
                   }),
                 ),
               ),
@@ -552,6 +560,7 @@ class ChatState extends ChangeNotifier {
     bool noPush = false,
     bool ring = false,
   }) => SealedEnvelope(
+    device: envelope.device,
     id: envelope.id,
     to: envelope.to,
     sealedB64: base64Encode(
@@ -723,7 +732,13 @@ class ChatState extends ChangeNotifier {
         serverAddress: serverAddress,
         serverTlsFp: serverTlsFp,
       );
-      final adPrefix = 'stonechat/v1|${app.stonechatId}|$toStonechatId|$type';
+      // Both device numbers are bound, on every message, single-device or
+      // not (MULTIDEVICE.md "Associated data"). One form, no conditional:
+      // this is the one place where a second code path would mean silent
+      // decryption failure.
+      final adPrefix =
+          'stonechat/v1|${app.stonechatId}|$myDeviceId'
+          '|$toStonechatId|$deviceId|$type';
       final sealed = session.encrypt(jsonEncode(payload), adPrefix);
       final x3dh = session.pendingX3dh?.toJson();
       // Persist the advanced chain before the envelope can leave: a crash
@@ -733,7 +748,9 @@ class ChatState extends ChangeNotifier {
         id: envelopeId ?? _uuid.v4(),
         type: type,
         from: app.stonechatId!,
+        fromDevice: myDeviceId,
         to: toStonechatId,
+        device: deviceId,
         sentAt: DateTime.now().toUtc().toIso8601String(),
         ratchet: sealed.ratchet,
         x3dh: x3dh,
@@ -749,15 +766,15 @@ class ChatState extends ChangeNotifier {
   /// null (drop silently) for anything that doesn't verify.
   Future<String?> _openEnvelope(Envelope envelope) async {
     final adPrefix =
-        'stonechat/v1|${envelope.from}|${envelope.to}|${envelope.type}';
+        'stonechat/v1|${envelope.from}|${envelope.fromDevice}'
+        '|${envelope.to}|${envelope.device}|${envelope.type}';
     final header = envelope.ratchet.cast<String, dynamic>();
     final nonce = Uint8List.fromList(base64Decode(envelope.nonceB64));
     final ciphertext = Uint8List.fromList(base64Decode(envelope.ciphertextB64));
     final block = X3dhBlock.fromJson(envelope.x3dh?.cast<String, dynamic>());
-    // Which of the sender's devices wrote this. `from_device` is not on the
-    // wire yet, so every incoming envelope is device 1's for now; the field
-    // lands with the AD-v2 change, and this is the one place that reads it.
-    final fromDevice = ChatDb.primaryDevice;
+    // Which of the sender's devices wrote this — the ratchet to open it on.
+    // AEAD-bound, so a relabelled envelope simply fails to decrypt.
+    final fromDevice = envelope.fromDevice;
     final session = await _loadSession(envelope.from, fromDevice);
 
     if (session != null) {

@@ -497,7 +497,15 @@ class Envelope {
   final String id;
   final String type;
   final String from;
+  /// Which of the sender's devices wrote this. Under shared identity every
+  /// one of their devices carries the same identity key and the same SC- ID,
+  /// so this is the *only* thing distinguishing "their phone said it" from
+  /// "their laptop said it" — which is why the AEAD binds it.
+  final int fromDevice;
   final String to;
+  /// Which of *our* devices it was addressed to. Also AEAD-bound: the pair
+  /// names the exact ratchet, and no other ratchet can open the message.
+  final int device;
   final String sentAt; // ISO-8601 UTC
   final Map<String, Object?> ratchet; // {dh, pn, n}
   final Map<String, Object?>? x3dh; // {ik, ek, spk_id, opk_id?}
@@ -510,7 +518,9 @@ class Envelope {
     required this.id,
     required this.type,
     required this.from,
+    required this.fromDevice,
     required this.to,
+    required this.device,
     required this.sentAt,
     required this.ratchet,
     this.x3dh,
@@ -524,7 +534,9 @@ class Envelope {
         'id': id,
         'type': type,
         'from': from,
+        'from_device': fromDevice,
         'to': to,
+        'device': device,
         'sent_at': sentAt,
         'ratchet': ratchet,
         if (x3dh != null) 'x3dh': x3dh,
@@ -538,7 +550,9 @@ class Envelope {
         id: j['id'] as String,
         type: j['type'] as String,
         from: j['from'] as String,
+        fromDevice: j['from_device'] as int,
         to: j['to'] as String,
+        device: j['device'] as int,
         sentAt: j['sent_at'] as String,
         ratchet: (j['ratchet'] as Map).cast<String, Object?>(),
         x3dh: (j['x3dh'] as Map?)?.cast<String, Object?>(),
@@ -564,6 +578,11 @@ class SealedEnvelope {
   final int v;
   final String id;
   final String to;
+  /// The recipient device whose queue this belongs in — the one cleartext
+  /// field the relay needs beyond `to`. It reveals nothing new: it is only
+  /// meaningful to the recipient's own mailbox, which *is* the device
+  /// registry. Bound into the inner AEAD, so tampering costs delivery.
+  final int device;
   final String sealedB64;
   final String? blobId;
   final bool transient;
@@ -574,6 +593,7 @@ class SealedEnvelope {
     this.v = 1,
     required this.id,
     required this.to,
+    required this.device,
     required this.sealedB64,
     this.blobId,
     this.transient = false,
@@ -585,6 +605,7 @@ class SealedEnvelope {
         'v': v,
         'id': id,
         'to': to,
+        'device': device,
         'sealed': sealedB64,
         if (blobId != null) 'blob_id': blobId,
         if (transient) 'transient': true,
@@ -596,6 +617,7 @@ class SealedEnvelope {
         v: j['v'] as int,
         id: j['id'] as String,
         to: j['to'] as String,
+        device: j['device'] as int,
         sealedB64: j['sealed'] as String,
         blobId: j['blob_id'] as String?,
         transient: j['transient'] as bool? ?? false,

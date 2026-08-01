@@ -118,24 +118,29 @@ def unb64(s: str) -> bytes:
     return base64.b64decode(s)
 
 
+PRIMARY_DEVICE = 1
+
+
 def ad_for(envelope: dict) -> bytes:
+    """Both device numbers are bound (MULTIDEVICE.md "Associated data") — one
+    form, always, so a relabelled envelope simply fails to decrypt."""
     r = envelope["ratchet"]
     return (
-        f"stonechat/v1|{envelope['from']}|{envelope['to']}|{envelope['type']}"
+        f"stonechat/v1|{envelope['from']}|{envelope['from_device']}"
+        f"|{envelope['to']}|{envelope['device']}|{envelope['type']}"
         f"|{r['dh']}|{r['pn']}|{r['n']}"
     ).encode()
 
 
 def session_encrypt(state: dict, plaintext: bytes, meta: dict) -> dict:
-    """meta = {from,to,type}. Returns ratchet/nonce/ciphertext fields."""
+    """meta = {from,from_device,to,device,type}. Returns the ratchet/nonce/
+    ciphertext fields. The AD is built by the same rule as ad_for() — one
+    form, both device numbers bound."""
     mk, state["cks"] = kdf_ck(state["cks"])
     header = {"dh": b64(state["dhs_pub"]), "pn": state["pn"], "n": state["ns"]}
     state["ns"] += 1
     nonce = nacl_random(24)
-    ad = (
-        f"stonechat/v1|{meta['from']}|{meta['to']}|{meta['type']}"
-        f"|{header['dh']}|{header['pn']}|{header['n']}"
-    ).encode()
+    ad = ad_for({**meta, "ratchet": header})
     ct = crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, ad, nonce, mk)
     return {"ratchet": header, "nonce": b64(nonce), "ciphertext": b64(ct)}
 
@@ -416,20 +421,29 @@ class Phone:
         return state, opk_id, kopk_id
 
     def make_envelope(self, to: "Phone", type_: str, payload: dict,
-                      envelope_id=None, blob_id=None) -> dict:
+                      envelope_id=None, blob_id=None,
+                      device=PRIMARY_DEVICE) -> dict:
         """The inner envelope: session-encrypted payload + routing fields.
         Only the recipient ever sees this — it travels inside wrap()."""
         if to.stonechat_id not in self.sessions:
             self._initiate_session(to)
         state = self.sessions[to.stonechat_id]
-        meta = {"from": self.stonechat_id, "to": to.stonechat_id, "type": type_}
+        meta = {
+            "from": self.stonechat_id,
+            "from_device": PRIMARY_DEVICE,
+            "to": to.stonechat_id,
+            "device": device,
+            "type": type_,
+        }
         sealed = session_encrypt(state, json.dumps(payload).encode(), meta)
         envelope = {
             "v": 1,
             "id": envelope_id or str(uuid.uuid4()),
             "type": type_,
             "from": self.stonechat_id,
+            "from_device": PRIMARY_DEVICE,
             "to": to.stonechat_id,
+            "device": device,
             "sent_at": datetime.now(timezone.utc).isoformat(),
             **sealed,
         }
@@ -452,6 +466,8 @@ class Phone:
             "v": 1,
             "id": inner["id"],
             "to": inner["to"],
+            # Routing: which of the recipient's queues this belongs in.
+            "device": inner["device"],
             "sealed": b64(kct + nonce + box),
         }
         if "blob_id" in inner:
@@ -828,9 +844,13 @@ def main():
     alice.deliver_to(bob, alice.wrap(bob, request_inner))
     req = asyncio.run(bob.receive_one())
     # Sealed sender: what the mailbox stored and forwarded names only the
-    # recipient — no from, no type, no identity key, no ratchet header.
-    assert set(req) <= {"v", "id", "to", "sealed", "blob_id"}, \
+    # recipient and which of their devices — no from, no from_device, no
+    # type, no identity key, no ratchet header. `device` is meaningful only
+    # to the recipient's own mailbox, which IS their device registry, so it
+    # tells an observer nothing it did not already serve.
+    assert set(req) <= {"v", "id", "to", "device", "sealed", "blob_id"}, \
         f"wire envelope leaks fields beyond the recipient: {sorted(req)}"
+    assert "from_device" not in req, "the sending device must stay sealed"
     assert bob.unseal(req)["type"] == "contact_request"
     assert bob.open_envelope(req, alice) == {"display_name": "Alice"}
     used_opk = request_inner["x3dh"]["opk_id"]
