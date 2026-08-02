@@ -33,6 +33,8 @@ pub fn token_hash(token: &str) -> String {
 
 pub struct Device {
     pub device_id: i64,
+    /// Opaque certificate blob, or null until the device publishes one.
+    pub cert: Option<String>,
     /// `primary` (provisioned the mailbox), `linked` (another of the owner's
     /// apps) or `web` (a browser session). Advisory — the protocol treats
     /// devices uniformly; this exists so a device list can be shown honestly
@@ -101,7 +103,15 @@ impl Mailbox {
                kind TEXT NOT NULL DEFAULT 'primary',
                created_at TEXT NOT NULL,
                expires_at TEXT,
-               last_seen TEXT);
+               last_seen TEXT,
+               -- The device's certificate, signed by its owner's identity
+               -- root (core/src/devcert.rs). Stored opaque and served
+               -- verbatim: the relay has no idea what is in it and no way to
+               -- check it — the owner's identity key lives on their primary,
+               -- and verification happens at the far end, on the sender's
+               -- device, against a key from the directory. A relay that
+               -- validated certificates would be a relay you had to trust.
+               cert TEXT);
              CREATE TABLE IF NOT EXISTS meta (
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL);",
@@ -175,7 +185,8 @@ impl Mailbox {
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
         let mut stmt = db
             .prepare(
-                "SELECT device_id, kind, created_at, expires_at, last_seen FROM devices
+                "SELECT device_id, kind, created_at, expires_at, last_seen, cert
+                 FROM devices
                  WHERE expires_at IS NULL OR expires_at > ?1
                  ORDER BY device_id",
             )
@@ -188,6 +199,7 @@ impl Mailbox {
                     created_at: r.get(2)?,
                     expires_at: r.get(3)?,
                     last_seen: r.get(4)?,
+                    cert: r.get(5)?,
                 })
             })
             .unwrap();
@@ -328,8 +340,19 @@ impl Mailbox {
         opks: &[OpkUpload],
         kspk: &SpkUpload,
         kopks: &[OpkUpload],
+        cert: Option<&str>,
     ) {
         let db = self.db.lock().unwrap();
+        // A device publishes its own certificate alongside its own prekeys:
+        // same operation, same authentication, and the two are useless apart.
+        // Absent leaves whatever is stored, so a restock never drops it.
+        if let Some(cert) = cert {
+            db.execute(
+                "UPDATE devices SET cert = ?1 WHERE device_id = ?2",
+                params![cert, device],
+            )
+            .unwrap();
+        }
         for (table, signed) in [("signed_prekey", spk), ("kem_signed_prekey", kspk)] {
             db.execute(
                 &format!(
@@ -401,7 +424,17 @@ impl Mailbox {
         };
         let opk = take_one("one_time_prekeys");
         let kopk = take_one("kem_one_time_prekeys");
+        let cert: Option<String> = db
+            .query_row(
+                "SELECT cert FROM devices WHERE device_id = ?1",
+                params![device],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap()
+            .flatten();
         Some(serde_json::json!({
+            "cert": cert,
             "spk": {"id": spk_id, "pub": spk_pub, "sig": spk_sig},
             "opk": opk.map(|(id, pub_key)| serde_json::json!({"id": id, "pub": pub_key})),
             "kspk": {"id": kspk_id, "pub": kspk_pub, "sig": kspk_sig},
@@ -417,20 +450,27 @@ impl Mailbox {
         let db = self.db.lock().unwrap();
         let mut stmt = db
             .prepare(
-                "SELECT s.device, s.id, s.pub, s.sig, k.id, k.pub, k.sig
+                "SELECT s.device, s.id, s.pub, s.sig, k.id, k.pub, k.sig, d.cert
                  FROM signed_prekey s
                  JOIN kem_signed_prekey k ON k.device = s.device
+                 JOIN devices d ON d.device_id = s.device
+                 WHERE d.expires_at IS NULL OR d.expires_at > ?1
                  ORDER BY s.device",
             )
             .unwrap();
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
         let rows = stmt
-            .query_map([], |r| {
+            .query_map(params![now], |r| {
                 Ok(serde_json::json!({
                     "device_id": r.get::<_, i64>(0)?,
                     "spk": {"id": r.get::<_, i64>(1)?, "pub": r.get::<_, String>(2)?,
                             "sig": r.get::<_, String>(3)?},
                     "kspk": {"id": r.get::<_, i64>(4)?, "pub": r.get::<_, String>(5)?,
                              "sig": r.get::<_, String>(6)?},
+                    // The sender needs the certificate to know which key to
+                    // seal to, and to check the prekey signatures above
+                    // against the device key it names.
+                    "cert": r.get::<_, Option<String>>(7)?,
                 }))
             })
             .unwrap();

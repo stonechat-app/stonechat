@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 
 use crate::db::{OpkUpload, SpkUpload};
-use crate::{blobs, push, AppState, MAX_BLOB_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
+use crate::{blobs, push, AppState, MAX_BLOB_BYTES, MAX_CERT_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
 
 fn detail(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"detail": msg}))).into_response()
@@ -150,7 +150,14 @@ pub async fn upload_prekeys(
     };
     let Ok(parsed) = serde_json::from_slice::<Value>(&body) else { return bad() };
     let Some((spk, opks, kspk, kopks)) = parse_prekey_upload(&parsed) else { return bad() };
-    state.mailbox.set_prekeys(device, &spk, &opks, &kspk, &kopks);
+    // Opaque to us — see the `cert` column. Size-capped only, because a blob
+    // this box cannot read is a blob it should not be storing much of.
+    let cert = match parsed.get("cert") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(c)) if !c.is_empty() && c.len() <= MAX_CERT_BYTES => Some(c.as_str()),
+        Some(_) => return detail(StatusCode::BAD_REQUEST, "bad cert"),
+    };
+    state.mailbox.set_prekeys(device, &spk, &opks, &kspk, &kopks, cert);
     Json(json!({"status": "ok", "prekeys": state.mailbox.prekey_status(device)})).into_response()
 }
 
@@ -337,6 +344,7 @@ pub async fn list_devices(
         "devices": state.mailbox.devices().iter().map(|d| json!({
             "device_id": d.device_id,
             "kind": d.kind,
+            "cert": d.cert,
             "created_at": d.created_at,
             "expires_at": d.expires_at,
             "last_seen": d.last_seen,

@@ -51,6 +51,10 @@ pub const MAX_OPKS: usize = 256;
 // prekey uploads get their own body cap so a full restock fits one request.
 pub const MAX_KOPKS: usize = 64;
 pub const MAX_PREKEY_UPLOAD_BYTES: usize = 256 * 1024;
+/// A device certificate is an X-Wing public key (1216 bytes) plus a little
+/// framing, base64'd — a few KB. Capped rather than validated: the relay
+/// cannot read it (core/src/devcert.rs) and has no business trying.
+pub const MAX_CERT_BYTES: usize = 8 * 1024;
 pub const PUSH_DEBOUNCE: Duration = Duration::from_secs(5);
 // A socket write succeeding is not delivery: a freshly-backgrounded phone
 // keeps its TCP connection open while the suspended app never reads the

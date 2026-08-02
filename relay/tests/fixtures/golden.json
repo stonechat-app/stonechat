@@ -99,6 +99,7 @@
   "bundle-consumes-lowest": [
     200,
     {
+      "cert": null,
       "spk": {
         "id": 7,
         "pub": "spk-pub",
@@ -122,6 +123,7 @@
   "bundle-second": [
     200,
     {
+      "cert": null,
       "spk": {
         "id": 7,
         "pub": "spk-pub",
@@ -145,6 +147,7 @@
   "bundle-dry": [
     200,
     {
+      "cert": null,
       "spk": {
         "id": 7,
         "pub": "spk-pub",
@@ -411,6 +414,7 @@
         {
           "device_id": 1,
           "kind": "primary",
+          "cert": null,
           "created_at": "X",
           "expires_at": null,
           "last_seen": null
@@ -453,6 +457,7 @@
         {
           "device_id": 1,
           "kind": "primary",
+          "cert": null,
           "created_at": "X",
           "expires_at": null,
           "last_seen": null
@@ -460,6 +465,7 @@
         {
           "device_id": 2,
           "kind": "linked",
+          "cert": null,
           "created_at": "X",
           "expires_at": null,
           "last_seen": null
@@ -494,6 +500,12 @@
         "kspk": true,
         "kopks": 1
       }
+    }
+  ],
+  "prekeys-bad-cert": [
+    400,
+    {
+      "detail": "bad cert"
     }
   ],
   "status-device1-unaffected": [
@@ -541,7 +553,8 @@
             "id": 8,
             "pub": "kspk-pub",
             "sig": "kspk-sig"
-          }
+          },
+          "cert": null
         },
         {
           "device_id": 2,
@@ -554,7 +567,8 @@
             "id": 80,
             "pub": "d2-kspk",
             "sig": "d2-ksig"
-          }
+          },
+          "cert": "d2-certificate-blob"
         }
       ]
     }
@@ -568,6 +582,7 @@
   "bundle-device2": [
     200,
     {
+      "cert": "d2-certificate-blob",
       "spk": {
         "id": 70,
         "pub": "d2-spk",
@@ -684,6 +699,7 @@
         {
           "device_id": 1,
           "kind": "primary",
+          "cert": null,
           "created_at": "X",
           "expires_at": null,
           "last_seen": null
@@ -720,6 +736,7 @@
         {
           "device_id": 1,
           "kind": "primary",
+          "cert": null,
           "created_at": "X",
           "expires_at": null,
           "last_seen": null
@@ -727,6 +744,7 @@
         {
           "device_id": 3,
           "kind": "web",
+          "cert": null,
           "created_at": "X",
           "expires_at": "X",
           "last_seen": null
@@ -787,6 +805,7 @@
         {
           "device_id": 1,
           "kind": "primary",
+          "cert": null,
           "created_at": "X",
           "expires_at": null,
           "last_seen": null
@@ -794,6 +813,7 @@
         {
           "device_id": 3,
           "kind": "web",
+          "cert": null,
           "created_at": "X",
           "expires_at": "X",
           "last_seen": null
