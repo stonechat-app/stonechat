@@ -208,6 +208,10 @@ class Phone:
         # message: two of a peer's devices cannot share one
         # (MULTIDEVICE.md). Everything defaults to device 1, so single-device
         # flows read exactly as before.
+        # Which device of its owner this Phone is. make_envelope stamps it
+        # into from_device and the AEAD binds it, so a Phone cannot claim to
+        # be a device it is not.
+        self.device = PRIMARY_DEVICE
         self.sessions = {}
         self.spk = None  # {"id", "priv", "pub"}
         self.opks = {}  # id -> priv bytes
@@ -448,7 +452,7 @@ class Phone:
         state = self.sessions[(to.stonechat_id, device)]
         meta = {
             "from": self.stonechat_id,
-            "from_device": PRIMARY_DEVICE,
+            "from_device": self.device,
             "to": to.stonechat_id,
             "device": device,
             "type": type_,
@@ -459,7 +463,7 @@ class Phone:
             "id": envelope_id or str(uuid.uuid4()),
             "type": type_,
             "from": self.stonechat_id,
-            "from_device": PRIMARY_DEVICE,
+            "from_device": self.device,
             "to": to.stonechat_id,
             "device": device,
             "sent_at": datetime.now(timezone.utc).isoformat(),

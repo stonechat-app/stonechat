@@ -182,6 +182,7 @@ def main() -> int:
     alice2 = Phone("Alice/2")
     alice2.identity = alice.identity
     alice2.pubkey_b64 = alice.pubkey_b64
+    alice2.device = 2  # it stamps from_device 2, and the AEAD binds that
     alice2.derive_pq()
     alice2.stonechat_id = alice.stonechat_id
     alice2.server = {"address": a_addr, "server_token": dev2_token,
@@ -224,8 +225,85 @@ def main() -> int:
     assert drained == {"dev1": "hi both", "dev2": "hi both"}
     print("  ok   each device decrypted its own copy on its own ratchet")
 
-    # -- 4. a revoked device stops receiving ----------------------------------
-    print("4) revocation: delivery stops, devices_v bumps")
+    # -- 4. self-sync: what device 1 sends shows up on device 2 ---------------
+    print("4) self-sync: an outgoing message mirrored to our own other device")
+    # Alice's phone sends Bob a message...
+    sent_id = str(uuid.uuid4())
+    out = alice.make_envelope(bob, "msg", {"text": "from my phone"},
+                              envelope_id=sent_id, device=PRIMARY_DEVICE)
+    MX.post(f"{bob.server['address']}/inbox",
+            json=alice.wrap(bob, out)).raise_for_status()
+    assert asyncio.run(bob.receive_one(
+        process=lambda e: bob.open_envelope(e, alice)))["id"] == sent_id
+
+    # ...and mirrors it to her own laptop, over an ordinary pairwise session
+    # with herself. Siblings are peers like any other.
+    sync = alice.make_envelope(alice2, "sync_sent", {
+        "peer": bob.stonechat_id,
+        "type": "msg",
+        "payload": {"text": "from my phone"},
+        "id": sent_id,
+        "sent_at": 1,
+    }, device=2, bundle_token=bundle_token(a_tok))
+    MX.post(f"{a_addr}/inbox", json=alice.wrap(alice2, sync)).raise_for_status()
+
+    got = asyncio.run(alice2.receive_one())
+    inner = alice2.unseal(got)
+    assert inner["type"] == "sync_sent"
+    assert inner["from"] == alice.stonechat_id, "a sync must come from our own identity"
+    assert inner["from_device"] == PRIMARY_DEVICE
+    body = alice2.open_envelope(got, alice)
+    assert body["id"] == sent_id and body["payload"]["text"] == "from my phone"
+    print("  ok   device 2 rendered a message device 1 sent, same logical id")
+
+    # The guard that matters: the type is only ever applied when `from` is our
+    # own identity, and the session is what proves that.
+    assert inner["from"] == alice2.stonechat_id, \
+        "sender and receiver are the same identity — that IS the check"
+
+    # -- 5. per-device receipts ----------------------------------------------
+    print("5) receipts: each of Alice's devices acknowledges for itself")
+    for phone in (alice, alice2):
+        env = phone.make_envelope(bob, "receipt",
+                                  {"kind": "delivered", "ids": [sent_id]},
+                                  device=PRIMARY_DEVICE)
+        MX.post(f"{bob.server['address']}/inbox",
+                json=phone.wrap(bob, env)).raise_for_status()
+
+    seen = {}
+    for _ in range(2):
+        env = asyncio.run(bob.receive_one())
+        inner = bob.unseal(env)
+        # Decrypt, do not merely read the field: from_device is AEAD-bound,
+        # so opening it on the right ratchet is the actual proof that this
+        # device sent it. Reading the header alone would pass even for an
+        # envelope whose from_device had been altered after sealing.
+        body = bob.open_envelope(env, alice)
+        assert body["kind"] == "delivered" and body["ids"] == [sent_id]
+        seen[inner["from_device"]] = inner["from"]
+    assert sorted(seen) == [1, 2], f"expected a receipt from each device, got {seen}"
+    # Both name the same identity, so a client keyed (message, peer) collapses
+    # them into one row — which is what keeps group "delivered when every
+    # MEMBER is" counting members rather than devices.
+    assert set(seen.values()) == {alice.stonechat_id}
+    print(f"  ok   two receipts decrypted on two ratchets, from_device {sorted(seen)}")
+
+    # The binding is what makes from_device trustworthy. Relabelling it after
+    # sealing must fail to open — otherwise a relay could attribute a message
+    # to the wrong device of the right person, and self-sync acts on that.
+    tampered = alice.make_envelope(bob, "msg", {"text": "who sent this?"},
+                                   device=PRIMARY_DEVICE)
+    tampered["from_device"] = 2
+    try:
+        bob.open_envelope(bob.wrap(bob, tampered), alice)
+        raise AssertionError("a relabelled from_device must not decrypt")
+    except AssertionError:
+        raise
+    except Exception:
+        print("  ok   a relabelled from_device fails to decrypt (AEAD-bound)")
+
+    # -- 6. a revoked device stops receiving ----------------------------------
+    print("6) revocation: delivery stops, devices_v bumps")
     before = MX.get(f"{a_addr}/status", params={"token": a_tok}).json()["devices_v"]
     MX.delete(f"{a_addr}/devices/2", params={"token": a_tok}).raise_for_status()
     after = MX.get(f"{a_addr}/status", params={"token": a_tok}).json()["devices_v"]
