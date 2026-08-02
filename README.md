@@ -148,6 +148,13 @@ cd hub && .venv/bin/pip install pynacl websockets
 STONECHAT_FLEET_HOSTS="local=|127.0.0.1" STONECHAT_ADMIN_TOKEN=test-admin STONECHAT_TEST_CODE=STONECHAT-TEST-TEST .venv/bin/uvicorn app.main:app --port 8477 &
 .venv/bin/python ../scripts/e2e.py
 
+# multi-device end to end — no Docker: it runs relays directly and lists them
+# via the hub's external-mailbox path. Link grant, per-device prekeys and
+# queues, fan-out, revocation.
+#   (the venv's console scripts have stale shebangs — use `python -m`)
+cd hub && .venv/bin/python -m uvicorn app.main:app --port 8477 &
+hub/.venv/bin/python scripts/e2e_multidevice.py
+
 # app unit tests + static analysis (pqcore lib enables the FFI vector tests)
 cd app && STONECHAT_CORE_LIB=$PWD/../core/target/release/libstonechat_core.dylib flutter test && flutter analyze
 

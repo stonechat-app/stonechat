@@ -203,7 +203,12 @@ class Phone:
         self.stonechat_id = None
         self.token = None
         self.server = None
-        self.sessions = {}  # peer stonechat_id -> ratchet state dict
+        # (peer stonechat_id, device) -> ratchet state. Keyed by device
+        # because a double ratchet is mutable state that advances on every
+        # message: two of a peer's devices cannot share one
+        # (MULTIDEVICE.md). Everything defaults to device 1, so single-device
+        # flows read exactly as before.
+        self.sessions = {}
         self.spk = None  # {"id", "priv", "pub"}
         self.opks = {}  # id -> priv bytes
         self.kspk = None  # {"id", "seed", "pub"} — ML-KEM-768 signed prekey
@@ -340,9 +345,19 @@ class Phone:
 
     # -- sessions --------------------------------------------------------------------
 
-    def _initiate_session(self, to: "Phone"):
-        """Fetch the peer's bundle from their mailbox, verify, run PQXDH."""
-        r = MX.get(f"{to.server['address']}/prekeys/bundle")
+    def _initiate_session(self, to: "Phone", device: int = PRIMARY_DEVICE,
+                          bundle_token: str | None = None):
+        """Fetch the peer's bundle from their mailbox, verify, run PQXDH.
+
+        A sibling device needs *that device's* prekeys: the unauthenticated
+        bundle is device 1's by design, so anything else goes through
+        ?device= with the peer's bundle token."""
+        if device == PRIMARY_DEVICE:
+            r = MX.get(f"{to.server['address']}/prekeys/bundle")
+        else:
+            assert bundle_token, "a sibling device needs the peer's bundle token"
+            r = MX.get(f"{to.server['address']}/prekeys/bundle",
+                       params={"device": device, "token": bundle_token})
         r.raise_for_status()
         bundle = r.json()
         peer_ed = VerifyKey(unb64(to.pubkey_b64))
@@ -371,7 +386,7 @@ class Phone:
 
         ratchet = PrivateKey.generate()
         rk, cks = kdf_rk(sk, crypto_scalarmult(bytes(ratchet), spk_pub))
-        self.sessions[to.stonechat_id] = {
+        self.sessions[(to.stonechat_id, device)] = {
             "rk": rk, "dhs_priv": bytes(ratchet), "dhs_pub": bytes(ratchet.public_key),
             "dhr": spk_pub, "cks": cks, "ckr": None,
             "ns": 0, "nr": 0, "pn": 0, "skipped": {}, "confirmed": False,
@@ -422,12 +437,15 @@ class Phone:
 
     def make_envelope(self, to: "Phone", type_: str, payload: dict,
                       envelope_id=None, blob_id=None,
-                      device=PRIMARY_DEVICE) -> dict:
+                      device=PRIMARY_DEVICE, bundle_token=None) -> dict:
         """The inner envelope: session-encrypted payload + routing fields.
-        Only the recipient ever sees this — it travels inside wrap()."""
-        if to.stonechat_id not in self.sessions:
-            self._initiate_session(to)
-        state = self.sessions[to.stonechat_id]
+        Only the recipient ever sees this — it travels inside wrap().
+
+        One copy per recipient device, each on its own ratchet: a logical
+        message to a peer with k devices is k of these."""
+        if (to.stonechat_id, device) not in self.sessions:
+            self._initiate_session(to, device, bundle_token)
+        state = self.sessions[(to.stonechat_id, device)]
         meta = {
             "from": self.stonechat_id,
             "from_device": PRIMARY_DEVICE,
@@ -492,12 +510,15 @@ class Phone:
     def open_envelope(self, envelope: dict, sender: "Phone") -> dict:
         if "sealed" in envelope:
             envelope = self.unseal(envelope)
-        state = self.sessions.get(envelope["from"])
+        # Which of the sender's ratchets wrote this. AEAD-bound, so a
+        # relabelled envelope simply fails to decrypt.
+        key = (envelope["from"], envelope.get("from_device", PRIMARY_DEVICE))
+        state = self.sessions.get(key)
         if state is not None:
             try:
                 trial = copy.deepcopy(state)
                 plain = session_decrypt(trial, envelope)
-                self.sessions[envelope["from"]] = trial
+                self.sessions[key] = trial
                 return json.loads(plain)
             except Exception:
                 if "x3dh" not in envelope:
@@ -508,7 +529,7 @@ class Phone:
             del self.opks[opk_id]  # one-time means one time
         if kopk_id is not None:
             del self.kopks[kopk_id]  # one-time means one time
-        self.sessions[envelope["from"]] = fresh
+        self.sessions[key] = fresh
         return json.loads(plain)
 
     # -- transport --------------------------------------------------------------------
@@ -859,7 +880,8 @@ def main():
     bob.deliver_to(alice, bob.seal(alice, "contact_accept", {"display_name": "Bob"}))
     acc = asyncio.run(alice.receive_one())
     assert alice.open_envelope(acc, bob) == {"display_name": "Bob"}
-    assert alice.sessions[bob.stonechat_id]["confirmed"], "round trip confirms the session"
+    assert alice.sessions[(bob.stonechat_id, PRIMARY_DEVICE)]["confirmed"], \
+        "round trip confirms the session"
 
     print("5b) group wire format: create + message, key commitments verify")
     group_id = str(uuid.uuid4())
@@ -905,7 +927,7 @@ def main():
     # …and bob's CURRENT session state cannot decrypt the recorded envelope 6:
     # the message key that sealed it was deleted on use — compromise-now does
     # not decrypt recorded-then.
-    compromised = copy.deepcopy(bob.sessions[alice.stonechat_id])
+    compromised = copy.deepcopy(bob.sessions[(alice.stonechat_id, PRIMARY_DEVICE)])
     try:
         session_decrypt(compromised, first_inner)
         raise AssertionError("old ciphertext decrypted from current state — no FS!")
