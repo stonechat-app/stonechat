@@ -102,10 +102,6 @@ impl Mailbox {
                created_at TEXT NOT NULL,
                expires_at TEXT,
                last_seen TEXT);
-             CREATE TABLE IF NOT EXISTS link_grants (
-               key TEXT PRIMARY KEY,
-               sealed TEXT NOT NULL,
-               created_at TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS meta (
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL);",
@@ -130,63 +126,6 @@ impl Mailbox {
         db.execute(
             "INSERT OR IGNORE INTO meta (key, value) VALUES ('devices_v', '1')",
             [],
-        )
-        .unwrap();
-    }
-
-    // -- link grants (MULTIDEVICE.md "Linking a device") ----------------------
-
-    /// Park a sealed grant for a device being linked. Returns false when too
-    /// many are already pending.
-    ///
-    /// The relay stores ciphertext it cannot open: the grant is sealed to an
-    /// ephemeral key that exists only on the new device, and was carried
-    /// there by the user pointing a camera at a screen.
-    pub fn put_grant(&self, key: &str, sealed: &str) -> bool {
-        let db = self.db.lock().unwrap();
-        Self::drop_stale_grants(&db);
-        let pending: i64 = db
-            .query_row("SELECT COUNT(*) FROM link_grants", [], |r| r.get(0))
-            .unwrap();
-        if pending >= crate::MAX_PENDING_LINKS {
-            return false;
-        }
-        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false);
-        db.execute(
-            "INSERT INTO link_grants (key, sealed, created_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET sealed = excluded.sealed,
-             created_at = excluded.created_at",
-            params![key, sealed, now],
-        )
-        .unwrap();
-        true
-    }
-
-    /// Return a grant **and delete it**: single-use, so a replayed fetch gets
-    /// nothing and the window for a stolen QR closes the moment it is used.
-    pub fn take_grant(&self, key: &str) -> Option<String> {
-        let db = self.db.lock().unwrap();
-        Self::drop_stale_grants(&db);
-        let sealed: Option<String> = db
-            .query_row(
-                "SELECT sealed FROM link_grants WHERE key = ?1",
-                params![key],
-                |r| r.get(0),
-            )
-            .optional()
-            .unwrap();
-        if sealed.is_some() {
-            db.execute("DELETE FROM link_grants WHERE key = ?1", params![key])
-                .unwrap();
-        }
-        sealed
-    }
-
-    fn drop_stale_grants(db: &Connection) {
-        let cutoff = chrono::Utc::now() - chrono::Duration::from_std(crate::LINK_TTL).unwrap();
-        db.execute(
-            "DELETE FROM link_grants WHERE created_at < ?1",
-            params![cutoff.to_rfc3339_opts(chrono::SecondsFormat::Micros, false)],
         )
         .unwrap();
     }

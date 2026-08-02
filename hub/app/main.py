@@ -314,6 +314,51 @@ def recover(body: RecoverIn, request: Request):
 _directory_limiter = RateLimiter(limit=120, window_s=60.0)
 
 
+# -- device linking (MULTIDEVICE.md "Linking a device") ------------------------
+#
+# The hub is the dead drop, not the relay. A device being linked has no
+# identity, no account, and no way to know which relay to poll — the hub URL
+# is the only address it has, because onboarding asked for it. What is parked
+# here is sealed to an ephemeral key that exists only on the new device; the
+# hub stores bytes it cannot open, filed under the hash of a secret it never
+# sees.
+_link_limiter = RateLimiter(limit=30, window_s=60.0)
+
+
+def _valid_link_key(key: str) -> bool:
+    """BLAKE2b-256 hex, matching the relay's own key validation."""
+    return len(key) == 64 and all(c in "0123456789abcdef" for c in key)
+
+
+@app.post("/v1/link")
+def put_link_grant(body: dict, request: Request):
+    """Park a sealed grant. Unauthenticated: the parking key is a capability
+    derived from a secret only the two devices hold, and the payload is
+    opaque, so an account check would add nothing an attacker could not
+    already satisfy."""
+    _link_limiter.check(request.client.host if request.client else "unknown")
+    key, sealed = body.get("key"), body.get("sealed")
+    if not isinstance(key, str) or not _valid_link_key(key):
+        raise HTTPException(400, "bad key")
+    if not isinstance(sealed, str) or not sealed or len(sealed) > 64 * 1024:
+        raise HTTPException(400, "bad sealed")
+    if not store.put_link_grant(key, sealed):
+        raise HTTPException(503, "too many pending links")
+    return {"status": "ok"}
+
+
+@app.get("/v1/link/{key}")
+def take_link_grant(key: str, request: Request):
+    """Collect and delete. Possession of the QR is the credential."""
+    _link_limiter.check(request.client.host if request.client else "unknown")
+    if not _valid_link_key(key):
+        raise HTTPException(400, "bad key")
+    sealed = store.take_link_grant(key)
+    if sealed is None:
+        raise HTTPException(404, "no such grant")
+    return {"sealed": sealed}
+
+
 @app.get("/v1/directory/{stonechat_id}")
 def directory(stonechat_id: str, request: Request):
     """Resolve a SC- cryptographic ID to its record. Lookup is by full ID

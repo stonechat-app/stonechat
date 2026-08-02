@@ -15,7 +15,7 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 
@@ -96,6 +96,24 @@ class Store:
             -- cases carry evidence-preservation duties (ABUSE.md §5) and the
             -- second report from a provider is only easy to answer if the
             -- first one was written down.
+            -- Link grants in flight (MULTIDEVICE.md "Linking a device").
+            --
+            -- The hub is the dead drop for one reason: a device being linked
+            -- has no identity, no account and no idea which relay to poll —
+            -- the hub URL is the only address it knows, because onboarding
+            -- asks for it. The relay cannot serve this bootstrap for the same
+            -- reason it cannot be found.
+            --
+            -- What is stored is opaque: sealed to an ephemeral key that
+            -- exists only on the new device, carried there by the user
+            -- pointing a camera at a screen. The hub cannot open it, and the
+            -- key it is filed under is the hash of a secret that never
+            -- touches the hub. Single-use and short-lived besides.
+            CREATE TABLE IF NOT EXISTS link_grants (
+                key        TEXT PRIMARY KEY,
+                sealed     TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS server_tombstones (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 stonechat_id      TEXT NOT NULL,
@@ -146,6 +164,49 @@ class Store:
             """
         )
         self._migrate()
+
+    # -- link grants (MULTIDEVICE.md "Linking a device") ----------------------
+
+    LINK_TTL_S = 600
+    MAX_PENDING_LINKS = 8
+
+    def put_link_grant(self, key: str, sealed: str) -> bool:
+        """False when too many are already pending. Unauthenticated writers
+        are rate-limited at the route; this bounds storage regardless."""
+        self._drop_stale_grants()
+        pending = self._db.execute(
+            "SELECT COUNT(*) AS n FROM link_grants"
+        ).fetchone()["n"]
+        if pending >= self.MAX_PENDING_LINKS:
+            return False
+        self._db.execute(
+            "INSERT INTO link_grants (key, sealed, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET sealed=excluded.sealed, "
+            "created_at=excluded.created_at",
+            (key, sealed, _now()),
+        )
+        self._db.commit()
+        return True
+
+    def take_link_grant(self, key: str) -> str | None:
+        """Returns and deletes: single-use, so a replayed fetch gets nothing
+        and a stolen QR stops being useful the moment it is used."""
+        self._drop_stale_grants()
+        row = self._db.execute(
+            "SELECT sealed FROM link_grants WHERE key = ?", (key,)
+        ).fetchone()
+        if row is None:
+            return None
+        self._db.execute("DELETE FROM link_grants WHERE key = ?", (key,))
+        self._db.commit()
+        return row["sealed"]
+
+    def _drop_stale_grants(self) -> None:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(seconds=self.LINK_TTL_S)
+        ).isoformat()
+        self._db.execute("DELETE FROM link_grants WHERE created_at < ?", (cutoff,))
+        self._db.commit()
 
     def _migrate(self) -> None:
         """Additive column migrations for hubs whose DB predates them.

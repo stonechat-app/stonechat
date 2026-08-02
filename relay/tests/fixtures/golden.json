@@ -800,53 +800,5 @@
         }
       ]
     }
-  ],
-  "link-put-noauth": [
-    401,
-    {
-      "detail": "owner only"
-    }
-  ],
-  "link-put-badshape": [
-    400,
-    {
-      "detail": "expected {key, sealed}"
-    }
-  ],
-  "link-put-badkey": [
-    400,
-    {
-      "detail": "expected {key, sealed}"
-    }
-  ],
-  "link-put-ok": [
-    200,
-    {
-      "status": "ok"
-    }
-  ],
-  "link-take-badkey": [
-    400,
-    {
-      "detail": "bad key"
-    }
-  ],
-  "link-take-missing": [
-    404,
-    {
-      "detail": "no such grant"
-    }
-  ],
-  "link-take-ok": [
-    200,
-    {
-      "sealed": "c2VhbGVkLWdyYW50"
-    }
-  ],
-  "link-take-again": [
-    404,
-    {
-      "detail": "no such grant"
-    }
   ]
 }

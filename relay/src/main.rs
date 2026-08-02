@@ -60,12 +60,6 @@ pub const PUSH_DEBOUNCE: Duration = Duration::from_secs(5);
 pub const PUSH_ACK_GRACE: Duration = Duration::from_secs(10);
 pub const PUSH_ACK_GRACE_RING: Duration = Duration::from_secs(2);
 pub const TURN_TTL_S: u64 = 6 * 3600;
-/// A parked link grant is a bootstrap secret in flight — short-lived on
-/// purpose, and single-use besides (MULTIDEVICE.md "Linking a device").
-pub const LINK_TTL: Duration = Duration::from_secs(10 * 60);
-pub const MAX_LINK_BYTES: usize = 64 * 1024;
-/// Bounded so a mailbox cannot be filled with grants nobody will collect.
-pub const MAX_PENDING_LINKS: i64 = 8;
 
 pub struct Config {
     pub owner_id: String,
@@ -195,8 +189,6 @@ async fn main() {
         .route("/prekeys/devices", get(routes::prekey_devices))
         .route("/devices", get(routes::list_devices).post(routes::mint_device))
         .route("/devices/{device_id}", axum::routing::delete(routes::revoke_device))
-        .route("/link", post(routes::link_put))
-        .route("/link/{key}", get(routes::link_take))
         .route("/inbox", post(routes::inbox))
         .route("/push-config", post(routes::push_config))
         .route("/turn-credentials", get(routes::turn_credentials))

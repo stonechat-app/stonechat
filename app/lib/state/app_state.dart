@@ -388,21 +388,19 @@ class AppState extends ChangeNotifier {
     );
   }
 
-  /// **New device.** Poll our future mailbox for the grant the other device
-  /// parked, and become this identity once it arrives.
+  /// **New device.** Poll the hub for the grant the other device parked, and
+  /// become this identity once it arrives.
   ///
-  /// The relay address is not known until the grant is opened, so the poll
-  /// runs against the address the *offer* was shown for — which the scanning
-  /// device supplies out of band by parking it at a key only the QR holder
-  /// can compute.
+  /// The hub is the rendezvous because it is the only address this device
+  /// has: the relay it will end up using is *inside* the grant, so it cannot
+  /// be the place the grant is collected from.
   Future<bool> collectLinkGrant({
-    required String relayAddress,
-    required String relayTlsFp,
+    required String hubUrl,
     required LinkOffer offer,
     required Uint8List seed,
   }) async {
     final key = linkParkingKey(_hashHex, offer.lookup);
-    final sealed = await takeLinkGrant(relayAddress, relayTlsFp, key);
+    final sealed = await takeLinkGrant(hubUrl, key);
     if (sealed == null) return false;
     // Same hybrid seal every envelope uses, opened with the ephemeral seed
     // this device generated and never showed anyone.
@@ -493,9 +491,7 @@ class AppState extends ChangeNotifier {
       Uint8List.fromList(utf8.encode(jsonEncode(grant.toJson()))),
     );
     await putLinkGrant(
-      relayAddress,
-      ownerToken,
-      relayTlsFp,
+      hubUrl,
       linkParkingKey(_hashHex, offer.lookup),
       base64Encode(sealed),
     );

@@ -509,52 +509,36 @@ Future<void> revokeDevice(
   }
 }
 
-/// Park a sealed link grant on our own mailbox.
-Future<void> putLinkGrant(
-  String serverAddress,
-  String token,
-  String tlsFp,
-  String key,
-  String sealedB64,
-) async {
-  final client = pinnedClient(tlsFp);
-  try {
-    final r = await client
-        .post(
-          Uri.parse('$serverAddress/link').replace(
-            queryParameters: {'token': token},
-          ),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({'key': key, 'sealed': sealedB64}),
-        )
-        .timeout(const Duration(seconds: 15));
-    if (r.statusCode >= 400) {
-      throw ApiException('could not park the grant (${r.statusCode})', r.statusCode);
-    }
-  } finally {
-    client.close();
+/// Park a sealed link grant on the **hub**.
+///
+/// The hub, not the relay, because of who has to collect it: a device being
+/// linked has no identity, no account and no way to learn which relay to
+/// poll. The hub URL is the only address it has — onboarding asked for it.
+/// The hub stores bytes it cannot open, filed under the hash of a secret it
+/// never sees.
+Future<void> putLinkGrant(String hubUrl, String key, String sealedB64) async {
+  final r = await http.post(
+    Uri.parse('$hubUrl/v1/link'),
+    headers: {'Content-Type': 'application/json'},
+    body: jsonEncode({'key': key, 'sealed': sealedB64}),
+  );
+  if (r.statusCode >= 400) {
+    throw ApiException('could not park the grant (${r.statusCode})', r.statusCode);
   }
 }
 
 /// Collect a parked grant. Unauthenticated — the new device has no credential
-/// yet, and possession of the QR is the credential. Null while the existing
-/// device has not parked it (or once someone already collected it).
-Future<String?> takeLinkGrant(
-  String serverAddress,
-  String tlsFp,
-  String key,
-) async {
-  final client = pinnedClient(tlsFp);
+/// yet, and possession of the QR is the credential. Null while the other
+/// device has not parked it, or once it has already been collected.
+Future<String?> takeLinkGrant(String hubUrl, String key) async {
   try {
-    final r = await client
-        .get(Uri.parse('$serverAddress/link/$key'))
+    final r = await http
+        .get(Uri.parse('$hubUrl/v1/link/$key'))
         .timeout(const Duration(seconds: 10));
     if (r.statusCode != 200) return null;
     return (jsonDecode(r.body) as Map<String, dynamic>)['sealed'] as String?;
   } catch (_) {
     return null;
-  } finally {
-    client.close();
   }
 }
 

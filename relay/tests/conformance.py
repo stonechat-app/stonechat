@@ -59,8 +59,6 @@ ENV_OK = {"v": 1, "id": "e-0001", "to": OWNER, "sealed": "aGVsbG8=", "device": 1
 DEV2 = "dev2-token-0123456789abcdef0123456789"
 DEV3 = "dev3-token-0123456789abcdef0123456789"
 DEV4 = "dev4-token-0123456789abcdef0123456789"
-LINK_KEY = hashlib.blake2b(b"lookup-secret", digest_size=32).hexdigest()
-OTHER_KEY = hashlib.blake2b(b"other-secret", digest_size=32).hexdigest()
 BUNDLE = hashlib.blake2b(
     TOKEN.encode() + b"|stonechat-bundle|", digest_size=32
 ).hexdigest()
@@ -233,20 +231,6 @@ CORPUS = [
     ("status-expired-device", "GET", f"/status?token={DEV4}", None, None),
     ("inbox-expired-device", "POST", "/inbox", {**ENV_OK, "id": "e-exp", "device": 4}, None),
     ("devices-list-hides-expired", "GET", f"/devices?token={TOKEN}", None, norm_devices),
-    # -- link grants (MULTIDEVICE.md "Linking a device") ----------------------
-    ("link-put-noauth", "POST", "/link", {"key": LINK_KEY, "sealed": "c2VhbGVk"}, None),
-    ("link-put-badshape", "POST", f"/link?token={TOKEN}", {"key": LINK_KEY}, None),
-    ("link-put-badkey", "POST", f"/link?token={TOKEN}",
-     {"key": "not-a-hash", "sealed": "c2VhbGVk"}, None),
-    ("link-put-ok", "POST", f"/link?token={TOKEN}",
-     {"key": LINK_KEY, "sealed": "c2VhbGVkLWdyYW50"}, None),
-    ("link-take-badkey", "GET", "/link/nope", None, None),
-    ("link-take-missing", "GET", f"/link/{OTHER_KEY}", None, None),
-    # Unauthenticated on purpose: the new device has no credential yet, and
-    # possession of the QR is the credential.
-    ("link-take-ok", "GET", f"/link/{LINK_KEY}", None, None),
-    # Single-use: a replayed fetch gets nothing.
-    ("link-take-again", "GET", f"/link/{LINK_KEY}", None, None),
 ]
 
 
