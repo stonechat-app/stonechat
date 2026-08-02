@@ -31,6 +31,7 @@
 //! also carry pqcore's `stonechat_mlkem_*`/`stonechat_xwing_*` symbols,
 //! so one linked artifact serves both ABIs.
 
+pub mod devcert;
 pub mod envelope;
 pub mod ffi;
 pub mod identity;

@@ -26,6 +26,10 @@ pub const PQPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-pqpk";
 pub const TLS_SIG_CONTEXT: &[u8] = b"stonechat-v1-tls";
 pub const RECOVER_SIG_CONTEXT: &[u8] = b"stonechat-v1-recover";
 pub const REPORT_SIG_CONTEXT: &[u8] = b"stonechat-v1-report";
+/// The identity root vouching for one of its devices (devcert.rs). Its own
+/// context so a device certificate can never be mistaken for — or replayed
+/// as — any other signature this identity makes.
+pub const DEVCERT_SIG_CONTEXT: &[u8] = b"stonechat-v1-devcert";
 
 /// `crypto_generichash(msg, key, 32)`. Key must be 16–64 bytes.
 pub fn keyed_hash_32(msg: &[u8], key: &[u8]) -> [u8; 32] {
