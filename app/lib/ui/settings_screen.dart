@@ -12,6 +12,7 @@ import '../state/app_state.dart';
 import '../state/call_state.dart';
 import '../state/chat_state.dart';
 import '../state/server_state.dart';
+import 'devices_screen.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -75,6 +76,19 @@ class SettingsScreen extends StatelessWidget {
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
             leading: const Icon(Icons.save_alt, color: Zn.muted, size: 20),
             onTap: () => Navigator.pushNamed(context, '/backup'),
+          ),
+          ListTile(
+            title: const Text('Linked devices'),
+            subtitle: const Text(
+                'Use Stonechat on more than one device. Each one sends and '
+                'receives on its own; a removed device stops receiving, but '
+                'still holds a copy of your identity key.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            leading: const Icon(Icons.devices_other, color: Zn.muted, size: 20),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const DevicesScreen()),
+            ),
           ),
           ListTile(
             title: const Text('Identity export'),
