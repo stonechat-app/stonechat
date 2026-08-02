@@ -42,6 +42,24 @@ macro_rules! ffi_guard {
     };
 }
 
+/// Allocate a caller-owned input buffer, for hosts that cannot allocate
+/// inside this module's linear memory themselves.
+///
+/// Native callers (Dart FFI, Swift) allocate with their own runtime and never
+/// need this. WebAssembly hosts do: JavaScript can read and write the exported
+/// `memory`, but has no way to know which of it is free. Returns null if the
+/// request cannot be met. Release with [`stonechat_free`] and the same length.
+#[unsafe(no_mangle)]
+pub extern "C" fn stonechat_alloc(len: usize) -> *mut u8 {
+    if len == 0 {
+        return core::ptr::null_mut();
+    }
+    let mut boxed = vec![0u8; len].into_boxed_slice();
+    let ptr = boxed.as_mut_ptr();
+    core::mem::forget(boxed);
+    ptr
+}
+
 /// # Safety
 /// `ptr` and `len` must come from a successful stonechat_* call, unmodified,
 /// and be freed exactly once. `ptr == NULL` is a no-op.
