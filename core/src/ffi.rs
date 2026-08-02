@@ -60,6 +60,129 @@ pub extern "C" fn stonechat_alloc(len: usize) -> *mut u8 {
     ptr
 }
 
+// -- device certificates (devcert.rs) -----------------------------------------
+
+/// Parse the JSON form of a certificate. Shared by sign and verify so the two
+/// cannot disagree about what a field means.
+fn parse_cert(v: &Value) -> Option<crate::devcert::DeviceCert> {
+    let seal_b64 = v.get("seal_pub")?.as_str()?;
+    let seal_bytes = B64.decode(seal_b64).ok()?;
+    let mut seal_pub = [0u8; pqcore::XWING_PUBLIC_BYTES];
+    if seal_bytes.len() != seal_pub.len() {
+        return None;
+    }
+    seal_pub.copy_from_slice(&seal_bytes);
+    let sig_bytes = B64.decode(v.get("sig_pub")?.as_str()?).ok()?;
+    let mut sig_pub = [0u8; 32];
+    if sig_bytes.len() != 32 {
+        return None;
+    }
+    sig_pub.copy_from_slice(&sig_bytes);
+    Some(crate::devcert::DeviceCert {
+        stonechat_id: v.get("stonechat_id")?.as_str()?.to_string(),
+        device_id: u32::try_from(v.get("device_id")?.as_u64()?).ok()?,
+        sig_pub,
+        seal_pub,
+        not_after: v.get("not_after")?.as_u64()?,
+    })
+}
+
+/// Sign a device certificate with the identity root.
+///
+/// `cert_json` is the unsigned certificate; `identity_seed` is the 32-byte
+/// Ed25519 seed, which only the primary device holds. Emits the same object
+/// with a `sig` field added.
+///
+/// # Safety
+/// Pointers must be valid for their stated lengths; `identity_seed` is 32
+/// bytes. See the module contract.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_devcert_sign(
+    cert_json: *const u8,
+    cert_len: usize,
+    identity_seed: *const u8,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let Some(bytes) = (unsafe { slice(cert_json, cert_len) }) else {
+            return ERR_INPUT;
+        };
+        let Some(seed) = (unsafe { arr::<32>(identity_seed) }) else {
+            return ERR_INPUT;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+            return ERR_INPUT;
+        };
+        let Some(cert) = parse_cert(&v) else {
+            return ERR_INPUT;
+        };
+        let sig = cert.sign(seed);
+        let mut signed = v.clone();
+        signed["sig"] = json!(B64.encode(sig));
+        unsafe { emit(serde_json::to_vec(&signed).unwrap(), out_ptr, out_len) };
+        OK
+    })
+}
+
+/// Check a signed device certificate against an owner's identity public key.
+///
+/// `now` is caller-supplied Unix seconds: this crate takes no ambient
+/// anything, and a client that lies to itself about the time is already lost.
+/// Returns 0 valid, -3 (refusal) for expired or forged — the caller gets the
+/// distinction in the emitted JSON (`{"status": "valid"|"expired"|
+/// "bad_signature"}`), because expiry is routine and self-healing while a bad
+/// signature is someone claiming a device that is not theirs.
+///
+/// # Safety
+/// Pointers must be valid for their stated lengths; `identity_pub` is 32
+/// bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_devcert_verify(
+    cert_json: *const u8,
+    cert_len: usize,
+    identity_pub: *const u8,
+    now: u64,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let Some(bytes) = (unsafe { slice(cert_json, cert_len) }) else {
+            return ERR_INPUT;
+        };
+        let Some(identity) = (unsafe { arr::<32>(identity_pub) }) else {
+            return ERR_INPUT;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+            return ERR_INPUT;
+        };
+        let (Some(cert), Some(sig_b64)) = (parse_cert(&v), v.get("sig").and_then(Value::as_str))
+        else {
+            return ERR_INPUT;
+        };
+        let Ok(sig_bytes) = B64.decode(sig_b64) else {
+            return ERR_INPUT;
+        };
+        let Ok(sig) = <[u8; 64]>::try_from(sig_bytes.as_slice()) else {
+            return ERR_INPUT;
+        };
+        let status = cert.verify(identity, &sig, now);
+        let label = match status {
+            crate::devcert::CertStatus::Valid => "valid",
+            crate::devcert::CertStatus::Expired => "expired",
+            crate::devcert::CertStatus::BadSignature => "bad_signature",
+        };
+        unsafe {
+            emit(
+                serde_json::to_vec(&json!({"status": label})).unwrap(),
+                out_ptr,
+                out_len,
+            )
+        };
+        if status == crate::devcert::CertStatus::Valid { OK } else { ERR_REFUSED }
+    })
+}
+
 /// # Safety
 /// `ptr` and `len` must come from a successful stonechat_* call, unmodified,
 /// and be freed exactly once. `ptr == NULL` is a no-op.
