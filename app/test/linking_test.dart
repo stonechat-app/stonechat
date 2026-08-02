@@ -5,7 +5,19 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:stonechat/core/core_ffi.dart';
+import 'package:stonechat/core/crypto.dart';
 import 'package:stonechat/core/linking.dart';
+import 'package:stonechat/core/pqcore.dart';
+
+/// The FFI core, or null where the native library isn't present.
+StonechatCore? maybeCore() {
+  try {
+    return StonechatCore();
+  } catch (_) {
+    return null;
+  }
+}
 
 Uint8List bytes(int n, [int fill = 7]) =>
     Uint8List.fromList(List.filled(n, fill));
@@ -128,6 +140,8 @@ void main() {
     expect(linkParkingKey(fakeHash, o.lookup), isNot(fakeHash(o.ekPub)));
   });
 
+  _sealRoundTrip();
+
   test('a minted device token is url-safe and unpadded', () {
     // It travels in a JSON body and, for the web client, potentially a URL.
     final token = newDeviceToken(bytes(32, 251));
@@ -136,5 +150,28 @@ void main() {
     expect(token.contains('/'), isFalse);
     // The relay requires at least 32 characters.
     expect(token.length, greaterThanOrEqualTo(32));
+  });
+}
+
+// The ephemeral seal the whole link flow rests on, against the real core:
+// the new device publishes xwingPkFromSeed(seed) in its QR and must be able
+// to open what the other device sealed to it. Asserted rather than assumed —
+// if this pairing did not hold, linking would fail only on a real device.
+void _sealRoundTrip() {
+  test('a grant sealed to an offer key opens with the offer seed', () {
+    final core = maybeCore();
+    if (core == null) return markTestSkipped('core library unavailable');
+    final seed = randomBytes(xwingSeedBytes);
+    final pk = PqCore().xwingPkFromSeed(seed);
+    final grant = utf8.encode(jsonEncode({'identity_seed': 'x'}));
+    final sealed = core.sealTo(
+      pk,
+      Uint8List.fromList(grant),
+      randomBytes(xwingEncapsRandomBytes),
+      randomBytes(24),
+    );
+    expect(core.unseal(seed, sealed), Uint8List.fromList(grant));
+    // A different seed is a different device: it must open nothing.
+    expect(core.unseal(randomBytes(xwingSeedBytes), sealed), isNull);
   });
 }

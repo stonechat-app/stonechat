@@ -16,6 +16,8 @@ import '../core/core_ffi.dart';
 import '../core/crypto.dart';
 import '../core/db.dart';
 import '../core/identity_export.dart';
+import '../core/linking.dart';
+import '../core/pqcore.dart';
 
 class AppState extends ChangeNotifier {
   // iOS: items ride the shared app-group access group so the notification
@@ -360,5 +362,143 @@ class AppState extends ChangeNotifier {
     stonechatId = result.stonechatId;
     displayName = name;
     notifyListeners();
+  }
+
+  // -- device linking (MULTIDEVICE.md "Linking a device") ---------------------
+
+  /// BLAKE2b-256 hex — the parking key derivation, shared by both sides.
+  /// The core exposes the hash under its TLS-fingerprint symbol (its first
+  /// caller); it is a plain keyless hash, and the relay validates parking
+  /// keys as 64 lowercase hex digits.
+  static String _hashHex(Uint8List data) => base64Decode(
+    StonechatCore().tlsFingerprintB64(data),
+  ).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+  /// **New device.** Generate the ephemeral keypair and lookup secret this
+  /// device will be linked with. The public half goes on screen; both secrets
+  /// stay here.
+  ({LinkOffer offer, Uint8List seed}) beginLinking() {
+    final seed = randomBytes(xwingSeedBytes);
+    return (
+      offer: LinkOffer(
+        ekPub: PqCore().xwingPkFromSeed(seed),
+        lookup: randomBytes(32),
+      ),
+      seed: seed,
+    );
+  }
+
+  /// **New device.** Poll our future mailbox for the grant the other device
+  /// parked, and become this identity once it arrives.
+  ///
+  /// The relay address is not known until the grant is opened, so the poll
+  /// runs against the address the *offer* was shown for — which the scanning
+  /// device supplies out of band by parking it at a key only the QR holder
+  /// can compute.
+  Future<bool> collectLinkGrant({
+    required String relayAddress,
+    required String relayTlsFp,
+    required LinkOffer offer,
+    required Uint8List seed,
+  }) async {
+    final key = linkParkingKey(_hashHex, offer.lookup);
+    final sealed = await takeLinkGrant(relayAddress, relayTlsFp, key);
+    if (sealed == null) return false;
+    // Same hybrid seal every envelope uses, opened with the ephemeral seed
+    // this device generated and never showed anyone.
+    final opened = StonechatCore().unseal(
+      seed,
+      Uint8List.fromList(base64Decode(sealed)),
+    );
+    if (opened == null) return false;
+    final grant = LinkGrant.fromJson(
+      jsonDecode(utf8.decode(opened)) as Map<String, dynamic>,
+    );
+    await adoptLinkGrant(grant);
+    return true;
+  }
+
+  /// **New device.** Become the identity in the grant.
+  ///
+  /// The commitment check is what makes the QR channel safe to trust: a grant
+  /// whose identity key does not hash to its claimed SC- ID is refused, so a
+  /// substituted grant cannot install a different identity under the name the
+  /// user thinks they are linking.
+  Future<void> adoptLinkGrant(LinkGrant grant) async {
+    final crypto = CryptoService.fromKeys(
+      secretKey: Uint8List.fromList(base64Decode(grant.identitySeedB64)),
+    );
+    if (!crypto.pubkeyMatchesId(crypto.publicKeyB64, grant.stonechatId)) {
+      throw ApiException.refusing(
+        'That code is for a different identity — refusing to link.',
+      );
+    }
+    api.baseUrl = grant.hubUrl;
+    // Deliberately no account token: server management and billing stay with
+    // the primary device (MULTIDEVICE.md "Decided").
+    api.accountToken = null;
+
+    await _storage.write(
+      key: 'zn_secret',
+      value: base64Encode(crypto.exportSecretKey()),
+    );
+    await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
+    await _storage.write(key: 'zn_id', value: grant.stonechatId);
+    await _storage.write(key: 'zn_name', value: grant.displayName);
+    await _storage.write(key: 'zn_hub_url', value: grant.hubUrl);
+    await _storage.write(key: 'zn_device_id', value: '${grant.deviceId}');
+    await _storage.write(key: 'zn_device_token', value: grant.deviceToken);
+
+    _crypto = crypto;
+    stonechatId = grant.stonechatId;
+    displayName = grant.displayName;
+    notifyListeners();
+  }
+
+  /// **Existing device.** Authorise a scanned offer: mint the newcomer a
+  /// device, seal it everything it needs to be us, and park that on our own
+  /// mailbox where only the holder of the QR can collect it.
+  Future<int> authoriseLink(
+    LinkOffer offer, {
+    required String relayAddress,
+    required String relayTlsFp,
+    required String ownerToken,
+    required String hubUrl,
+    String? bundleToken,
+    String kind = 'linked',
+    int? expiresInSeconds,
+  }) async {
+    final deviceToken = newDeviceToken(randomBytes(32));
+    final minted = await mintDevice(
+      relayAddress,
+      ownerToken,
+      relayTlsFp,
+      deviceToken,
+      kind: kind,
+      expiresInSeconds: expiresInSeconds,
+    );
+    final grant = LinkGrant(
+      identitySeedB64: base64Encode(crypto.exportSecretKey()),
+      stonechatId: stonechatId!,
+      displayName: displayName ?? '',
+      hubUrl: hubUrl,
+      relayAddress: relayAddress,
+      relayTlsFp: relayTlsFp,
+      deviceId: minted.deviceId,
+      deviceToken: deviceToken,
+      bundleToken: bundleToken,
+    );
+    final sealed = crypto.sealTo(
+      offer.ekPub,
+      Uint8List.fromList(utf8.encode(jsonEncode(grant.toJson()))),
+    );
+    await putLinkGrant(
+      relayAddress,
+      ownerToken,
+      relayTlsFp,
+      linkParkingKey(_hashHex, offer.lookup),
+      base64Encode(sealed),
+    );
+    return minted.deviceId;
   }
 }
