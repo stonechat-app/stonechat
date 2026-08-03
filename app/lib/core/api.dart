@@ -557,6 +557,46 @@ Future<void> revokeDevice(
 /// poll. The hub URL is the only address it has — onboarding asked for it.
 /// The hub stores bytes it cannot open, filed under the hash of a secret it
 /// never sees.
+/// Park this device's public keys under a commitment to them.
+///
+/// The QR carries only the commitment — 32 bytes instead of 1248 — so the keys
+/// themselves travel here. The hub recomputes the commitment and refuses a
+/// mismatch; the scanning device checks again on arrival, because the hub's
+/// word does not count.
+Future<void> putLinkOffer(
+  String hubUrl,
+  String commitmentHex,
+  String sealPubB64,
+  String sigPubB64,
+) async {
+  final r = await http.post(
+    Uri.parse('$hubUrl/v1/link/offer'),
+    headers: {'content-type': 'application/json'},
+    body: jsonEncode({
+      'key': commitmentHex,
+      'offer': {'seal': sealPubB64, 'sig': sigPubB64},
+    }),
+  );
+  if (r.statusCode >= 400) {
+    throw ApiException('could not publish the link code (${r.statusCode})', r.statusCode);
+  }
+}
+
+/// Fetch the keys an offer commits to. Not single-use: a scan that fails
+/// downstream must be retryable.
+Future<Map<String, dynamic>?> getLinkOffer(
+  String hubUrl,
+  String commitmentHex,
+) async {
+  final r = await http.get(Uri.parse('$hubUrl/v1/link/offer/$commitmentHex'));
+  if (r.statusCode == 404) return null;
+  if (r.statusCode >= 400) {
+    throw ApiException('could not read the link code (${r.statusCode})', r.statusCode);
+  }
+  return (jsonDecode(r.body) as Map<String, dynamic>)['offer']
+      as Map<String, dynamic>;
+}
+
 Future<void> putLinkGrant(String hubUrl, String key, String sealedB64) async {
   final r = await http.post(
     Uri.parse('$hubUrl/v1/link'),

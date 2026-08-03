@@ -105,12 +105,22 @@ writeFileSync(join(dist, 'theme.css'), css);
 
 // Kept deliberately small and free of logic. Everything here should be
 // checkable by eye in under a minute — that is the property being bought.
+// Where the client is allowed to talk to. `https:` covers a production hub and
+// every relay (WebTransport is https-only). A hub on plain HTTP — a bare IP
+// during testing — is not covered and must be named explicitly, because
+// widening this to `http:` would allow the page to talk to *any* unencrypted
+// host, which is a much larger grant than "this one test box".
+//
+//   STONECHAT_CONNECT="http://35.225.244.167:8000" npm run build
+const extraConnect = (process.env.STONECHAT_CONNECT ?? '').trim();
+const connectSrc = ["'self'", 'https:', extraConnect].filter(Boolean).join(' ');
+
 const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' https:; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src ${connectSrc}; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <title>Stonechat</title>
 <link rel="stylesheet" href="/theme.css" integrity="${sri(css)}">
 </head>
@@ -151,6 +161,7 @@ console.log(`  theme.css             ${kb(css)}   ${sri(css)}`);
 console.log(`  stonechat_core.wasm   ${kb(wasm)}  ${wasmIntegrity}`);
 console.log('');
 console.log(`  hash root  ${root}`);
+if (extraConnect) console.log(`  connect-src also allows  ${extraConnect}`);
 console.log('');
 console.log('  Verify a deployment against this:');
 console.log("    curl -s https://<origin>/ | shasum -a 256");

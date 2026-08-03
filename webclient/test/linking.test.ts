@@ -17,6 +17,7 @@ import {
   encodeOffer,
   LINK_SCHEME,
   LinkRefused,
+  offerCommitment,
   openGrant,
   parkingKey,
   parseOffer,
@@ -99,24 +100,50 @@ function grantFor(
 
 test('the offer round-trips through the QR text', () => {
   const keys = DeviceKeys.generate(core);
-  const offer = { sealPub: keys.sealPublic, sigPub: keys.sigPublic, lookup: randomBytes(32) };
-  const back = parseOffer(encodeOffer(offer))!;
-  assert.ok(equalBytes(back.sealPub, offer.sealPub));
-  assert.ok(equalBytes(back.sigPub, offer.sigPub));
+  const offer = {
+    sealPub: keys.sealPublic,
+    sigPub: keys.sigPublic,
+    lookup: randomBytes(32),
+  };
+  const back = parseOffer(encodeOffer(core, offer))!;
   assert.ok(equalBytes(back.lookup, offer.lookup));
+  assert.equal(
+    back.commitment,
+    offerCommitment(core, offer.sealPub, offer.sigPub),
+  );
 });
 
-test('the offer fits in a QR code', () => {
-  // Byte mode tops out at 2953 bytes. This is why the offer names the
-  // device's real seal key instead of a separate ephemeral one: a second
-  // X-Wing public key would not fit.
+test('the code is short enough to scan comfortably', () => {
+  // The whole point of v2. v1 carried the 1216-byte X-Wing key and came out
+  // at ~2360 characters — QR version 36, which phones would not read.
   const keys = DeviceKeys.generate(core);
-  const encoded = encodeOffer({
+  const encoded = encodeOffer(core, {
     sealPub: keys.sealPublic,
     sigPub: keys.sigPublic,
     lookup: randomBytes(32),
   });
-  assert.ok(encoded.length < 2953, `offer is ${encoded.length} chars`);
+  assert.ok(encoded.length < 160, `offer is ${encoded.length} chars`);
+});
+
+test('the commitment covers both keys and their order', () => {
+  const a = DeviceKeys.generate(core);
+  const b = DeviceKeys.generate(core);
+  const base = offerCommitment(core, a.sealPublic, a.sigPublic);
+  assert.equal(offerCommitment(core, a.sealPublic, a.sigPublic), base);
+  assert.notEqual(offerCommitment(core, b.sealPublic, a.sigPublic), base);
+  assert.notEqual(offerCommitment(core, a.sealPublic, b.sigPublic), base);
+  assert.match(base, /^[0-9a-f]{64}$/);
+});
+
+test('the commitment matches the phone and the hub, byte for byte', () => {
+  // Three implementations hash one concatenation: this, the hub's
+  // `_offer_commitment`, and the app's `offerCommitment`. A drift surfaces as
+  // "that code has expired", which points nowhere useful — so the bytes are
+  // pinned rather than merely agreed upon.
+  assert.equal(
+    offerCommitment(core, new Uint8Array(1216).fill(3), new Uint8Array(32).fill(4)),
+    '7500b764f3392ffb9de621f93f0474571ce2675cae4a6420317588f8da212ae4',
+  );
 });
 
 test('the scanner refuses anything that is not one of ours', () => {
@@ -126,28 +153,28 @@ test('the scanner refuses anything that is not one of ours', () => {
     'stonechat:SC-SOMEONE', // the *invite* scheme, not the link one
     LINK_SCHEME,
     `${LINK_SCHEME}not-base64!!`,
+    // A v1 code: right scheme, wrong format. Must fail cleanly rather than
+    // half-parse into a lookup that goes nowhere.
     LINK_SCHEME + Buffer.from('{"seal":"x"}').toString('base64url'),
   ]) {
     assert.equal(parseOffer(junk), null, junk);
   }
 });
 
-test('the scanner refuses a key of the wrong size', () => {
-  const encode = (seal: number, sig: number, lookup: number) =>
-    encodeOffer({
-      sealPub: new Uint8Array(seal),
-      sigPub: new Uint8Array(sig),
-      lookup: new Uint8Array(lookup),
-    });
-  assert.equal(parseOffer(encode(1215, 32, 32)), null);
-  assert.equal(parseOffer(encode(1216, 31, 32)), null);
-  assert.equal(parseOffer(encode(1216, 32, 31)), null);
-  assert.notEqual(parseOffer(encode(1216, 32, 32)), null);
+test('the scanner refuses a code of the wrong length or version', () => {
+  const encode = (raw: number[]) =>
+    LINK_SCHEME + Buffer.from(raw).toString('base64url');
+  assert.notEqual(parseOffer(encode([2, ...new Array(64).fill(1)])), null);
+  assert.equal(parseOffer(encode([2, ...new Array(63).fill(1)])), null);
+  assert.equal(parseOffer(encode([2, ...new Array(65).fill(1)])), null);
+  // Version 1 is the old format. Refusing it makes an old code fail loudly
+  // rather than be misread as a lookup plus garbage.
+  assert.equal(parseOffer(encode([1, ...new Array(64).fill(1)])), null);
 });
 
 test('whitespace from a scan or a paste is tolerated', () => {
   const keys = DeviceKeys.generate(core);
-  const encoded = encodeOffer({
+  const encoded = encodeOffer(core, {
     sealPub: keys.sealPublic,
     sigPub: keys.sigPublic,
     lookup: randomBytes(32),
@@ -155,13 +182,15 @@ test('whitespace from a scan or a paste is tolerated', () => {
   assert.notEqual(parseOffer(`  ${encoded}\n`), null);
 });
 
-test('the parking key comes from the lookup secret, not the visible key', () => {
-  // Deriving it from `seal` — which is on screen — would let a passer-by
-  // compute it and destroy the grant with the returns-and-deletes fetch.
+test('the parking key comes from the lookup, not the commitment', () => {
+  // Both are in the QR and only one is secret. Deriving the parking key from
+  // the commitment would let anyone who glimpses the screen compute it and
+  // destroy the grant with the returns-and-deletes fetch.
   const keys = DeviceKeys.generate(core);
   const lookup = randomBytes(32);
+  const commitment = offerCommitment(core, keys.sealPublic, keys.sigPublic);
   assert.equal(parkingKey(core, lookup), parkingKey(core, lookup));
-  assert.notEqual(parkingKey(core, lookup), parkingKey(core, keys.sealPublic.slice(0, 32)));
+  assert.notEqual(parkingKey(core, lookup), commitment);
   assert.match(parkingKey(core, lookup), /^[0-9a-f]{64}$/);
 });
 

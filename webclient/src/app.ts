@@ -5,16 +5,18 @@
  * Message *history* is not — it stays on the phone (WEB_CLIENT.md "the
  * defensible shape"), and `store.ts` says which is which and why.
  */
-import { b64decode } from './bytes.js';
+import { b64decode, b64encode } from './bytes.js';
 import { StonechatCore } from './core.js';
 import { DeviceKeys, randomBytes, WEB_CERT_LIFETIME_MS } from './device.js';
 import { Hub } from './hub.js';
 import { Protocol } from './protocol.js';
+import { qrVersion, renderQr } from './qr.js';
 import { store } from './store.js';
 import { App } from './ui.js';
 import {
   encodeOffer,
   LinkRefused,
+  offerCommitment,
   openGrant,
   parkingKey,
   type LinkGrant,
@@ -96,14 +98,44 @@ class LinkScreen {
     lede.style.marginBottom = '16px';
     card.append(lede);
 
+    const offerText = encodeOffer(this.core, this.offer);
+
+    // The QR, on white with a quiet zone — the phone's Devices screen scans,
+    // it has no paste path, so this is the flow rather than a convenience.
+    const qrWrap = el('div');
+    qrWrap.style.background = '#fff';
+    qrWrap.style.padding = '12px';
+    qrWrap.style.borderRadius = 'var(--radius)';
+    qrWrap.style.display = 'flex';
+    qrWrap.style.justifyContent = 'center';
+    qrWrap.append(renderQr(offerText));
+    card.append(qrWrap);
+
+    const hint = el('div', 'mono');
+    hint.style.marginTop = '8px';
+    hint.style.color = 'var(--faint)';
+    hint.textContent =
+      `QR version ${qrVersion(offerText)} · your phone fetches this session's ` +
+      'keys and checks them against the code you scanned';
+    card.append(hint);
+
+    // Kept for debugging and for anything that cannot scan. Collapsed, so it
+    // does not compete with the QR.
+    const details = el('details');
+    details.style.marginTop = '12px';
+    const summary = el('summary', 'mono', 'show the raw code');
+    summary.style.cursor = 'pointer';
+    summary.style.color = 'var(--muted)';
     const code = el('textarea', 'mono');
-    code.value = encodeOffer(this.offer);
+    code.value = offerText;
     code.readOnly = true;
-    code.rows = 6;
+    code.rows = 5;
     code.style.width = '100%';
+    code.style.marginTop = '8px';
     code.style.wordBreak = 'break-all';
     code.addEventListener('focus', () => code.select());
-    card.append(code);
+    details.append(summary, code);
+    card.append(details);
 
     const facts = el('div', 'mono');
     facts.style.marginTop = '16px';
@@ -147,12 +179,28 @@ class LinkScreen {
 
     this.root.append(bar, this.status, body);
     into.replaceChildren(this.root);
-    this.startPolling();
+    // Park the keys before anything can be scanned. If this fails the QR is
+    // useless — the phone would scan a commitment to keys it cannot fetch — so
+    // it is reported rather than left to fail later and less clearly.
+    void this.publishOffer().then(() => this.startPolling());
   }
 
   private setStatus(kind: 'live' | 'warn' | 'down', text: string): void {
     this.dot.className = `dot dot--${kind}`;
     this.statusText.textContent = text;
+  }
+
+  private async publishOffer(): Promise<void> {
+    try {
+      await this.hub.putLinkOffer(
+        offerCommitment(this.core, this.offer.sealPub, this.offer.sigPub),
+        b64encode(this.offer.sealPub),
+        b64encode(this.offer.sigPub),
+      );
+    } catch (e) {
+      this.setStatus('down', `could not publish this session's keys — ${(e as Error).message}`);
+      throw e;
+    }
   }
 
   private startPolling(): void {

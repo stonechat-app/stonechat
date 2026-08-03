@@ -130,12 +130,45 @@ def main() -> int:
     alice2.device = 2  # it stamps from_device 2, and the AEAD binds that
     alice2.stonechat_id = alice.stonechat_id
 
-    # The QR: this device's real seal key (also the grant's target — so only
-    # the device the certificate names can open it), its signing key, and an
-    # independent lookup secret the parking key is hashed from.
-    lookup = nacl_random(32)
+    # The QR carries a *commitment* to this device's keys, not the keys: an
+    # X-Wing public key is 1216 bytes, which made the code QR version 36 and
+    # unreadable in practice. The keys go to the hub; the phone fetches them
+    # and checks they hash to what was scanned, so a substituted key is still
+    # refused — the eyes carry 32 bytes instead of 1248.
     import hashlib
+    lookup = nacl_random(32)
     parking_key = hashlib.blake2b(lookup, digest_size=32).hexdigest()
+
+    commitment = hashlib.blake2b(
+        b"stonechat-link-offer" + alice2.dev_seal_pk
+        + bytes(alice2.dev_sig.verify_key),
+        digest_size=32,
+    ).hexdigest()
+    httpx.post(f"{HUB}/v1/link/offer", json={
+        "key": commitment,
+        "offer": {"seal": b64(alice2.dev_seal_pk),
+                  "sig": b64(bytes(alice2.dev_sig.verify_key))},
+    }).raise_for_status()
+
+    # The hub refuses a key that is not the commitment to the offer — it
+    # cannot be used to serve keys the scanner did not agree to.
+    bad = httpx.post(f"{HUB}/v1/link/offer", json={
+        "key": hashlib.blake2b(b"wrong", digest_size=32).hexdigest(),
+        "offer": {"seal": b64(alice2.dev_seal_pk),
+                  "sig": b64(bytes(alice2.dev_sig.verify_key))},
+    })
+    assert bad.status_code == 400, f"mismatched commitment: got {bad.status_code}"
+
+    # The phone side: fetch and verify before certifying anything.
+    fetched = httpx.get(f"{HUB}/v1/link/offer/{commitment}").json()["offer"]
+    assert hashlib.blake2b(
+        b"stonechat-link-offer" + unb64(fetched["seal"]) + unb64(fetched["sig"]),
+        digest_size=32,
+    ).hexdigest() == commitment, "fetched keys must match the scanned commitment"
+    # Not single-use: a scan that fails downstream has to be retryable.
+    assert httpx.get(f"{HUB}/v1/link/offer/{commitment}").status_code == 200, \
+        "the offer must survive a re-read"
+    print("  ok   offer parked under its commitment, verified, re-readable")
 
     # Alice's phone mints the newcomer a device...
     dev2_token = base64.urlsafe_b64encode(nacl_random(32)).decode().rstrip("=")

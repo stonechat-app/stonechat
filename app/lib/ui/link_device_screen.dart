@@ -33,9 +33,16 @@ class _LinkDeviceScreenState extends State<LinkDeviceScreen> {
   @override
   void initState() {
     super.initState();
-    // No separate ephemeral to keep: the offer names this device's own keys,
-    // which are already on disk.
-    _offer = context.read<AppState>().beginLinking();
+    // The offer is parked on the hub before it can be shown, so this is
+    // async: a code committing to keys nobody can fetch would scan and then
+    // fail.
+    final app = context.read<AppState>();
+    app.beginLinking(widget.hubUrl).then((offer) {
+      if (!mounted) return;
+      setState(() => _offer = offer);
+    }).catchError((Object e) {
+      if (mounted) setState(() => _error = '$e');
+    });
     // The grant is single-use and expires in ten minutes; polling is the
     // whole of the new device's side, since it has no socket to be notified
     // on until it has an identity.

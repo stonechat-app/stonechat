@@ -3,6 +3,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'dart:async';
 
@@ -111,6 +112,50 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
   }
 
+  /// Link from a pasted code rather than a scan.
+  Future<void> _pasteToLink() async {
+    final controller = TextEditingController();
+    // Pre-fill from the clipboard: the user almost certainly just copied it,
+    // and making them paste by hand into a dialog they opened *to* paste is a
+    // small cruelty.
+    final clip = await Clipboard.getData(Clipboard.kTextPlain);
+    if (LinkOffer.tryParse(clip?.text ?? '') != null) {
+      controller.text = clip!.text!.trim();
+    }
+    if (!mounted) return;
+    final raw = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Zn.surface,
+        title: const Text('Paste the link code'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: 3,
+          style: Zn.mono(size: 12, color: Zn.text),
+          decoration: const InputDecoration(hintText: 'stonechat-link:…'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child: const Text('Link'),
+          ),
+        ],
+      ),
+    );
+    if (raw == null || !mounted) return;
+    final offer = LinkOffer.tryParse(raw);
+    if (offer == null) {
+      showZnSnack(context, "That doesn't look like a link code", error: true);
+      return;
+    }
+    await _authorise(offer);
+  }
+
   Future<void> _scanToLink() async {
     final mailbox = _mailbox;
     if (mailbox == null) return;
@@ -119,7 +164,13 @@ class _DevicesScreenState extends State<DevicesScreen> {
       MaterialPageRoute(builder: (_) => const _LinkScannerScreen()),
     );
     if (offer == null || !mounted) return;
+    await _authorise(offer);
+  }
 
+  /// The half both entry points share: mint, certify, seal, park.
+  Future<void> _authorise(LinkOffer offer) async {
+    final mailbox = _mailbox;
+    if (mailbox == null) return;
     final app = context.read<AppState>();
     setState(() => _busy = true);
     try {
@@ -168,10 +219,20 @@ class _DevicesScreenState extends State<DevicesScreen> {
             icon: const Icon(Icons.qr_code_scanner, size: 18),
             label: const Text('Link a device'),
           ),
+          const SizedBox(height: 8),
+          // Cameras fail: glare, a cracked lens, a screen too dim, a code on
+          // the same phone. The code is short enough to paste, so there is no
+          // reason for a scanner to be the only way in.
+          TextButton.icon(
+            onPressed: _busy ? null : _pasteToLink,
+            icon: const Icon(Icons.content_paste, size: 16),
+            label: const Text('Paste a code instead'),
+          ),
           const SizedBox(height: 16),
           const Text(
             'On the new device, choose "Link to a device I already have" and '
-            'scan the code it shows.\n\n'
+            'scan the code it shows — or paste it, if the camera will not '
+            'cooperate.\n\n'
             'Every linked device receives and sends independently — none is a '
             'proxy for another. They share your identity, so a linked device '
             'can do anything this one can.',

@@ -18,6 +18,7 @@ import '../core/device_keys.dart';
 import '../core/db.dart';
 import '../core/identity_export.dart';
 import '../core/linking.dart';
+import '../core/pqcore.dart';
 
 class AppState extends ChangeNotifier {
   // iOS: items ride the shared app-group access group so the notification
@@ -444,15 +445,32 @@ class AppState extends ChangeNotifier {
   /// the real keys rather than throwaways is what lets the primary certify
   /// this device from the QR alone, and it means the grant can only be opened
   /// by the device its certificate names.
-  LinkOffer beginLinking() {
+  Future<LinkOffer> beginLinking(String hubUrl) async {
     final keys = deviceKeys ?? DeviceKeys.generate();
     deviceKeys = keys;
-    return LinkOffer(
-      sealPub: keys.sealPublic,
-      sigPub: keys.sigPublic,
-      lookup: randomBytes(32),
+    final commitment = offerCommitment(
+      _hashBytes,
+      keys.sealPublic,
+      keys.sigPublic,
     );
+    // Parked before the code is shown: a commitment to keys nobody can fetch
+    // is a QR that scans and then fails, which is worse than not showing one.
+    await putLinkOffer(
+      hubUrl,
+      _hex(commitment),
+      base64Encode(keys.sealPublic),
+      base64Encode(keys.sigPublic),
+    );
+    return LinkOffer(lookup: randomBytes(32), commitment: commitment);
   }
+
+  /// BLAKE2b-256, raw bytes. `_hashHex` is the same hash, hex-encoded.
+  static Uint8List _hashBytes(Uint8List data) => Uint8List.fromList(
+    base64Decode(StonechatCore().tlsFingerprintB64(data)),
+  );
+
+  static String _hex(Uint8List b) =>
+      b.map((x) => x.toRadixString(16).padLeft(2, '0')).join();
 
   /// **New device.** Poll the hub for the grant the other device parked, and
   /// become this identity once it arrives.
@@ -560,6 +578,30 @@ class AppState extends ChangeNotifier {
     String kind = 'linked',
     int? expiresInSeconds,
   }) async {
+    // The QR carried a commitment, not the keys. Fetch them and check they
+    // hash to what the user's eyes transported — this is the whole security of
+    // the smaller code. A substituted key produces a different commitment and
+    // is refused, so the hub cannot put its own key in front of ours.
+    final fetched = await getLinkOffer(hubUrl, _hex(offer.commitment));
+    if (fetched == null) {
+      throw ApiException.refusing(
+        'That code has expired — show a fresh one on the other device.',
+      );
+    }
+    final sealPub = Uint8List.fromList(base64Decode(fetched['seal'] as String));
+    final sigPub = Uint8List.fromList(base64Decode(fetched['sig'] as String));
+    if (sealPub.length != xwingPublicBytes || sigPub.length != 32) {
+      throw ApiException.refusing('That code points at malformed keys.');
+    }
+    final recomputed = offerCommitment(_hashBytes, sealPub, sigPub);
+    if (_hex(recomputed) != _hex(offer.commitment)) {
+      // The hub served keys other than the ones committed to. It checks this
+      // itself, which is exactly why we do not take its word for it.
+      throw ApiException.refusing(
+        'Those keys do not match the code you scanned — refusing to link.',
+      );
+    }
+
     final deviceToken = newDeviceToken(randomBytes(32));
     final minted = await mintDevice(
       relayAddress,
@@ -583,8 +625,8 @@ class AppState extends ChangeNotifier {
       unsignedCert(
         stonechatId: stonechatId!,
         deviceId: minted.deviceId,
-        sigPublic: offer.sigPub,
-        sealPublic: offer.sealPub,
+        sigPublic: sigPub,
+        sealPublic: sealPub,
         notAfter: DateTime.now().toUtc().add(lifetime),
       ),
       crypto.identitySeed,
@@ -602,7 +644,7 @@ class AppState extends ChangeNotifier {
       bundleToken: bundleToken,
     );
     final sealed = crypto.sealTo(
-      offer.sealPub,
+      sealPub,
       Uint8List.fromList(utf8.encode(jsonEncode(grant.toJson()))),
     );
     await putLinkGrant(

@@ -385,6 +385,71 @@ def take_link_grant(key: str, request: Request):
     return {"sealed": sealed}
 
 
+LINK_OFFER_CONTEXT = b"stonechat-link-offer"
+
+
+def _offer_commitment(seal_b64: str, sig_b64: str) -> str:
+    """blake2b-256 over the two public keys, hex.
+
+    Domain-separated so this hash can never be mistaken for — or replayed as —
+    any other blake2b in the protocol (the parking key is one over the lookup
+    secret, the TLS fingerprint another over a certificate).
+    """
+    import hashlib
+
+    h = hashlib.blake2b(digest_size=32)
+    h.update(LINK_OFFER_CONTEXT)
+    h.update(base64.b64decode(seal_b64, validate=True))
+    h.update(base64.b64decode(sig_b64, validate=True))
+    return h.hexdigest()
+
+
+@app.post("/v1/link/offer")
+def put_link_offer(body: dict, request: Request):
+    """Park a new device's public keys under a commitment to them.
+
+    Unauthenticated, like the grant drop, and for a stronger reason: the
+    contents are public keys. What makes it safe is that the **key is the
+    hash** — recomputed here — so this endpoint cannot be used to serve a
+    device keys that do not match the commitment their user scanned. The
+    scanning device verifies again anyway; our word does not count.
+    """
+    _link_limiter.check(request.client.host if request.client else "unknown")
+    key, offer = body.get("key"), body.get("offer")
+    if not isinstance(key, str) or not _valid_link_key(key):
+        raise HTTPException(400, "bad key")
+    if not isinstance(offer, dict):
+        raise HTTPException(400, "bad offer")
+    seal, sig = offer.get("seal"), offer.get("sig")
+    if not isinstance(seal, str) or not isinstance(sig, str):
+        raise HTTPException(400, "offer must carry seal and sig")
+    try:
+        if len(base64.b64decode(seal, validate=True)) != 1216:
+            raise ValueError
+        if len(base64.b64decode(sig, validate=True)) != 32:
+            raise ValueError
+        commitment = _offer_commitment(seal, sig)
+    except Exception:
+        raise HTTPException(400, "offer keys are malformed")
+    if commitment != key:
+        raise HTTPException(400, "key is not the commitment to those offer keys")
+    if not store.put_link_offer(key, json.dumps({"seal": seal, "sig": sig})):
+        raise HTTPException(503, "too many pending links")
+    return {"status": "ok"}
+
+
+@app.get("/v1/link/offer/{key}")
+def get_link_offer(key: str, request: Request):
+    """Read the parked keys. **Not** single-use — see db.peek_link_offer."""
+    _link_limiter.check(request.client.host if request.client else "unknown")
+    if not _valid_link_key(key):
+        raise HTTPException(400, "bad key")
+    offer = store.peek_link_offer(key)
+    if offer is None:
+        raise HTTPException(404, "no such offer")
+    return {"offer": json.loads(offer)}
+
+
 @app.get("/v1/directory/{stonechat_id}")
 def directory(stonechat_id: str, request: Request):
     """Resolve a SC- cryptographic ID to its record. Lookup is by full ID

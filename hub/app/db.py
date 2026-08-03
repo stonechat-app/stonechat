@@ -117,6 +117,22 @@ class Store:
                 sealed     TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
+            -- The *other* direction of the link flow: the new device's public
+            -- keys, so they do not have to fit in the QR.
+            --
+            -- An X-Wing public key is 1216 bytes — post-quantum keys are large
+            -- — which put the QR at version 36 and made it unreadable in
+            -- practice. The QR now carries a 32-byte commitment to these keys
+            -- instead, and the keys themselves come from here. The eyes still
+            -- carry the trust anchor; only the bytes moved.
+            --
+            -- Read-without-delete, unlike link_grants: the scanning device may
+            -- retry, and a fetch that consumed the offer would strand it.
+            CREATE TABLE IF NOT EXISTS link_offers (
+                key        TEXT PRIMARY KEY,   -- hex commitment; also the integrity check
+                offer      TEXT NOT NULL,      -- JSON {seal, sig}
+                created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS server_tombstones (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 stonechat_id      TEXT NOT NULL,
@@ -204,11 +220,46 @@ class Store:
         self._db.commit()
         return row["sealed"]
 
+    def put_link_offer(self, key: str, offer: str) -> bool:
+        """Park a new device's public keys under a commitment to them.
+
+        Bounded like the grants, and for the same reason: the writer is
+        unauthenticated by design, so storage has to be bounded here."""
+        self._drop_stale_grants()
+        pending = self._db.execute(
+            "SELECT COUNT(*) AS n FROM link_offers"
+        ).fetchone()["n"]
+        if pending >= self.MAX_PENDING_LINKS:
+            return False
+        self._db.execute(
+            "INSERT INTO link_offers (key, offer, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET offer=excluded.offer, "
+            "created_at=excluded.created_at",
+            (key, offer, _now()),
+        )
+        self._db.commit()
+        return True
+
+    def peek_link_offer(self, key: str) -> str | None:
+        """Read without deleting.
+
+        Deliberately not single-use: the scanner may retry, and an offer
+        consumed by a first read would leave the phone unable to finish a link
+        it had already scanned. Safe to re-read because the contents are public
+        keys — what is secret is the *grant*, and that one is still
+        returns-and-deletes."""
+        self._drop_stale_grants()
+        row = self._db.execute(
+            "SELECT offer FROM link_offers WHERE key = ?", (key,)
+        ).fetchone()
+        return None if row is None else row["offer"]
+
     def _drop_stale_grants(self) -> None:
         cutoff = (
             datetime.now(timezone.utc) - timedelta(seconds=self.LINK_TTL_S)
         ).isoformat()
         self._db.execute("DELETE FROM link_grants WHERE created_at < ?", (cutoff,))
+        self._db.execute("DELETE FROM link_offers WHERE created_at < ?", (cutoff,))
         self._db.commit()
 
     def _migrate(self) -> None:

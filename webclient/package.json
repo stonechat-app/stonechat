@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Stonechat web client \u2014 a tethered, ephemeral device.",
+  "description": "Stonechat web client — a tethered, ephemeral device.",
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "esbuild": "0.28.1",
+    "qrcode-generator": "2.0.4",
     "typescript": "5.9.3"
   }
 }

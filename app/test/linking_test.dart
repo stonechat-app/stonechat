@@ -23,32 +23,41 @@ StonechatCore? maybeCore() {
 Uint8List bytes(int n, [int fill = 7]) =>
     Uint8List.fromList(List.filled(n, fill));
 
+/// BLAKE2b stand-in: only the *input* is under test in most of these, so a
+/// cheap deterministic hash keeps them independent of the native core.
+Uint8List fakeHash(Uint8List d) {
+  final out = Uint8List(32);
+  for (var i = 0; i < d.length; i++) {
+    out[i % 32] = (out[i % 32] + d[i] + i) & 0xff;
+  }
+  return out;
+}
+
 LinkOffer offer() =>
-    LinkOffer(sealPub: bytes(1216), sigPub: bytes(32, 5), lookup: bytes(32, 9));
+    LinkOffer(lookup: bytes(32, 9), commitment: bytes(32, 5));
 
 void main() {
   group('LinkOffer', () {
     test('round-trips through the QR text', () {
       final back = LinkOffer.tryParse(offer().encode())!;
-      expect(back.sealPub, offer().sealPub);
-      expect(back.sigPub, offer().sigPub);
       expect(back.lookup, offer().lookup);
+      expect(back.commitment, offer().commitment);
     });
 
-    test('offers both keys the certificate has to cover', () {
-      // A certificate names a signing key and a seal key. Omitting either
-      // from the QR would leave the primary unable to mint one from the scan
-      // alone, which is the only information it has.
-      final json = _decode(offer().encode());
-      expect(json.keys.toSet(), {'seal', 'sig', 'lookup'});
+    test('the code is short enough to scan comfortably', () {
+      // The whole point of the v2 format. v1 carried the 1216-byte X-Wing key
+      // and came out at ~2360 characters — QR version 36, which phones would
+      // not read. Anything over a few hundred is the old mistake returning.
+      expect(offer().encode().length, lessThan(160));
     });
 
-    test('carries the lookup secret separately from the public keys', () {
-      // The whole point of the separation: the parking key must not be
-      // derivable from anything a passer-by can read off the screen alone.
-      final o = offer();
-      expect(o.lookup, isNot(o.sealPub.sublist(0, 32)));
-      expect(o.lookup, isNot(o.sigPub));
+    test('carries a commitment, never the keys themselves', () {
+      // If a key ever ends up back in here the QR silently becomes
+      // unscannable again, so this is pinned as a property.
+      final encoded = offer().encode();
+      final body = encoded.substring(linkScheme.length);
+      final padded = body + '=' * ((4 - body.length % 4) % 4);
+      expect(base64Url.decode(padded).length, 65);
     });
 
     test('refuses anything that is not one of ours', () {
@@ -58,38 +67,54 @@ void main() {
         'stonechat:SC-SOMEONE', // the *invite* scheme, not the link one
         'stonechat-link:',
         'stonechat-link:not-base64!!',
+        // A v1 code: right scheme, wrong format. Must fail cleanly rather
+        // than half-parse into a lookup that goes nowhere.
         'stonechat-link:${base64Url.encode(utf8.encode('{"seal":"x"}'))}',
       ]) {
         expect(LinkOffer.tryParse(junk), isNull, reason: junk);
       }
     });
 
-    test('refuses a key or lookup of the wrong size', () {
-      // A short seal key would fail later, inside the seal; a short signing
-      // key would be signed into a certificate. Failing at the scanner is the
-      // difference between "that is not a Stonechat code" and either.
-      String encoded(int sealLen, int sigLen, int lookupLen) => LinkOffer(
-        sealPub: bytes(sealLen),
-        sigPub: bytes(sigLen, 5),
-        lookup: bytes(lookupLen, 9),
-      ).encode();
-      expect(LinkOffer.tryParse(encoded(1215, 32, 32)), isNull);
-      expect(LinkOffer.tryParse(encoded(1216, 31, 32)), isNull);
-      expect(LinkOffer.tryParse(encoded(1216, 32, 31)), isNull);
-      expect(LinkOffer.tryParse(encoded(32, 32, 32)), isNull);
-      expect(LinkOffer.tryParse(encoded(1216, 32, 32)), isNotNull);
-    });
-
-    test('fits in a QR code', () {
-      // Byte mode tops out at 2953 bytes. This is why the offer names the
-      // device's real seal key instead of a separate ephemeral one: a second
-      // X-Wing public key (1216 bytes, ~2160 more characters after the two
-      // base64 layers) would not fit.
-      expect(offer().encode().length, lessThan(2953));
+    test('refuses a code of the wrong length or version', () {
+      String encoded(List<int> raw) =>
+          linkScheme + base64Url.encode(raw).replaceAll('=', '');
+      expect(LinkOffer.tryParse(encoded([2, ...bytes(64)])), isNotNull);
+      expect(LinkOffer.tryParse(encoded([2, ...bytes(63)])), isNull);
+      expect(LinkOffer.tryParse(encoded([2, ...bytes(65)])), isNull);
+      // Version 1 is the old format; refusing it is how an old code fails
+      // loudly instead of being misread.
+      expect(LinkOffer.tryParse(encoded([1, ...bytes(64)])), isNull);
     });
 
     test('tolerates the whitespace a scan or a paste can introduce', () {
+      // The paste path especially: clipboards pick up trailing newlines.
       expect(LinkOffer.tryParse('  ${offer().encode()}\n'), isNotNull);
+    });
+  });
+
+  group('offer commitment', () {
+    test('covers both keys, and the order they appear in', () {
+      final seal = bytes(1216, 3);
+      final sig = bytes(32, 4);
+      final base = offerCommitment(fakeHash, seal, sig);
+      expect(offerCommitment(fakeHash, seal, sig), base);
+      expect(offerCommitment(fakeHash, bytes(1216, 7), sig), isNot(base));
+      expect(offerCommitment(fakeHash, seal, bytes(32, 8)), isNot(base));
+    });
+
+    test('is domain-separated from a bare hash of the keys', () {
+      // Otherwise this commitment could be confused with — or replayed as —
+      // the parking key or a TLS fingerprint, which are the same primitive
+      // over different inputs.
+      final seal = bytes(1216, 3);
+      final sig = bytes(32, 4);
+      final tagged = offerCommitment(fakeHash, seal, sig);
+      final untagged = fakeHash(Uint8List.fromList([...seal, ...sig]));
+      expect(tagged, isNot(untagged));
+    });
+
+    test('is 32 bytes, which is what the QR budgets for', () {
+      expect(offerCommitment(fakeHash, bytes(1216, 3), bytes(32, 4)).length, 32);
     });
   });
 
@@ -175,12 +200,14 @@ void main() {
     });
   });
 
-  test('the parking key is derived from the lookup secret, not the key', () {
-    // Stand-in hash: only the *input* is being asserted here.
-    String fakeHash(Uint8List d) => 'h${d.length}:${d.first}';
+  test('the parking key comes from the lookup secret, not the commitment', () {
+    // Both are in the QR, and only one is secret. Deriving the parking key
+    // from the commitment would let anyone who glimpses the screen compute it
+    // and destroy the grant with the returns-and-deletes fetch.
+    String hex(Uint8List d) => 'h${d.length}:${d.first}';
     final o = offer();
-    expect(linkParkingKey(fakeHash, o.lookup), fakeHash(o.lookup));
-    expect(linkParkingKey(fakeHash, o.lookup), isNot(fakeHash(o.sealPub)));
+    expect(linkParkingKey(hex, o.lookup), hex(o.lookup));
+    expect(linkParkingKey(hex, o.lookup), isNot(hex(o.commitment)));
   });
 
   _sealRoundTrip();

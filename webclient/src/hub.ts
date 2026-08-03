@@ -49,6 +49,32 @@ export class Hub {
   }
 
   /**
+   * Park this session's public keys under a commitment to them.
+   *
+   * The QR carries only the commitment — 32 bytes instead of 1248 — so the
+   * keys themselves have to reach the phone some other way. The hub recomputes
+   * the commitment and refuses a mismatch, and the phone checks again on
+   * arrival: a substituted key hashes differently and is rejected, which is
+   * exactly the property the eyes used to provide by carrying the key itself.
+   */
+  async putLinkOffer(
+    commitment: string,
+    sealPub: string,
+    sigPub: string,
+  ): Promise<void> {
+    const r = await fetch(`${this.baseUrl}/v1/link/offer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'omit',
+      body: JSON.stringify({
+        key: commitment,
+        offer: { seal: sealPub, sig: sigPub },
+      }),
+    });
+    if (!r.ok) throw new HubError(`could not park the offer (${r.status})`, r.status);
+  }
+
+  /**
    * A directory entry, so a certificate can be checked against the identity
    * key its SC- ID commits to.
    *

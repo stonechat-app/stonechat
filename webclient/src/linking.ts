@@ -24,7 +24,6 @@ import type { SignedCert, StonechatCore } from './core.js';
 import { certSealKey, certSigKey, type DeviceKeys } from './device.js';
 import {
   b64decode,
-  b64encode,
   b64urlDecode,
   b64urlEncode,
   equalBytes,
@@ -35,21 +34,29 @@ import {
 
 export const LINK_SCHEME = 'stonechat-link:';
 
+/** Domain tag for the commitment. Separated so this hash can never be
+ * mistaken for the parking key (blake2b over the lookup secret) or the TLS
+ * fingerprint (blake2b over a certificate). */
+const OFFER_CONTEXT = 'stonechat-link-offer';
+
+/** Format marker. The first version put the whole 1216-byte X-Wing key in the
+ * QR; this one puts a commitment to it. Carried so a future change is a
+ * different byte rather than a mystery. */
+const OFFER_V2 = 0x02;
+
 /**
- * What this session shows and the phone scans.
+ * What this session holds. The public halves go to the hub; only a 32-byte
+ * commitment to them travels by eye.
  *
- * `seal` and `sig` are this device's **long-lived** keys, not throwaways for
- * the link: they are what the certificate must vouch for, and the phone has
- * nothing but this to mint it from. `seal` is therefore also the key the grant
- * is encapsulated to, which binds "the device that opened the grant" to "the
- * device the certificate names".
+ * `seal` and `sig` are this device's **long-lived** keys, not throwaways: they
+ * are what the certificate must vouch for, and `seal` is also the key the
+ * grant is encapsulated to — which binds "the device that opened the grant" to
+ * "the device the certificate names".
  *
- * `lookup` is a third, independent secret. The parking key is its hash and
- * **not** `seal`'s: `seal` is on screen and therefore public, so deriving the
- * parking key from it would let anyone who glimpses the screen compute it and
- * win the returns-and-deletes race. They could not read the grant — it is
- * sealed to a key they do not hold — but they could destroy it, turning a
- * shoulder-surf into a linking denial of service.
+ * `lookup` is a third, independent secret and stays out of the offer entirely.
+ * The parking key is its hash, and deriving that from anything on screen would
+ * let a passer-by compute it and destroy the grant with the returns-and-deletes
+ * fetch.
  */
 export interface LinkOffer {
   sealPub: Uint8Array;
@@ -57,42 +64,71 @@ export interface LinkOffer {
   lookup: Uint8Array;
 }
 
-export function encodeOffer(offer: LinkOffer): string {
-  return (
-    LINK_SCHEME +
-    b64urlEncode(
-      utf8.encode(
-        JSON.stringify({
-          seal: b64encode(offer.sealPub),
-          sig: b64encode(offer.sigPub),
-          lookup: b64encode(offer.lookup),
-        }),
-      ),
-    )
-  );
+/** What a scanner reads: a lookup secret and a commitment, and nothing else. */
+export interface ScannedOffer {
+  lookup: Uint8Array;
+  /** blake2b-256 over the two public keys. Hex, because it is also the key the
+   * offer is parked under. */
+  commitment: string;
+}
+
+/**
+ * blake2b-256 over `"stonechat-link-offer" ‖ seal ‖ sig`.
+ *
+ * This is the whole trick. The keys themselves are 1248 bytes and put the QR
+ * at version 36 — dense enough that phones would not read it. A commitment is
+ * 32 bytes and says exactly as much as the eyes need to say: *the key you
+ * fetch must be this one*. A substituted key hashes differently and is refused,
+ * so the network still cannot swap it.
+ */
+export function offerCommitment(
+  core: StonechatCore,
+  sealPub: Uint8Array,
+  sigPub: Uint8Array,
+): string {
+  const tag = utf8.encode(OFFER_CONTEXT);
+  const buf = new Uint8Array(tag.length + sealPub.length + sigPub.length);
+  buf.set(tag);
+  buf.set(sealPub, tag.length);
+  buf.set(sigPub, tag.length + sealPub.length);
+  return toHex(core.tlsFingerprint(buf));
+}
+
+/** The QR payload: 65 bytes — a version marker, the lookup secret and the
+ * commitment — which is ~102 characters and a QR a phone reads at a glance. */
+export function encodeOffer(core: StonechatCore, offer: LinkOffer): string {
+  const commitment = offerCommitment(core, offer.sealPub, offer.sigPub);
+  const raw = new Uint8Array(1 + 32 + 32);
+  raw[0] = OFFER_V2;
+  raw.set(offer.lookup, 1);
+  raw.set(hexToBytes(commitment), 33);
+  return LINK_SCHEME + b64urlEncode(raw);
 }
 
 /** Null for anything that is not one of ours, or is malformed. */
-export function parseOffer(raw: string): LinkOffer | null {
+export function parseOffer(raw: string): ScannedOffer | null {
   const text = raw.trim();
   if (!text.startsWith(LINK_SCHEME)) return null;
   try {
-    const json = JSON.parse(
-      fromUtf8.decode(b64urlDecode(text.slice(LINK_SCHEME.length))),
-    ) as Record<string, unknown>;
-    const seal = b64decode(json['seal'] as string);
-    const sig = b64decode(json['sig'] as string);
-    const lookup = b64decode(json['lookup'] as string);
-    // Sizes checked here rather than at use: a malformed offer should fail at
-    // the scanner, not deep inside the seal. The sig length matters most — it
-    // is about to be signed into a certificate.
-    if (seal.length !== 1216 || sig.length !== 32 || lookup.length !== 32) {
-      return null;
-    }
-    return { sealPub: seal, sigPub: sig, lookup };
+    const bytes = b64urlDecode(text.slice(LINK_SCHEME.length));
+    // Length and version are checked at the scanner, not deep inside the
+    // seal: a malformed code should read as "that is not a Stonechat code".
+    if (bytes.length !== 65 || bytes[0] !== OFFER_V2) return null;
+    return {
+      lookup: bytes.slice(1, 33),
+      commitment: toHex(bytes.slice(33, 65)),
+    };
   } catch {
     return null;
   }
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
 }
 
 /** What the phone seals back. The only secret in it is `device_token`. */

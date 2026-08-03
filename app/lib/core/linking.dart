@@ -28,44 +28,34 @@ const linkScheme = 'stonechat-link:';
 /// fetch. They could not read the grant — it is sealed to a key they do not
 /// hold — but they could destroy it, turning a shoulder-surf into a linking
 /// denial of service.
-/// The two keys are this device's **long-lived** ones, not throwaways for the
-/// link. That is deliberate on both counts:
-///
-/// - `seal` is what the grant is encapsulated to *and* what peers will seal
-///   envelopes to. Making them one key binds "the device that opened the
-///   grant" to "the device the certificate names" — with a separate ephemeral
-///   there is nothing tying the two together. It also keeps the QR within a
-///   QR's capacity: two X-Wing public keys would not fit.
-/// - Reusing it costs nothing that matters. Someone who records the parked
-///   ciphertext and *later* steals this device could read the grant — but a
-///   stolen device already holds everything in it.
-///
-/// `lookup` is a third, independent secret. The parking key is its hash and
-/// **not** `seal`'s: `seal` is on screen and therefore public, so deriving
-/// the parking key from it would let a passer-by compute the key and destroy
-/// the grant with the returns-and-deletes fetch. They still could not read it.
-class LinkOffer {
-  final Uint8List sealPub; // X-Wing: the grant's target, and this device's
-  final Uint8List sigPub; // Ed25519: what the certificate will vouch for
-  final Uint8List lookup; // 32 random bytes; the parking key is its hash
+/// Domain tag for the offer commitment. Separated so this hash can never be
+/// mistaken for the parking key (BLAKE2b over the lookup secret) or the TLS
+/// fingerprint (BLAKE2b over a certificate).
+const offerContext = 'stonechat-link-offer';
 
-  const LinkOffer({
-    required this.sealPub,
-    required this.sigPub,
-    required this.lookup,
-  });
+/// Format marker. v1 carried the new device's whole 1216-byte X-Wing key in
+/// the QR; at ~2360 characters that was a version-36 code and phones would not
+/// read it. v2 carries a 32-byte commitment instead.
+const offerVersion = 2;
+
+/// What a scanner reads: a lookup secret and a commitment, and nothing else.
+///
+/// The keys themselves are fetched from the hub and checked against the
+/// commitment. That sounds weaker and is not: the eyes still carry something
+/// the network cannot forge. A substituted key hashes differently and is
+/// refused, which is exactly what carrying the key by eye bought — for 32
+/// bytes instead of 1248.
+class LinkOffer {
+  final Uint8List lookup; // 32 random bytes; the parking key is its hash
+  final Uint8List commitment; // BLAKE2b-256 over the tag ‖ seal ‖ sig
+
+  const LinkOffer({required this.lookup, required this.commitment});
 
   String encode() =>
       linkScheme +
-      base64Url.encode(
-        utf8.encode(
-          jsonEncode({
-            'seal': base64Encode(sealPub),
-            'sig': base64Encode(sigPub),
-            'lookup': base64Encode(lookup),
-          }),
-        ),
-      );
+      base64Url
+          .encode([offerVersion, ...lookup, ...commitment])
+          .replaceAll('=', '');
 
   /// Null for anything that isn't one of ours, or is malformed. A QR scanner
   /// sees a lot of things that are not link offers.
@@ -73,30 +63,43 @@ class LinkOffer {
     final text = raw.trim();
     if (!text.startsWith(linkScheme)) return null;
     try {
-      final json =
-          jsonDecode(
-                utf8.decode(base64Url.decode(text.substring(linkScheme.length))),
-              )
-              as Map<String, dynamic>;
-      final seal = base64Decode(json['seal'] as String);
-      final sig = base64Decode(json['sig'] as String);
-      final lookup = base64Decode(json['lookup'] as String);
-      // Sizes are checked here rather than at use: a malformed offer should
-      // fail at the scanner, not deep inside the seal. The sig length matters
-      // most — it is about to be signed into a certificate.
-      if (seal.length != 1216 || sig.length != 32 || lookup.length != 32) {
-        return null;
-      }
+      var body = text.substring(linkScheme.length);
+      body += '=' * ((4 - body.length % 4) % 4);
+      final bytes = base64Url.decode(body);
+      // Length and version are checked here rather than at use: a malformed
+      // code should fail at the scanner, reading as "that is not a Stonechat
+      // code" rather than as a mysterious failure three steps later.
+      if (bytes.length != 65 || bytes[0] != offerVersion) return null;
       return LinkOffer(
-        sealPub: Uint8List.fromList(seal),
-        sigPub: Uint8List.fromList(sig),
-        lookup: Uint8List.fromList(lookup),
+        lookup: Uint8List.fromList(bytes.sublist(1, 33)),
+        commitment: Uint8List.fromList(bytes.sublist(33, 65)),
       );
     } catch (_) {
       return null;
     }
   }
 }
+
+/// The keys an offer commits to, once fetched and verified.
+class OfferKeys {
+  final Uint8List sealPub; // X-Wing: the grant's target, and their seal key
+  final Uint8List sigPub; // Ed25519: what the certificate will vouch for
+
+  const OfferKeys({required this.sealPub, required this.sigPub});
+}
+
+/// BLAKE2b-256 over `"stonechat-link-offer" ‖ seal ‖ sig`.
+///
+/// [hash] is the same keyless BLAKE2b the parking key uses. Mirrored in the
+/// hub (`_offer_commitment`) and the web client (`offerCommitment`) — three
+/// implementations, so the bytes are spelled out rather than implied.
+Uint8List offerCommitment(
+  Uint8List Function(Uint8List) hash,
+  Uint8List sealPub,
+  Uint8List sigPub,
+) => hash(
+  Uint8List.fromList([...utf8.encode(offerContext), ...sealPub, ...sigPub]),
+);
 
 /// What the existing device seals to the newcomer's ephemeral key.
 ///
