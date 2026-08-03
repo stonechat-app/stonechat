@@ -49,8 +49,15 @@ class CryptoService {
 
   final Uint8List _secretKey; // 64 bytes: seed || public, libsodium layout
   final Uint8List publicKey;
-  final Uint8List pqPublicKey; // X-Wing identity public (directory pq_pk)
-  final Uint8List _pqSeed;
+  /// The identity's own X-Wing key, still published in the directory as
+  /// `pq_pk` and still signature-verified on resolve — but **nothing seals to
+  /// it any more**. Envelopes go to a device's certified seal key instead.
+  /// Its private half used to live here as `_pqSeed`; that field became
+  /// unused the moment unsealing moved to the device key, which is a fair
+  /// summary of what device certificates changed. Retiring the directory
+  /// field itself is a separate cleanup — it touches registration and the
+  /// hub schema.
+  final Uint8List pqPublicKey;
   final String stonechatId;
   final String _pqPkSig;
 
@@ -60,7 +67,6 @@ class CryptoService {
     this._secretKey,
     this.publicKey,
     this.pqPublicKey,
-    this._pqSeed,
     this.stonechatId,
     this._pqPkSig,
   );
@@ -74,7 +80,6 @@ class CryptoService {
       id.secret,
       id.public,
       id.pqPublic,
-      core.pqSeedFromEdSecret(id.secret),
       id.stonechatId,
       id.pqPublicSigB64,
     );
@@ -128,7 +133,13 @@ class CryptoService {
   /// Returns null when the envelope wasn't sealed to this identity (or is
   /// garbage): a wrong recipient decapsulates to a wrong shared secret and
   /// the AEAD refuses.
-  Uint8List? unseal(Uint8List sealed) => core.unseal(_pqSeed, sealed);
+  /// Open an envelope sealed to this **device's** key.
+  ///
+  /// [deviceSealSeed] is our own X-Wing seed. It used to be the identity's
+  /// (`_pqSeed`), which is why every device needed the identity secret to
+  /// read anything — see MULTIDEVICE_IMPLEMENTATION.md.
+  Uint8List? unseal(Uint8List deviceSealSeed, Uint8List sealed) =>
+      core.unseal(deviceSealSeed, sealed);
 
   /// The owner vouching for their X-Wing identity key; published beside it
   /// in the hub directory and verified by every resolver.
@@ -209,17 +220,25 @@ class CryptoService {
     return (seed: seed, pub: pq.mlkemPkFromSeed(seed));
   }
 
-  Uint8List signPrekey(Uint8List spkPub) =>
-      core.sign(_secretKey, spkSigContext, spkPub);
+  /// Prekeys are signed by the **device**, not the identity.
+  ///
+  /// Before device certificates, senders verified these against the identity
+  /// key from the directory, which is precisely why every device needed the
+  /// identity secret to be reachable at all. Now a device signs with its own
+  /// key and its certificate is what ties that key to its owner.
+  Uint8List signPrekey(Uint8List deviceSecret, Uint8List spkPub) =>
+      core.sign(deviceSecret, spkSigContext, spkPub);
 
+  /// [deviceSigPub] comes from the device's certificate, which the caller
+  /// has already verified against the owner's identity key.
   bool verifyPrekeySig(
     Uint8List spkPub,
     Uint8List sig,
-    Uint8List identityEdPub,
-  ) => core.verify(identityEdPub, spkSigContext, spkPub, sig);
+    Uint8List deviceSigPub,
+  ) => core.verify(deviceSigPub, spkSigContext, spkPub, sig);
 
-  Uint8List signKemPrekey(Uint8List kspkPub) =>
-      core.sign(_secretKey, kspkSigContext, kspkPub);
+  Uint8List signKemPrekey(Uint8List deviceSecret, Uint8List kspkPub) =>
+      core.sign(deviceSecret, kspkSigContext, kspkPub);
 
   bool verifyKemPrekeySig(
     Uint8List kspkPub,

@@ -14,6 +14,7 @@ import 'package:uuid/uuid.dart';
 
 import '../core/api.dart';
 import '../core/db.dart';
+import '../core/device_keys.dart';
 import '../core/links.dart';
 import '../core/session.dart';
 import '../models.dart';
@@ -608,9 +609,12 @@ class ChatState extends ChangeNotifier {
   /// its owner. [transient] (typing, call ICE), [noPush] (receipts) and
   /// [ring] (call offers) are the delivery hints the mailbox is allowed to
   /// see.
+  /// [toSealKeyB64] is the recipient **device's** X-Wing key, taken from its
+  /// verified certificate — not the single identity key the directory holds.
+  /// That change is what lets a device exist without the identity secret.
   SealedEnvelope _wireSeal(
     Envelope envelope,
-    String toPqPkB64, {
+    String toSealKeyB64, {
     bool transient = false,
     bool noPush = false,
     bool ring = false,
@@ -620,7 +624,7 @@ class ChatState extends ChangeNotifier {
     to: envelope.to,
     sealedB64: base64Encode(
       app.crypto.sealTo(
-        Uint8List.fromList(base64Decode(toPqPkB64)),
+        Uint8List.fromList(base64Decode(toSealKeyB64)),
         utf8.encode(jsonEncode(envelope.toJson())),
       ),
     ),
@@ -656,6 +660,96 @@ class ChatState extends ChangeNotifier {
       return const [ChatDb.primaryDevice];
     }
   }
+
+  /// Verified device certificates, per peer, per device.
+  ///
+  /// In memory only: a certificate is public, cheap to refetch, and holding a
+  /// stale one is worse than holding none.
+  final Map<String, Map<int, Map<String, dynamic>>> _peerCerts = {};
+
+  /// The certificate for one of a peer's devices — the thing that says which
+  /// key to seal to, and which key their prekeys are signed with.
+  ///
+  /// Verified against the peer's identity key from the directory before it is
+  /// cached, so everything downstream can treat a cached certificate as
+  /// trusted. Refetched when the one we hold is nearing expiry, rather than
+  /// when it has already lapsed.
+  Future<Map<String, dynamic>?> _certFor(
+    String peerId,
+    int deviceId,
+    String peerPubkeyB64,
+    String? bundleToken,
+    String address,
+    String tlsFp,
+  ) async {
+    final held = _peerCerts[peerId]?[deviceId];
+    if (held != null && !certNeedsRefresh(held)) return held;
+
+    Map<String, dynamic>? fetched;
+    try {
+      if (bundleToken != null) {
+        final listed = await fetchDeviceList(address, bundleToken, tlsFp);
+        _peerDevices[peerId] = listed.devices;
+        for (final entry in listed.certs.entries) {
+          _recordCert(peerId, entry.key, entry.value, peerPubkeyB64);
+        }
+        fetched = _peerCerts[peerId]?[deviceId];
+      } else if (deviceId == ChatDb.primaryDevice) {
+        // No token, so no device list — but a stranger sending a first
+        // contact request still gets the primary's certificate off the open
+        // bundle, which is exactly the reach they are meant to have.
+        final bundle = await fetchPrekeyBundle(address, tlsFp);
+        final cert = bundle['cert'];
+        if (cert is Map<String, dynamic>) {
+          _recordCert(peerId, deviceId, cert, peerPubkeyB64);
+          fetched = _peerCerts[peerId]?[deviceId];
+        }
+      }
+    } catch (_) {
+      // Unreachable mailbox — fall through to whatever we already hold.
+    }
+    // A stale-but-valid certificate beats refusing to send because a refresh
+    // could not happen right now.
+    return fetched ?? held;
+  }
+
+  /// Verify a certificate against the peer's identity key and cache it.
+  ///
+  /// A certificate that does not verify is dropped silently: it is either a
+  /// mailbox serving something it was not given, or a device that is not this
+  /// peer's. Either way there is nothing to encrypt to.
+  void _recordCert(
+    String peerId,
+    int deviceId,
+    Map<String, dynamic> cert,
+    String peerPubkeyB64,
+  ) {
+    final now = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+    final status = app.crypto.core.devcertVerify(
+      cert,
+      Uint8List.fromList(base64Decode(peerPubkeyB64)),
+      now,
+    );
+    if (status != 'valid') {
+      _dropLogPlain(
+        'device $deviceId of $peerId: certificate $status — not encrypting to it',
+      );
+      _peerCerts[peerId]?.remove(deviceId);
+      return;
+    }
+    if (cert['device_id'] != deviceId) {
+      // The certificate names a different device than the slot it arrived in.
+      // Signed, so not forged — but a relay shuffling certificates between
+      // devices would redirect mail, and the signature covers the id exactly
+      // so it can be checked.
+      _dropLogPlain('device $deviceId of $peerId: certificate names another device');
+      return;
+    }
+    (_peerCerts[peerId] ??= {})[deviceId] = cert;
+  }
+
+  static void _dropLogPlain(String reason) =>
+      debugPrint('stonechat: $reason');
 
   /// A peer's device set changed — drop the cached list so the next send
   /// re-reads it, and remember the version we saw.
@@ -703,6 +797,26 @@ class ChatState extends ChangeNotifier {
     try {
       for (final device in devices) {
         try {
+          // Which key this device's mail is sealed to, from its certificate.
+          // No certificate, or one that does not verify, means there is
+          // nothing to encrypt to — skip it rather than falling back to the
+          // directory key, which is exactly what certificates replaced.
+          final cert = await _certFor(
+            peerId,
+            device,
+            pubkeyB64,
+            bundleToken,
+            address,
+            tlsFp,
+          );
+          final sealKeyBytes = cert == null ? null : certSealKey(cert);
+          if (sealKeyBytes == null) {
+            lastError = ApiException(
+              'No usable certificate for one of their devices',
+            );
+            continue;
+          }
+          final sealKey = base64Encode(sealKeyBytes);
           final envelope = await _sealFor(
             type,
             peerId,
@@ -718,7 +832,7 @@ class ChatState extends ChangeNotifier {
           final devicesV = await link.deliver(
             _wireSeal(
               envelope,
-              pqPkB64,
+              sealKey,
               transient: transient,
               noPush: noPush,
               ring: ring,
@@ -1096,11 +1210,27 @@ class ChatState extends ChangeNotifier {
     }
 
     final peerEd = Uint8List.fromList(base64Decode(peerPubkeyB64));
-    if (!app.crypto.verifyPrekeySig(bundle.spkPub, bundle.spkSig, peerEd) ||
+    // Prekeys are signed by the DEVICE, and its certificate — already
+    // verified against the identity key above — is what names the key to
+    // check them with. Without one there is nothing to verify against, and a
+    // prekey nobody vouched for is the exact thing this check exists to
+    // refuse.
+    final cert = _peerCerts[peerId]?[deviceId];
+    final deviceSigKey = cert == null ? null : certSigKey(cert);
+    if (deviceSigKey == null) {
+      throw ApiException.refusing(
+        'No certificate for that device — refusing to start a session.',
+      );
+    }
+    if (!app.crypto.verifyPrekeySig(
+          bundle.spkPub,
+          bundle.spkSig,
+          deviceSigKey,
+        ) ||
         !app.crypto.verifyKemPrekeySig(
           bundle.kspkPub,
           bundle.kspkSig,
-          peerEd,
+          deviceSigKey,
         )) {
       throw ApiException.refusing(
         'Their mailbox served a forged prekey — refusing to send.',
@@ -1286,6 +1416,11 @@ class ChatState extends ChangeNotifier {
     final token = mailboxToken;
     final tlsFp = mailboxTlsFp;
     if (address == null || token == null || tlsFp == null) return;
+    // Our certificate goes up with our prekeys: it names the key that signed
+    // them, so publishing one without the other leaves peers unable to check
+    // either. Minting it here also renews it when it nears expiry.
+    await app.ensureOwnCertificate(myDeviceId);
+    if (app.deviceKeys == null) return;
 
     final now = DateTime.now().millisecondsSinceEpoch;
 
@@ -1357,7 +1492,9 @@ class ChatState extends ChangeNotifier {
       {
         'id': spkRow['id'],
         'pub': spkRow['pub'],
-        'sig': base64Encode(app.crypto.signPrekey(spkPubBytes)),
+        'sig': base64Encode(
+          app.crypto.signPrekey(app.deviceKeys!.sigSecret, spkPubBytes),
+        ),
       },
       [
         for (final o in toPublish) {'id': o['id'], 'pub': o['pub']},
@@ -1365,11 +1502,14 @@ class ChatState extends ChangeNotifier {
       {
         'id': kspkRow['id'],
         'pub': kspkRow['pub'],
-        'sig': base64Encode(app.crypto.signKemPrekey(kspkPubBytes)),
+        'sig': base64Encode(
+          app.crypto.signKemPrekey(app.deviceKeys!.sigSecret, kspkPubBytes),
+        ),
       },
       [
         for (final o in kemToPublish) {'id': o['id'], 'pub': o['pub']},
       ],
+      cert: app.deviceCert,
     );
   }
 
@@ -3284,6 +3424,7 @@ class ChatState extends ChangeNotifier {
     final Envelope envelope;
     try {
       final inner = app.crypto.unseal(
+        app.deviceKeys!.sealSeed,
         Uint8List.fromList(base64Decode(wire.sealedB64)),
       );
       if (inner == null) {

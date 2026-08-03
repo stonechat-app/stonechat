@@ -549,7 +549,8 @@ Future<String?> takeLinkGrant(String hubUrl, String key) async {
 /// (MULTIDEVICE.md "Why the device list is gated"). Needs the peer's bundle
 /// token; without it a sender can only reach their primary device, which is
 /// what a stranger sending a contact request gets.
-Future<({int devicesV, List<int> devices})> fetchDeviceList(
+Future<({int devicesV, List<int> devices, Map<int, Map<String, dynamic>> certs})>
+fetchDeviceList(
   String serverAddress,
   String bundleToken,
   String tlsFp,
@@ -566,12 +567,21 @@ Future<({int devicesV, List<int> devices})> fetchDeviceList(
       );
     }
     final j = jsonDecode(r.body) as Map<String, dynamic>;
+    final entries = [
+      for (final d in (j['devices'] as List? ?? const []))
+        (d as Map<String, dynamic>),
+    ];
     return (
       devicesV: (j['devices_v'] as int?) ?? 0,
-      devices: [
-        for (final d in (j['devices'] as List? ?? const []))
-          (d as Map<String, dynamic>)['device_id'] as int,
-      ],
+      devices: [for (final d in entries) d['device_id'] as int],
+      // Certificates ride the same response: the caller needs the key to
+      // seal to and the key to check prekeys against, and fetching them
+      // separately would be two requests for one answer.
+      certs: {
+        for (final d in entries)
+          if (d['cert'] is Map<String, dynamic>)
+            d['device_id'] as int: d['cert'] as Map<String, dynamic>,
+      },
     );
   } finally {
     client.close();
@@ -616,8 +626,12 @@ Future<void> uploadPrekeys(
   Map<String, Object?> spk,
   List<Map<String, Object?>> opks,
   Map<String, Object?> kspk,
-  List<Map<String, Object?>> kopks,
-) async {
+  List<Map<String, Object?>> kopks, {
+  /// This device's certificate. Goes up with the prekeys because it names
+  /// the key that signed them — one without the other leaves a peer unable
+  /// to check either.
+  Map<String, dynamic>? cert,
+}) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
@@ -629,6 +643,9 @@ Future<void> uploadPrekeys(
             'opks': opks,
             'kspk': kspk,
             'kopks': kopks,
+            // Absent leaves whatever the relay holds, so a routine restock
+            // never drops it.
+            'cert': ?cert,
           }),
         )
         .timeout(const Duration(seconds: 10));

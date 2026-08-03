@@ -21,6 +21,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stonechat/core/crypto.dart';
+import 'package:stonechat/core/device_keys.dart';
 import 'package:stonechat/core/session.dart';
 
 void main() {
@@ -49,13 +50,17 @@ void main() {
     final adBtoA = 'stonechat/v1|$bobId|$aliceId|msg';
 
     // -- Bob's prekeys, private halves kept for the fixture ------------------
+    // Signed by Bob's DEVICE key, not his identity: prekey signatures moved
+    // there when device certificates arrived. Incidental to this fixture,
+    // which pins the ratchet transcript rather than the certificate layer.
+    final bobDevice = DeviceKeys.generate();
     final spk = b.newX25519();
     final spkSec = spk.secretKey;
-    final spkSig = b.signPrekey(spk.publicKey);
+    final spkSig = b.signPrekey(bobDevice.sigSecret, spk.publicKey);
     final opk = b.newX25519();
     final opkSec = opk.secretKey;
     final kspk = b.newMlkemPrekey();
-    final kspkSig = b.signKemPrekey(kspk.pub);
+    final kspkSig = b.signKemPrekey(bobDevice.sigSecret, kspk.pub);
     final kopk = b.newMlkemPrekey();
 
     final bundle = PrekeyBundle.fromJson({

@@ -52,6 +52,11 @@ class DeviceKeys {
   );
 
   Uint8List get sigPublic => StonechatCore().identity(seed: sigSeed).public;
+
+  /// The 64-byte form the signing primitive wants, expanded from the seed.
+  /// Derived rather than stored so it cannot drift from the seed it belongs
+  /// to (see "what is persisted is seeds only").
+  Uint8List get sigSecret => StonechatCore().identity(seed: sigSeed).secret;
   Uint8List get sealPublic => PqCore().xwingPkFromSeed(sealSeed);
 
   String encode() => jsonEncode({
