@@ -702,3 +702,17 @@ mod tests {
         assert_eq!(host_from_headers(&h).unwrap(), "::1");
     }
 }
+
+/// The browser transport's certificate schedule.
+///
+/// Unauthenticated on purpose: every value in it is a hash of a certificate
+/// this relay hands to anyone who connects. What makes it *trustworthy* is not
+/// this endpoint — it is the owner's signature over the same list, published
+/// in the hub directory. A client that takes these hashes without checking
+/// that signature has pinned whatever the network told it to.
+pub async fn wt_certs(State(state): State<Arc<AppState>>) -> Response {
+    match &state.wt_certs {
+        Some(schedule) => Json(schedule.published(chrono::Utc::now().timestamp())).into_response(),
+        None => (StatusCode::NOT_FOUND, "browser transport disabled").into_response(),
+    }
+}

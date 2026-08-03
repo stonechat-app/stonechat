@@ -7,11 +7,25 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use axum::extract::ws::CloseFrame;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::link::Frame;
 use crate::AppState;
+
+/// The one place the transport-agnostic frame becomes a WebSocket frame.
+/// `wt.rs` has the matching two lines for WebTransport.
+fn to_ws(frame: Frame) -> Message {
+    match frame {
+        Frame::Text(text) => Message::Text(text.into()),
+        Frame::Close { code, reason } => Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.into(),
+        })),
+    }
+}
 
 pub async fn ws_owner(
     ws: WebSocketUpgrade,
@@ -34,7 +48,7 @@ pub async fn ws_owner(
 
 async fn handle(socket: WebSocket, state: Arc<AppState>, device: i64) {
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Frame>();
     let conn_id = state.link.attach(device, tx).await;
     state.mailbox.touch_device(device);
     log::info!(
@@ -45,9 +59,9 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, device: i64) {
     // Writer: everything to the socket flows through the link's queue, so
     // drain and live pushes serialize exactly like Python's send_lock.
     let writer = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let closing = matches!(msg, Message::Close(_));
-            if sink.send(msg).await.is_err() || closing {
+        while let Some(frame) = rx.recv().await {
+            let closing = matches!(frame, Frame::Close { .. });
+            if sink.send(to_ws(frame)).await.is_err() || closing {
                 break;
             }
         }

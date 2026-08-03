@@ -943,6 +943,20 @@ class ChatState extends ChangeNotifier {
     final tlsFp = mailboxTlsFp!;
     for (final device in devices) {
       try {
+        // Our own devices are peers like any other, including here: the wrap
+        // goes to that device's certified seal key. Sealing to the identity's
+        // X-Wing key — which this did until 08-03 — now produces something no
+        // device can open, because that key's private half no longer exists.
+        final cert = await _certFor(
+          app.stonechatId!,
+          device,
+          app.crypto.publicKeyB64,
+          myBundleToken,
+          address,
+          tlsFp,
+        );
+        final sealKey = cert == null ? null : certSealKey(cert);
+        if (sealKey == null) continue;
         final envelope = await _sealFor(
           type,
           app.stonechatId!,
@@ -955,7 +969,7 @@ class ChatState extends ChangeNotifier {
         );
         await deliverEnvelope(
           address,
-          _wireSeal(envelope, app.crypto.pqPublicKeyB64, noPush: true),
+          _wireSeal(envelope, base64Encode(sealKey), noPush: true),
           tlsFp,
         );
       } catch (_) {
@@ -1209,7 +1223,6 @@ class ChatState extends ChangeNotifier {
       bundle = await fetchFrom(entry.serverAddress!, entry.serverTlsFp!);
     }
 
-    final peerEd = Uint8List.fromList(base64Decode(peerPubkeyB64));
     // Prekeys are signed by the DEVICE, and its certificate — already
     // verified against the identity key above — is what names the key to
     // check them with. Without one there is nothing to verify against, and a
@@ -1236,7 +1249,17 @@ class ChatState extends ChangeNotifier {
         'Their mailbox served a forged prekey — refusing to send.',
       );
     }
-    final session = RatchetSession.initiate(app.crypto, peerId, peerEd, bundle);
+    // Device to device: their signing key from the certificate we just
+    // verified, ours from this device's own seed. Neither side's identity
+    // secret is involved, which is the point — it is what lets a browser
+    // session run this at all.
+    final session = RatchetSession.initiate(
+      app.crypto,
+      peerId,
+      deviceSigKey,
+      bundle,
+      ownEdSeed: app.deviceKeys!.sigSeed,
+    );
     await _saveSession(session, deviceId);
     return session;
   }
@@ -1274,7 +1297,9 @@ class ChatState extends ChangeNotifier {
           'stonechat/v1|${app.stonechatId}|$myDeviceId'
           '|$toStonechatId|$deviceId|$type';
       final sealed = session.encrypt(jsonEncode(payload), adPrefix);
-      final x3dh = session.pendingX3dh?.toJson();
+      // Our certificate travels with the handshake so the responder can
+      // trust the device key inside it without fetching anything.
+      final x3dh = session.pendingX3dh?.withCert(app.deviceCert).toJson();
       // Persist the advanced chain before the envelope can leave: a crash
       // after send must never reuse a message key.
       await _saveSession(session, deviceId);
@@ -1338,9 +1363,39 @@ class ChatState extends ChangeNotifier {
       return null;
     }
 
-    // The identity key in the block must commit to the claimed sender.
-    if (!app.crypto.pubkeyMatchesId(block.ikB64, envelope.from)) {
-      _dropLog(envelope, 'x3dh identity key does not commit to sender id');
+    // The key in the block is the sender's DEVICE key, which does not hash
+    // to their SC- ID — so the check is the certificate that vouches for it,
+    // against the identity key their SC- ID does commit to. The certificate
+    // rides in the block precisely so this needs no network round trip on
+    // the receive path.
+    final senderCert = block.cert;
+    if (senderCert == null) {
+      _dropLog(envelope, 'x3dh block carries no device certificate');
+      return null;
+    }
+    // Resolving the sender is the one lookup this path cannot avoid — the
+    // identity key is what the certificate has to verify against, and it is
+    // what their SC- ID commits to. It is also cached, so this is a network
+    // call only the first time we ever hear from them.
+    final senderEntry = await _resolve(envelope.from);
+    _recordCert(
+      envelope.from,
+      envelope.fromDevice,
+      senderCert,
+      senderEntry.pubkeyB64,
+    );
+    // _recordCert caches it only if it verifies AND names this device, so
+    // getting it back out is the check — and it means our reply already has
+    // the certificate it needs without fetching their bundle.
+    if (_peerCerts[envelope.from]?[envelope.fromDevice] == null) {
+      _dropLog(envelope, 'x3dh device certificate did not verify');
+      return null;
+    }
+    final certified = certSigKey(senderCert);
+    if (certified == null || base64Encode(certified) != block.ikB64) {
+      // Signed, valid, ours — but vouching for a different key than the one
+      // the handshake used. Without this the certificate would be decoration.
+      _dropLog(envelope, 'x3dh key is not the one its certificate vouches for');
       return null;
     }
     final spkRow = await app.db.prekeyById(block.spkId, 'spk');
@@ -1370,6 +1425,7 @@ class ChatState extends ChangeNotifier {
       envelope.from,
       Uint8List.fromList(base64Decode(block.ikB64)),
       block,
+      ownEdSeed: app.deviceKeys!.sigSeed,
       spkPub: Uint8List.fromList(base64Decode(spkRow['pub'] as String)),
       spkSec: Uint8List.fromList(base64Decode(spkRow['sec'] as String)),
       opkSec: opkRow == null

@@ -18,4 +18,7 @@ ENV STONECHAT_BLOBS=/data/blobs
 ENV STONECHAT_TLS_DIR=/data
 
 EXPOSE 8080
+# The browser transport is QUIC, so UDP. Separate from the TLS listener on
+# purpose: a host that blocks UDP loses browser sessions and nothing else.
+EXPOSE 8443/udp
 ENTRYPOINT ["/stonechat-relay"]

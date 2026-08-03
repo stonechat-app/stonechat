@@ -1,0 +1,285 @@
+/* Stonechat visual identity, in CSS.
+ *
+ * Every value here is lifted from app/lib/ui/theme.dart — the same palette the
+ * landing site uses (landing/src/styles/global.css). Three surfaces, one set of
+ * numbers. If you change a colour, change it in all three or the product stops
+ * looking like one product.
+ *
+ * From theme.dart's own summary: "Not another bubble app: warm near-black
+ * console surfaces, sharp 4px corners, a burnt-orange accent, and a monospace
+ * voice for anything machine-made (IDs, timestamps, relay status). Messages
+ * render as a left-aligned ledger with colored rails instead of chat bubbles."
+ *
+ * One deliberate divergence from the landing site: **no webfonts.** The landing
+ * page loads Bricolage Grotesque and IBM Plex Mono; this client loads nothing
+ * from anywhere. Every external request is a request the hash root does not
+ * cover and an origin that learns you are here — see WEB_CLIENT.md. System
+ * stacks only, which also matches the app, whose mono family is Menlo.
+ */
+
+:root {
+  /* palette — Zn in theme.dart */
+  --bg: #100e0b;
+  --surface: #17140f;
+  --raised: #1e1912;
+  --line: #2b261d;
+  --orange: #ff4d00; /* you */
+  --amber: #e6a85a; /* them */
+  --on-accent: #140800;
+  --text: #f4eee1;
+  --muted: #b5ac99;
+  --faint: #6f695c;
+  --danger: #f2555a;
+  --ok: #6be675;
+
+  /* Zn.radius — 4px, everywhere, no exceptions */
+  --radius: 4px;
+
+  /* Zn.idColor's palette, in order. Index by the same hash the app uses so a
+   * contact is the same colour on both clients. */
+  --id-0: #e6a85a;
+  --id-1: #5ad7e6;
+  --id-2: #b48af2;
+  --id-3: #6be675;
+  --id-4: #f28ab4;
+  --id-5: #7fa8f2;
+
+  --font-mono: Menlo, 'Roboto Mono', ui-monospace, 'SF Mono', monospace;
+  --font-ui:
+    system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+
+  --gutter: 16px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The monospace voice: anything machine-made. IDs, fingerprints, timestamps,
+ * relay status, device ids. Never used for prose the user wrote. */
+.mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-ligatures: none;
+}
+
+.mono--id {
+  letter-spacing: 0.04em;
+}
+
+/* -- chrome ------------------------------------------------------------- */
+
+.appbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 52px;
+  padding: 0 var(--gutter);
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+
+.appbar__title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+hr,
+.divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* -- the ledger --------------------------------------------------------- */
+
+/* Not bubbles. A left-aligned ledger: every row starts at the same x, and the
+ * only thing that distinguishes sender from recipient is the colour of a 2px
+ * rail on the left edge. Orange is you, amber is them (Zn.orange / Zn.amber). */
+
+.ledger {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 2px 1fr;
+  gap: 0 12px;
+  padding: 6px var(--gutter);
+  align-items: start;
+}
+
+.row__rail {
+  align-self: stretch;
+  background: var(--amber);
+  border-radius: 1px;
+}
+
+.row--mine .row__rail {
+  background: var(--orange);
+}
+
+.row__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--faint);
+}
+
+.row__who {
+  color: var(--amber);
+}
+
+.row--mine .row__who {
+  color: var(--orange);
+}
+
+.row__body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Delivery state, in the machine voice. A failed send is the only place
+ * danger appears in the ledger. */
+.row__state {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.row__state--pending {
+  color: var(--faint);
+}
+
+.row__state--failed {
+  color: var(--danger);
+}
+
+/* -- composer ----------------------------------------------------------- */
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px var(--gutter);
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+  flex: none;
+}
+
+/* -- controls (inputDecorationTheme / filledButtonTheme in theme.dart) --- */
+
+input[type='text'],
+textarea {
+  flex: 1;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  font: inherit;
+  resize: none;
+}
+
+input[type='text']::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+}
+
+input[type='text']:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--orange);
+}
+
+button {
+  font: inherit;
+  font-weight: 700;
+  border-radius: var(--radius);
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  background: var(--orange);
+  color: var(--on-accent);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line);
+  font-weight: 400;
+}
+
+/* -- status banner ------------------------------------------------------ */
+
+/* The web client is a tethered session with an expiry. It says so, always —
+ * "the phone shows web session active throughout" (WEB_CLIENT.md) is only
+ * half the promise; the browser should be honest about it too. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px var(--gutter);
+  background: var(--raised);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  flex: none;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+  flex: none;
+}
+
+.dot--live {
+  background: var(--ok);
+}
+
+.dot--warn {
+  background: var(--amber);
+}
+
+.dot--down {
+  background: var(--danger);
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}

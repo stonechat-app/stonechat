@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
-from .bootstrap import SERVER_PORT
+from .bootstrap import SERVER_PORT, WT_PORT
 from .local import IMAGE, image_context
 
 FLEET_LABEL = "stonechat.fleet=1"
@@ -130,6 +130,9 @@ class FleetProvider(CloudProvider):
             "--name", name,
             "--restart", "unless-stopped",
             "-p", f"0:{SERVER_PORT}",
+            # The browser transport. The host port is Docker's choice, which
+            # is exactly why it must be published rather than derived.
+            "-p", f"0:{WT_PORT}/udp",
             "-e", f"STONECHAT_OWNER_ID={req.owner_id}",
             "-e", f"STONECHAT_OWNER_TOKEN={req.owner_token}",
             "-e", f"STONECHAT_PUSH_GATEWAY={os.environ.get('STONECHAT_PUSH_GATEWAY', '')}",
@@ -145,9 +148,11 @@ class FleetProvider(CloudProvider):
         self._docker(host, *args)
 
         port = self._published_port(host, name)
+        wt_port = self._published_port(host, name, WT_PORT, "udp")
         return ProvisionResult(
             resource_id=name,
             address=f"https://{host.advertise}:{port}",
+            wt_address=f"{host.advertise}:{wt_port}" if wt_port else None,
             meta={"host": host.name},
         )
 
@@ -161,9 +166,18 @@ class FleetProvider(CloudProvider):
             except ProviderError:
                 continue  # not on this host / already gone — idempotent
 
-    def _published_port(self, host: FleetHost, name: str) -> str:
+    def _published_port(
+        self, host: FleetHost, name: str, port: int = SERVER_PORT, proto: str = "tcp"
+    ) -> str | None:
+        """The host port Docker mapped, or None when it mapped none.
+
+        None is fatal for the mailbox and merely a missing feature for the
+        browser transport, so the caller decides — a fleet host still running
+        an image from before the UDP port existed should keep provisioning."""
         info = json.loads(self._docker(host, "inspect", name))[0]
-        bindings = info["NetworkSettings"]["Ports"].get(f"{SERVER_PORT}/tcp")
+        bindings = info["NetworkSettings"]["Ports"].get(f"{port}/{proto}")
         if not bindings:
-            raise ProviderError("container has no published port")
+            if port == SERVER_PORT:
+                raise ProviderError("container has no published port")
+            return None
         return bindings[0]["HostPort"]

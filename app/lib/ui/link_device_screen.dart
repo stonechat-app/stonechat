@@ -6,7 +6,6 @@
 library;
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -27,7 +26,6 @@ class LinkDeviceScreen extends StatefulWidget {
 
 class _LinkDeviceScreenState extends State<LinkDeviceScreen> {
   LinkOffer? _offer;
-  Uint8List? _seed;
   Timer? _poll;
   String? _error;
   bool _linked = false;
@@ -35,9 +33,9 @@ class _LinkDeviceScreenState extends State<LinkDeviceScreen> {
   @override
   void initState() {
     super.initState();
-    final begun = context.read<AppState>().beginLinking();
-    _offer = begun.offer;
-    _seed = begun.seed;
+    // No separate ephemeral to keep: the offer names this device's own keys,
+    // which are already on disk.
+    _offer = context.read<AppState>().beginLinking();
     // The grant is single-use and expires in ten minutes; polling is the
     // whole of the new device's side, since it has no socket to be notified
     // on until it has an identity.
@@ -52,13 +50,12 @@ class _LinkDeviceScreenState extends State<LinkDeviceScreen> {
 
   Future<void> _tryCollect() async {
     if (_linked) return;
-    final offer = _offer, seed = _seed;
-    if (offer == null || seed == null) return;
+    final offer = _offer;
+    if (offer == null) return;
     try {
       final ok = await context.read<AppState>().collectLinkGrant(
         hubUrl: widget.hubUrl,
         offer: offer,
-        seed: seed,
       );
       if (!ok || !mounted) return;
       _linked = true;

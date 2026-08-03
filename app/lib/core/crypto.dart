@@ -47,7 +47,9 @@ class CryptoService {
   final StonechatCore core;
   final PqCore pq;
 
-  final Uint8List _secretKey; // 64 bytes: seed || public, libsodium layout
+  /// 64 bytes: seed || public, libsodium layout. **Null on a linked device**,
+  /// which holds no identity secret at all — see [CryptoService.publicOnly].
+  final Uint8List? _secretKey;
   final Uint8List publicKey;
   /// The identity's own X-Wing key, still published in the directory as
   /// `pq_pk` and still signature-verified on resolve — but **nothing seals to
@@ -57,9 +59,11 @@ class CryptoService {
   /// summary of what device certificates changed. Retiring the directory
   /// field itself is a separate cleanup — it touches registration and the
   /// hub schema.
-  final Uint8List pqPublicKey;
+  /// Null on a linked device: it is derived from the identity secret, and is
+  /// only ever needed at registration, which is the primary's job.
+  final Uint8List? pqPublicKey;
   final String stonechatId;
-  final String _pqPkSig;
+  final String? _pqPkSig;
 
   CryptoService._(
     this.core,
@@ -97,8 +101,54 @@ class CryptoService {
     PqCore? pqCore,
   }) => CryptoService._from(secretKey, pqCore: pqCore);
 
+  /// A device that knows **who** it is but cannot act as the root.
+  ///
+  /// This is what a linked device gets. It can send and receive — those run
+  /// on device keys since 08-03 — but it cannot mint a certificate, sign its
+  /// mailbox's TLS fingerprint, recover the account, or export the identity.
+  /// Each of those throws rather than degrading, because the alternative is a
+  /// linked device that appears to do them and silently does not.
+  ///
+  /// The public key is still checked against the Stonechat ID by the caller
+  /// ([AppState.adoptLinkGrant]) — it is what the device's own certificate
+  /// verifies against, so a wrong one would leave it unable to prove itself.
+  factory CryptoService.publicOnly({
+    required Uint8List publicKey,
+    PqCore? pqCore,
+  }) {
+    final core = StonechatCore();
+    return CryptoService._(
+      core,
+      pqCore ?? PqCore(),
+      null,
+      publicKey,
+      null,
+      core.stonechatId(publicKey),
+      null,
+    );
+  }
+
+  /// True when this device holds the identity root — i.e. it is the primary.
+  bool get hasIdentitySecret => _secretKey != null;
+
+  Uint8List get _root {
+    final key = _secretKey;
+    if (key == null) {
+      throw StateError(
+        'This device holds no identity secret — that is the primary\'s job '
+        '(MULTIDEVICE.md "Linking a device").',
+      );
+    }
+    return key;
+  }
+
   String get publicKeyB64 => base64Encode(publicKey);
-  String get pqPublicKeyB64 => base64Encode(pqPublicKey);
+  /// Registration only, and registration is the primary's. Throws on a
+  /// linked device rather than returning something that would be published as
+  /// this identity's post-quantum key.
+  String get pqPublicKeyB64 => base64Encode(
+    pqPublicKey ?? (throw StateError('no identity secret: cannot derive pq_pk')),
+  );
 
   /// The 32-byte Ed25519 seed — the identity root.
   ///
@@ -106,12 +156,8 @@ class CryptoService {
   /// nothing else derives from it at message time, and only the primary
   /// device holds it at all (MULTIDEVICE_IMPLEMENTATION.md "How device
   /// certificates work").
-  Uint8List get identitySeed => Uint8List.sublistView(_secretKey, 0, 32);
-  Uint8List exportSecretKey() => Uint8List.fromList(_secretKey);
-
-  /// The Ed25519 seed (first half of the secret key) — what the session
-  /// engine expands identities from (core_ffi.dart).
-  Uint8List get identityEdSeed => Uint8List.sublistView(_secretKey, 0, 32);
+  Uint8List get identitySeed => Uint8List.sublistView(_root, 0, 32);
+  Uint8List exportSecretKey() => Uint8List.fromList(_root);
 
   // -- sealed envelopes (PROTOCOL.md "Envelope") --------------------------------
 
@@ -143,7 +189,8 @@ class CryptoService {
 
   /// The owner vouching for their X-Wing identity key; published beside it
   /// in the hub directory and verified by every resolver.
-  String signPqPk() => _pqPkSig;
+  String signPqPk() =>
+      _pqPkSig ?? (throw StateError('no identity secret: cannot sign pq_pk'));
 
   bool verifyPqPkSig(Uint8List pqPk, Uint8List sig, Uint8List identityEdPub) =>
       core.verify(identityEdPub, utf8.encode('stonechat-v1-pqpk'), pqPk, sig);
@@ -178,7 +225,7 @@ class CryptoService {
   /// signature over the context and the current unix time, so the hub can
   /// re-issue an account token without ever having stored one.
   String signRecovery(int unixSeconds) => base64Encode(
-    core.sign(_secretKey, recoverSigContext, utf8.encode('$unixSeconds')),
+    core.sign(_root, recoverSigContext, utf8.encode('$unixSeconds')),
   );
 
   /// Signs an abuse report (PROTOCOL.md "Reporting", hub/app/report.py).
@@ -195,7 +242,7 @@ class CryptoService {
     required String? evidence,
   }) => base64Encode(
     core.signReport(
-      _secretKey,
+      _root,
       reportedId: reportedId,
       unixSeconds: unixSeconds,
       category: category,
@@ -263,7 +310,7 @@ class CryptoService {
 
   /// The owner vouching for their mailbox's TLS key.
   String signTlsFp(String fpB64) =>
-      base64Encode(core.sign(_secretKey, tlsSigContext, base64Decode(fpB64)));
+      base64Encode(core.sign(_root, tlsSigContext, base64Decode(fpB64)));
 
   bool verifyTlsSig(String fpB64, String sigB64, Uint8List identityEdPub) {
     try {

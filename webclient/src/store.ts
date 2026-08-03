@@ -1,0 +1,125 @@
+/**
+ * What a browser session keeps, and what it deliberately does not.
+ *
+ * WEB_CLIENT.md blocker 3: a browser is a bad place for long-lived secrets.
+ * `localStorage` is readable by any XSS, any extension, anyone at the keyboard,
+ * and WebCrypto non-extractable keys do not help because the ratchet runs in
+ * WASM and needs raw bytes. That is not fixable here — it is why the web device
+ * is a **bounded** device: its certificate is short-lived, it cannot renew
+ * itself, and the phone can revoke it.
+ *
+ * So the rule is: keep what the session cannot function without, and nothing
+ * else.
+ *
+ * **Kept** — device keys, the link grant, and ratchet state. The ratchet is the
+ * one people are tempted to leave in memory: it must survive a reload, because
+ * a peer who has advanced their chain cannot rewind it. Losing it does not lose
+ * a message, it breaks the conversation permanently.
+ *
+ * **Not kept** — message history. The tethered shape says history stays on the
+ * phone (WEB_CLIENT.md "the defensible shape"), so a reload shows an empty
+ * conversation and that is the design, not a bug. Messages live in memory for
+ * as long as the tab does.
+ */
+import type { SessionState, SignedCert } from './core.js';
+import type { LinkGrant } from './linking.js';
+
+const KEYS = 'stonechat.device_keys';
+const GRANT = 'stonechat.grant';
+const SESSIONS = 'stonechat.sessions';
+const PEER_CERTS = 'stonechat.peer_certs';
+const CONTACTS = 'stonechat.contacts';
+const PREKEYS = 'stonechat.prekeys';
+
+/** A peer we have exchanged something with. */
+export interface Contact {
+  stonechatId: string;
+  /** Their identity key, verified to commit to their SC- ID. */
+  pubkey: string;
+  /** Their mailbox's bundle token, if they have sent us anything — it rides
+   * every envelope. Without it we can only reach their primary device, which
+   * is exactly what a stranger sending a first message gets. */
+  bundleToken?: string;
+}
+
+/** Our own prekey private halves, by id. Consumed one-time keys are deleted:
+ * what we hold is exactly what we can decrypt. */
+export interface PrekeyStore {
+  spk: { id: number; pub: string; sec: string };
+  kspk: { id: number; pub: string; seed: string };
+  opks: Record<number, { pub: string; sec: string }>;
+  kopks: Record<number, { pub: string; seed: string }>;
+  nextId: number;
+}
+
+function read<T>(key: string): T | null {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    // Corrupt is treated as absent. A half-parsed ratchet is worse than none:
+    // it would encrypt with a key the peer cannot derive.
+    localStorage.removeItem(key);
+    return null;
+  }
+}
+
+function write(key: string, value: unknown): void {
+  localStorage.setItem(key, JSON.stringify(value));
+}
+
+export const store = {
+  deviceKeys: () => localStorage.getItem(KEYS),
+  setDeviceKeys: (encoded: string) => localStorage.setItem(KEYS, encoded),
+
+  grant: () => read<LinkGrant>(GRANT),
+  setGrant: (grant: LinkGrant) => write(GRANT, grant),
+
+  /** Ratchet state, keyed `peerId/device`. */
+  session(peerId: string, device: number): SessionState | null {
+    const all = read<Record<string, SessionState>>(SESSIONS) ?? {};
+    return all[`${peerId}/${device}`] ?? null;
+  },
+  setSession(peerId: string, device: number, state: SessionState): void {
+    const all = read<Record<string, SessionState>>(SESSIONS) ?? {};
+    all[`${peerId}/${device}`] = state;
+    write(SESSIONS, all);
+  },
+
+  /** A peer device's verified certificate, keyed `peerId/device`.
+   *
+   * Persisted beside the session because it is needed for exactly as long: it
+   * names the key to seal to. Without it, replying to someone who wrote to us
+   * first would have to re-fetch their bundle — and the handshake they sent
+   * already contained it. */
+  peerCert(peerId: string, device: number): SignedCert | null {
+    const all = read<Record<string, SignedCert>>(PEER_CERTS) ?? {};
+    return all[`${peerId}/${device}`] ?? null;
+  },
+  setPeerCert(peerId: string, device: number, cert: SignedCert): void {
+    const all = read<Record<string, SignedCert>>(PEER_CERTS) ?? {};
+    all[`${peerId}/${device}`] = cert;
+    write(PEER_CERTS, all);
+  },
+
+  contacts: () => read<Record<string, Contact>>(CONTACTS) ?? {},
+  setContact(contact: Contact): void {
+    const all = store.contacts();
+    // Merge rather than replace: a bundle token learned from an incoming
+    // envelope must not be lost when the contact is next touched.
+    all[contact.stonechatId] = { ...all[contact.stonechatId], ...contact };
+    write(CONTACTS, all);
+  },
+
+  prekeys: () => read<PrekeyStore>(PREKEYS),
+  setPrekeys: (value: PrekeyStore) => write(PREKEYS, value),
+
+  /** Forget everything. Used when a link is refused or a device is revoked —
+   * leaving a dead ratchet behind would make the next link fail confusingly. */
+  clear(): void {
+    for (const key of [KEYS, GRANT, SESSIONS, PEER_CERTS, CONTACTS, PREKEYS]) {
+      localStorage.removeItem(key);
+    }
+  },
+};

@@ -82,6 +82,28 @@ typedef _DevcertVerify =
       Pointer<Size>,
     );
 
+typedef _WtcertsSignNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _WtcertsSign =
+    int Function(
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+
+typedef _WtcertsVerifyNative =
+    Int32 Function(Pointer<Uint8>, Size, Pointer<Uint8>, Pointer<Uint8>);
+typedef _WtcertsVerify =
+    int Function(Pointer<Uint8>, int, Pointer<Uint8>, Pointer<Uint8>);
+
 typedef _SignNative =
     Int32 Function(
       Pointer<Uint8>,
@@ -398,6 +420,8 @@ class StonechatCore {
   final _Identity _identity;
   final _DevcertSign _devcertSign;
   final _DevcertVerify _devcertVerify;
+  final _WtcertsSign _wtcertsSign;
+  final _WtcertsVerify _wtcertsVerify;
   final _Sign _sign;
   final _Verify _verify;
   final _SignReport _signReport;
@@ -433,6 +457,12 @@ class StonechatCore {
       ),
       _devcertVerify = lib.lookupFunction<_DevcertVerifyNative, _DevcertVerify>(
         'stonechat_devcert_verify',
+      ),
+      _wtcertsSign = lib.lookupFunction<_WtcertsSignNative, _WtcertsSign>(
+        'stonechat_wtcerts_sign',
+      ),
+      _wtcertsVerify = lib.lookupFunction<_WtcertsVerifyNative, _WtcertsVerify>(
+        'stonechat_wtcerts_verify',
       ),
       _sign = lib.lookupFunction<_SignNative, _Sign>('stonechat_sign'),
       _verify = lib.lookupFunction<_VerifyNative, _Verify>('stonechat_verify'),
@@ -858,6 +888,58 @@ class StonechatCore {
       calloc.free(pub);
       calloc.free(outPtr);
       calloc.free(outLen);
+    }
+  }
+
+  /// Sign a mailbox's browser-transport certificate schedule.
+  ///
+  /// [published] is the body the relay served at `GET /wt/certs`. The bytes
+  /// actually signed are canonical and length-prefixed (core/src/wtcerts.rs),
+  /// not this JSON — three implementations have to agree on them, and JSON is
+  /// not a canonical form.
+  String wtcertsSign(Map<String, dynamic> published, Uint8List identitySeed) {
+    final json = Uint8List.fromList(utf8.encode(jsonEncode(published)));
+    final body = _in(json, 'certs');
+    final seed = _in(identitySeed, 'identitySeed', expected: 32);
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _wtcertsSign(body, json.length, seed, outPtr, outLen);
+      if (rc != 0) throw StateError('stonechat-core wtcerts sign failed ($rc)');
+      final sig = utf8.decode(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return sig;
+    } finally {
+      calloc.free(body);
+      calloc.free(seed);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// True when [published] is the list its owner signed.
+  ///
+  /// False means the relay served a schedule nobody vouched for, and the only
+  /// safe response is to pin none of it — an unverified pin is worse than no
+  /// pin, because it looks like security.
+  bool wtcertsVerify(
+    Map<String, dynamic> published,
+    Uint8List identityPublic,
+    Uint8List sig,
+  ) {
+    final json = Uint8List.fromList(utf8.encode(jsonEncode(published)));
+    final body = _in(json, 'certs');
+    final pub = _in(identityPublic, 'identityPublic', expected: 32);
+    final signature = _in(sig, 'sig', expected: 64);
+    try {
+      final rc = _wtcertsVerify(body, json.length, pub, signature);
+      if (rc == 0) return true;
+      if (rc == -3) return false;
+      throw StateError('stonechat-core wtcerts verify failed ($rc)');
+    } finally {
+      calloc.free(body);
+      calloc.free(pub);
+      calloc.free(signature);
     }
   }
 

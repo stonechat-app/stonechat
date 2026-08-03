@@ -145,7 +145,9 @@ register it in `providers/__init__.py`.
 # (STONECHAT_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only;
 #  STONECHAT_ADMIN_TOKEN lets the test mint the comp entitlement the fleet gate needs)
 cd hub && .venv/bin/pip install pynacl websockets
-STONECHAT_FLEET_HOSTS="local=|127.0.0.1" STONECHAT_ADMIN_TOKEN=test-admin STONECHAT_TEST_CODE=STONECHAT-TEST-TEST .venv/bin/uvicorn app.main:app --port 8477 &
+#  STONECHAT_REGISTER_LIMIT and STONECHAT_REPORT_LIMIT lift the per-IP signup
+#  and abuse-report walls, which a full run exceeds and a rerun exceeds again)
+STONECHAT_FLEET_HOSTS="local=|127.0.0.1" STONECHAT_ADMIN_TOKEN=test-admin STONECHAT_TEST_CODE=STONECHAT-TEST-TEST STONECHAT_REGISTER_LIMIT=1000 STONECHAT_REPORT_LIMIT=1000 .venv/bin/uvicorn app.main:app --port 8477 &
 .venv/bin/python ../scripts/e2e.py
 
 # multi-device end to end — no Docker: it runs relays directly and lists them

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
-from .bootstrap import RELAY_RUNTIME_DOCKERFILE, SERVER_PORT, relay_binary_path
+from .bootstrap import RELAY_RUNTIME_DOCKERFILE, SERVER_PORT, WT_PORT, relay_binary_path
 
 IMAGE = "stonechat-server:dev"
 RELAY_DIR = Path(__file__).resolve().parents[3] / "relay"
@@ -70,6 +70,10 @@ class LocalDockerProvider(CloudProvider):
                 "--name", name,
                 "--restart", "unless-stopped",
                 "-p", f"0:{SERVER_PORT}",
+                # The browser transport. Docker picks the host port, so it is
+                # discovered after the fact rather than chosen — which is why
+                # it has to be published and cannot be derived.
+                "-p", f"0:{WT_PORT}/udp",
                 "-e", f"STONECHAT_OWNER_ID={req.owner_id}",
                 "-e", f"STONECHAT_OWNER_TOKEN={req.owner_token}",
                 "-e", f"STONECHAT_PUSH_GATEWAY={os.environ.get('STONECHAT_PUSH_GATEWAY', '')}",
@@ -80,9 +84,11 @@ class LocalDockerProvider(CloudProvider):
         )
         port = self._host_port(name)
         host = os.environ.get("STONECHAT_LOCAL_HOST", "127.0.0.1")
+        wt_port = self._host_port(name, WT_PORT, "udp")
         return ProvisionResult(
             resource_id=name,
             address=f"https://{host}:{port}",
+            wt_address=f"{host}:{wt_port}" if wt_port else None,
             meta={},
         )
 
@@ -99,10 +105,19 @@ class LocalDockerProvider(CloudProvider):
             with image_context() as ctx:
                 _run(["docker", "build", "-t", IMAGE, ctx])
 
-    def _host_port(self, name: str) -> str:
+    def _host_port(
+        self, name: str, port: int = SERVER_PORT, proto: str = "tcp"
+    ) -> str | None:
+        """The host port Docker mapped, or None when it mapped none.
+
+        None is fatal for the mailbox itself and merely a missing feature for
+        the browser transport, so the caller decides — an image built before
+        the UDP port existed should still provision."""
         out = _run(["docker", "inspect", name]).stdout
         info = json.loads(out)[0]
-        bindings = info["NetworkSettings"]["Ports"].get(f"{SERVER_PORT}/tcp")
+        bindings = info["NetworkSettings"]["Ports"].get(f"{port}/{proto}")
         if not bindings:
-            raise ProviderError("container has no published port")
+            if port == SERVER_PORT:
+                raise ProviderError("container has no published port")
+            return None
         return bindings[0]["HostPort"]

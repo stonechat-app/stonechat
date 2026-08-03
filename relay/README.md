@@ -19,9 +19,79 @@ cargo build --release
 STONECHAT_OWNER_ID=SC-… STONECHAT_OWNER_TOKEN=secret ./target/release/stonechat-relay
 ```
 
-Env contract: `STONECHAT_PORT` (8080), `STONECHAT_DB`
-(`mailbox.db`), `STONECHAT_BLOBS` (`blobs`), `STONECHAT_TLS_DIR` (DB's directory),
+Env contract: `STONECHAT_PORT` (8080), `STONECHAT_WT_PORT` (8443, UDP; `0`
+disables), `STONECHAT_DB` (`mailbox.db`), `STONECHAT_BLOBS` (`blobs`),
+`STONECHAT_TLS_DIR` (DB's directory),
 `STONECHAT_TURN_SECRET`/`STONECHAT_TURN_PORT`, `STONECHAT_PUSH_GATEWAY`/`STONECHAT_PUSH_KEY`.
+
+### The browser transport (`STONECHAT_WT_PORT`)
+
+A second listener, QUIC/UDP, carrying the **same owner socket** as `/ws`:
+envelopes down, `{"ack": id}` up, one drainer per device. It exists because a
+browser cannot open the socket `/ws` uses — a relay is a self-signed
+certificate on a bare IP, and `fetch`/`WebSocket` refuse that with no API to
+accept it (WEB_CLIENT.md blocker 1).
+
+WebTransport's `serverCertificateHashes` is the exception, and it is the *same*
+trust model Stonechat already has — pin the certificate, ignore CAs — with two
+differences that are not ours to negotiate: the pin is **SHA-256 of the DER**
+(not BLAKE2b), and the certificate may be valid for **at most 14 days**.
+
+That cap is the whole design problem, and `wtcert.rs` answers it by running
+ahead: the relay keeps a **schedule** of twelve certificates covering ~5 months,
+serves the currently-live one, and publishes every unexpired hash at
+`GET /wt/certs`. A client pins the whole set, so rotation is silent and it only
+has to refresh before its *last* pin lapses. Rotation happens in place
+(`reload_config`), so live sessions are not dropped.
+
+`/wt/certs` is unauthenticated and states rather than vouches — every value in
+it is a hash of a certificate the relay hands to anyone who connects. What
+makes it trustworthy is the **owner's signature** over the same list in the hub
+directory, exactly as with the long-lived fingerprint. **That signature does
+not exist yet** — see "Not finished" below.
+
+Separate from the TLS listener on purpose: native clients keep the transport
+they pin today, and a host that blocks UDP loses browser sessions rather than
+its mailbox. A bind failure is logged, not fatal.
+
+The owner's signature over the schedule **now exists** (`POST /v1/server/wt`
+on the hub, signed with `stonechat-v1-wtcerts` over the canonical form in
+`core/src/wtcerts.rs`). The directory serves the list and the signature
+together, or neither — an unsigned schedule is served as no schedule, because
+a client must not pin one.
+
+The address is published too, as `server.wt_address` in the directory.
+Container providers map `-p 0:8443/udp` and read the port back; VM providers
+expose the fixed port. Unsigned, and safe to be: rewriting it sends a client to
+a server whose certificate is not in the owner-signed schedule, so the
+connection is refused — denial of service, not compromise, the same property
+`address` already has behind `tls_fp`.
+
+#### One router, two transports
+
+The whole HTTP surface is carried too, one bidirectional stream per request:
+
+```text
+{"method":"POST","path":"/inbox","len":1234}\n<1234 bytes>
+{"status":200,"headers":{…},"len":56}\n<56 bytes>
+```
+
+`/ws` is the exception and it is the HTTP one — the relay answers
+`{"status":101}` and the stream then carries the owner socket.
+
+Requests are **not reimplemented**. `wt::dispatch` turns the frame into an
+`http::Request` and hands it to the same `axum::Router` the TLS listener
+serves, so every route exists once, with its own extractors, body limit and
+status codes. An adapter that reimplemented even one of them would be a second
+relay to keep correct, and the conformance corpus only covers the first.
+
+**The session is deliberately unauthenticated.** It is tempting to check a
+device token at CONNECT and let streams inherit it — and that is wrong: most of
+a relay's surface is open by design. `POST /inbox` takes no token, because
+sealed sender means anyone can post to anyone's mailbox and a *sender* holds no
+token for the *recipient's* relay. Gating the session made delivery impossible
+for exactly the case this transport exists to serve; it was caught by writing
+the client. Each route authenticates itself, as it does over HTTP.
 
 Docker: `docker build -t stonechat-server:rust .` (self-building dev image;
 production ships a prebuilt binary — RUST_PORT.md "Packaging").

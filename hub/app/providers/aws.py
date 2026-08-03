@@ -23,6 +23,7 @@ from .bootstrap import (
     SERVER_PORT,
     TURN_PORT,
     TURN_RELAY_PORTS,
+    WT_PORT,
     build_startup_script,
 )
 
@@ -82,6 +83,9 @@ class AWSProvider(CloudProvider):
         return ProvisionResult(
             resource_id=instance_id,
             address=f"https://{ip}:{SERVER_PORT}",
+            # Fixed port on a VM, so derivable — published anyway so every
+            # provider answers the same question the same way.
+            wt_address=f"{ip}:{WT_PORT}",
             meta={"region": region},
         )
 
@@ -122,6 +126,14 @@ class AWSProvider(CloudProvider):
                 "IpProtocol": "udp",
                 "FromPort": TURN_PORT,
                 "ToPort": TURN_PORT,
+                "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
+            },
+            # The browser transport (QUIC/UDP). Re-asserted like the rest, so a
+            # security group created before it existed grows the rule.
+            {
+                "IpProtocol": "udp",
+                "FromPort": WT_PORT,
+                "ToPort": WT_PORT,
                 "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
             },
             {

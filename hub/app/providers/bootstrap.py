@@ -191,6 +191,11 @@ systemctl enable --now stonechat-host-agent
 """
 
 SERVER_PORT = 8080
+# The browser transport (QUIC/UDP, relay/src/wt.rs). Fixed inside the relay;
+# container providers map it to a random host port, VM providers expose it as
+# is. Separate from SERVER_PORT so a host that blocks UDP loses browser
+# sessions rather than its mailbox.
+WT_PORT = 8443
 TURN_PORT = 3478
 TURN_RELAY_PORTS = (49152, 65535)  # coturn's default ephemeral relay range
 HOST_AGENT_PORT = 8200

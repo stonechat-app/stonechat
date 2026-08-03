@@ -288,6 +288,22 @@ class HubApi {
     await _check(r, (_) => null);
   }
 
+  /// Publish the owner's signature over the mailbox's browser-transport
+  /// certificate schedule. Same shape as [publishTlsSig] and for the same
+  /// reason: the relay states which certificates it will present, and only the
+  /// owner can vouch that the list is theirs.
+  Future<void> publishWtCerts(
+    List<Map<String, dynamic>> certs,
+    String wtSig,
+  ) async {
+    final r = await http.post(
+      Uri.parse('$baseUrl/v1/server/wt'),
+      headers: _auth,
+      body: jsonEncode({'certs': certs, 'wt_sig': wtSig}),
+    );
+    await _check(r, (_) => null);
+  }
+
   Future<void> deleteServer() async {
     final r = await http.delete(
       Uri.parse('$baseUrl/v1/server'),
@@ -385,6 +401,31 @@ Future<String> fileReport({
     throw ApiException(message, r.statusCode, detail);
   }
   return (body as Map<String, dynamic>)['report_id'] as String;
+}
+
+/// Fetch a mailbox's browser-transport certificate schedule.
+///
+/// Unauthenticated at the relay, and untrusted here: what makes the list
+/// usable is the owner's signature over it, published separately to the hub.
+/// Returns null when the mailbox has no browser transport, which is a normal
+/// state and not an error.
+Future<Map<String, dynamic>?> fetchWtCerts(
+  String serverAddress,
+  String tlsFp,
+) async {
+  final client = pinnedClient(tlsFp);
+  try {
+    final r = await client
+        .get(Uri.parse('$serverAddress/wt/certs'))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode == 404) return null; // browser transport disabled
+    if (r.statusCode >= 400) {
+      throw ApiException('wt certs unavailable (${r.statusCode})', r.statusCode);
+    }
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  } finally {
+    client.close();
+  }
 }
 
 /// Fetch a peer's prekey bundle from their mailbox (consumes a one-time

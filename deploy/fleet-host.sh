@@ -58,6 +58,10 @@ chown "$FLEET_USER:$FLEET_USER" "/home/$FLEET_USER/.ssh/authorized_keys"
 echo "==> configuring firewall (ufw)"
 ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp
 ufw allow "${MAILBOX_PORT_RANGE%:*}:${MAILBOX_PORT_RANGE#*:}/tcp" comment "stonechat mailboxes"
+# The browser transport is QUIC, so UDP, and Docker publishes it on a random
+# host port from the same ephemeral range. TCP alone leaves every mailbox
+# unreachable from a browser while looking completely healthy to a phone.
+ufw allow "${MAILBOX_PORT_RANGE%:*}:${MAILBOX_PORT_RANGE#*:}/udp" comment "stonechat mailboxes (webtransport)"
 ufw --force enable
 
 # -- done ---------------------------------------------------------------------

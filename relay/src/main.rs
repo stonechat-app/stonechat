@@ -28,6 +28,8 @@ mod link;
 mod push;
 mod routes;
 mod tls;
+mod wt;
+mod wtcert;
 mod ws;
 
 use std::collections::HashMap;
@@ -80,6 +82,8 @@ pub struct AppState {
     pub blobs: blobs::BlobStore,
     pub link: link::DeviceLinks,
     pub tls_fp: String,
+    /// The browser transport's certificate schedule, if it is enabled.
+    pub wt_certs: Option<Arc<wtcert::CertSchedule>>,
     pub http: reqwest::Client,
     pub last_gateway_ping: Mutex<HashMap<i64, Instant>>,
 }
@@ -135,6 +139,12 @@ async fn main() {
             }),
     };
     let port: u16 = env_or("STONECHAT_PORT", "8080").parse().expect("bad STONECHAT_PORT");
+    // The browser transport is UDP and separate from the TLS listener, so a
+    // host that blocks UDP loses browser sessions and nothing else. Set to 0
+    // to turn it off entirely.
+    let wt_port: u16 = env_or("STONECHAT_WT_PORT", "8443")
+        .parse()
+        .expect("bad STONECHAT_WT_PORT");
 
     let cfg = Config {
         owner_id,
@@ -146,11 +156,22 @@ async fn main() {
     };
 
     let tls = tls::Tls::load_or_generate(&tls_dir).expect("TLS setup failed");
+    // Generated even when the endpoint is off, so turning it on later does not
+    // hand every client a schedule they have never seen.
+    let wt_certs = if wt_port == 0 {
+        None
+    } else {
+        Some(Arc::new(
+            wtcert::CertSchedule::load_or_generate(&tls_dir, chrono::Utc::now().timestamp())
+                .expect("webtransport certificate schedule"),
+        ))
+    };
     let state = Arc::new(AppState {
         mailbox: db::Mailbox::open(&db_path, &cfg.owner_token).expect("mailbox db"),
         blobs: blobs::BlobStore::open(&blob_dir).expect("blob store"),
         link: link::DeviceLinks::new(),
         tls_fp: tls.fingerprint_b64.clone(),
+        wt_certs: wt_certs.clone(),
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -202,6 +223,10 @@ async fn main() {
             get(routes::blob_download).delete(routes::blob_delete),
         )
         .route("/ws", get(ws::ws_owner))
+        // Public by design: these are hashes of certificates the relay is
+        // about to present anyway. The owner's signature over them lives in
+        // the hub directory — this endpoint states, it does not vouch.
+        .route("/wt/certs", get(routes::wt_certs))
         .layer(DefaultBodyLimit::max(MAX_BLOB_BYTES + 1024))
         .with_state(state.clone());
 
@@ -212,6 +237,19 @@ async fn main() {
         &o[o.len().saturating_sub(4)..],
         state.mailbox.depth()
     );
+
+    if let Some(schedule) = wt_certs {
+        // Failing to bind UDP must not take the mailbox down with it: native
+        // clients do not use this port, and a relay that refuses to start is
+        // strictly worse than one without browser sessions.
+        // The router is handed over, not rebuilt: every route exists once and
+        // both transports run the same code (wt.rs "One router, two
+        // transports").
+        match wt::serve(state.clone(), schedule, wt_port, app.clone()).await {
+            Ok(addr) => log::info!("browser transport on {addr}"),
+            Err(e) => log::error!("webtransport disabled: {e}"),
+        }
+    }
 
     let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem(
         tls.cert_pem.into_bytes(),

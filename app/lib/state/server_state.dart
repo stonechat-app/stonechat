@@ -199,6 +199,10 @@ class ServerState extends ChangeNotifier {
     final tlsFp = isExternal ? app.externalMailboxTlsFp : record.tlsFp;
     if (isRunning && record.address != null && token != null && tlsFp != null) {
       await _vouchForTls(tlsFp);
+      // Also vouch for the browser transport's schedule. Deliberately after
+      // the TLS signature: this one is best-effort extra reach, and must never
+      // delay the pin every native client depends on.
+      await _vouchForWtCerts(record.address!, tlsFp);
       onMailbox?.call(record.address, token, tlsFp);
       _ensureSocket(record.address!, token, tlsFp);
       // Whatever the socket is doing, a persisted outage may have crossed
@@ -226,6 +230,43 @@ class ServerState extends ChangeNotifier {
     } on Exception {
       // best-effort: peers can't reach us until this lands, but the next
       // refresh() retries
+    }
+  }
+
+  /// The schedule we last vouched for, so a refresh that changes nothing does
+  /// not re-sign and re-publish on every poll.
+  String? _vouchedWtCerts;
+
+  /// Vouch for the mailbox's **browser-transport** certificate schedule.
+  ///
+  /// The relay mints short-lived WebTransport certificates and publishes their
+  /// hashes; only this device can say the list is ours. Without the signature
+  /// the directory serves nothing, and a browser session cannot pin — which is
+  /// the safe failure, not a broken one.
+  ///
+  /// Only the primary can do this: it needs the identity root. A linked device
+  /// calling it would throw, so it does not.
+  Future<void> _vouchForWtCerts(String address, String tlsFp) async {
+    if (!app.crypto.hasIdentitySecret) return;
+    try {
+      final published = await fetchWtCerts(address, tlsFp);
+      // Null means the mailbox has no browser transport. Nothing to vouch for,
+      // and nothing wrong.
+      if (published == null) return;
+      final certs = (published['certs'] as List?)
+          ?.cast<Map<String, dynamic>>();
+      if (certs == null || certs.isEmpty) return;
+      final key = jsonEncode(certs);
+      if (_vouchedWtCerts == key) return;
+      final sig = app.crypto.core.wtcertsSign(
+        published,
+        app.crypto.identitySeed,
+      );
+      await app.api.publishWtCerts(certs, sig);
+      _vouchedWtCerts = key;
+    } on Exception {
+      // Same best-effort contract as the TLS signature: browser sessions
+      // cannot connect until this lands, and the next refresh() retries.
     }
   }
 

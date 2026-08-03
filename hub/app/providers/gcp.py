@@ -17,6 +17,7 @@ from .bootstrap import (
     SERVER_PORT,
     TURN_PORT,
     TURN_RELAY_PORTS,
+    WT_PORT,
     build_startup_script,
 )
 
@@ -99,6 +100,9 @@ class GCPProvider(CloudProvider):
         return ProvisionResult(
             resource_id=instance_name,
             address=f"https://{ip}:{SERVER_PORT}",
+            # Fixed port on a VM, so derivable — published anyway so every
+            # provider answers the same question the same way.
+            wt_address=f"{ip}:{WT_PORT}",
             meta={"zone": zone},
         )
 
@@ -135,6 +139,13 @@ class GCPProvider(CloudProvider):
                     ],
                 )
             ],
+        )
+        # The browser transport: QUIC, so UDP, on its own fixed port. A rule of
+        # its own by name so deployments predating it grow one on the next
+        # provision — same reason TURN got a separate rule.
+        self._ensure_firewall_rule(
+            f"{FIREWALL_NAME}-wt",
+            [compute_v1.Allowed(I_p_protocol="udp", ports=[str(WT_PORT)])],
         )
         # Host agent + the ports Docker publishes its guest mailboxes on.
         self._ensure_firewall_rule(

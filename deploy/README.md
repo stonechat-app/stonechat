@@ -85,8 +85,12 @@ Knobs (env vars):
 you must also open. Add inbound TCP rules for:
 
 - **`8000`** (or your `STONECHAT_HUB_PORT`) — to the **hub** VM only
-- **`32768–60999`** — to the **fleet host(s)** only (Docker's published-port
+- **`32768–60999` TCP** — to the **fleet host(s)** only (Docker's published-port
   range for mailbox containers)
+- **`32768–60999` UDP** — same hosts. The browser transport is QUIC, and
+  Docker publishes it on a random host port from the same range. Without this
+  the web client cannot reach any mailbox, while phones work perfectly — a
+  failure that looks like a client bug and is not.
 
 On DigitalOcean/Hetzner that's the "Cloud Firewall" UI; on AWS/GCP it's the
 security group / VPC firewall. Without this, the app reaches nothing.

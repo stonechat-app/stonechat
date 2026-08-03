@@ -87,6 +87,99 @@ fn parse_cert(v: &Value) -> Option<crate::devcert::DeviceCert> {
     })
 }
 
+/// Parse a published `/wt/certs` body into the list the owner signs.
+///
+/// Accepts either the relay's whole response (`{"certs": [...]}`) or a bare
+/// array, so a caller does not have to unwrap it first — the shape a client
+/// holds after a round trip varies, and being strict here buys nothing.
+fn parse_wtcerts(v: &Value) -> Option<Vec<crate::wtcerts::WtCert>> {
+    let list = v.get("certs").unwrap_or(v).as_array()?;
+    list.iter()
+        .map(|c| {
+            Some(crate::wtcerts::WtCert {
+                sha256_b64: c.get("sha256")?.as_str()?.to_string(),
+                not_before: c.get("not_before")?.as_i64()?,
+                not_after: c.get("not_after")?.as_i64()?,
+            })
+        })
+        .collect()
+}
+
+/// Sign a mailbox's browser-transport certificate schedule.
+///
+/// `certs_json` is what the relay published at `GET /wt/certs`. Emits the
+/// base64 signature; the caller publishes it to the hub beside the list.
+///
+/// # Safety
+/// Pointers must be valid for their stated lengths; `identity_seed` is 32
+/// bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_wtcerts_sign(
+    certs_json: *const u8,
+    certs_len: usize,
+    identity_seed: *const u8,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let Some(bytes) = (unsafe { slice(certs_json, certs_len) }) else {
+            return ERR_INPUT;
+        };
+        let Some(seed) = (unsafe { arr::<32>(identity_seed) }) else {
+            return ERR_INPUT;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+            return ERR_INPUT;
+        };
+        let Some(certs) = parse_wtcerts(&v) else {
+            return ERR_INPUT;
+        };
+        let sig = crate::wtcerts::sign(&certs, seed);
+        unsafe { emit(B64.encode(sig).into_bytes(), out_ptr, out_len) };
+        OK
+    })
+}
+
+/// Check a schedule against the owner's identity public key.
+///
+/// Returns 0 when it verifies and -3 (refusal) when it does not. A refusal
+/// here means the list a relay served is not the list its owner signed, and
+/// the only safe response is to not pin any of it.
+///
+/// # Safety
+/// Pointers must be valid for their stated lengths; `identity_pub` is 32
+/// bytes and `sig` is 64.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_wtcerts_verify(
+    certs_json: *const u8,
+    certs_len: usize,
+    identity_pub: *const u8,
+    sig: *const u8,
+) -> i32 {
+    ffi_guard!({
+        let Some(bytes) = (unsafe { slice(certs_json, certs_len) }) else {
+            return ERR_INPUT;
+        };
+        let Some(pubkey) = (unsafe { arr::<32>(identity_pub) }) else {
+            return ERR_INPUT;
+        };
+        let Some(signature) = (unsafe { arr::<64>(sig) }) else {
+            return ERR_INPUT;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+            return ERR_INPUT;
+        };
+        let Some(certs) = parse_wtcerts(&v) else {
+            return ERR_INPUT;
+        };
+        if crate::wtcerts::verify(&certs, pubkey, signature) {
+            OK
+        } else {
+            ERR_REFUSED
+        }
+    })
+}
+
 /// Sign a device certificate with the identity root.
 ///
 /// `cert_json` is the unsigned certificate; `identity_seed` is the 32-byte

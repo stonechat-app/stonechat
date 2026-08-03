@@ -27,6 +27,16 @@ rustls-pemfile = "2"
 futures-util = "0.3"
 log = "0.4"
 env_logger = "0.11"
+sha2 = "0.10"
+time = { version = "0.3", default-features = false }
+wtransport = "0.7"
+tower = { version = "0.5.3", features = ["util"] }
+
+[dev-dependencies]
+# The end-to-end WebTransport test drives the relay binary over both of its
+# transports; it skips the pinned-TLS check because it is testing the other one.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [profile.release]
 strip = true

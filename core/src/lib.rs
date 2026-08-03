@@ -39,6 +39,7 @@ pub mod ids;
 pub mod primitives;
 pub mod session;
 pub mod vault;
+pub mod wtcerts;
 
 pub use pqcore;
 

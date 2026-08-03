@@ -12,8 +12,9 @@ Networking notes, and why DO is a good fit (BUSINESS.md):
 - The public IPv4 sits directly on the droplet's interface — no 1:1 NAT, so
   the host agent's from-inside health checks of guest mailboxes just work.
 - New droplets have NO default cloud firewall: every port is reachable, which
-  covers the mailbox (8080), TURN, the host agent (8200) and the guest port
-  range without the rule ceremony the GCP/AWS providers need. The bootstrap
+  covers the mailbox (8080), the browser transport (8443/udp), TURN, the host
+  agent (8200) and the guest port range without the rule ceremony the GCP/AWS
+  providers need. The bootstrap
   script does not enable ufw, so nothing on the box blocks them either.
 - user_data is capped at 64 KiB; the bootstrap script is ~30 KB (gzipped
   payloads). Checked at provision time so growth fails loudly here, not as a
@@ -26,7 +27,7 @@ import time
 import httpx
 
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
-from .bootstrap import SERVER_PORT, build_startup_script
+from .bootstrap import SERVER_PORT, WT_PORT, build_startup_script
 
 API = "https://api.digitalocean.com/v2"
 IMAGE = "debian-12-x64"
@@ -83,6 +84,9 @@ class DOProvider(CloudProvider):
         return ProvisionResult(
             resource_id=str(droplet_id),
             address=f"https://{ip}:{SERVER_PORT}",
+            # Fixed port on a VM, so derivable — published anyway so every
+            # provider answers the same question the same way.
+            wt_address=f"{ip}:{WT_PORT}",
             meta={"region": req.spec.region},
         )
 

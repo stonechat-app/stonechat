@@ -31,6 +31,12 @@ pub const REPORT_SIG_CONTEXT: &[u8] = b"stonechat-v1-report";
 /// as — any other signature this identity makes.
 pub const DEVCERT_SIG_CONTEXT: &[u8] = b"stonechat-v1-devcert";
 
+/// The owner vouching for their mailbox's browser-transport certificate
+/// schedule (wtcerts.rs). Distinct from TLS_SIG_CONTEXT so a signature over
+/// the long-lived fingerprint can never be replayed as one over the
+/// short-lived WebTransport hashes, or the reverse.
+pub const WTCERTS_SIG_CONTEXT: &[u8] = b"stonechat-v1-wtcerts";
+
 /// `crypto_generichash(msg, key, 32)`. Key must be 16–64 bytes.
 pub fn keyed_hash_32(msg: &[u8], key: &[u8]) -> [u8; 32] {
     let mut mac = Blake2bMac::<U32>::new_from_slice(key).expect("key must be 16-64 bytes");

@@ -59,6 +59,9 @@ class Store:
                 host_agent_token TEXT,             -- dedicated VMs: agent admin secret
                 tls_fp       TEXT,                 -- relay cert fingerprint (observed)
                 tls_sig      TEXT,                 -- owner's signature over it
+                wt_address   TEXT,                 -- host:port of the browser transport (UDP)
+                wt_certs     TEXT,                 -- relay's published /wt/certs body
+                wt_sig       TEXT,                 -- owner's signature over that list
                 meta         TEXT NOT NULL DEFAULT '{}',
                 error        TEXT,
                 created_at   TEXT NOT NULL
@@ -225,6 +228,17 @@ class Store:
         ):
             if column not in have:
                 self._db.execute(ddl)
+        have = {r["name"] for r in self._db.execute("PRAGMA table_info(servers)")}
+        for column, ddl in (
+            # The browser transport's certificate schedule and the owner's
+            # signature over it. Absent means "this mailbox has no browser
+            # transport", which is a normal state, not a legacy one.
+            ("wt_address", "ALTER TABLE servers ADD COLUMN wt_address TEXT"),
+            ("wt_certs", "ALTER TABLE servers ADD COLUMN wt_certs TEXT"),
+            ("wt_sig", "ALTER TABLE servers ADD COLUMN wt_sig TEXT"),
+        ):
+            if column not in have:
+                self._db.execute(ddl)
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -351,17 +365,36 @@ class Store:
         return dict(row) if row else None
 
     def mark_running(self, stonechat_id: str, resource_id: str, address: str, meta: dict,
-                     tls_fp: str | None) -> None:
+                     tls_fp: str | None, wt_address: str | None = None) -> None:
         self._db.execute(
             "UPDATE servers SET status='running', resource_id=?, address=?, meta=?,"
-            " tls_fp=?, tls_sig=NULL, error=NULL"  # new box, new cert — old sig is void
+            " tls_fp=?, tls_sig=NULL, wt_address=?, wt_certs=NULL, wt_sig=NULL,"
+            " error=NULL"  # new box, new cert — old sig is void
             " WHERE stonechat_id=?",
-            (resource_id, address, json.dumps(meta), tls_fp, stonechat_id),
+            (resource_id, address, json.dumps(meta), tls_fp, wt_address, stonechat_id),
+        )
+
+    def set_wt_address(self, stonechat_id: str, wt_address: str | None) -> None:
+        """For mailboxes the hub did not provision: the owner states where
+        their browser transport listens, because nobody else can know."""
+        self._db.execute(
+            "UPDATE servers SET wt_address=? WHERE stonechat_id=?",
+            (wt_address, stonechat_id),
         )
 
     def set_tls_sig(self, stonechat_id: str, tls_sig: str) -> None:
         self._db.execute(
             "UPDATE servers SET tls_sig=? WHERE stonechat_id=?", (tls_sig, stonechat_id)
+        )
+
+    def set_wt_certs(self, stonechat_id: str, wt_certs: str, wt_sig: str) -> None:
+        """The schedule and its signature move together, always. Storing one
+        without the other would leave the directory serving a list nobody
+        vouched for — which is the exact failure this signature exists to
+        prevent."""
+        self._db.execute(
+            "UPDATE servers SET wt_certs=?, wt_sig=? WHERE stonechat_id=?",
+            (wt_certs, wt_sig, stonechat_id),
         )
 
     def mark_error(self, stonechat_id: str, error: str) -> None:

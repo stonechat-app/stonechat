@@ -29,6 +29,27 @@ import 'pqcore.dart';
 /// chosen at link time, and a browser session shorter still.
 const primaryCertLifetime = Duration(days: 365);
 
+/// How long the primary certifies a linked device for.
+///
+/// Shorter than the primary's, because this is the lifetime that bounds the
+/// damage from a device the user forgot they linked: revocation stops it
+/// immediately, and expiry stops it eventually without anyone doing anything.
+const linkedCertLifetime = Duration(days: 180);
+
+/// A browser session. Short by design — the web client cannot protect a key
+/// the way a phone keystore can, so its certificate is the mitigation, and a
+/// mitigation measured in months is not one.
+const webCertLifetime = Duration(days: 7);
+
+/// The lifetime for a device of the given kind, matching the relay's
+/// `devices.kind` column. Unknown kinds get the shortest, not the longest:
+/// a typo should under-grant.
+Duration certLifetimeFor(String kind) => switch (kind) {
+  'primary' => primaryCertLifetime,
+  'linked' => linkedCertLifetime,
+  _ => webCertLifetime,
+};
+
 /// Refetch a peer's device list once the certificate we hold has less than
 /// this left. Not a `devices_v` bump: that signals a device-*set* change,
 /// which renewal is not, and a missed bump would silently stop delivery on

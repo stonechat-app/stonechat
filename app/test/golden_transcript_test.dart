@@ -79,7 +79,16 @@ void main() {
     });
 
     // -- Alice initiates and sends three messages ----------------------------
-    final aSession = RatchetSession.initiate(a, bobId, b.publicKey, bundle);
+    // The corpus predates device certificates and is a pure crypto transcript
+    // shared with Rust — the core does not care whose Ed25519 key it is given,
+    // so these stay identity keys. What the app passes is device keys.
+    final aSession = RatchetSession.initiate(
+      a,
+      bobId,
+      b.publicKey,
+      bundle,
+      ownEdSeed: a.identitySeed,
+    );
     final block = aSession.pendingX3dh!;
     expect(block.kemOneTime, isTrue);
 
@@ -104,6 +113,7 @@ void main() {
       aliceId,
       a.publicKey,
       block,
+      ownEdSeed: b.identitySeed,
       spkPub: spk.publicKey,
       spkSec: spkSec,
       opkSec: opkSec,

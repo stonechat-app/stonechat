@@ -18,7 +18,6 @@ import '../core/device_keys.dart';
 import '../core/db.dart';
 import '../core/identity_export.dart';
 import '../core/linking.dart';
-import '../core/pqcore.dart';
 
 class AppState extends ChangeNotifier {
   // iOS: items ride the shared app-group access group so the notification
@@ -129,8 +128,13 @@ class AppState extends ChangeNotifier {
       accountToken: await _storage.read(key: 'zn_token'),
     );
 
-    if (secret != null && public != null) {
-      _crypto = CryptoService.fromKeys(secretKey: base64Decode(secret));
+    if (public != null) {
+      // A linked device stores the identity's public key and no secret. The
+      // public key is the anchor either way: it is what this device's own
+      // certificate verifies against and what the SC- ID commits to.
+      _crypto = secret != null
+          ? CryptoService.fromKeys(secretKey: base64Decode(secret))
+          : CryptoService.publicOnly(publicKey: base64Decode(public));
       stonechatId = await _storage.read(key: 'zn_id');
       displayName = await _storage.read(key: 'zn_name');
       pushPrompted = (await _storage.read(key: 'zn_push_prompted')) == '1';
@@ -432,17 +436,21 @@ class AppState extends ChangeNotifier {
     StonechatCore().tlsFingerprintB64(data),
   ).map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
-  /// **New device.** Generate the ephemeral keypair and lookup secret this
-  /// device will be linked with. The public half goes on screen; both secrets
-  /// stay here.
-  ({LinkOffer offer, Uint8List seed}) beginLinking() {
-    final seed = randomBytes(xwingSeedBytes);
-    return (
-      offer: LinkOffer(
-        ekPub: PqCore().xwingPkFromSeed(seed),
-        lookup: randomBytes(32),
-      ),
-      seed: seed,
+  /// **New device.** The offer to put on screen: this device's own public
+  /// keys, plus a fresh lookup secret.
+  ///
+  /// The keys are the ones generated on first run — the same pair peers will
+  /// seal to and verify prekeys against once the certificate arrives. Showing
+  /// the real keys rather than throwaways is what lets the primary certify
+  /// this device from the QR alone, and it means the grant can only be opened
+  /// by the device its certificate names.
+  LinkOffer beginLinking() {
+    final keys = deviceKeys ?? DeviceKeys.generate();
+    deviceKeys = keys;
+    return LinkOffer(
+      sealPub: keys.sealPublic,
+      sigPub: keys.sigPublic,
+      lookup: randomBytes(32),
     );
   }
 
@@ -455,15 +463,14 @@ class AppState extends ChangeNotifier {
   Future<bool> collectLinkGrant({
     required String hubUrl,
     required LinkOffer offer,
-    required Uint8List seed,
   }) async {
     final key = linkParkingKey(_hashHex, offer.lookup);
     final sealed = await takeLinkGrant(hubUrl, key);
     if (sealed == null) return false;
-    // Same hybrid seal every envelope uses, opened with the ephemeral seed
-    // this device generated and never showed anyone.
+    // Same hybrid seal every envelope uses, opened with this device's own
+    // seal seed — the one the certificate inside is about to vouch for.
     final opened = StonechatCore().unseal(
-      seed,
+      deviceKeys!.sealSeed,
       Uint8List.fromList(base64Decode(sealed)),
     );
     if (opened == null) return false;
@@ -476,17 +483,46 @@ class AppState extends ChangeNotifier {
 
   /// **New device.** Become the identity in the grant.
   ///
-  /// The commitment check is what makes the QR channel safe to trust: a grant
-  /// whose identity key does not hash to its claimed SC- ID is refused, so a
-  /// substituted grant cannot install a different identity under the name the
-  /// user thinks they are linking.
+  /// Three checks, and each closes a different substitution:
+  ///
+  /// 1. the identity key must hash to the claimed SC- ID — so a grant that
+  ///    reached us by any route cannot install a *different* identity under
+  ///    the name the user is looking at;
+  /// 2. the certificate must verify against that identity key, unexpired, and
+  ///    name the device id we were given;
+  /// 3. the certificate must vouch for **our own** keys. Without this we would
+  ///    happily store a valid certificate for some other device, publish it
+  ///    with our prekeys, and then be unable to open a single envelope
+  ///    addressed to us — a failure with no error anywhere.
   Future<void> adoptLinkGrant(LinkGrant grant) async {
-    final crypto = CryptoService.fromKeys(
-      secretKey: Uint8List.fromList(base64Decode(grant.identitySeedB64)),
-    );
-    if (!crypto.pubkeyMatchesId(crypto.publicKeyB64, grant.stonechatId)) {
+    final identityPub = Uint8List.fromList(base64Decode(grant.identityPubB64));
+    final crypto = CryptoService.publicOnly(publicKey: identityPub);
+    if (!crypto.pubkeyMatchesId(grant.identityPubB64, grant.stonechatId)) {
       throw ApiException.refusing(
         'That code is for a different identity — refusing to link.',
+      );
+    }
+    final keys = deviceKeys!;
+    final status = crypto.core.devcertVerify(
+      grant.cert,
+      identityPub,
+      DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+    );
+    if (status != 'valid' ||
+        grant.cert['device_id'] != grant.deviceId ||
+        grant.cert['stonechat_id'] != grant.stonechatId) {
+      throw ApiException.refusing(
+        'That link code came with a certificate we cannot use — try again.',
+      );
+    }
+    final certSig = certSigKey(grant.cert);
+    final certSeal = certSealKey(grant.cert);
+    if (certSig == null ||
+        certSeal == null ||
+        base64Encode(certSig) != base64Encode(keys.sigPublic) ||
+        base64Encode(certSeal) != base64Encode(keys.sealPublic)) {
+      throw ApiException.refusing(
+        'That certificate is for a different device — refusing to link.',
       );
     }
     api.baseUrl = grant.hubUrl;
@@ -494,11 +530,11 @@ class AppState extends ChangeNotifier {
     // the primary device (MULTIDEVICE.md "Decided").
     api.accountToken = null;
 
-    await _storage.write(
-      key: 'zn_secret',
-      value: base64Encode(crypto.exportSecretKey()),
-    );
-    await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
+    // No `zn_secret`: this device never holds the identity root. Its absence
+    // at startup is what makes it a linked device.
+    await _storage.write(key: 'zn_public', value: grant.identityPubB64);
+    deviceCert = grant.cert;
+    await _storage.write(key: 'zn_device_cert', value: jsonEncode(grant.cert));
     await _storage.write(key: 'zn_id', value: grant.stonechatId);
     await _storage.write(key: 'zn_name', value: grant.displayName);
     await _storage.write(key: 'zn_hub_url', value: grant.hubUrl);
@@ -533,8 +569,29 @@ class AppState extends ChangeNotifier {
       kind: kind,
       expiresInSeconds: expiresInSeconds,
     );
+    // The certificate is minted here, from the public keys in the QR, and is
+    // the only authority the new device gets. It cannot extend it: renewal
+    // means coming back to this device.
+    //
+    // The lifetime tracks the device row's when one was set, so a device that
+    // stops authenticating does not go on being a valid encryption target —
+    // two clocks disagreeing is how mail ends up in a dead mailbox.
+    final lifetime = expiresInSeconds != null
+        ? Duration(seconds: expiresInSeconds)
+        : certLifetimeFor(kind);
+    final cert = crypto.core.devcertSign(
+      unsignedCert(
+        stonechatId: stonechatId!,
+        deviceId: minted.deviceId,
+        sigPublic: offer.sigPub,
+        sealPublic: offer.sealPub,
+        notAfter: DateTime.now().toUtc().add(lifetime),
+      ),
+      crypto.identitySeed,
+    );
     final grant = LinkGrant(
-      identitySeedB64: base64Encode(crypto.exportSecretKey()),
+      identityPubB64: crypto.publicKeyB64,
+      cert: cert,
       stonechatId: stonechatId!,
       displayName: displayName ?? '',
       hubUrl: hubUrl,
@@ -545,7 +602,7 @@ class AppState extends ChangeNotifier {
       bundleToken: bundleToken,
     );
     final sealed = crypto.sealTo(
-      offer.ekPub,
+      offer.sealPub,
       Uint8List.fromList(utf8.encode(jsonEncode(grant.toJson()))),
     );
     await putLinkGrant(

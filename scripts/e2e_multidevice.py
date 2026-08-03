@@ -32,8 +32,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import e2e  # noqa: E402  the protocol reference
 from e2e import (  # noqa: E402
-    HUB, MX, PRIMARY_DEVICE, Phone, b64, nacl_random,
+    HUB, MX, PRIMARY_DEVICE, Phone, b64, nacl_random, unb64,
 )
+from nacl.exceptions import BadSignatureError  # noqa: E402
 import httpx  # noqa: E402
 import pqcore  # noqa: E402
 
@@ -119,14 +120,24 @@ def main() -> int:
     a_fp = alice.server["tls_fp"]
 
     # -- 1. link a second device to Alice -------------------------------------
-    print("1) link grant: mint → seal → park on the hub → collect")
-    ek_seed = nacl_random(32)
-    ek_pub = pqcore.xwing_pk_from_seed(ek_seed)
+    print("1) link grant: mint → certify → seal → park on the hub → collect")
+    # The newcomer, with its OWN keys. It never receives Alice's identity
+    # secret — what it gets is a certificate over the public halves it is
+    # about to show in its QR.
+    alice2 = Phone("Alice/2")
+    alice2.identity = None  # proves the linked device never needs the root
+    alice2.pubkey_b64 = alice.pubkey_b64
+    alice2.device = 2  # it stamps from_device 2, and the AEAD binds that
+    alice2.stonechat_id = alice.stonechat_id
+
+    # The QR: this device's real seal key (also the grant's target — so only
+    # the device the certificate names can open it), its signing key, and an
+    # independent lookup secret the parking key is hashed from.
     lookup = nacl_random(32)
     import hashlib
     parking_key = hashlib.blake2b(lookup, digest_size=32).hexdigest()
 
-    # Alice's phone mints the newcomer a device.
+    # Alice's phone mints the newcomer a device...
     dev2_token = base64.urlsafe_b64encode(nacl_random(32)).decode().rstrip("=")
     r = MX.post(f"{a_addr}/devices", params={"token": a_tok},
                 json={"device_token": dev2_token, "kind": "linked"})
@@ -134,9 +145,13 @@ def main() -> int:
     device_id = r.json()["device_id"]
     assert device_id == 2, f"expected device 2, got {device_id}"
 
-    # ...seals a grant to the newcomer's ephemeral key and parks it on the hub.
+    # ...certifies the keys from the QR for exactly that device id, and seals
+    # the grant to the seal key it just certified.
+    cert = alice.sign_cert_for(
+        bytes(alice2.dev_sig.verify_key), alice2.dev_seal_pk, device=device_id)
     grant = json.dumps({
-        "identity_seed": b64(bytes(alice.identity)),
+        "identity_pub": alice.pubkey_b64,
+        "cert": cert,
         "stonechat_id": alice.stonechat_id,
         "display_name": "Alice",
         "hub_url": HUB,
@@ -146,7 +161,7 @@ def main() -> int:
         "device_token": dev2_token,
         "bundle_token": bundle_token(a_tok),
     }).encode()
-    kct, ss = pqcore.xwing_encaps(ek_pub)
+    kct, ss = pqcore.xwing_encaps(alice2.dev_seal_pk)
     key = e2e.H(ss, e2e.HSEAL_KDF_KEY, 32)
     nonce = nacl_random(24)
     sealed = kct + nonce + e2e.crypto_aead_xchacha20poly1305_ietf_encrypt(
@@ -154,7 +169,8 @@ def main() -> int:
     httpx.post(f"{HUB}/v1/link",
                json={"key": parking_key, "sealed": b64(sealed)}).raise_for_status()
 
-    # The new device collects and opens it.
+    # The new device collects and opens it — with its own seal seed, which is
+    # the seed the certificate inside vouches for.
     got = httpx.get(f"{HUB}/v1/link/{parking_key}")
     got.raise_for_status()
     blob = base64.b64decode(got.json()["sealed"])
@@ -163,11 +179,38 @@ def main() -> int:
                        blob[pqcore.XWING_CT + 24:])
     opened = json.loads(e2e.crypto_aead_xchacha20poly1305_ietf_decrypt(
         box, e2e.HSEAL_AD, nonce2,
-        e2e.H(pqcore.xwing_decaps(ek_seed, ct), e2e.HSEAL_KDF_KEY, 32)))
+        e2e.H(pqcore.xwing_decaps(alice2.dev_seal_seed, ct),
+              e2e.HSEAL_KDF_KEY, 32)))
     assert opened["stonechat_id"] == alice.stonechat_id
     assert opened["device_id"] == 2
     assert "account_token" not in opened, "a linked device must get no hub token"
+    assert "identity_seed" not in opened, \
+        "the identity secret must not travel in a grant"
+    assert e2e.stonechat_id_from_pubkey(unb64(opened["identity_pub"])) \
+        == alice.stonechat_id, "identity key must commit to the claimed ID"
     print("  ok   grant sealed, parked, collected, opened")
+
+    # The three checks the new device makes before adopting it.
+    e2e.verify_devcert(opened["cert"], unb64(opened["identity_pub"]),
+                       device=opened["device_id"])
+    assert opened["cert"]["sig_pub"] == b64(bytes(alice2.dev_sig.verify_key))
+    assert opened["cert"]["seal_pub"] == b64(alice2.dev_seal_pk), \
+        "a certificate for keys we do not hold would leave us unable to read"
+    alice2.cert = opened["cert"]
+    print("  ok   certificate verifies, names device 2, and vouches for OUR keys")
+
+    # A certificate the primary did not sign is refused — this is the check
+    # that stops a substituted grant installing a device under Alice's name.
+    mallory = Phone("Mallory")
+    mallory.stonechat_id = alice.stonechat_id  # claiming to be her
+    forged = mallory.sign_cert_for(
+        bytes(alice2.dev_sig.verify_key), alice2.dev_seal_pk, device=2)
+    try:
+        e2e.verify_devcert(forged, unb64(alice.pubkey_b64), device=2)
+        raise AssertionError("a certificate signed by someone else must not verify")
+    except BadSignatureError:
+        pass
+    print("  ok   a certificate from another identity is refused")
 
     # Single-use: the grant is gone.
     assert httpx.get(f"{HUB}/v1/link/{parking_key}").status_code == 404
@@ -175,24 +218,11 @@ def main() -> int:
 
     # -- 2. the second device publishes its own prekeys -----------------------
     print("2) per-device prekeys: device 2's pool is its own")
-    # Same identity, different ratchets — which is the whole design. The
-    # public key has to be re-derived too: Phone() generated a throwaway one
-    # in its constructor, and leaving it would make device 2 look like a
-    # different user to anyone verifying its signed prekeys.
-    alice2 = Phone("Alice/2")
-    alice2.identity = alice.identity
-    alice2.pubkey_b64 = alice.pubkey_b64
-    alice2.device = 2  # it stamps from_device 2, and the AEAD binds that
-    alice2.derive_pq()
-    alice2.stonechat_id = alice.stonechat_id
+    # Same identity, different ratchets — which is the whole design. Its
+    # prekeys are signed by its own key and published with the certificate it
+    # was granted; it could not mint one, having no root to sign with.
     alice2.server = {"address": a_addr, "server_token": dev2_token,
                      "tls_fp": a_fp}
-    # Its certificate names device 2. The id is inside the signature, so a
-    # certificate minted for one device cannot be presented as another's —
-    # the client checks the id against the slot it arrived in and drops a
-    # mismatch, because a relay shuffling certificates between devices would
-    # redirect mail.
-    alice2.sign_own_cert(device=2)
     alice2.upload_prekeys()
 
     listed = MX.get(f"{a_addr}/prekeys/devices",

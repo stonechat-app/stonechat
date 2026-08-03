@@ -72,8 +72,17 @@ CATEGORIES = {
 # or one identity spraying reports across many. Per-reporter is the tighter of
 # the two because minting identities is free (admin.py's ban docstring makes
 # the same point) so the IP wall is what actually bites a determined flooder.
-_report_ip_limiter = RateLimiter(limit=20, window_s=3600.0)
-_report_id_limiter = RateLimiter(limit=10, window_s=3600.0)
+#
+# The IP wall is overridable for the same reason STONECHAT_REGISTER_LIMIT is:
+# scripts/e2e.py files several reports from one address per run, and a rerun
+# within the hour trips a limit meant for humans. Default is the production
+# value; the env var is a test-rig knob.
+_report_ip_limiter = RateLimiter(
+    limit=int(os.environ.get("STONECHAT_REPORT_LIMIT", "20")), window_s=3600.0
+)
+_report_id_limiter = RateLimiter(
+    limit=int(os.environ.get("STONECHAT_REPORT_LIMIT", "10")), window_s=3600.0
+)
 
 
 class ReportIn(BaseModel):

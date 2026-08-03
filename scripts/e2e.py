@@ -23,6 +23,7 @@ import copy
 import hashlib
 import json
 import pathlib
+import socket
 import ssl
 import subprocess
 import sys
@@ -59,6 +60,24 @@ sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]
 from app.identity import stonechat_id_from_pubkey  # noqa: E402
 
 TLS_SIG_CONTEXT = b"stonechat-v1-tls"
+WTCERTS_SIG_CONTEXT = b"stonechat-v1-wtcerts"
+
+
+def wtcerts_signing_bytes(certs: list[dict]) -> bytes:
+    """Mirrors core/src/wtcerts.rs — length-prefixed and ordered, not JSON.
+
+    The leading count is what stops a truncated list verifying as a prefix of
+    the signed one, and truncating away the *future* certificates is exactly
+    how an attacker strands a client on one they already hold."""
+    out = bytearray(len(certs).to_bytes(4, "big"))
+    for cert in certs:
+        for field in (
+            cert["sha256"].encode(),
+            int(cert["not_before"]).to_bytes(8, "big", signed=True),
+            int(cert["not_after"]).to_bytes(8, "big", signed=True),
+        ):
+            out += len(field).to_bytes(4, "big") + field
+    return bytes(out)
 
 
 def live_cert_fp(address: str) -> str:
@@ -272,23 +291,30 @@ class Phone:
 
     # -- hub -----------------------------------------------------------
 
-    def sign_own_cert(self, device=PRIMARY_DEVICE, not_after=None):
-        """The identity root vouching for this device's keys. Only a device
-        holding the root can do this — which is exactly why a linked device
-        receives its certificate rather than making one."""
+    def sign_cert_for(self, sig_pub: bytes, seal_pub: bytes,
+                      device=PRIMARY_DEVICE, not_after=None):
+        """The identity root vouching for a device's keys.
+
+        Only a device holding the root can do this, which is the whole bound
+        on a linked device: it receives a certificate over the public keys it
+        showed in its QR, and can neither extend it nor mint another."""
         cert = {
             "stonechat_id": self.stonechat_id,
             "device_id": device,
-            "sig_pub": b64(bytes(self.dev_sig.verify_key)),
-            "seal_pub": b64(self.dev_seal_pk),
-            "not_after": int(time.time()) + 365 * 24 * 3600,
+            "sig_pub": b64(sig_pub),
+            "seal_pub": b64(seal_pub),
+            "not_after": not_after or int(time.time()) + 365 * 24 * 3600,
         }
-        if not_after is not None:
-            cert["not_after"] = not_after
         cert["sig"] = b64(self.identity.sign(
             DEVCERT_SIG_CONTEXT + devcert_signing_bytes(cert)).signature)
-        self.cert = cert
         return cert
+
+    def sign_own_cert(self, device=PRIMARY_DEVICE, not_after=None):
+        """The primary certifying itself — the one device that can."""
+        self.cert = self.sign_cert_for(
+            bytes(self.dev_sig.verify_key), self.dev_seal_pk,
+            device=device, not_after=not_after)
+        return self.cert
 
     def register(self):
         pq_sig = self.identity.sign(PQPK_SIG_CONTEXT + self.pq_pk).signature
@@ -401,6 +427,24 @@ class Phone:
         )
         r.raise_for_status()
 
+    def publish_wt_certs(self):
+        """The owner vouching for the mailbox's browser-transport schedule.
+
+        The relay states which short-lived WebTransport certificates it will
+        present; only the owner can say the list is theirs. Without this the
+        directory serves nothing and a browser cannot pin — which is the safe
+        failure, not a broken one."""
+        r = MX.get(f"{self.server['address']}/wt/certs")
+        if r.status_code == 404:
+            return None  # browser transport disabled on this relay
+        r.raise_for_status()
+        certs = r.json()["certs"]
+        sig = self.identity.sign(
+            WTCERTS_SIG_CONTEXT + wtcerts_signing_bytes(certs)).signature
+        httpx.post(f"{HUB}/v1/server/wt", headers=self.auth,
+                   json={"certs": certs, "wt_sig": b64(sig)}).raise_for_status()
+        return certs
+
     def publish_tls_sig(self):
         """The owner's half of pinned TLS: confirm the fingerprint the control
         plane observed matches the live certificate, sign it, publish."""
@@ -435,20 +479,19 @@ class Phone:
         # certificate names.
         cert = bundle.get("cert")
         assert cert, "no certificate for that device — nothing to encrypt to"
-        peer_ed = VerifyKey(unb64(to.pubkey_b64))
         verify_devcert(cert, unb64(to.pubkey_b64), device=device)
         device_ed = VerifyKey(unb64(cert["sig_pub"]))
-        # X3DH is still IDENTITY-to-identity: the seal target and the prekey
-        # signatures moved to device keys, this has not. It is the last place
-        # the identity secret is load-bearing, and moving it changes the
-        # initial-envelope format — see MULTIDEVICE_IMPLEMENTATION.md.
+        # And PQXDH runs between those same two device keys — the third and
+        # last place the identity secret used to be load-bearing. Nothing an
+        # ordinary send touches needs the identity secret now; it is a root
+        # that signs certificates and nothing else.
         spk_pub = unb64(bundle["spk"]["pub"])
         device_ed.verify(SPK_SIG_CONTEXT + spk_pub, unb64(bundle["spk"]["sig"]))
         kspk_pub = unb64(bundle["kspk"]["pub"])
         device_ed.verify(KSPK_SIG_CONTEXT + kspk_pub, unb64(bundle["kspk"]["sig"]))
 
-        ikx_priv = bytes(self.identity.to_curve25519_private_key())
-        peer_ikx = bytes(peer_ed.to_curve25519_public_key())
+        ikx_priv = bytes(self.dev_sig.to_curve25519_private_key())
+        peer_ikx = bytes(device_ed.to_curve25519_public_key())
         ek = PrivateKey.generate()
         dhs = [
             crypto_scalarmult(ikx_priv, spk_pub),
@@ -472,7 +515,11 @@ class Phone:
             "dhr": spk_pub, "cks": cks, "ckr": None,
             "ns": 0, "nr": 0, "pn": 0, "skipped": {}, "confirmed": False,
             "pending_x3dh": {
-                "ik": self.pubkey_b64,
+                # Our DEVICE key, plus the certificate that vouches for it —
+                # the responder cannot check a device key against an SC- ID,
+                # so the proof has to travel with the handshake.
+                "ik": b64(bytes(self.dev_sig.verify_key)),
+                "cert": self.cert or self.sign_own_cert(self.device),
                 "ek": b64(bytes(ek.public_key)),
                 "spk_id": bundle["spk"]["id"],
                 **({"opk_id": opk["id"]} if opk else {}),
@@ -485,13 +532,25 @@ class Phone:
     def _respond_session(self, envelope: dict):
         """Responder PQXDH from an initial envelope's x3dh block."""
         block = envelope["x3dh"]
+        # Two checks in place of the old "does this key hash to the sender's
+        # ID": the certificate against the identity key their ID does commit
+        # to, then the handshake key against what the certificate vouches for.
+        # Skipping the second would make the certificate decoration.
+        cert = block.get("cert")
+        assert cert, "initial envelope must carry the sender's device certificate"
+        sender_entry = httpx.get(f"{HUB}/v1/directory/{envelope['from']}").json()
+        sender_identity = unb64(sender_entry["pubkey"])
+        assert stonechat_id_from_pubkey(sender_identity) == envelope["from"], \
+            "directory key must commit to the sender's Stonechat ID"
+        verify_devcert(cert, sender_identity,
+                       device=envelope.get("from_device", PRIMARY_DEVICE))
+        assert cert["sig_pub"] == block["ik"], \
+            "x3dh key is not the one its certificate vouches for"
         sender_ed = VerifyKey(unb64(block["ik"]))
-        assert stonechat_id_from_pubkey(bytes(sender_ed)) == envelope["from"], \
-            "x3dh identity key must commit to the sender's Stonechat ID"
         assert block["spk_id"] == self.spk["id"]
         ek_pub = unb64(block["ek"])
         sender_ikx = bytes(sender_ed.to_curve25519_public_key())
-        my_ikx = bytes(self.identity.to_curve25519_private_key())
+        my_ikx = bytes(self.dev_sig.to_curve25519_private_key())
         dhs = [
             crypto_scalarmult(self.spk["priv"], sender_ikx),
             crypto_scalarmult(my_ikx, ek_pub),
@@ -710,6 +769,76 @@ def main():
     r = httpx.post(f"{HUB}/v1/server/tls", headers=alice.auth,
                    json={"tls_fp": other_fp, "tls_sig": b64(sig)})
     assert r.status_code == 400, f"wrong fp: expected 400, got {r.status_code}"
+
+    print("3a1) browser transport: the owner vouches for the cert schedule")
+    # A relay's /wt/certs states which short-lived WebTransport certificates it
+    # will present; it cannot vouch for them, being the thing under
+    # authentication. Until the owner signs, the directory serves nothing —
+    # a browser that pinned an unsigned list has pinned whatever the network
+    # said (WEB_CLIENT.md "the code-delivery problem", relay/src/wtcert.rs).
+    entry = httpx.get(f"{HUB}/v1/directory/{alice.stonechat_id}").json()
+    assert entry["server"]["wt_certs"] is None, "unsigned schedule must not be served"
+    certs = alice.publish_wt_certs()
+    if certs is None:
+        print("  --   relay has no browser transport; skipping")
+    else:
+        assert len(certs) >= 2, "the schedule should run ahead of the live cert"
+        entry = httpx.get(f"{HUB}/v1/directory/{alice.stonechat_id}").json()
+        served = entry["server"]["wt_certs"]
+        assert served == certs, "the directory must serve exactly what was signed"
+        VerifyKey(unb64(alice.pubkey_b64)).verify(
+            WTCERTS_SIG_CONTEXT + wtcerts_signing_bytes(served),
+            unb64(entry["server"]["wt_sig"]))
+        # Every certificate is inside the browser's 14-day cap, and the
+        # schedule reaches months ahead so rotation needs no network.
+        for c in served:
+            assert c["not_after"] - c["not_before"] <= 14 * 86400, "over the browser cap"
+        horizon = (max(c["not_after"] for c in served) - int(time.time())) / 86400
+        assert horizon > 90, f"only {horizon:.0f} days of pins published"
+        print(f"  ok   {len(certs)} pins signed, {horizon:.0f} days ahead, all ≤14d")
+
+        # And somewhere to send them. Not derivable from the mailbox address:
+        # container providers map a *random* host port for each, so a mailbox
+        # at 1.2.3.4:49173 says nothing about where its QUIC listener landed.
+        wt_address = entry["server"]["wt_address"]
+        assert wt_address, "a provisioned mailbox must publish its browser transport"
+        wt_host, wt_port = wt_address.rsplit(":", 1)
+        assert 0 < int(wt_port) <= 65535, wt_address
+        assert wt_address != alice.server["address"].removeprefix("https://"), \
+            "the browser transport is a separate port, not the mailbox's"
+        # It really is listening: QUIC is UDP, and an unbound port answers
+        # nothing at all.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.settimeout(1)
+        try:
+            probe.sendto(b"\x00", (wt_host, int(wt_port)))
+        finally:
+            probe.close()
+        print(f"  ok   browser transport published at {wt_address}")
+
+        # Tampering is caught by the hub as well as by clients. Truncation is
+        # the one worth naming: dropping the future certificates would strand
+        # a client on the current one, which is the one an attacker holding it
+        # wants them stuck with.
+        for name, mutated in (
+            ("truncated", certs[:-1]),
+            ("reordered", list(reversed(certs))),
+            ("tampered", [{**certs[0], "sha256": b64(b"\x11" * 32)}] + certs[1:]),
+        ):
+            r = httpx.post(f"{HUB}/v1/server/wt", headers=alice.auth,
+                           json={"certs": mutated,
+                                 "wt_sig": b64(alice.identity.sign(
+                                     WTCERTS_SIG_CONTEXT
+                                     + wtcerts_signing_bytes(certs)).signature)})
+            assert r.status_code == 400, f"{name}: expected 400, got {r.status_code}"
+        # And a schedule signed by somebody else.
+        r = httpx.post(f"{HUB}/v1/server/wt", headers=alice.auth,
+                       json={"certs": certs,
+                             "wt_sig": b64(bob.identity.sign(
+                                 WTCERTS_SIG_CONTEXT
+                                 + wtcerts_signing_bytes(certs)).signature)})
+        assert r.status_code == 400, f"foreign sig: expected 400, got {r.status_code}"
+        print("  ok   truncated / reordered / tampered / foreign signatures refused")
 
     print("3a2) publish prekeys — mailboxes serve public halves only")
     alice.upload_prekeys()
@@ -1312,9 +1441,14 @@ def main():
     assert httpx.get(f"{HUB}/v1/admin/reports").status_code == 403
     r = httpx.get(f"{HUB}/v1/admin/reports", headers=admin_hdr)
     r.raise_for_status()
-    queue = r.json()["reports"]
-    assert len(queue) == 2, f"expected 2 open reports, got {len(queue)}"
-    assert all("evidence" not in row for row in queue), \
+    all_open = r.json()["reports"]
+    # Scoped to *this run's* subject. The hub DB persists across runs, and a
+    # count over the whole queue made the second run of the day fail with
+    # "expected 2, got 3" — a fixture problem that reads exactly like a bug in
+    # the thing under test.
+    queue = [row for row in all_open if row["reported_id"] == mallory.stonechat_id]
+    assert len(queue) == 2, f"expected 2 open reports for mallory, got {len(queue)}"
+    assert all("evidence" not in row for row in all_open), \
         "the list view must not spill attached plaintext"
 
     r = httpx.get(f"{HUB}/v1/admin/reports/{ref}", headers=admin_hdr)
@@ -1336,8 +1470,13 @@ def main():
     assert r.json()["report"]["evidence"] is None, \
         "attached plaintext must not outlive the decision it informed"
     assert r.json()["report"]["status"] == "actioned"
-    assert len(httpx.get(f"{HUB}/v1/admin/reports",
-                         headers=admin_hdr).json()["reports"]) == 1
+    # Again scoped to this run's subject: one of mallory's two is resolved.
+    still_open = [
+        row
+        for row in httpx.get(f"{HUB}/v1/admin/reports", headers=admin_hdr).json()["reports"]
+        if row["reported_id"] == mallory.stonechat_id
+    ]
+    assert len(still_open) == 1, f"expected 1 still open, got {len(still_open)}"
 
     print("9) destroy relays")
     alice.destroy()

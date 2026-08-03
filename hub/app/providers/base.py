@@ -42,6 +42,22 @@ class ProvisionResult:
     resource_id: str       # provider-side handle (instance name, id, container id)
     address: str           # base URL of the routing server, e.g. "http://34.1.2.3:8080"
     meta: dict = field(default_factory=dict)  # whatever destroy() will need (zone, region, …)
+    # Where the browser transport listens: "host:port", UDP (relay/src/wt.rs).
+    #
+    # Published rather than derived from `address` because it is not derivable:
+    # container providers map a *random* host port for each, so a mailbox at
+    # 1.2.3.4:49173 says nothing about where its QUIC listener landed. VM
+    # providers could derive it — the port is fixed there — but one rule that
+    # holds everywhere beats two that each hold somewhere.
+    #
+    # None means "no browser transport", which is a normal state: a host that
+    # blocks UDP, or a provider that has not been taught to map it.
+    #
+    # Unsigned, and safe to be: an attacker who rewrites this sends the client
+    # to a server whose certificate is not in the owner-signed schedule, so the
+    # connection is refused. Denial of service, not compromise — the same
+    # property `address` already has behind the signed `tls_fp`.
+    wt_address: str | None = None
 
 
 class CloudProvider(ABC):

@@ -24,7 +24,9 @@ Config (env):
 
 import asyncio
 import base64
+import json
 import logging
+import os
 import re
 import secrets
 from contextlib import asynccontextmanager
@@ -176,11 +178,29 @@ class ServerIn(BaseModel):
 
 class ExternalServerIn(BaseModel):
     address: str = Field(max_length=200, examples=["https://203.0.113.7:8080"])
+    # Where the browser transport listens, if it does. Stated by the owner
+    # because for a mailbox the hub did not provision, nobody else can know —
+    # there is no port mapping we performed and no fixed convention we set.
+    wt_address: str | None = Field(default=None, max_length=200,
+                                   examples=["203.0.113.7:8443"])
 
 
 class TlsSigIn(BaseModel):
     tls_fp: str = Field(max_length=64)  # base64 BLAKE2b-256 of the relay's DER cert
     tls_sig: str = Field(max_length=128)  # owner's Ed25519 sig over "stonechat-v1-tls"||fp
+
+
+class WtCertIn(BaseModel):
+    sha256: str = Field(max_length=64)  # base64 SHA-256 of the DER
+    not_before: int
+    not_after: int
+
+
+class WtCertsIn(BaseModel):
+    # Bounded by the relay's own schedule length; a list far longer than that
+    # is not a schedule, it is someone filling the directory.
+    certs: list[WtCertIn] = Field(max_length=64)
+    wt_sig: str = Field(max_length=128)
 
 
 # -- routes ---------------------------------------------------------------------
@@ -212,7 +232,13 @@ def relay_binary(authorization: str | None = Header(default=None)):
 # Registration is once per install, so 10/min/IP is roomy even for a NAT'd
 # office — while a scripted loop dies on its first second (ABUSE.md
 # "Scripted registration").
-_register_limiter = RateLimiter(limit=10, window_s=60.0)
+#
+# Overridable only because scripts/e2e.py creates a dozen identities from one
+# address in seconds and would otherwise trip a limit that exists for humans.
+# The default is the production value; the env var is a test-rig knob.
+_register_limiter = RateLimiter(
+    limit=int(os.environ.get("STONECHAT_REGISTER_LIMIT", "10")), window_s=60.0
+)
 
 
 @app.post("/v1/register", status_code=201)
@@ -388,6 +414,20 @@ def directory(stonechat_id: str, request: Request):
                 "status": server["status"],
                 "tls_fp": server["tls_fp"],
                 "tls_sig": server["tls_sig"],
+                # Where the browser transport listens (UDP). Unsigned, and
+                # safe to be: rewriting it sends a client to a server whose
+                # certificate is not in the owner-signed schedule, so the
+                # connection is refused. Denial of service, not compromise —
+                # the same property `address` has behind `tls_fp`.
+                "wt_address": server["wt_address"],
+                # The browser transport's pinned certificate schedule. Null
+                # when the mailbox has no browser transport, or when the owner
+                # has not vouched for it yet — an unsigned schedule is served
+                # as no schedule, because a client must not pin one.
+                "wt_certs": (
+                    json.loads(server["wt_certs"]) if server["wt_certs"] else None
+                ),
+                "wt_sig": server["wt_sig"],
             }
             if server and server["status"] == "running"
             else None
@@ -467,9 +507,20 @@ def register_external_server(body: ExternalServerIn, user: UnbannedUser):
     if not owner_ok:
         raise HTTPException(400, "that mailbox belongs to a different Stonechat ID")
 
+    wt_address = (body.wt_address or "").strip()
+    # The bracketed alternative is not decoration: an IPv6 literal is full of
+    # colons, so a host pattern that excludes them rejects every IPv6 mailbox.
+    wt_match = re.match(
+        r"^(?:\[[0-9A-Fa-f:.]+\]|[a-zA-Z0-9.\-]+):(\d{1,5})$", wt_address
+    )
+    if wt_address and (not wt_match or not 0 < int(wt_match.group(1)) <= 65535):
+        raise HTTPException(400, "wt_address must look like host:port")
+
     tls_fp = health.get("tls_fp")
     if not store.create_external_server(user["stonechat_id"], address, tls_fp):
         raise HTTPException(409, "you already have a server (one per user)")
+    if wt_address:
+        store.set_wt_address(user["stonechat_id"], wt_address)
     log.info("external relay registered for %s", user["stonechat_id"][:12])
     return {"status": "running", "address": address, "tls_fp": tls_fp}
 
@@ -496,6 +547,58 @@ def publish_tls_sig(body: TlsSigIn, user: User):
         raise HTTPException(400, "signature does not verify against your identity key")
     store.set_tls_sig(user["stonechat_id"], body.tls_sig)
     return {"status": "ok"}
+
+
+@app.post("/v1/server/wt")
+def publish_wt_certs(body: WtCertsIn, user: User):
+    """The owner vouches for their mailbox's **browser-transport** certificate
+    schedule.
+
+    A relay's `/wt/certs` states which short-lived certificates it will present;
+    it cannot vouch for them, being the thing under authentication. This is the
+    owner's signature over that list, verifiable by anyone against the identity
+    key their Stonechat ID commits to.
+
+    Checked here so the directory never serves garbage — but clients re-verify,
+    because our word does not count. A client that pins these hashes without
+    checking the signature has pinned whatever the network told it to.
+    """
+    server = store.server_for(user["stonechat_id"])
+    if not server or server["status"] != "running":
+        raise HTTPException(404, "no running server")
+    certs = [c.model_dump() for c in body.certs]
+    try:
+        from nacl.signing import VerifyKey
+
+        VerifyKey(base64.b64decode(user["pubkey"])).verify(
+            b"stonechat-v1-wtcerts" + _wtcerts_signing_bytes(certs),
+            base64.b64decode(body.wt_sig),
+        )
+    except Exception:
+        raise HTTPException(400, "signature does not verify against your identity key")
+    # Stored as the exact list that was signed. Re-serializing it differently
+    # on the way out would be harmless (clients rebuild the signing bytes from
+    # the fields), but keeping them together is what makes that true.
+    store.set_wt_certs(user["stonechat_id"], json.dumps(certs), body.wt_sig)
+    return {"status": "ok"}
+
+
+def _wtcerts_signing_bytes(certs: list[dict]) -> bytes:
+    """Mirrors core/src/wtcerts.rs. Length-prefixed and ordered, not JSON:
+    three implementations sign or verify this, and JSON is not canonical.
+
+    The leading count is what stops a truncated list verifying as a prefix of
+    the signed one — and truncating away the *future* certificates is exactly
+    how an attacker strands a client on one they already hold."""
+    out = bytearray(len(certs).to_bytes(4, "big"))
+    for cert in certs:
+        for field in (
+            cert["sha256"].encode(),
+            int(cert["not_before"]).to_bytes(8, "big", signed=True),
+            int(cert["not_after"]).to_bytes(8, "big", signed=True),
+        ):
+            out += len(field).to_bytes(4, "big") + field
+    return bytes(out)
 
 
 def _host_agent_address(server_address: str) -> str:
@@ -563,7 +666,8 @@ def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, server
             )
         )
         tls_fp = _wait_healthy(result.address)
-        store.mark_running(stonechat_id, result.resource_id, result.address, result.meta, tls_fp)
+        store.mark_running(stonechat_id, result.resource_id, result.address,
+                           result.meta, tls_fp, result.wt_address)
         log.info("server for %s running at %s", stonechat_id[:12], result.address)
     except Exception as e:
         log.exception("provisioning failed for %s", stonechat_id[:12])

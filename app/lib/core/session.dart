@@ -61,13 +61,28 @@ class PrekeyBundle {
 /// ML-KEM ciphertext, encapsulated to the one-time KEM prekey when the
 /// bundle had one (its id in `kem_id`), else to the signed KEM prekey.
 class X3dhBlock {
-  final String ikB64; // sender's Ed25519 identity key
+  /// The sender's **device** Ed25519 key — not their identity key.
+  ///
+  /// X3DH runs device-to-device since device certificates: this key is what
+  /// [cert] vouches for, and the responder checks the certificate against the
+  /// sender's identity key rather than checking this against their SC- ID
+  /// (a device key does not hash to its owner's ID).
+  final String ikB64;
   final String ekB64; // sender's ephemeral X25519 key
   final int spkId;
   final int? opkId;
   final String kctB64; // ML-KEM-768 ciphertext (PQXDH)
   final int kemId; // id of the KEM prekey encapsulated to
   final bool kemOneTime; // whether kem_id names a one-time KEM prekey
+
+  /// The sender's device certificate, so the responder can trust [ikB64]
+  /// without a network round trip on the receive path. Self-authenticating —
+  /// signed by the sender's identity key, which the responder resolves from
+  /// the directory — so it needs no AEAD coverage of its own.
+  ///
+  /// Null only on a block from before certificates existed, which is a
+  /// session that cannot be established.
+  final Map<String, dynamic>? cert;
 
   X3dhBlock({
     required this.ikB64,
@@ -77,6 +92,7 @@ class X3dhBlock {
     required this.kctB64,
     required this.kemId,
     required this.kemOneTime,
+    this.cert,
   });
 
   Map<String, Object?> toJson() => {
@@ -87,7 +103,22 @@ class X3dhBlock {
     'kct': kctB64,
     'kem_id': kemId,
     'kem_one_time': kemOneTime,
+    if (cert != null) 'cert': cert,
   };
+
+  /// The same block with our certificate attached. The core builds the
+  /// cryptographic parts; the certificate is a client-layer addition, so it
+  /// is merged here rather than threaded through the FFI.
+  X3dhBlock withCert(Map<String, dynamic>? ours) => X3dhBlock(
+    ikB64: ikB64,
+    ekB64: ekB64,
+    spkId: spkId,
+    opkId: opkId,
+    kctB64: kctB64,
+    kemId: kemId,
+    kemOneTime: kemOneTime,
+    cert: ours,
+  );
 
   static X3dhBlock? fromJson(Map<String, dynamic>? j) => j == null
       ? null
@@ -99,6 +130,7 @@ class X3dhBlock {
           kctB64: j['kct'] as String,
           kemId: j['kem_id'] as int,
           kemOneTime: j['kem_one_time'] as bool? ?? false,
+          cert: (j['cert'] as Map?)?.cast<String, dynamic>(),
         );
 }
 
@@ -116,17 +148,22 @@ class RatchetSession {
 
   Uint8List _random(int n) => randomBytes(n);
 
-  /// PQXDH as the initiator. [peerEdPub] must already be
-  /// commitment-verified against the peer's Stonechat ID and [bundle]'s
-  /// SPK + KSPK signatures checked.
+  /// PQXDH as the initiator, **device to device**.
+  ///
+  /// [peerEdPub] is the peer device's signing key, taken from its certificate
+  /// after that certificate was verified against their identity key.
+  /// [ownEdSeed] is this device's own signing seed — not the identity's,
+  /// which is what lets a device run this without holding the identity
+  /// secret at all.
   factory RatchetSession.initiate(
     CryptoService crypto,
     String peerId,
     Uint8List peerEdPub,
-    PrekeyBundle bundle,
-  ) {
+    PrekeyBundle bundle, {
+    required Uint8List ownEdSeed,
+  }) {
     final state = _core.sessionInitiate(
-      edSeed: crypto.identityEdSeed,
+      edSeed: ownEdSeed,
       peerEdPk: peerEdPub,
       bundleJson: jsonEncode(bundle.raw),
       ekSk: randomBytes(32),
@@ -137,21 +174,24 @@ class RatchetSession {
   }
 
   /// PQXDH as the responder, from an initial envelope's x3dh block and our
-  /// stored prekey private halves. [senderEdPub] must already be
-  /// commitment-verified against the envelope's `from`. [kemSeed] is the
-  /// stored seed of the KEM prekey named by `block.kemId`.
+  /// stored prekey private halves.
+  ///
+  /// [senderEdPub] is the sending device's key, which the caller has already
+  /// checked against the certificate in the block. [kemSeed] is the stored
+  /// seed of the KEM prekey named by `block.kemId`.
   factory RatchetSession.respond(
     CryptoService crypto,
     String peerId,
     Uint8List senderEdPub,
     X3dhBlock block, {
+    required Uint8List ownEdSeed,
     required Uint8List spkPub,
     required Uint8List spkSec,
     Uint8List? opkSec,
     required Uint8List kemSeed,
   }) {
     final state = _core.sessionRespond(
-      edSeed: crypto.identityEdSeed,
+      edSeed: ownEdSeed,
       senderEdPk: senderEdPub,
       x3dhJson: jsonEncode(block.toJson()),
       spkPub: spkPub,
