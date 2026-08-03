@@ -434,7 +434,7 @@ impl Mailbox {
             .unwrap()
             .flatten();
         Some(serde_json::json!({
-            "cert": cert,
+            "cert": cert.and_then(|c| serde_json::from_str::<Value>(&c).ok()),
             "spk": {"id": spk_id, "pub": spk_pub, "sig": spk_sig},
             "opk": opk.map(|(id, pub_key)| serde_json::json!({"id": id, "pub": pub_key})),
             "kspk": {"id": kspk_id, "pub": kspk_pub, "sig": kspk_sig},
@@ -467,10 +467,11 @@ impl Mailbox {
                             "sig": r.get::<_, String>(3)?},
                     "kspk": {"id": r.get::<_, i64>(4)?, "pub": r.get::<_, String>(5)?,
                              "sig": r.get::<_, String>(6)?},
-                    // The sender needs the certificate to know which key to
-                    // seal to, and to check the prekey signatures above
-                    // against the device key it names.
-                    "cert": r.get::<_, Option<String>>(7)?,
+                    // Served back as the object it arrived as — the sender
+                    // needs it to know which key to seal to, and to check the
+                    // prekey signatures above against the device key it names.
+                    "cert": r.get::<_, Option<String>>(7)?
+                        .and_then(|c| serde_json::from_str::<Value>(&c).ok()),
                 }))
             })
             .unwrap();

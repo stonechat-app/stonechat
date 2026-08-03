@@ -568,7 +568,10 @@
             "pub": "d2-kspk",
             "sig": "d2-ksig"
           },
-          "cert": "d2-certificate-blob"
+          "cert": {
+            "device_id": 2,
+            "seal_pub": "d2-seal"
+          }
         }
       ]
     }
@@ -582,7 +585,10 @@
   "bundle-device2": [
     200,
     {
-      "cert": "d2-certificate-blob",
+      "cert": {
+        "device_id": 2,
+        "seal_pub": "d2-seal"
+      },
       "spk": {
         "id": 70,
         "pub": "d2-spk",

@@ -150,14 +150,23 @@ pub async fn upload_prekeys(
     };
     let Ok(parsed) = serde_json::from_slice::<Value>(&body) else { return bad() };
     let Some((spk, opks, kspk, kopks)) = parse_prekey_upload(&parsed) else { return bad() };
-    // Opaque to us — see the `cert` column. Size-capped only, because a blob
-    // this box cannot read is a blob it should not be storing much of.
+    // A JSON object on the wire, stored as the text of itself. "Opaque" here
+    // means we never look inside — not that we refuse to carry structure;
+    // making clients double-encode a JSON object into a JSON string would buy
+    // nothing and cost every client a serialization step. Size-capped,
+    // because a blob this box cannot read is one it should not store much of.
     let cert = match parsed.get("cert") {
         None | Some(Value::Null) => None,
-        Some(Value::String(c)) if !c.is_empty() && c.len() <= MAX_CERT_BYTES => Some(c.as_str()),
+        Some(Value::Object(_)) => {
+            let text = parsed["cert"].to_string();
+            if text.len() > MAX_CERT_BYTES {
+                return detail(StatusCode::PAYLOAD_TOO_LARGE, "cert too large");
+            }
+            Some(text)
+        }
         Some(_) => return detail(StatusCode::BAD_REQUEST, "bad cert"),
     };
-    state.mailbox.set_prekeys(device, &spk, &opks, &kspk, &kopks, cert);
+    state.mailbox.set_prekeys(device, &spk, &opks, &kspk, &kopks, cert.as_deref());
     Json(json!({"status": "ok", "prekeys": state.mailbox.prekey_status(device)})).into_response()
 }
 

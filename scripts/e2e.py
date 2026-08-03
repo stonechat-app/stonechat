@@ -119,6 +119,38 @@ def unb64(s: str) -> bytes:
 
 
 PRIMARY_DEVICE = 1
+DEVCERT_SIG_CONTEXT = b"stonechat-v1-devcert"
+
+
+def devcert_signing_bytes(cert: dict) -> bytes:
+    """Mirror of DeviceCert::signing_bytes in core/src/devcert.rs.
+
+    Length-prefixed and ordered, deliberately NOT JSON: a signature over
+    re-serialized JSON is a signature over whatever the other side's
+    serializer emitted, and two implementations ordering keys differently
+    would reject each other's certificates while looking like forgery."""
+    def field(b: bytes) -> bytes:
+        return len(b).to_bytes(4, "big") + b
+    return (
+        field(cert["stonechat_id"].encode())
+        + field(cert["device_id"].to_bytes(4, "big"))
+        + field(unb64(cert["sig_pub"]))
+        + field(unb64(cert["seal_pub"]))
+        + field(cert["not_after"].to_bytes(8, "big"))
+    )
+
+
+def verify_devcert(cert: dict, identity_pub: bytes, now: int | None = None,
+                   device: int | None = None) -> None:
+    """Raises unless the certificate is signed by that identity, unexpired,
+    and — when `device` is given — actually for the device it arrived as.
+    This is the check that lets a device exist without the identity secret."""
+    VerifyKey(identity_pub).verify(
+        DEVCERT_SIG_CONTEXT + devcert_signing_bytes(cert), unb64(cert["sig"]))
+    assert cert["not_after"] > (now or int(time.time())), "certificate expired"
+    if device is not None:
+        assert cert["device_id"] == device, \
+            "certificate names a different device than the slot it came in"
 
 
 def ad_for(envelope: dict) -> bytes:
@@ -228,8 +260,35 @@ class Phone:
         self.pq_seed = H(sk64, PQID_SEED_KEY, 32)
         self.pq_pk = pqcore.xwing_pk_from_seed(self.pq_seed)
         self.pq_pk_b64 = b64(self.pq_pk)
+        # This device's OWN keys (MULTIDEVICE_IMPLEMENTATION.md "How device
+        # certificates work"). Envelopes are sealed to dev_seal_pk and this
+        # device's prekeys are signed by dev_sig — neither is the identity,
+        # which now only signs the certificate tying them to this SC- ID.
+        if not hasattr(self, "dev_sig"):
+            self.dev_sig = SigningKey.generate()
+            self.dev_seal_seed = nacl_random(32)
+        self.dev_seal_pk = pqcore.xwing_pk_from_seed(self.dev_seal_seed)
+        self.cert = None
 
     # -- hub -----------------------------------------------------------
+
+    def sign_own_cert(self, device=PRIMARY_DEVICE, not_after=None):
+        """The identity root vouching for this device's keys. Only a device
+        holding the root can do this — which is exactly why a linked device
+        receives its certificate rather than making one."""
+        cert = {
+            "stonechat_id": self.stonechat_id,
+            "device_id": device,
+            "sig_pub": b64(bytes(self.dev_sig.verify_key)),
+            "seal_pub": b64(self.dev_seal_pk),
+            "not_after": int(time.time()) + 365 * 24 * 3600,
+        }
+        if not_after is not None:
+            cert["not_after"] = not_after
+        cert["sig"] = b64(self.identity.sign(
+            DEVCERT_SIG_CONTEXT + devcert_signing_bytes(cert)).signature)
+        self.cert = cert
+        return cert
 
     def register(self):
         pq_sig = self.identity.sign(PQPK_SIG_CONTEXT + self.pq_pk).signature
@@ -322,8 +381,10 @@ class Phone:
             self.kopks[self._next_prekey_id] = seed
             new_kopks.append({"id": self._next_prekey_id, "pub": b64(pub)})
             self._next_prekey_id += 1
-        sig = self.identity.sign(SPK_SIG_CONTEXT + self.spk["pub"]).signature
-        ksig = self.identity.sign(KSPK_SIG_CONTEXT + self.kspk["pub"]).signature
+        # Signed by the DEVICE key. Senders check these against the key this
+        # device's certificate names, not against the identity.
+        sig = self.dev_sig.sign(SPK_SIG_CONTEXT + self.spk["pub"]).signature
+        ksig = self.dev_sig.sign(KSPK_SIG_CONTEXT + self.kspk["pub"]).signature
         r = MX.post(
             f"{self.server['address']}/prekeys",
             params={"token": self.server["server_token"]},
@@ -332,7 +393,11 @@ class Phone:
                   "opks": new_opks,
                   "kspk": {"id": self.kspk["id"], "pub": b64(self.kspk["pub"]),
                            "sig": b64(ksig)},
-                  "kopks": new_kopks},
+                  "kopks": new_kopks,
+                  # The certificate goes up with the prekeys: it names the key
+                  # that signed them, so one without the other leaves a peer
+                  # unable to check either.
+                  "cert": self.cert or self.sign_own_cert()},
         )
         r.raise_for_status()
 
@@ -364,11 +429,23 @@ class Phone:
                        params={"device": device, "token": bundle_token})
         r.raise_for_status()
         bundle = r.json()
+        # Two steps, and the order is the whole point: the certificate is
+        # checked against the peer's IDENTITY key (which their SC- ID commits
+        # to), and the prekeys are then checked against the DEVICE key that
+        # certificate names.
+        cert = bundle.get("cert")
+        assert cert, "no certificate for that device — nothing to encrypt to"
         peer_ed = VerifyKey(unb64(to.pubkey_b64))
+        verify_devcert(cert, unb64(to.pubkey_b64), device=device)
+        device_ed = VerifyKey(unb64(cert["sig_pub"]))
+        # X3DH is still IDENTITY-to-identity: the seal target and the prekey
+        # signatures moved to device keys, this has not. It is the last place
+        # the identity secret is load-bearing, and moving it changes the
+        # initial-envelope format — see MULTIDEVICE_IMPLEMENTATION.md.
         spk_pub = unb64(bundle["spk"]["pub"])
-        peer_ed.verify(SPK_SIG_CONTEXT + spk_pub, unb64(bundle["spk"]["sig"]))
+        device_ed.verify(SPK_SIG_CONTEXT + spk_pub, unb64(bundle["spk"]["sig"]))
         kspk_pub = unb64(bundle["kspk"]["pub"])
-        peer_ed.verify(KSPK_SIG_CONTEXT + kspk_pub, unb64(bundle["kspk"]["sig"]))
+        device_ed.verify(KSPK_SIG_CONTEXT + kspk_pub, unb64(bundle["kspk"]["sig"]))
 
         ikx_priv = bytes(self.identity.to_curve25519_private_key())
         peer_ikx = bytes(peer_ed.to_curve25519_public_key())
@@ -477,9 +554,12 @@ class Phone:
 
     def wrap(self, to: "Phone", inner: dict) -> dict:
         """The wire form (PROTOCOL.md "Envelope"): an anonymous hybrid seal
-        (X-Wing) to the recipient's directory pq_pk. The mailbox sees only
-        the recipient. Wire: kem_ct || nonce || aead_ct."""
-        kct, ss = pqcore.xwing_encaps(to.pq_pk)
+        (X-Wing) to the recipient DEVICE's certified seal key — not to the
+        one identity key in the directory, which nothing seals to since
+        device certificates. The mailbox sees only the recipient.
+        Wire: kem_ct || nonce || aead_ct."""
+        seal_pk = unb64(to.cert["seal_pub"]) if to.cert else to.dev_seal_pk
+        kct, ss = pqcore.xwing_encaps(seal_pk)
         key = H(ss, HSEAL_KDF_KEY, 32)
         nonce = nacl_random(24)
         box = crypto_aead_xchacha20poly1305_ietf_encrypt(
@@ -507,7 +587,9 @@ class Phone:
         kct, nonce, box = (sealed[:pqcore.XWING_CT],
                            sealed[pqcore.XWING_CT:pqcore.XWING_CT + 24],
                            sealed[pqcore.XWING_CT + 24:])
-        key = H(pqcore.xwing_decaps(self.pq_seed, kct), HSEAL_KDF_KEY, 32)
+        # Opened with THIS DEVICE's seal seed. It used to be the identity's,
+        # which is why every device needed the identity secret to read.
+        key = H(pqcore.xwing_decaps(self.dev_seal_seed, kct), HSEAL_KDF_KEY, 32)
         return json.loads(
             crypto_aead_xchacha20poly1305_ietf_decrypt(box, HSEAL_AD, nonce, key))
 

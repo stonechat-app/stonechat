@@ -187,6 +187,12 @@ def main() -> int:
     alice2.stonechat_id = alice.stonechat_id
     alice2.server = {"address": a_addr, "server_token": dev2_token,
                      "tls_fp": a_fp}
+    # Its certificate names device 2. The id is inside the signature, so a
+    # certificate minted for one device cannot be presented as another's —
+    # the client checks the id against the slot it arrived in and drops a
+    # mismatch, because a relay shuffling certificates between devices would
+    # redirect mail.
+    alice2.sign_own_cert(device=2)
     alice2.upload_prekeys()
 
     listed = MX.get(f"{a_addr}/prekeys/devices",

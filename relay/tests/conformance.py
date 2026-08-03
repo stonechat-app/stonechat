@@ -189,10 +189,10 @@ CORPUS = [
       "kopks": [{"id": 81, "pub": "d2-kopk"}],
       # A device publishes its certificate with its prekeys — same
       # operation, same auth, and useless apart. Opaque to the relay.
-      "cert": "d2-certificate-blob"}, None),
+      "cert": {"device_id": 2, "seal_pub": "d2-seal"}}, None),
     ("prekeys-bad-cert", "POST", f"/prekeys?token={DEV2}",
      {"spk": {"id": 70, "pub": "p", "sig": "s"},
-      "kspk": {"id": 80, "pub": "k", "sig": "ks"}, "cert": 42}, None),
+      "kspk": {"id": 80, "pub": "k", "sig": "ks"}, "cert": "a string"}, None),
     ("status-device1-unaffected", "GET", f"/status?token={TOKEN}", None, None),
     # -- bundle split ---------------------------------------------------------
     # Listing is gated and free; the open bundle keeps device 1's exact shape.
