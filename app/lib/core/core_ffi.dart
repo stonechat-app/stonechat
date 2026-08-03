@@ -46,6 +46,42 @@ typedef _IdentityNative =
 typedef _Identity =
     int Function(Pointer<Uint8>, int, Pointer<Pointer<Uint8>>, Pointer<Size>);
 
+typedef _DevcertSignNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _DevcertSign =
+    int Function(
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+
+typedef _DevcertVerifyNative =
+    Int32 Function(
+      Pointer<Uint8>,
+      Size,
+      Pointer<Uint8>,
+      Uint64,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+typedef _DevcertVerify =
+    int Function(
+      Pointer<Uint8>,
+      int,
+      Pointer<Uint8>,
+      int,
+      Pointer<Pointer<Uint8>>,
+      Pointer<Size>,
+    );
+
 typedef _SignNative =
     Int32 Function(
       Pointer<Uint8>,
@@ -360,6 +396,8 @@ class StonechatCore {
   final _PqSeed _pqSeed;
   final _TlsFp _tlsFp;
   final _Identity _identity;
+  final _DevcertSign _devcertSign;
+  final _DevcertVerify _devcertVerify;
   final _Sign _sign;
   final _Verify _verify;
   final _SignReport _signReport;
@@ -389,6 +427,12 @@ class StonechatCore {
       ),
       _identity = lib.lookupFunction<_IdentityNative, _Identity>(
         'stonechat_identity',
+      ),
+      _devcertSign = lib.lookupFunction<_DevcertSignNative, _DevcertSign>(
+        'stonechat_devcert_sign',
+      ),
+      _devcertVerify = lib.lookupFunction<_DevcertVerifyNative, _DevcertVerify>(
+        'stonechat_devcert_verify',
       ),
       _sign = lib.lookupFunction<_SignNative, _Sign>('stonechat_sign'),
       _verify = lib.lookupFunction<_VerifyNative, _Verify>('stonechat_verify'),
@@ -737,6 +781,81 @@ class StonechatCore {
       );
     } finally {
       calloc.free(p);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  // -- device certificates (core/src/devcert.rs) ------------------------------
+
+  /// Sign a device certificate with the identity root. Only the primary
+  /// device holds the seed this needs.
+  ///
+  /// [unsigned] is `{stonechat_id, device_id, sig_pub, seal_pub, not_after}`;
+  /// the result is the same object with `sig` added.
+  Map<String, dynamic> devcertSign(
+    Map<String, Object?> unsigned,
+    Uint8List identitySeed,
+  ) {
+    final json = Uint8List.fromList(utf8.encode(jsonEncode(unsigned)));
+    final body = _in(json, 'cert');
+    final seed = _in(identitySeed, 'identitySeed', expected: 32);
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _devcertSign(body, json.length, seed, outPtr, outLen);
+      if (rc != 0) throw StateError('stonechat-core devcert sign failed ($rc)');
+      final signed =
+          jsonDecode(utf8.decode(outPtr.value.asTypedList(outLen.value)))
+              as Map<String, dynamic>;
+      _free(outPtr.value, outLen.value);
+      return signed;
+    } finally {
+      calloc.free(body);
+      calloc.free(seed);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// Check a signed certificate against its owner's identity public key.
+  ///
+  /// Returns `valid`, `expired` or `bad_signature` — the distinction matters:
+  /// expiry is routine and heals when the owner renews, a bad signature is
+  /// someone claiming a device that is not theirs. [nowSeconds] is passed in
+  /// because the core takes no ambient anything.
+  String devcertVerify(
+    Map<String, dynamic> signed,
+    Uint8List identityPublic,
+    int nowSeconds,
+  ) {
+    final json = Uint8List.fromList(utf8.encode(jsonEncode(signed)));
+    final body = _in(json, 'cert');
+    final pub = _in(identityPublic, 'identityPublic', expected: 32);
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _devcertVerify(
+        body,
+        json.length,
+        pub,
+        nowSeconds,
+        outPtr,
+        outLen,
+      );
+      // rc is 0 for valid and -3 for a refusal; both emit a status, and only
+      // a malformed input emits nothing.
+      if (outPtr.value == nullptr) {
+        throw StateError('stonechat-core devcert verify failed ($rc)');
+      }
+      final status =
+          (jsonDecode(utf8.decode(outPtr.value.asTypedList(outLen.value)))
+              as Map<String, dynamic>)['status'];
+      _free(outPtr.value, outLen.value);
+      return status as String;
+    } finally {
+      calloc.free(body);
+      calloc.free(pub);
       calloc.free(outPtr);
       calloc.free(outLen);
     }

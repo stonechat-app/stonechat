@@ -94,6 +94,14 @@ class CryptoService {
 
   String get publicKeyB64 => base64Encode(publicKey);
   String get pqPublicKeyB64 => base64Encode(pqPublicKey);
+
+  /// The 32-byte Ed25519 seed — the identity root.
+  ///
+  /// Its one remaining job is signing device certificates: since those exist,
+  /// nothing else derives from it at message time, and only the primary
+  /// device holds it at all (MULTIDEVICE_IMPLEMENTATION.md "How device
+  /// certificates work").
+  Uint8List get identitySeed => Uint8List.sublistView(_secretKey, 0, 32);
   Uint8List exportSecretKey() => Uint8List.fromList(_secretKey);
 
   /// The Ed25519 seed (first half of the secret key) — what the session

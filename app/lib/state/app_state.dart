@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 import '../core/api.dart';
 import '../core/core_ffi.dart';
 import '../core/crypto.dart';
+import '../core/device_keys.dart';
 import '../core/db.dart';
 import '../core/identity_export.dart';
 import '../core/linking.dart';
@@ -141,6 +142,7 @@ class AppState extends ChangeNotifier {
       hostAgentAdminToken = await _storage.read(key: 'zn_host_agent_token');
       hostAgentTlsFp = await _storage.read(key: 'zn_host_agent_tls_fp');
       avatar = await db.kvGet('own_avatar');
+      await _loadOrCreateDeviceKeys();
     }
   }
 
@@ -362,6 +364,62 @@ class AppState extends ChangeNotifier {
     stonechatId = result.stonechatId;
     displayName = name;
     notifyListeners();
+  }
+
+  // -- this device's own keys (MULTIDEVICE_IMPLEMENTATION.md) -----------------
+
+  /// This device's own signing and seal keys. Never leave this device — not
+  /// in a link grant, not anywhere. What travels is the certificate over
+  /// their *public* halves.
+  DeviceKeys? deviceKeys;
+
+  /// Our own signed certificate, published with our prekeys so peers know
+  /// which key to seal to us with.
+  Map<String, dynamic>? deviceCert;
+
+  Future<void> _loadOrCreateDeviceKeys() async {
+    final stored = await _storage.read(key: 'zn_device_keys');
+    if (stored != null) {
+      deviceKeys = DeviceKeys.decode(stored);
+    } else {
+      // First run on this device — including an upgrade from before
+      // certificates existed, which is a wipe rather than a migration.
+      deviceKeys = DeviceKeys.generate();
+      await _storage.write(key: 'zn_device_keys', value: deviceKeys!.encode());
+    }
+    final storedCert = await _storage.read(key: 'zn_device_cert');
+    if (storedCert != null) {
+      deviceCert = jsonDecode(storedCert) as Map<String, dynamic>;
+    }
+  }
+
+  /// Mint (or renew) this device's certificate.
+  ///
+  /// Only the primary can do this for itself — it is the device holding the
+  /// identity root. A linked device receives its certificate in the link
+  /// grant and cannot make its own, which is exactly the property that
+  /// bounds it: it cannot extend its own life or vouch for anyone else.
+  Future<void> ensureOwnCertificate(int deviceId) async {
+    final keys = deviceKeys;
+    if (keys == null || stonechatId == null) return;
+    if (deviceCert != null && !certNeedsRefresh(deviceCert!)) return;
+    if (deviceId != ChatDb.primaryDevice) {
+      // Not ours to mint. If it has run out, the user must re-link; saying so
+      // is better than quietly failing to publish.
+      return;
+    }
+    final signed = crypto.core.devcertSign(
+      unsignedCert(
+        stonechatId: stonechatId!,
+        deviceId: deviceId,
+        sigPublic: keys.sigPublic,
+        sealPublic: keys.sealPublic,
+        notAfter: DateTime.now().toUtc().add(primaryCertLifetime),
+      ),
+      crypto.identitySeed,
+    );
+    deviceCert = signed;
+    await _storage.write(key: 'zn_device_cert', value: jsonEncode(signed));
   }
 
   // -- device linking (MULTIDEVICE.md "Linking a device") ---------------------
