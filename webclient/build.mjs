@@ -25,6 +25,19 @@
  * Deliberately absent: a service worker. Service worker scripts cannot carry
  * SRI, so one would put uncoverable code in the delivery path. The client is
  * live-only anyway (no history in a browser), so nothing is lost.
+ *
+ * ## About `'wasm-unsafe-eval'`
+ *
+ * Compiling WebAssembly counts as code generation, so a bare `script-src
+ * 'self'` blocks `WebAssembly.instantiateStreaming` outright — the core does
+ * not load at all. The fix is NOT `'unsafe-eval'`, which would also re-enable
+ * `eval()` and `new Function()` for JavaScript and hand a script-injection bug
+ * far more than it needs. `'wasm-unsafe-eval'` permits exactly one thing:
+ * compiling WASM. Every browser with WebTransport has it (Chrome 97+,
+ * Firefox 102+, Safari 16.4+), so it costs no reach either.
+ *
+ * This is the one policy line that cannot be checked off a browser, and it was
+ * found by loading the page.
  */
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, rmSync, copyFileSync } from 'node:fs';
@@ -97,7 +110,7 @@ const html = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https:; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src 'self' https:; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <title>Stonechat</title>
 <link rel="stylesheet" href="/theme.css" integrity="${sri(css)}">
 </head>
