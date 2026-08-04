@@ -33,9 +33,14 @@ interface MockOptions {
 function mockRelay(handler: Handler, options: MockOptions = {}): {
   session: Session;
   acks: string[];
+  /** Every request path, query string included — the query is where
+   * authorisation lives, so a mock that discarded it would be blind to the
+   * one thing worth checking. */
+  paths: string[];
 } {
   const chunk = options.chunk ?? 1 << 20;
   const acks: string[] = [];
+  const paths: string[] = [];
 
   const session: Session = {
     closed: new Promise(() => {}),
@@ -72,6 +77,7 @@ function mockRelay(handler: Handler, options: MockOptions = {}): {
               const idx = outbound.indexOf(10);
               if (idx === -1) return;
               head = JSON.parse(fromUtf8.decode(outbound.subarray(0, idx)));
+              paths.push(head!.path);
               outbound = outbound.subarray(idx + 1);
               if (head!.path.split('?')[0] === '/ws') {
                 isSocket = true;
@@ -134,7 +140,7 @@ function mockRelay(handler: Handler, options: MockOptions = {}): {
       return { readable, writable };
     },
   };
-  return { session, acks };
+  return { session, acks, paths };
 }
 
 const okJson = (value: unknown): ReturnType<Handler> => ({
@@ -225,6 +231,22 @@ test('a non-2xx throws with its status, not a generic failure', async () => {
   }
 });
 
+test('the socket carries the device token', async () => {
+  // The session is deliberately unauthenticated — sealed sender means a
+  // stranger must be able to deliver — so /ws authorises itself from its own
+  // query string. Omitting the token gets a 403 that reads as a transport
+  // failure and is not. It shipped that way once.
+  const { session, paths } = mockRelay(() => okJson({}), {
+    socketLines: [{ id: 'e-1' }],
+  });
+  const mailbox = Mailbox.overSession(session);
+  for await (const _ of mailbox.socket('tok-abc/123')) {
+    // drain
+  }
+  assert.equal(paths.length, 1);
+  assert.equal(paths[0], '/ws?token=tok-abc%2F123', 'token must be sent, escaped');
+});
+
 test('the socket drains, acks, and reports a close code', async () => {
   const { session, acks } = mockRelay(() => okJson({}), {
     socketLines: [
@@ -236,7 +258,7 @@ test('the socket drains, acks, and reports a close code', async () => {
   const mailbox = Mailbox.overSession(session);
   const seen: string[] = [];
   let closed: { code: number; reason: string } | null = null;
-  for await (const message of mailbox.socket()) {
+  for await (const message of mailbox.socket('tok')) {
     if (message.kind === 'envelope') {
       seen.push(String(message.envelope['id']));
       await mailbox.ack(String(message.envelope['id']));
@@ -256,7 +278,7 @@ test('the upgrade reply is consumed, not yielded as an envelope', async () => {
     socketLines: [{ id: 'e-1' }],
   });
   const messages = [];
-  for await (const m of Mailbox.overSession(session).socket()) messages.push(m);
+  for await (const m of Mailbox.overSession(session).socket('tok')) messages.push(m);
   // One envelope, not two: the `{"status":101}` frame is the upgrade, and
   // treating it as an envelope would hand the app a message with no id.
   assert.equal(messages.length, 1);
@@ -269,7 +291,7 @@ test('a refused upgrade throws instead of pretending to be connected', async () 
   // like an empty queue.
   const { session } = mockRelay(() => okJson({}), { socketStatus: 403 });
   await assert.rejects(async () => {
-    for await (const _ of Mailbox.overSession(session).socket()) {
+    for await (const _ of Mailbox.overSession(session).socket('tok')) {
       // no messages expected
     }
   }, (e: MailboxError) => e instanceof MailboxError && e.status === 403);

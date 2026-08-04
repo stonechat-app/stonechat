@@ -183,15 +183,29 @@ export class Mailbox {
   /**
    * The owner socket: drains the queue, then stays open for live delivery.
    *
+   * [deviceToken] authorises it — the socket names the device, and the device
+   * names the queue.
+   *
    * `ack` deletes the row — only this device's copy, so a sibling still owed
    * the same envelope keeps its own. Ack after the envelope is stored, never
    * before: the relay's promise is "accepted for write", not "read".
    */
-  async *socket(): AsyncGenerator<SocketMessage, void, void> {
+  async *socket(deviceToken: string): AsyncGenerator<SocketMessage, void, void> {
     const stream = await this.session.createBidirectionalStream();
     const writer = stream.writable.getWriter();
+    // The token rides on the *request*, not the session. The session is
+    // deliberately unauthenticated — sealed sender means a stranger has to be
+    // able to deliver — so every route that needs authorisation carries its
+    // own, exactly as over HTTP. Omitting it here gets a 403 that looks like
+    // a transport failure and is not.
     await writer.write(
-      utf8.encode(JSON.stringify({ method: 'GET', path: '/ws', len: 0 }) + '\n'),
+      utf8.encode(
+        JSON.stringify({
+          method: 'GET',
+          path: `/ws?token=${encodeURIComponent(deviceToken)}`,
+          len: 0,
+        }) + '\n',
+      ),
     );
     this.ack = async (id: string) => {
       await writer.write(utf8.encode(JSON.stringify({ ack: id }) + '\n'));

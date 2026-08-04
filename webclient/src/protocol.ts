@@ -410,7 +410,7 @@ export class Protocol {
    */
   async *receive(): AsyncGenerator<Message, void, void> {
     const mailbox = await this.ownMailbox();
-    for await (const item of mailbox.socket()) {
+    for await (const item of mailbox.socket(this.grant.device_token)) {
       if (item.kind === 'closed') {
         throw new Error(
           item.code === 4001
