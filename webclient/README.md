@@ -155,15 +155,30 @@ makes it untestable, which makes it undeployable.
 
 ## Still missing
 
-Groups, media, receipts, typing, calls, edits, reactions, disappearing
-messages, self-sync, history bootstrap, QR *rendering* (the offer is a paste
-string), and retry — a send that fails reports the error and puts the text
-back in the composer rather than queueing.
+**Message types.** Groups, media, receipts, typing, calls, edits, reactions,
+disappearing messages. Anything that is not `msg` is decrypted (to keep the
+ratchet current) and then dropped.
 
-Also unbuilt: QR *rendering* (the offer is shown as a paste string, which
-MULTIDEVICE.md allows as the fallback), and storage — there is no SQLCipher in
-a browser, and the tethered shape says no history at all, which makes that
-smaller than it looks.
+**Retry.** A send that fails reports the error and puts the text back in the
+composer. There is no outbox and no backoff, so a message typed while the
+relay is briefly unreachable is lost rather than queued — the app has
+`sendGiveUpAfterMs` and a retry sweep; this has neither.
+
+**History bootstrap.** A freshly-linked browser starts empty. It keeps what
+passes through it (capped), but never fetches the phone's backlog —
+`sync_history` in MULTIDEVICE.md is designed and unbuilt on both sides.
+
+**Certificate renewal.** The 7-day certificate cannot be renewed from here by
+design, and nothing yet asks the phone to reissue one, so a browser session
+simply stops working after a week and must be re-linked.
+
+**Contact names.** Conversations are labelled with a truncated SC- ID. Display
+names arrive in `contact_request`/`contact_accept`, which this client does not
+handle.
+
+**A browser in the test suite.** The largest gap, and the one that let four
+bugs through in a single day — see "Tested by nothing that runs in a browser"
+below.
 
 ## Decisions
 
@@ -234,3 +249,25 @@ security argument that justifies the whole project.
   at all, which makes this smaller than it looks.
 - **CORS on the relay** (there is none) and moving `?token=` out of the query
   string.
+
+## Tested by nothing that runs in a browser
+
+Every test here runs in Node. That is structurally blind to a whole class of
+failure, and on 2026-08-04 it let four bugs reach a live deployment in one day:
+
+| bug | found by |
+|---|---|
+| CSP blocked WebAssembly compilation | loading the page |
+| CSP blocked the hub's origin | loading the page |
+| Hub CORS was GET-only from the landing origin | the hub's access log |
+| WebTransport certificates had no `subjectAltName` | Chrome's DevTools, then headless Chrome |
+
+The last is the instructive one. Rust QUIC clients skip name checks when handed
+certificate hashes, so a certificate with no SAN passed the unit tests, all
+three end-to-end WebTransport tests, and a live connection against production.
+The tests were not weak; they could not see it.
+
+A headless-Chrome smoke test — start a relay, serve `dist/`, assert the core
+instantiates and a WebTransport session opens — would have caught three of the
+four. It has been built twice, in a scratch directory, and thrown away twice.
+It should live here.
