@@ -6,13 +6,17 @@
  * anything machine-made. Messages render as a left-aligned ledger with coloured
  * rails, not bubbles.
  *
- * **Messages live in memory only.** The tethered shape says history stays on
- * the phone (WEB_CLIENT.md), so a reload shows an empty conversation. That is
- * the design and the UI says so, rather than looking like data loss.
+ * **Messages persist, up to a cap.** They used to live in memory only, which
+ * meant a refresh emptied every conversation — defensible on paper and
+ * unusable in practice. `store.ts` holds the reasoning and the bound.
  */
 import type { Message, Protocol } from './protocol.js';
 import { certExpiry } from './device.js';
-import { store, type Contact } from './store.js';
+import {
+  MAX_MESSAGES_PER_CONVERSATION,
+  store,
+  type Contact,
+} from './store.js';
 
 const el = <K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -41,13 +45,17 @@ export class App {
   private readonly dot = el('span', 'dot');
   private readonly bannerText = el('span');
   private readonly body = el('main');
-  /** In memory, deliberately: history stays on the phone. */
+  /** Loaded from storage on mount and written through on every change, so a
+   * refresh resumes rather than forgetting. */
   private readonly threads = new Map<string, Message[]>();
   private open: string | null = null;
 
   constructor(private readonly protocol: Protocol) {}
 
   mount(into: HTMLElement): void {
+    for (const [peerId, messages] of Object.entries(store.messages())) {
+      this.threads.set(peerId, messages);
+    }
     const bar = el('header', 'appbar');
     const back = el('button', 'secondary', '‹');
     back.style.display = 'none';
@@ -131,8 +139,12 @@ export class App {
 
   private push(message: Message): void {
     const thread = this.threads.get(message.peerId) ?? [];
+    // Redelivery is normal — the relay re-sends anything unacked when a socket
+    // reconnects — so the same message can arrive twice across a refresh.
+    if (thread.some((m) => m.id === message.id)) return;
     thread.push(message);
     this.threads.set(message.peerId, thread);
+    store.appendMessage(message);
     this.render();
   }
 
@@ -239,7 +251,8 @@ export class App {
     note.style.padding = 'var(--gutter)';
     note.style.color = 'var(--faint)';
     note.textContent =
-      'history stays on your phone — this session shows what arrives while it is open';
+      `this browser keeps the last ${MAX_MESSAGES_PER_CONVERSATION} messages ` +
+      'per conversation — Unlink erases them';
     this.body.append(note);
   }
 
@@ -260,7 +273,7 @@ export class App {
     const preview = el(
       'div',
       'row__body',
-      last ? last.text : 'no messages this session',
+      last ? last.text : 'no messages yet',
     );
     if (!last) preview.style.color = 'var(--faint)';
     main.append(meta, preview);
@@ -279,8 +292,7 @@ export class App {
       const empty = el('div', 'mono');
       empty.style.padding = 'var(--gutter)';
       empty.style.color = 'var(--faint)';
-      empty.textContent =
-        'nothing here yet — messages sent and received while this tab is open appear here';
+      empty.textContent = 'nothing here yet';
       this.body.append(empty);
     }
     for (const message of thread) {

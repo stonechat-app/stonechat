@@ -207,9 +207,9 @@ class LinkScreen {
     const caveatBody = el(
       'p',
       undefined,
-      'Send and receive text. No groups, media, calls or receipts yet — and ' +
-        'no history: past messages stay on your phone, and this session only ' +
-        'shows what arrives while it is open.',
+      'Send and receive text. No groups, media, calls or receipts yet. ' +
+        'Recent messages are kept in this browser so a refresh does not lose ' +
+        'them — Unlink erases everything it holds.',
     );
     caveatBody.style.color = 'var(--muted)';
     caveat.append(caveatTitle, caveatBody);

@@ -132,12 +132,26 @@ answering. Which devices exist comes from the peer's bundle token, which rides
 every envelope; without one we reach their primary only, exactly as a
 stranger's first message does.
 
-**What is stored, and what is not** (`src/store.ts`): device keys, the grant,
-ratchet state and peer certificates are persisted — the ratchet especially,
-because a peer who has advanced their chain cannot rewind it, and losing it
-breaks the conversation permanently rather than losing one message. **Message
-history is not stored**: it stays on the phone, so a reload shows an empty
-conversation. The UI says so rather than looking like data loss.
+**What is stored** (`src/store.ts`): device keys, the grant, ratchet state and
+peer certificates — the ratchet especially, because a peer who has advanced
+their chain cannot rewind it, and losing it breaks the conversation permanently
+rather than losing one message.
+
+**Message history too, capped** (2026-08-04). This reverses WEB_CLIENT.md's
+"no history sync; history stays on the phone", and the reversal is a real
+tradeoff rather than an oversight. Before: a compromised browser session
+yielded *messages during that session*. Now: what the browser has seen, up to
+`MAX_MESSAGES_PER_CONVERSATION` (200). The certificate bounds what a session
+can **do**, not what is sitting on disk, so the cap and the Unlink button are
+the only things bounding this.
+
+Deliberately no encryption at rest: any key the page could decrypt with would
+live in the same storage, readable by exactly the same attacker. It would look
+like protection and be none.
+
+The reason it changed is worth recording too — a client that forgets every
+conversation on refresh is defensible on paper and unusable in practice, which
+makes it untestable, which makes it undeployable.
 
 ## Still missing
 

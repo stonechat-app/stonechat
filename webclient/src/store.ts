@@ -16,12 +16,26 @@
  * a peer who has advanced their chain cannot rewind it. Losing it does not lose
  * a message, it breaks the conversation permanently.
  *
- * **Not kept** — message history. The tethered shape says history stays on the
- * phone (WEB_CLIENT.md "the defensible shape"), so a reload shows an empty
- * conversation and that is the design, not a bug. Messages live in memory for
- * as long as the tab does.
+ * **Kept, with a bound** — message history. This reverses the original
+ * decision, and the reversal is worth stating rather than burying: the
+ * tethered shape said history stays on the phone, so a reload showed an empty
+ * conversation. That is defensible and it is also unusable — a client that
+ * forgets the conversation every refresh is not one anyone will test with,
+ * let alone use.
+ *
+ * What it costs: a compromised browser session used to yield *messages during
+ * that session*. Now it yields what this browser has seen, up to the cap. The
+ * certificate bounds what the session can **do**, not what is sitting on disk,
+ * so the cap is the only thing bounding this — hence
+ * [MAX_MESSAGES_PER_CONVERSATION], and hence Unlink wiping it.
+ *
+ * No encryption-at-rest theatre: any key the page could use to decrypt this
+ * would have to live in the same storage, readable by exactly the same
+ * attacker. It would look like protection and be none.
  */
 import type { SessionState, SignedCert } from './core.js';
+// Type-only, so this does not create a runtime cycle with protocol.ts.
+import type { Message } from './protocol.js';
 import type { LinkGrant } from './linking.js';
 
 const KEYS = 'stonechat.device_keys';
@@ -30,6 +44,18 @@ const SESSIONS = 'stonechat.sessions';
 const PEER_CERTS = 'stonechat.peer_certs';
 const CONTACTS = 'stonechat.contacts';
 const PREKEYS = 'stonechat.prekeys';
+const MESSAGES = 'stonechat.messages';
+
+/**
+ * How much of a conversation a browser keeps.
+ *
+ * A bound rather than a number pulled from nowhere: this is the blast radius
+ * of a compromised session, and "everything, forever" is the wrong answer for
+ * a device whose whole justification is being disposable. Enough to scroll
+ * back through a conversation; not enough to be an archive. The phone is the
+ * archive.
+ */
+export const MAX_MESSAGES_PER_CONVERSATION = 200;
 
 /** A peer we have exchanged something with. */
 export interface Contact {
@@ -115,10 +141,42 @@ export const store = {
   prekeys: () => read<PrekeyStore>(PREKEYS),
   setPrekeys: (value: PrekeyStore) => write(PREKEYS, value),
 
+  /** Every conversation this browser has kept, newest last. */
+  messages: () => read<Record<string, Message[]>>(MESSAGES) ?? {},
+
+  /**
+   * Record one message, or ignore it if we already have it.
+   *
+   * Deduplicated by id because redelivery is normal, not exceptional: the
+   * relay re-sends anything unacked when a socket reconnects, so a refresh
+   * mid-conversation would otherwise double every recent message.
+   */
+  appendMessage(message: Message): void {
+    const all = store.messages();
+    const thread = all[message.peerId] ?? [];
+    if (thread.some((m) => m.id === message.id)) return;
+    thread.push(message);
+    // Trim from the front: the oldest go first, and the cap is per
+    // conversation so one busy chat cannot evict every other.
+    if (thread.length > MAX_MESSAGES_PER_CONVERSATION) {
+      thread.splice(0, thread.length - MAX_MESSAGES_PER_CONVERSATION);
+    }
+    all[message.peerId] = thread;
+    write(MESSAGES, all);
+  },
+
   /** Forget everything. Used when a link is refused or a device is revoked —
    * leaving a dead ratchet behind would make the next link fail confusingly. */
   clear(): void {
-    for (const key of [KEYS, GRANT, SESSIONS, PEER_CERTS, CONTACTS, PREKEYS]) {
+    for (const key of [
+      KEYS,
+      GRANT,
+      SESSIONS,
+      PEER_CERTS,
+      CONTACTS,
+      PREKEYS,
+      MESSAGES,
+    ]) {
       localStorage.removeItem(key);
     }
   },
