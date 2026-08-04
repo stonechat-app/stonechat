@@ -95,7 +95,7 @@ fn der_of(cert_pem: &str) -> Result<Vec<u8>, String> {
     Ok(der.as_ref().to_vec())
 }
 
-fn mint(not_before: i64, not_after: i64) -> Result<ScheduledCert, String> {
+fn mint(not_before: i64, not_after: i64, sans: &[String]) -> Result<ScheduledCert, String> {
     // Enforced rather than merely documented. A certificate a day over the cap
     // is refused by the browser with an error that says nothing useful, and
     // the mistake would only show up in a browser nobody is testing in.
@@ -109,8 +109,17 @@ fn mint(not_before: i64, not_after: i64) -> Result<ScheduledCert, String> {
     // ECDSA P-256 is rcgen's default and is what the browser requires; do not
     // "upgrade" this to Ed25519 without checking the WebTransport spec first.
     let key_pair = rcgen::KeyPair::generate().map_err(|e| e.to_string())?;
-    let mut params = rcgen::CertificateParams::new(vec![])
-        .map_err(|e| e.to_string())?;
+    // A **subjectAltName is mandatory**, and its absence is not a warning: a
+    // certificate with only a CommonName is rejected outright by Chrome with
+    // `QUIC_TLS_CERTIFICATE_UNKNOWN … CERTIFICATE_VERIFY_FAILED`, which reads
+    // as "the pin did not match" and is nothing of the sort. Browsers stopped
+    // honouring CN as a name years ago; `serverCertificateHashes` does not
+    // exempt a certificate from being well formed.
+    //
+    // Rust QUIC clients skip name checks when given hashes, so this passes
+    // every test we have and fails in the only place that matters.
+    let mut params =
+        rcgen::CertificateParams::new(sans.to_vec()).map_err(|e| e.to_string())?;
     params.distinguished_name = {
         let mut dn = rcgen::DistinguishedName::new();
         dn.push(rcgen::DnType::CommonName, "stonechat-mailbox-wt");
@@ -145,9 +154,28 @@ impl CertSchedule {
     /// Idempotent and safe to call on every boot: a relay that was off for a
     /// month regenerates the tail rather than starting over, so the pins a
     /// client already holds keep working.
-    pub fn load_or_generate(dir: &Path, now: i64) -> Result<Self, String> {
+    pub fn load_or_generate(dir: &Path, now: i64, sans: &[String]) -> Result<Self, String> {
         let dir = dir.join("wt");
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+        // The names are baked into every certificate, so a change to them
+        // invalidates the whole schedule. Recorded and compared rather than
+        // assumed: a relay that moved to a new address would otherwise keep
+        // serving certificates naming the old one, and the failure is a TLS
+        // rejection that says nothing about names.
+        let marker = dir.join("sans.txt");
+        let wanted = sans.join(",");
+        let held = std::fs::read_to_string(&marker).unwrap_or_default();
+        if held != wanted {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if matches!(path.extension().and_then(|e| e.to_str()), Some("crt" | "key")) {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            std::fs::write(&marker, &wanted).map_err(|e| e.to_string())?;
+        }
+
         let mut certs = Self::read_existing(&dir, now)?;
 
         // Each certificate takes over OVERLAP_DAYS before the previous one
@@ -160,7 +188,7 @@ impl CertSchedule {
             .unwrap_or(now - DAY); // a day of slack for a client clock behind ours
 
         while certs.len() < SCHEDULE_LEN {
-            let cert = mint(next_start, next_start + VALIDITY_DAYS as i64 * DAY)?;
+            let cert = mint(next_start, next_start + VALIDITY_DAYS as i64 * DAY, sans)?;
             Self::write(&dir, &cert)?;
             next_start += step;
             certs.push(cert);
@@ -287,16 +315,35 @@ mod tests {
 
     const NOW: i64 = 1_800_000_000;
 
+    fn sans() -> Vec<String> {
+        vec!["127.0.0.1".to_string(), "localhost".to_string()]
+    }
+
     #[test]
     fn minting_over_the_cap_is_refused() {
         // Matched rather than unwrap_err'd: ScheduledCert holds a private
         // key, so it deliberately does not derive Debug — nothing should be
         // able to print one into a log by accident.
-        match mint(NOW, NOW + 15 * DAY) {
+        match mint(NOW, NOW + 15 * DAY, &sans()) {
             Err(e) => assert!(e.contains("browsers cap"), "{e}"),
             Ok(_) => panic!("a 15-day certificate should be refused"),
         }
-        assert!(mint(NOW, NOW + 14 * DAY).is_ok());
+        assert!(mint(NOW, NOW + 14 * DAY, &sans()).is_ok());
+    }
+
+    /// Write a real minted certificate out so it can be inspected with
+    /// openssl. Not an assertion — a window into what browsers are being
+    /// handed, which is otherwise only visible mid-QUIC-handshake.
+    #[test]
+    #[ignore]
+    fn dump_a_certificate_for_inspection() {
+        let dir = tmp("dump");
+        let s = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
+        let live = s.live(NOW).unwrap();
+        let out = std::env::temp_dir().join("stonechat-wt-live.pem");
+        std::fs::write(&out, &live.cert_pem).unwrap();
+        println!("wrote {}", out.display());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -304,7 +351,7 @@ mod tests {
         // The one hard external constraint. A certificate a day over the cap
         // is refused by the browser with an error that says nothing useful.
         let dir = tmp("cap");
-        let s = CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        let s = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         for c in &s.certs {
             let days = (c.not_after - c.not_before) / DAY;
             assert!(
@@ -321,7 +368,7 @@ mod tests {
         // six-hour steps and assert something is always servable — a gap of
         // even an hour is an outage for every browser session.
         let dir = tmp("gap");
-        let s = CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        let s = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         let last = s.certs.last().unwrap().not_after;
         let mut t = NOW;
         while t < last - DAY {
@@ -336,7 +383,7 @@ mod tests {
         // The point of publishing the future: a client only has to refresh
         // before its *last* pin lapses, not before the current one does.
         let dir = tmp("ahead");
-        let s = CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        let s = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         let horizon = (s.certs.last().unwrap().not_after - NOW) / DAY;
         assert!(horizon > 90, "only {horizon} days of pins published");
         std::fs::remove_dir_all(&dir).ok();
@@ -348,10 +395,10 @@ mod tests {
         // be holding hashes for certificates that no longer exist — and the
         // failure looks like an unreachable relay, not a rotation bug.
         let dir = tmp("reboot");
-        let first = CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        let first = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         let before: Vec<_> = first.certs.iter().map(|c| c.sha256_b64.clone()).collect();
         drop(first);
-        let second = CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        let second = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         let after: Vec<_> = second.certs.iter().map(|c| c.sha256_b64.clone()).collect();
         assert_eq!(before, after);
         std::fs::remove_dir_all(&dir).ok();
@@ -360,7 +407,7 @@ mod tests {
     #[test]
     fn time_passing_extends_the_schedule_without_disturbing_it() {
         let dir = tmp("extend");
-        let first = CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        let first = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         let live_then = first.live(NOW).unwrap().sha256_b64.clone();
         let still_valid: Vec<_> = first
             .certs
@@ -372,7 +419,7 @@ mod tests {
 
         // Two months later: expired certificates are dropped, the tail is
         // extended, and everything a client could still be pinning survives.
-        let later = CertSchedule::load_or_generate(&dir, NOW + 60 * DAY).unwrap();
+        let later = CertSchedule::load_or_generate(&dir, NOW + 60 * DAY, &sans()).unwrap();
         let after: Vec<_> = later.certs.iter().map(|c| c.sha256_b64.clone()).collect();
         for hash in &still_valid {
             assert!(after.contains(hash), "a still-valid pin was discarded");
@@ -387,14 +434,17 @@ mod tests {
     fn expired_keys_are_deleted_not_merely_ignored() {
         // A private key nobody can use is a liability with no upside.
         let dir = tmp("shred");
-        CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         let wt = dir.join("wt");
         let before = std::fs::read_dir(&wt).unwrap().count();
-        CertSchedule::load_or_generate(&dir, NOW + 400 * DAY).unwrap();
+        CertSchedule::load_or_generate(&dir, NOW + 400 * DAY, &sans()).unwrap();
+        // Only the certificate material — the directory also holds the
+        // `sans.txt` marker, which has no window in its name.
         let names: Vec<_> = std::fs::read_dir(&wt)
             .unwrap()
             .flatten()
             .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".crt") || n.ends_with(".key"))
             .collect();
         assert!(before > 0);
         for name in &names {
@@ -414,7 +464,7 @@ mod tests {
         // BLAKE2b from the directory, browsers are handed SHA-256. Mixing them
         // up produces a pin nothing matches.
         let dir = tmp("hash");
-        let s = CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        let s = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         let live = s.live(NOW).unwrap();
         let der = der_of(&live.cert_pem).unwrap();
         assert_eq!(live.sha256_b64, B64.encode(Sha256::digest(&der)));
@@ -426,7 +476,7 @@ mod tests {
     #[test]
     fn what_is_published_carries_no_private_material() {
         let dir = tmp("public");
-        let s = CertSchedule::load_or_generate(&dir, NOW).unwrap();
+        let s = CertSchedule::load_or_generate(&dir, NOW, &sans()).unwrap();
         let text = s.published(NOW).to_string();
         assert!(!text.contains("PRIVATE"));
         assert!(!text.contains("BEGIN"));

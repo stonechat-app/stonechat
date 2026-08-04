@@ -74,6 +74,9 @@ class LocalDockerProvider(CloudProvider):
                 # discovered after the fact rather than chosen — which is why
                 # it has to be published and cannot be derived.
                 "-p", f"0:{WT_PORT}/udp",
+                "-e",
+                f"STONECHAT_WT_ADVERTISE="
+                f"{os.environ.get('STONECHAT_LOCAL_HOST', '127.0.0.1')}",
                 "-e", f"STONECHAT_OWNER_ID={req.owner_id}",
                 "-e", f"STONECHAT_OWNER_TOKEN={req.owner_token}",
                 "-e", f"STONECHAT_PUSH_GATEWAY={os.environ.get('STONECHAT_PUSH_GATEWAY', '')}",

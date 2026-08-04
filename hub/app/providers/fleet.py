@@ -133,6 +133,11 @@ class FleetProvider(CloudProvider):
             # The browser transport. The host port is Docker's choice, which
             # is exactly why it must be published rather than derived.
             "-p", f"0:{WT_PORT}/udp",
+            # The names the browser transport's certificates must carry. The
+            # relay cannot discover this — inside the container it sees a
+            # private address — and a certificate without a matching SAN is
+            # refused by browsers with an error that reads like a pin mismatch.
+            "-e", f"STONECHAT_WT_ADVERTISE={host.advertise}",
             "-e", f"STONECHAT_OWNER_ID={req.owner_id}",
             "-e", f"STONECHAT_OWNER_TOKEN={req.owner_token}",
             "-e", f"STONECHAT_PUSH_GATEWAY={os.environ.get('STONECHAT_PUSH_GATEWAY', '')}",

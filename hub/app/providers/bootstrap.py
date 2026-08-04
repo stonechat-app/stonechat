@@ -124,6 +124,12 @@ Environment=STONECHAT_PUSH_GATEWAY={push_gateway}
 Environment=STONECHAT_PUSH_KEY={push_key}
 Environment=STONECHAT_TURN_SECRET=$TURN_SECRET
 Environment=STONECHAT_TURN_PORT={turn_port}
+# The browser transport's certificates must name the address clients dial.
+# A certificate with no matching subjectAltName is refused by browsers with an
+# error that reads like a pin mismatch and is not one. Empty on a box where the
+# metadata service says nothing — the relay still serves native clients, and
+# only browser sessions are lost.
+Environment=STONECHAT_WT_ADVERTISE=$PUBLIC_IP
 ExecStart=/opt/stonechat/stonechat-relay
 Restart=always
 RestartSec=2

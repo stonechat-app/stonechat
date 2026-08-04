@@ -158,12 +158,35 @@ async fn main() {
     let tls = tls::Tls::load_or_generate(&tls_dir).expect("TLS setup failed");
     // Generated even when the endpoint is off, so turning it on later does not
     // hand every client a schedule they have never seen.
+    // The names the browser transport's certificates carry. A certificate with
+    // no subjectAltName is refused by browsers outright — CommonName has not
+    // been a name for years — and the rejection reads as a pin mismatch, which
+    // it is not.
+    //
+    // The relay cannot discover this itself: in a container it sees a private
+    // address, and the address clients dial is the host's. Whoever creates the
+    // container knows it, so they pass it. Loopback is always included so a
+    // developer running the binary directly needs no configuration.
+    let mut wt_sans: Vec<String> = env_or("STONECHAT_WT_ADVERTISE", "")
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    for fallback in ["127.0.0.1", "localhost", "::1"] {
+        if !wt_sans.iter().any(|s| s == fallback) {
+            wt_sans.push(fallback.to_string());
+        }
+    }
     let wt_certs = if wt_port == 0 {
         None
     } else {
         Some(Arc::new(
-            wtcert::CertSchedule::load_or_generate(&tls_dir, chrono::Utc::now().timestamp())
-                .expect("webtransport certificate schedule"),
+            wtcert::CertSchedule::load_or_generate(
+                &tls_dir,
+                chrono::Utc::now().timestamp(),
+                &wt_sans,
+            )
+            .expect("webtransport certificate schedule"),
         ))
     };
     let state = Arc::new(AppState {
