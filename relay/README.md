@@ -20,7 +20,9 @@ STONECHAT_OWNER_ID=SC-… STONECHAT_OWNER_TOKEN=secret ./target/release/stonecha
 ```
 
 Env contract: `STONECHAT_PORT` (8080), `STONECHAT_WT_PORT` (8443, UDP; `0`
-disables), `STONECHAT_DB` (`mailbox.db`), `STONECHAT_BLOBS` (`blobs`),
+disables), `STONECHAT_WT_ADVERTISE` (comma-separated hosts/IPs the browser
+transport's certificates must name — see below), `STONECHAT_DB` (`mailbox.db`),
+`STONECHAT_BLOBS` (`blobs`),
 `STONECHAT_TLS_DIR` (DB's directory),
 `STONECHAT_TURN_SECRET`/`STONECHAT_TURN_PORT`, `STONECHAT_PUSH_GATEWAY`/`STONECHAT_PUSH_KEY`.
 
@@ -66,6 +68,34 @@ expose the fixed port. Unsigned, and safe to be: rewriting it sends a client to
 a server whose certificate is not in the owner-signed schedule, so the
 connection is refused — denial of service, not compromise, the same property
 `address` already has behind `tls_fp`.
+
+#### `STONECHAT_WT_ADVERTISE` is not optional in a container
+
+Every certificate must carry a **subjectAltName naming the address clients
+dial**. `serverCertificateHashes` does not exempt a certificate from being well
+formed, and browsers stopped honouring CommonName as a name years ago. Without
+one, Chrome refuses with:
+
+```
+ERR_QUIC_PROTOCOL_ERROR.QUIC_TLS_CERTIFICATE_UNKNOWN
+  … 46: certificate unknown … CERTIFICATE_VERIFY_FAILED
+```
+
+which reads as "the pin did not match" and is nothing of the sort — the pin
+matches fine. Worse, **Rust QUIC clients skip name checks when given hashes**,
+so a SAN-less certificate passes every test in this repo, including the three
+end-to-end WebTransport ones and a live connection against production. It fails
+only in the one place that matters. That is how it shipped.
+
+The relay cannot discover the name itself: inside a container it sees a private
+address, and the address clients dial belongs to the host. Whoever creates the
+container knows it and passes it — the fleet and local providers set it from
+`host.advertise`, and VM startup scripts from the metadata service. Loopback is
+always appended, so running the binary directly needs no configuration.
+
+Changing it regenerates the whole schedule: the names are baked into every
+certificate, and a relay that moved would otherwise keep serving certificates
+naming its old address. The current set is recorded in `<tls_dir>/wt/sans.txt`.
 
 #### One router, two transports
 
