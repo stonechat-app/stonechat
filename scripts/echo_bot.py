@@ -66,13 +66,70 @@ SENTENCES = [
 
 class Peer:
     """Duck-typed stand-in for e2e.Phone on the remote side: exactly the
-    attributes Phone.make_envelope/wrap/deliver_to read from `to`."""
+    attributes Phone.make_envelope/wrap/deliver_to read from `to`.
 
-    def __init__(self, stonechat_id: str, pubkey_b64: str, pq_pk: bytes, address: str):
+    `cert` is the peer device's certificate, and it is load-bearing: since
+    device certificates, envelopes are sealed to the key a *certificate* names,
+    not to the one identity key in the directory. Without it wrap() has nothing
+    to encrypt to. It is cached in the bot's state because fetching it means
+    pulling the peer's bundle, which consumes one of their one-time prekeys."""
+
+    def __init__(self, stonechat_id: str, pubkey_b64: str, address: str,
+                 cert: dict | None = None):
         self.stonechat_id = stonechat_id
         self.pubkey_b64 = pubkey_b64
-        self.pq_pk = pq_pk
+        self.address = address
         self.server = {"address": address}
+        self.cert = cert
+        # Only read if `cert` is missing, which for a remote peer means we
+        # have no business sending at all — so it fails loudly rather than
+        # sealing to something arbitrary.
+        self.dev_seal_pk = None
+
+
+def hub(method: str, path: str, **kw) -> dict:
+    """A hub call that fails with a sentence rather than a KeyError.
+
+    The bot used to call .json() straight off the response, so a 401 body —
+    `{"detail": "..."}` — surfaced three lines later as `KeyError: 'status'`
+    and pointed nowhere. 401 in particular has one overwhelmingly likely
+    cause worth naming.
+    """
+    r = httpx.request(method, f"{HUB}{path}", timeout=30, **kw)
+    if r.status_code == 401:
+        sys.exit(
+            f"the hub no longer knows this identity ({r.status_code}).\n"
+            f"Its directory was probably reset. Delete {STATE_PATH} and re-run "
+            "to register a fresh one."
+        )
+    if r.status_code >= 400:
+        sys.exit(f"{method} {path} failed ({r.status_code}): {r.text[:300]}")
+    return r.json()
+
+
+def peer_cert(bot: Phone, peer: Peer) -> dict:
+    """The peer device's certificate, cached.
+
+    Every envelope is sealed to the key a certificate names, so this is needed
+    on *every* send — but fetching it means pulling their prekey bundle, which
+    consumes one of their one-time prekeys. Hence the cache. Verified against
+    the identity key their SC- ID commits to before it is trusted or stored.
+    """
+    key = (peer.stonechat_id, e2e.PRIMARY_DEVICE)
+    cached = bot.peer_certs.get(key)
+    if cached:
+        return cached
+    bundle = MX.get(f"{peer.server['address']}/prekeys/bundle", timeout=15)
+    bundle.raise_for_status()
+    cert = bundle.json().get("cert")
+    if not cert:
+        raise RuntimeError(
+            f"{peer.stonechat_id} publishes no device certificate — "
+            "nothing to encrypt to")
+    e2e.verify_devcert(cert, base64.b64decode(peer.pubkey_b64),
+                       device=e2e.PRIMARY_DEVICE)
+    bot.peer_certs[key] = cert
+    return cert
 
 
 def resolve(stonechat_id: str) -> Peer:
@@ -81,15 +138,17 @@ def resolve(stonechat_id: str) -> Peer:
     entry = entry.json()
     assert stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == entry["stonechat_id"], \
         "directory pubkey does not commit to the Stonechat ID"
-    # The X-Wing key seals every envelope to this peer — only trust it
-    # signed by the (commitment-checked) identity key.
+    # The identity's X-Wing key is still published and still signature-checked
+    # — a directory serving an unsigned one is serving junk — but **nothing
+    # seals to it any more**. Envelopes go to a device's certified seal key;
+    # see peer_cert() below.
     VerifyKey(base64.b64decode(entry["pubkey"])).verify(
         e2e.PQPK_SIG_CONTEXT + base64.b64decode(entry["pq_pk"]),
         base64.b64decode(entry["pq_sig"]))
     if not entry["server"]:
         raise RuntimeError(f"{stonechat_id} has no running relay — can't deliver")
     return Peer(entry["stonechat_id"], entry["pubkey"],
-                base64.b64decode(entry["pq_pk"]), entry["server"]["address"])
+                entry["server"]["address"])
 
 
 # -- state ---------------------------------------------------------------------
@@ -106,6 +165,17 @@ def save(bot: Phone) -> None:
         "kspk": bot.kspk,
         "kopks": bot.kopks,
         "next_prekey_id": bot._next_prekey_id,
+        # This device's own keys and the certificate over them. Regenerating
+        # these on restart would publish prekeys signed by a key no peer has
+        # heard of, and leave every cached certificate pointing at a seal key
+        # this process no longer holds — every established chat would break,
+        # silently, which is the one thing the state file exists to prevent.
+        "dev_sig_seed": bytes(bot.dev_sig),
+        "dev_seal_seed": bot.dev_seal_seed,
+        "cert": bot.cert,
+        # Peer certificates: needed on every send, and each fetch costs one of
+        # their one-time prekeys.
+        "peer_certs": bot.peer_certs,
     }))
 
 
@@ -116,11 +186,26 @@ def load() -> Phone | None:
     bot = Phone(BOT_NAME)
     bot.identity = SigningKey(s["seed"])
     bot.pubkey_b64 = e2e.b64(bytes(bot.identity.verify_key))
-    bot.derive_pq()  # the X-Wing identity is derived from the Ed25519 key
+    # Restore the device keys *before* derive_pq, which only mints them when
+    # they are absent. Getting this order wrong is how a restart quietly
+    # becomes a different device.
+    if "dev_sig_seed" in s:
+        bot.dev_sig = SigningKey(s["dev_sig_seed"])
+        bot.dev_seal_seed = s["dev_seal_seed"]
+    bot.derive_pq()
+    bot.cert = s.get("cert")
+    bot.peer_certs = s.get("peer_certs", {})
     bot.stonechat_id, bot.token, bot.server = s["stonechat_id"], s["token"], s["server"]
     bot.sessions, bot.spk, bot.opks = s["sessions"], s["spk"], s["opks"]
     bot.kspk, bot.kopks = s.get("kspk"), s.get("kopks", {})
     bot._next_prekey_id = s["next_prekey_id"]
+    if "dev_sig_seed" not in s:
+        # State from before device certificates. The keys it holds are for a
+        # device the relay has never heard of, so the sessions in it are dead.
+        sys.exit(
+            f"{STATE_PATH} predates device certificates — its sessions cannot "
+            "be resumed. Delete it and re-run to register fresh."
+        )
     return bot
 
 
@@ -131,36 +216,37 @@ def redeem(bot: Phone) -> None:
         "fleet is plan-gated — set STONECHAT_TEST_CODE (the current tester codes "
         "live in the hub's systemd drop-in, STONECHAT_TEST_CODES)")
     r = httpx.post(f"{HUB}/v1/billing/redeem", headers=bot.auth,
-                   json={"code": code})
+                   json={"code": code}, timeout=30)
     if r.status_code == 404:
         sys.exit(f"hub does not recognize code {code!r} — that's the "
                  "placeholder or a revoked code; use the current one from "
                  "the hub's drop-in")
-    r.raise_for_status()
+    if r.status_code >= 400:
+        sys.exit(f"redeeming {code!r} failed ({r.status_code}): {r.text[:300]}")
     print("entitlement:", r.json()["plan"], r.json()["status"])
 
 
 def ensure_provisioned(bot: Phone) -> None:
     """Idempotent: registers/ignites whatever is still missing, so a failed
     first run (bad code, network blip) resumes instead of orphaning IDs."""
-    srv = httpx.get(f"{HUB}/v1/server", headers=bot.auth).json()
+    srv = hub("GET", "/v1/server", headers=bot.auth)
     if srv["status"] == "error":
         sys.exit(f"relay is in error state: {srv.get('error')} — run "
                  "--destroy and start over")
     if srv["status"] == "none":
-        r = httpx.post(f"{HUB}/v1/server", headers=bot.auth, json={
+        body = {
             "provider": "fleet",
             "machine": {"machine_type": "container", "region": "fleet1",
                         "disk_gb": 10},
-        })
+        }
+        r = httpx.post(f"{HUB}/v1/server", headers=bot.auth, json=body, timeout=30)
         if r.status_code == 402:
             redeem(bot)
-            r = httpx.post(f"{HUB}/v1/server", headers=bot.auth, json={
-                "provider": "fleet",
-                "machine": {"machine_type": "container", "region": "fleet1",
-                            "disk_gb": 10},
-            })
-        assert r.status_code == 202, (r.status_code, r.text)
+            r = httpx.post(f"{HUB}/v1/server", headers=bot.auth, json=body,
+                           timeout=30)
+        if r.status_code != 202:
+            sys.exit(f"could not ignite a mailbox ({r.status_code}): "
+                     f"{r.text[:300]}")
         print("igniting fleet mailbox…")
     if srv["status"] == "running":
         bot.server = srv
@@ -168,6 +254,9 @@ def ensure_provisioned(bot: Phone) -> None:
         bot.wait_running()
     if bot.spk is None:  # first run (or crashed before prekeys landed)
         bot.publish_tls_sig()
+        # Mints this device's certificate if it has none, and publishes it
+        # alongside the prekeys it signed — one without the other leaves a
+        # sender unable to check either.
         bot.upload_prekeys(opk_count=32)
     save(bot)
 
@@ -184,7 +273,25 @@ def top_up_opks(bot: Phone) -> None:
 # -- the bot -------------------------------------------------------------------
 
 def send(bot: Phone, peer: Peer, type_: str, payload: dict) -> None:
+    """Seal and deliver one envelope.
+
+    The recipient device's certified key is needed on *every* message, not
+    just the first — an established session never re-fetches a bundle. But a
+    bundle fetch consumes one of the peer's one-time prekeys, so the order
+    here matters: use the cache, and otherwise let the handshake's own fetch
+    supply it rather than paying for a second one.
+    """
+    key = (peer.stonechat_id, e2e.PRIMARY_DEVICE)
+    peer.cert = bot.peer_certs.get(key)
+    if peer.cert is None and key in bot.sessions:
+        # A session with no cached certificate: nothing is about to fetch a
+        # bundle on our behalf, so do it once.
+        peer.cert = peer_cert(bot, peer)
     bot.deliver_to(peer, bot.seal(peer, type_, payload))
+    # seal() establishes the session when there is none, and records the
+    # certificate it verified on the way.
+    if peer.cert is not None:
+        bot.peer_certs[key] = peer.cert
     save(bot)
 
 
@@ -249,6 +356,7 @@ def main() -> None:
     bot = load()
     if bot is None:
         bot = Phone(BOT_NAME)
+        bot.peer_certs = {}
         print("registering fresh identity on", HUB)
         bot.register()
         save(bot)

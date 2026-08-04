@@ -480,6 +480,11 @@ class Phone:
         cert = bundle.get("cert")
         assert cert, "no certificate for that device — nothing to encrypt to"
         verify_devcert(cert, unb64(to.pubkey_b64), device=device)
+        # Record it on the peer: wrap() needs the certified seal key on every
+        # send, not just the first, and a remote peer (echo_bot's Peer) has no
+        # other way to learn it. Verified immediately above, so what is cached
+        # is never unchecked.
+        to.cert = cert
         device_ed = VerifyKey(unb64(cert["sig_pub"]))
         # And PQXDH runs between those same two device keys — the third and
         # last place the identity secret used to be load-bearing. Nothing an
