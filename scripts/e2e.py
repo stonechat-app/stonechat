@@ -641,9 +641,11 @@ class Phone:
         return outer
 
     def seal(self, to: "Phone", type_: str, payload: dict,
-             envelope_id=None, blob_id=None) -> dict:
+             envelope_id=None, blob_id=None,
+             device=PRIMARY_DEVICE, bundle_token=None) -> dict:
         return self.wrap(to, self.make_envelope(
-            to, type_, payload, envelope_id=envelope_id, blob_id=blob_id))
+            to, type_, payload, envelope_id=envelope_id, blob_id=blob_id,
+            device=device, bundle_token=bundle_token))
 
     def unseal(self, outer: dict) -> dict:
         """Recover the inner envelope from a sealed wire envelope."""

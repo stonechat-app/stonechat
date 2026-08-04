@@ -33,6 +33,7 @@ import pickle
 import random
 import sys
 import time
+import uuid
 
 os.environ.setdefault("STONECHAT_HUB", "https://hub.stonechat.app")
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -107,29 +108,60 @@ def hub(method: str, path: str, **kw) -> dict:
     return r.json()
 
 
-def peer_cert(bot: Phone, peer: Peer) -> dict:
-    """The peer device's certificate, cached.
+def peer_cert(bot: Phone, peer: Peer, device: int) -> dict:
+    """One of the peer's device certificates, cached.
 
     Every envelope is sealed to the key a certificate names, so this is needed
     on *every* send — but fetching it means pulling their prekey bundle, which
     consumes one of their one-time prekeys. Hence the cache. Verified against
     the identity key their SC- ID commits to before it is trusted or stored.
     """
-    key = (peer.stonechat_id, e2e.PRIMARY_DEVICE)
+    key = (peer.stonechat_id, device)
     cached = bot.peer_certs.get(key)
     if cached:
         return cached
-    bundle = MX.get(f"{peer.server['address']}/prekeys/bundle", timeout=15)
+    params = {}
+    if device != e2e.PRIMARY_DEVICE:
+        # Only device 1's bundle is open. Anything else needs their bundle
+        # token, which rides every envelope they have sent us.
+        token = bot.bundle_tokens.get(peer.stonechat_id)
+        if not token:
+            raise RuntimeError(f"no bundle token for {peer.stonechat_id}")
+        params = {"device": device, "token": token}
+    bundle = MX.get(f"{peer.server['address']}/prekeys/bundle",
+                    params=params, timeout=15)
     bundle.raise_for_status()
     cert = bundle.json().get("cert")
     if not cert:
         raise RuntimeError(
-            f"{peer.stonechat_id} publishes no device certificate — "
+            f"{peer.stonechat_id} device {device} publishes no certificate — "
             "nothing to encrypt to")
-    e2e.verify_devcert(cert, base64.b64decode(peer.pubkey_b64),
-                       device=e2e.PRIMARY_DEVICE)
+    e2e.verify_devcert(cert, base64.b64decode(peer.pubkey_b64), device=device)
     bot.peer_certs[key] = cert
     return cert
+
+
+def peer_devices(bot: Phone, peer: Peer) -> list[int]:
+    """Which of a peer's devices to encrypt for.
+
+    Not optional, and not a nicety: a browser session is device 2 or later, so
+    a reply that only ever went to device 1 would reach their phone and never
+    the tab that sent the message. Which devices exist comes from their bundle
+    token; without one we can reach only their primary, which is exactly what
+    a stranger's first message gets.
+    """
+    token = bot.bundle_tokens.get(peer.stonechat_id)
+    if not token:
+        return [e2e.PRIMARY_DEVICE]
+    try:
+        listed = MX.get(f"{peer.server['address']}/prekeys/devices",
+                        params={"token": token}, timeout=15)
+        listed.raise_for_status()
+        ids = sorted(d["device_id"] for d in listed.json()["devices"])
+        return ids or [e2e.PRIMARY_DEVICE]
+    except Exception:
+        # A listing we cannot fetch is not a reason to send nothing.
+        return [e2e.PRIMARY_DEVICE]
 
 
 def resolve(stonechat_id: str) -> Peer:
@@ -176,6 +208,8 @@ def save(bot: Phone) -> None:
         # Peer certificates: needed on every send, and each fetch costs one of
         # their one-time prekeys.
         "peer_certs": bot.peer_certs,
+        # Their bundle tokens, so fan-out survives a restart.
+        "bundle_tokens": bot.bundle_tokens,
     }))
 
 
@@ -195,6 +229,7 @@ def load() -> Phone | None:
     bot.derive_pq()
     bot.cert = s.get("cert")
     bot.peer_certs = s.get("peer_certs", {})
+    bot.bundle_tokens = s.get("bundle_tokens", {})
     bot.stonechat_id, bot.token, bot.server = s["stonechat_id"], s["token"], s["server"]
     bot.sessions, bot.spk, bot.opks = s["sessions"], s["spk"], s["opks"]
     bot.kspk, bot.kopks = s.get("kspk"), s.get("kopks", {})
@@ -287,31 +322,52 @@ def top_up_opks(bot: Phone) -> None:
 # -- the bot -------------------------------------------------------------------
 
 def send(bot: Phone, peer: Peer, type_: str, payload: dict) -> None:
-    """Seal and deliver one envelope.
+    """Seal and deliver one envelope **per device** the peer has.
 
-    The recipient device's certified key is needed on *every* message, not
-    just the first — an established session never re-fetches a bundle. But a
-    bundle fetch consumes one of the peer's one-time prekeys, so the order
-    here matters: use the cache, and otherwise let the handshake's own fetch
-    supply it rather than paying for a second one.
+    The recipient device's certified key is needed on every message, not just
+    the first — an established session never re-fetches a bundle. But a bundle
+    fetch consumes one of their one-time prekeys, so the order matters: use the
+    cache, and otherwise let the handshake's own fetch supply it rather than
+    paying for a second one.
+
+    One dead device does not stop its siblings: the ones that took a copy will
+    show the message.
     """
-    key = (peer.stonechat_id, e2e.PRIMARY_DEVICE)
-    peer.cert = bot.peer_certs.get(key)
-    if peer.cert is None and key in bot.sessions:
-        # A session with no cached certificate: nothing is about to fetch a
-        # bundle on our behalf, so do it once.
-        peer.cert = peer_cert(bot, peer)
-    bot.deliver_to(peer, bot.seal(peer, type_, payload))
-    # seal() establishes the session when there is none, and records the
-    # certificate it verified on the way.
-    if peer.cert is not None:
-        bot.peer_certs[key] = peer.cert
+    envelope_id = str(uuid.uuid4())
+    token = bot.bundle_tokens.get(peer.stonechat_id)
+    delivered, last_error = 0, None
+    for device in peer_devices(bot, peer):
+        key = (peer.stonechat_id, device)
+        try:
+            peer.cert = bot.peer_certs.get(key)
+            if peer.cert is None and key in bot.sessions:
+                # A session with no cached certificate: nothing is about to
+                # fetch a bundle on our behalf, so do it once.
+                peer.cert = peer_cert(bot, peer, device)
+            bot.deliver_to(peer, bot.seal(
+                peer, type_, payload, envelope_id=envelope_id,
+                device=device, bundle_token=token))
+            # seal() establishes the session when there is none, and records
+            # the certificate it verified on the way.
+            if peer.cert is not None:
+                bot.peer_certs[key] = peer.cert
+            delivered += 1
+        except Exception as exc:
+            last_error = exc
+            print(f"  ! device {device} of {peer.stonechat_id[:12]}…: {exc!r}")
+    if delivered == 0 and last_error is not None:
+        raise last_error
     save(bot)
 
 
 async def handle(bot: Phone, outer: dict) -> None:
     inner = bot.unseal(outer)
     sender, type_ = inner["from"], inner["type"]
+    # Their bundle token rides every envelope. It is what lets a reply reach
+    # all of their devices instead of only their primary — without it a
+    # browser session never sees an answer to the message it just sent.
+    if inner.get("bundle_token"):
+        bot.bundle_tokens[sender] = inner["bundle_token"]
     payload = bot.open_envelope(inner, None)
 
     if type_ == "contact_request":
@@ -371,6 +427,7 @@ def main() -> None:
     if bot is None:
         bot = Phone(BOT_NAME)
         bot.peer_certs = {}
+        bot.bundle_tokens = {}
         print("registering fresh identity on", HUB)
         bot.register()
         save(bot)
