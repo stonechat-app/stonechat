@@ -258,6 +258,20 @@ def ensure_provisioned(bot: Phone) -> None:
         # alongside the prekeys it signed — one without the other leaves a
         # sender unable to check either.
         bot.upload_prekeys(opk_count=32)
+    # Vouch for the browser transport's certificate schedule, on every start
+    # rather than only the first: the relay may have been replaced since, and
+    # the schedule rotates on its own. An unvouched schedule is served by the
+    # directory as *no* schedule — deliberately, since a client must not pin
+    # something nobody signed — so a browser simply refuses to connect, with
+    # "that mailbox publishes no signed browser-transport certificates".
+    #
+    # Best-effort: a relay with no browser transport returns None and native
+    # clients are unaffected either way.
+    try:
+        if bot.publish_wt_certs() is not None:
+            print("vouched for the browser transport's certificates")
+    except Exception as exc:
+        print(f"could not vouch for the browser transport: {exc!r}")
     save(bot)
 
 
