@@ -11,6 +11,7 @@
  * meant a refresh emptied every conversation — defensible on paper and
  * unusable in practice. `store.ts` holds the reasoning and the bound.
  */
+import birdMark from './bird.png';
 import type { Message, Protocol } from './protocol.js';
 import { certExpiry } from './device.js';
 import {
@@ -71,6 +72,31 @@ function idColor(stonechatId: string): string {
 
 const shortId = (id: string) => id.replace(/^SC-/, '').slice(0, 9);
 
+/**
+ * The top bar: the mark and wordmark on the left, connection status on the
+ * right.
+ *
+ * One bar rather than two. The status used to sit in a strip of its own above
+ * the app, which spent a whole row saying "connected" — folding it in beside
+ * the brand costs nothing and reads as one piece of chrome.
+ *
+ * The mark is the same bird as the phone app and the landing page
+ * (`app/assets/logo/bird.png`), and the wordmark is set in the monospace face
+ * with the landing site's letter-spacing, so the three surfaces still look
+ * like one product.
+ */
+function brandBar(status: HTMLElement): HTMLElement {
+  const bar = el('header', 'brand');
+  const mark = el('img', 'brand__mark');
+  mark.src = birdMark;
+  mark.alt = '';
+  mark.width = 22;
+  mark.height = 22;
+  const word = el('span', 'brand__word', 'STONECHAT');
+  bar.append(mark, word, status);
+  return bar;
+}
+
 type Section = 'chats' | 'groups';
 
 export class App {
@@ -102,7 +128,7 @@ export class App {
     this.banner.append(this.dot, this.bannerText);
 
     const root = el('div', 'app');
-    root.append(this.banner, this.shell);
+    root.append(brandBar(this.banner), this.shell);
     into.replaceChildren(root);
 
     this.render();

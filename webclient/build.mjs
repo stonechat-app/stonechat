@@ -87,6 +87,11 @@ const result = await esbuild.build({
   target: 'es2022',
   platform: 'browser',
   minify: false, // auditability is the product; bytes are not the constraint
+  // The brand mark becomes a data: URI inside app.js, so it is covered by the
+  // script's SRI hash. As a separate file it would be an *unhashed* fetch —
+  // `<img>` cannot carry integrity — and a hole in the chain the whole build
+  // exists to keep closed.
+  loader: { '.png': 'dataurl' },
   sourcemap: false, // a sourcemap URL is another uncovered fetch
   legalComments: 'none',
   define: {

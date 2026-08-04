@@ -98,8 +98,10 @@ body {
 }
 
 .appbar__title {
-  font-size: 17px;
+  font-family: var(--font-mono);
+  font-size: 13px;
   font-weight: 600;
+  letter-spacing: 0.14em;
 }
 
 .card {
@@ -486,4 +488,44 @@ button.secondary {
   .pane__back {
     display: none !important;
   }
+}
+
+/* -- brand bar ----------------------------------------------------------- */
+
+/* One row of chrome: the mark and wordmark, then connection status pushed to
+ * the right. The wordmark is monospace with the landing site's letter-spacing
+ * (Header.astro `.logo-word`), so the three surfaces read as one product. */
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  flex: none;
+  padding: 0 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.brand__mark {
+  width: 22px;
+  height: 22px;
+  display: block;
+  flex: none;
+}
+
+.brand__word {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+/* The status sits inside the brand bar rather than in a strip of its own, so
+ * it loses the banner's background and border. */
+.brand .banner {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  padding: 0;
 }

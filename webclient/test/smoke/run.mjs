@@ -214,6 +214,7 @@ await esbuild.build({
   format: 'esm',
   target: 'es2022',
   platform: 'browser',
+  loader: { '.png': 'dataurl' },
   define: {
     __WASM_INTEGRITY__: JSON.stringify(
       'sha384-' + createHash('sha384').update(wasm).digest('base64'),

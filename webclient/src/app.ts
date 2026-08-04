@@ -5,6 +5,7 @@
  * Message *history* is not — it stays on the phone (WEB_CLIENT.md "the
  * defensible shape"), and `store.ts` says which is which and why.
  */
+import birdMark from './bird.png';
 import { b64decode, b64encode } from './bytes.js';
 import { StonechatCore } from './core.js';
 import { DeviceKeys, randomBytes, WEB_CERT_LIFETIME_MS } from './device.js';
@@ -37,6 +38,18 @@ const el = <K extends keyof HTMLElementTagNameMap>(
   if (text !== undefined) node.textContent = text;
   return node;
 };
+
+/** The mark, shared with the app and the landing page. Inlined by the build,
+ * so it costs no fetch and is covered by the script's SRI hash. */
+function brandMark(): HTMLImageElement {
+  const img = document.createElement('img');
+  img.src = birdMark;
+  img.alt = '';
+  img.width = 22;
+  img.height = 22;
+  img.style.display = 'block';
+  return img;
+}
 
 async function loadCore(): Promise<StonechatCore> {
   // The integrity string was compiled in at build time and the hash of *this
@@ -82,7 +95,7 @@ class LinkScreen {
   /** No QR, because there is no code that could work. */
   private mountFailure(into: HTMLElement, message: string): void {
     const bar = el('header', 'appbar');
-    bar.append(el('span', 'appbar__title', 'Stonechat'));
+    bar.append(brandMark(), el('span', 'appbar__title', 'STONECHAT'));
     const card = el('div', 'card');
     card.style.margin = 'var(--gutter)';
     card.style.padding = '16px';
@@ -101,7 +114,7 @@ class LinkScreen {
 
   private draw(into: HTMLElement): void {
     const bar = el('header', 'appbar');
-    bar.append(el('span', 'appbar__title', 'Stonechat'));
+    bar.append(brandMark(), el('span', 'appbar__title', 'STONECHAT'));
     const build = el('span', 'mono');
     build.textContent = `web ${__BUILD_VERSION__}`;
     build.style.marginLeft = 'auto';
