@@ -54,6 +54,15 @@ export class Protocol {
    * cost of delivery. */
   private readonly mailboxes = new Map<string, Promise<Mailbox>>();
 
+  /** The in-flight self-sync, if any. Exposed through [whenSynced] because
+   * fire-and-forget work is invisible to a test otherwise. */
+  private syncing: Promise<void> = Promise.resolve();
+
+  /** Resolves once the last send's mirror to our own devices has finished. */
+  whenSynced(): Promise<void> {
+    return this.syncing;
+  }
+
   constructor(
     private readonly core: StonechatCore,
     private readonly hub: Hub,
@@ -295,7 +304,7 @@ export class Protocol {
     let lastError: unknown = null;
     for (const device of devices) {
       try {
-        await this.sendTo(peerId, device, id, sentAt, text);
+        await this.sendTo(peerId, device, id, sentAt, 'msg', { text });
         delivered++;
       } catch (e) {
         lastError = e;
@@ -306,7 +315,64 @@ export class Protocol {
         ? lastError
         : new Error('Could not reach any of their devices.');
     }
+    // Mirror it to our own other devices. Without this a message typed in the
+    // browser never appears on the phone and vice versa: each device only sees
+    // what a *peer* sent it, and our own outgoing messages have no other route.
+    //
+    // Not awaited: the message has already reached the person it was for, and
+    // making the composer wait on a sibling that may be offline would be the
+    // wrong trade. The promise is kept so tests can wait for it.
+    this.syncing = this.syncSent(peerId, id, sentAt, text);
     return { id, peerId, mine: true, text, sentAt };
+  }
+
+  /**
+   * Mirror one of our own outgoing messages to our other devices.
+   *
+   * Best-effort, like receipts: a lost sync costs a stale view on one device,
+   * and it must never make the send itself look failed — the message did go to
+   * the person it was for.
+   */
+  private async syncSent(
+    peerId: string,
+    id: string,
+    sentAt: string,
+    text: string,
+  ): Promise<void> {
+    const payload = {
+      peer: peerId,
+      type: 'msg',
+      payload: { text },
+      id,
+      // Milliseconds, matching what the app's `_applySyncSent` reads. The
+      // outer envelope carries ISO; this inner field does not.
+      sent_at: Date.parse(sentAt),
+    };
+    for (const device of await this.siblingDevices()) {
+      try {
+        await this.sendTo(this.stonechatId, device, id, sentAt, 'sync_sent', payload);
+      } catch {
+        // A device that is gone or unreachable is not this send's problem.
+      }
+    }
+  }
+
+  /** Our own devices, excluding this one. */
+  private async siblingDevices(): Promise<number[]> {
+    const token = this.grant.bundle_token;
+    if (!token) return [];
+    try {
+      const mailbox = await this.ownMailbox();
+      const listed = await mailbox.json<{ devices: Array<{ device_id: number }> }>(
+        'GET',
+        `/prekeys/devices?token=${encodeURIComponent(token)}`,
+      );
+      return listed.devices
+        .map((d) => d.device_id)
+        .filter((d) => d !== this.deviceId);
+    } catch {
+      return [];
+    }
   }
 
   /** Which of a peer's devices to encrypt for. */
@@ -332,7 +398,8 @@ export class Protocol {
     device: number,
     id: string,
     sentAt: string,
-    text: string,
+    type: string,
+    payload: Record<string, unknown>,
   ): Promise<void> {
     const state = await this.sessionFor(peerId, device);
     // Held from whichever way the session was established: fetched with their
@@ -341,7 +408,6 @@ export class Protocol {
     const sealKey = cert ? certSealKey(cert) : null;
     if (!sealKey) throw new Error('No usable certificate for that device.');
 
-    const type = 'msg';
     // Both device numbers are bound, on every message. One form, no
     // conditional: this is the one place a second code path would mean silent
     // decryption failure.
@@ -353,7 +419,7 @@ export class Protocol {
     const nonce = randomBytes(24);
     const result = this.core.sessionEncrypt(
       state,
-      utf8.encode(JSON.stringify({ text })),
+      utf8.encode(JSON.stringify(payload)),
       ad,
       nonce,
     );
@@ -468,18 +534,42 @@ export class Protocol {
     if (result === null) return null;
     store.setSession(from, fromDevice, result.state);
 
+    const body = JSON.parse(fromUtf8.decode(b64decode(result.plaintext))) as
+      Record<string, unknown>;
+
+    if (type === 'sync_sent') {
+      // One of *our* devices telling us what it sent. Applied only when the
+      // sender is our own identity — which the session already authenticates,
+      // since only our own devices hold a ratchet under our SC- ID.
+      if (from !== this.stonechatId) return null;
+      return this.fromSyncSent(body);
+    }
     if (type !== 'msg') return null; // slim: text only
-    const payload = JSON.parse(
-      fromUtf8.decode(b64decode(result.plaintext)),
-    ) as { text?: string };
-    if (typeof payload.text !== 'string') return null;
+    if (typeof body['text'] !== 'string') return null;
     return {
       id: String(inner['id']),
       peerId: from,
       mine: false,
-      text: payload.text,
+      text: body['text'],
       sentAt: String(inner['sent_at'] ?? new Date().toISOString()),
     };
+  }
+
+  /** A message one of our own devices sent, mirrored to us. */
+  private fromSyncSent(payload: Record<string, unknown>): Message | null {
+    const peerId = (payload['group_id'] ?? payload['peer']) as string | undefined;
+    const inner = payload['payload'] as Record<string, unknown> | undefined;
+    const id = payload['id'] as string | undefined;
+    // Groups are not implemented here, so a group_id would render a message
+    // into a conversation this client cannot open. Better to drop it.
+    if (!peerId || !inner || !id || payload['group_id']) return null;
+    if ((payload['type'] ?? 'msg') !== 'msg') return null;
+    if (typeof inner['text'] !== 'string') return null;
+    const sentAt =
+      typeof payload['sent_at'] === 'number'
+        ? new Date(payload['sent_at']).toISOString()
+        : new Date().toISOString();
+    return { id, peerId, mine: true, text: inner['text'], sentAt };
   }
 
   /**

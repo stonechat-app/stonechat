@@ -16,7 +16,8 @@ Usage (first run provisions; later runs reuse the saved identity):
     python3 scripts/echo_bot.py --destroy      # tear down mailbox + state
 
 Env: STONECHAT_HUB (default https://hub.stonechat.app), STONECHAT_TEST_CODE (required on
-first run — fleet is plan-gated), STONECHAT_BOT_NAME (default "Echo Bot"),
+first run — fleet is plan-gated), STONECHAT_BOT_NAME (default: a random
+"<word> (echo bot)", chosen once and kept with the identity),
 STONECHAT_BOT_STATE (default ~/.stonechat_echo_bot.pkl).
 
 Identity, prekeys, and ratchet sessions persist in the state file, so the bot
@@ -47,7 +48,26 @@ from e2e import MX, WS_SSL, Phone
 from app.identity import stonechat_id_from_pubkey  # noqa: E402 (path set by e2e)
 
 HUB = e2e.HUB
-BOT_NAME = os.environ.get("STONECHAT_BOT_NAME", "Echo Bot")
+
+# A different name per run, so several bots in a contact list are tellable
+# apart — and so a fresh one is obviously fresh rather than looking like the
+# last one come back. STONECHAT_BOT_NAME still overrides.
+#
+# The name is chosen once and then persisted with the identity: it is part of
+# who this bot is to everyone who has added it, and rerolling it on restart
+# would rename a contact under the user.
+_WORDS = [
+    "amber", "basalt", "cedar", "delta", "ember", "flint", "granite", "harbor",
+    "indigo", "juniper", "kelp", "lumen", "marble", "nimbus", "onyx", "pebble",
+    "quartz", "ridge", "slate", "tundra", "umber", "vellum", "willow", "yarrow",
+]
+
+
+def random_bot_name() -> str:
+    return f"{random.choice(_WORDS)} (echo bot)"
+
+
+BOT_NAME = os.environ.get("STONECHAT_BOT_NAME") or random_bot_name()
 STATE_PATH = pathlib.Path(
     os.environ.get("STONECHAT_BOT_STATE", pathlib.Path.home() / ".stonechat_echo_bot.pkl"))
 
@@ -188,6 +208,7 @@ def resolve(stonechat_id: str) -> Peer:
 def save(bot: Phone) -> None:
     STATE_PATH.write_bytes(pickle.dumps({
         "seed": bytes(bot.identity),
+        "name": bot.name,
         "stonechat_id": bot.stonechat_id,
         "token": bot.token,
         "server": bot.server,
@@ -217,7 +238,7 @@ def load() -> Phone | None:
     if not STATE_PATH.exists():
         return None
     s = pickle.loads(STATE_PATH.read_bytes())
-    bot = Phone(BOT_NAME)
+    bot = Phone(s.get("name", BOT_NAME))
     bot.identity = SigningKey(s["seed"])
     bot.pubkey_b64 = e2e.b64(bytes(bot.identity.verify_key))
     # Restore the device keys *before* derive_pq, which only mints them when
@@ -374,10 +395,10 @@ async def handle(bot: Phone, outer: dict) -> None:
         name = payload.get("display_name") or sender[:12]
         print(f"contact request from {name} ({sender}) — accepting")
         peer = resolve(sender)
-        send(bot, peer, "contact_accept", {"display_name": BOT_NAME})
+        send(bot, peer, "contact_accept", {"display_name": bot.name})
         await asyncio.sleep(1.0)
         send(bot, peer, "msg",
-             {"text": f"Hi {name}! I'm {BOT_NAME}. Say anything and "
+             {"text": f"Hi {name}! I'm {bot.name}. Say anything and "
                       "I'll answer with one of my ten sentences."})
     elif type_ == "contact_accept":
         print(f"{sender} accepted our request")
@@ -433,7 +454,7 @@ def main() -> None:
         save(bot)
     ensure_provisioned(bot)
 
-    print(f"\n  {BOT_NAME}: {bot.stonechat_id}")
+    print(f"\n  {bot.name}: {bot.stonechat_id}")
     print("  add this ID as a contact on your phone\n")
 
     if "--say" in sys.argv:
@@ -451,7 +472,7 @@ def main() -> None:
     if "--add" in sys.argv:
         target = sys.argv[sys.argv.index("--add") + 1]
         peer = resolve(target)
-        send(bot, peer, "contact_request", {"display_name": BOT_NAME})
+        send(bot, peer, "contact_request", {"display_name": bot.name})
         print(f"sent contact request to {target} — accept it on the phone")
 
     try:

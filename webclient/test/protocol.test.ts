@@ -46,21 +46,29 @@ interface Queued {
 
 /** One owner's mailbox: a prekey store and a per-device queue. */
 class FakeRelay {
-  prekeys: Record<string, unknown> | null = null;
-  queue: Queued[] = [];
+  /** Per device, like the real relay: each device publishes its own pool and
+   * its own certificate. One shared slot would let a sibling's publish clobber
+   * another's, and the mismatch it causes is exactly the bug per-device
+   * prekeys exist to prevent. */
+  prekeys = new Map<number, Record<string, unknown>>();
+  /** Per-device queues. A single shared queue would let a sibling drain mail
+   * addressed to another device, which is precisely what per-device fan-out
+   * exists to prevent — a mock that did that could not see a routing bug. */
+  queues = new Map<number, Queued[]>();
+  /** Every device this owner has, as `/prekeys/devices` reports them. */
+  devices: number[] = [1];
   /** One-time prekeys handed out, so double-use is detectable. */
   servedOpks: number[] = [];
-  /** Which device this mailbox's owner actually has. */
-  deviceId = 1;
 
-  bundle(): Record<string, unknown> {
-    const p = this.prekeys as {
+  bundle(device = 1): Record<string, unknown> {
+    const p = this.prekeys.get(device) as {
       spk: unknown;
       kspk: unknown;
       opks: Array<{ id: number; pub: string }>;
       kopks: Array<{ id: number; pub: string }>;
       cert: SignedCert;
     };
+    if (!p) throw new Error(`no prekeys published for device ${device}`);
     // Consumed server-side, exactly like the real relay.
     const opk = p.opks.shift();
     const kopk = p.kopks.shift();
@@ -76,7 +84,7 @@ class FakeRelay {
 }
 
 /** A Mailbox-shaped object over a FakeRelay. */
-function fakeMailbox(relay: FakeRelay): Mailbox {
+function fakeMailbox(relay: FakeRelay, drainDevice = 1): Mailbox {
   const mailbox = {
     closed: new Promise<void>(() => {}),
     close() {},
@@ -86,24 +94,31 @@ function fakeMailbox(relay: FakeRelay): Mailbox {
     async json<T>(method: string, path: string, body?: unknown): Promise<T> {
       const route = path.split('?')[0]!;
       if (method === 'POST' && route === '/prekeys') {
-        relay.prekeys = body as Record<string, unknown>;
+        relay.prekeys.set(drainDevice, body as Record<string, unknown>);
         return null as T;
       }
       if (method === 'GET' && route === '/prekeys/devices') {
-        return { devices: [{ device_id: relay.deviceId }] } as T;
+        return { devices: relay.devices.map((d) => ({ device_id: d })) } as T;
       }
       if (method === 'GET' && route === '/prekeys/bundle') {
-        return relay.bundle() as T;
+        const want = Number(
+          new URLSearchParams(path.split('?')[1] ?? '').get('device') ?? 1,
+        );
+        return relay.bundle(want) as T;
       }
       if (method === 'POST' && route === '/inbox') {
-        const envelope = body as Queued;
-        relay.queue.push({ id: envelope.id, sealed: envelope.sealed });
+        const envelope = body as Queued & { device?: number };
+        const device = envelope.device ?? 1;
+        const q = relay.queues.get(device) ?? [];
+        q.push({ id: envelope.id, sealed: envelope.sealed });
+        relay.queues.set(device, q);
         return { status: 'delivered' } as T;
       }
       throw new Error(`unmocked ${method} ${path}`);
     },
     async *socket() {
-      for (const item of relay.queue.splice(0)) {
+      const q = relay.queues.get(drainDevice) ?? [];
+      for (const item of q.splice(0)) {
         yield { kind: 'envelope' as const, envelope: item as unknown as Record<string, unknown> };
       }
     },
@@ -196,13 +211,13 @@ async function pair() {
   } as unknown as Hub;
 
   const dial = async (entry: DirectoryEntry) =>
-    fakeMailbox(relays[entry.stonechat_id]!);
+    fakeMailbox(relays[entry.stonechat_id]!, entry.stonechat_id === alice.id ? 2 : 1);
 
   // Alice is a browser session — device 2, like every web device. That is the
   // case a reply has to reach, and it only does because the fan-out reads her
   // bundle token rather than assuming device 1.
-  aRelay.deviceId = 2;
-  bRelay.deviceId = 1;
+  aRelay.devices = [2];
+  bRelay.devices = [1];
   const A = new Protocol(core, hub, aKeys, grantFor(alice, alice.certify(aKeys, 2), 2), dial);
   const B = new Protocol(core, hub, bKeys, grantFor(bob, bob.certify(bKeys, 1), 1), dial);
 
@@ -296,9 +311,9 @@ test('an envelope for another device cannot be opened', async () => {
   const { bob, A, B, as, bRelay } = await pair();
   await as('b', () => B.publishPrekeys());
   await as('a', () => A.send(bob.id, 'for someone else'));
-  const stray = bRelay.queue[0]!;
+  const stray = bRelay.queues.get(1)![0]!;
   const other = DeviceKeys.generate(core);
-  bRelay.queue = [
+  bRelay.queues.set(1, [
     {
       id: stray.id,
       sealed: b64encode(
@@ -310,7 +325,7 @@ test('an envelope for another device cannot be opened', async () => {
         ),
       ),
     },
-  ];
+  ]);
   assert.deepEqual(await as('b', () => drain(B)), []);
 });
 
@@ -354,13 +369,143 @@ test('a certificate for another device id is refused', async () => {
 async function B_publish(relay: FakeRelay): Promise<void> {
   const bob = phone(9);
   const keys = DeviceKeys.generate(core);
-  relay.prekeys = {
+  relay.prekeys.set(1, {
     spk: { id: 1, pub: b64encode(core.x25519Public(new Uint8Array(32).fill(3))), sig: '' },
     kspk: { id: 1, pub: b64encode(core.mlkemPkFromSeed(new Uint8Array(64).fill(4))), sig: '' },
     opks: [],
     kopks: [],
     // Device 5, but it will be served in device 1's slot.
     cert: bob.certify(keys, 5),
-  };
-  relay.deviceId = 1;
+  });
+  relay.devices = [1];
 }
+
+// -- self-sync ---------------------------------------------------------------
+
+/**
+ * Two devices of ONE identity — a phone and a browser — plus someone to talk
+ * to. This is the shape the slim client got wrong: each device only ever saw
+ * what a *peer* sent it, so a message typed on one never appeared on the other.
+ */
+async function ownDevices() {
+  const worlds = new Map<string, Record<string, string>>();
+  let active = 'phone';
+  (globalThis as { localStorage?: Storage }).localStorage = {
+    getItem: (k) => worlds.get(active)![k] ?? null,
+    setItem: (k, v) => {
+      worlds.get(active)![k] = v;
+    },
+    removeItem: (k) => {
+      delete worlds.get(active)![k];
+    },
+    clear: () => worlds.set(active, {}),
+    key: () => null,
+    length: 0,
+  } as Storage;
+  worlds.set('phone', {});
+  worlds.set('browser', {});
+  worlds.set('them', {});
+
+  const me = phone(7);
+  const them = phone(9);
+  const themKeys = DeviceKeys.generate(core);
+  const phoneKeys = DeviceKeys.generate(core);
+  const browserKeys = DeviceKeys.generate(core);
+  const myRelay = new FakeRelay();
+  const theirRelay = new FakeRelay();
+  // One identity, two devices, one mailbox — which is the whole point.
+  myRelay.devices = [1, 2];
+  theirRelay.devices = [1];
+  const relays: Record<string, FakeRelay> = {
+    [me.id]: myRelay,
+    [them.id]: theirRelay,
+  };
+  const entries: Record<string, DirectoryEntry> = {
+    [me.id]: { stonechat_id: me.id, pubkey: me.pub },
+    [them.id]: { stonechat_id: them.id, pubkey: them.pub },
+  };
+  const hub = { directory: async (id: string) => entries[id]! } as unknown as Hub;
+
+  const make = (keys: DeviceKeys, device: number, drain: number) =>
+    new Protocol(
+      core,
+      hub,
+      keys,
+      grantFor(me, me.certify(keys, device), device),
+      async (entry: DirectoryEntry) => fakeMailbox(relays[entry.stonechat_id]!, drain),
+    );
+
+  // The person being written to has to be a real participant: they publish
+  // prekeys and hold their own storage, exactly like the two devices do.
+  const themProtocol = new Protocol(
+    core,
+    hub,
+    themKeys,
+    grantFor(them, them.certify(themKeys, 1), 1),
+    async (entry: DirectoryEntry) => fakeMailbox(relays[entry.stonechat_id]!, 1),
+  );
+
+  const as = <T>(
+    who: 'phone' | 'browser' | 'them',
+    fn: () => Promise<T>,
+  ): Promise<T> => {
+    active = who;
+    return fn();
+  };
+  return {
+    me,
+    them,
+    themProtocol,
+    myRelay,
+    phone: make(phoneKeys, 1, 1),
+    browser: make(browserKeys, 2, 2),
+    as,
+  };
+}
+
+test('a message sent on one device appears on the other', async () => {
+  // The bug: replies from a peer reached both devices, but our own outgoing
+  // messages reached neither sibling — each device only ever saw what a peer
+  // sent it.
+  const { them, themProtocol, phone: myPhone, browser, as, myRelay } =
+    await ownDevices();
+  await as('them', () => themProtocol.publishPrekeys());
+  await as('phone', () => myPhone.publishPrekeys());
+  await as('browser', () => browser.publishPrekeys());
+
+  const sent = await as('browser', async () => {
+    const m = await browser.send(them.id, 'typed in the tab');
+    await browser.whenSynced();
+    return m;
+  });
+  assert.equal(sent.text, 'typed in the tab');
+
+  // The sync copy is addressed to device 1 — the sibling, not the sender.
+  assert.equal(myRelay.queues.get(1)?.length, 1, 'sibling should have a copy');
+  assert.equal(myRelay.queues.get(2)?.length ?? 0, 0, 'no copy to itself');
+
+  const onPhone = await as('phone', () => drain(myPhone));
+  assert.equal(onPhone.length, 1);
+  assert.equal(onPhone[0]!.text, 'typed in the tab');
+  assert.equal(onPhone[0]!.peerId, them.id, 'filed under the conversation');
+});
+
+test('a synced message is marked as ours, not as theirs', async () => {
+  // It has to render on the right side of the ledger; a sync copy shown as an
+  // incoming message would read as the peer echoing us back.
+  const { them, themProtocol, phone: myPhone, browser, as } = await ownDevices();
+  await as('them', () => themProtocol.publishPrekeys());
+  await as('phone', () => myPhone.publishPrekeys());
+  await as('browser', () => browser.publishPrekeys());
+  await as('browser', async () => {
+    await browser.send(them.id, 'mine');
+    await browser.whenSynced();
+  });
+
+  const messages: Array<{ mine: boolean }> = [];
+  await as('phone', async () => {
+    for await (const m of myPhone.receive()) messages.push(m);
+  });
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]!.mine, true);
+});
