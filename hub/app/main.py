@@ -134,6 +134,11 @@ app.add_middleware(
     allow_origins=[
         "https://stonechat.app",
         "https://www.stonechat.app",
+        # The web client. First-party, so it belongs in the allowlist rather
+        # than in STONECHAT_CORS_EXTRA — that variable is for a developer's
+        # localhost, and a production origin that only works when an env var
+        # is set is one deploy away from being broken.
+        "https://webapp.stonechat.app",
         *[o for o in os.environ.get("STONECHAT_CORS_EXTRA", "").split(",") if o],
     ],
     allow_methods=["GET", "POST"],

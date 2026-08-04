@@ -24,6 +24,10 @@ import {
   type LinkOffer,
 } from './linking.js';
 
+/** Where the hosted hub lives. The same constant the phone app carries as
+ * `AppState.hostedHubUrl` — one product, one default. */
+const HOSTED_HUB = 'https://hub.stonechat.app';
+
 /** Injected by build.mjs so the client can integrity-check its own core. */
 declare const __WASM_INTEGRITY__: string;
 declare const __BUILD_VERSION__: string;
@@ -340,11 +344,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  // The hub is same-origin only if this page is served from it; in
-  // development it is passed on the query string. There is no default that
-  // would be safe to guess.
+  // The hosted hub, matching the app's `AppState.hostedHubUrl`. Falling back
+  // to `location.origin` was wrong in the one place it mattered: served from
+  // its own domain, the client asked *itself* for the directory and failed
+  // with a 404 that said nothing about why.
+  //
+  // `?hub=` still overrides, for a self-hosted hub or a local one. After
+  // linking, the hub in the grant wins over both.
   const hubUrl =
-    new URLSearchParams(location.search).get('hub') ?? location.origin;
+    new URLSearchParams(location.search).get('hub') ?? HOSTED_HUB;
   const hub = new Hub(hubUrl);
 
   const stored = store.grant();
