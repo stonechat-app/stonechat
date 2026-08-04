@@ -9,7 +9,9 @@
  *
  *   tiny index.html → SRI-pinned JS → integrity-fetched WASM
  *
- * so the entire attack surface is one small human-readable file, and verifying
+ * so the entire *executable* attack surface is one small human-readable file
+ * — the favicon is the one served file outside the chain, and it cannot run —
+ * and verifying
  * the served app reduces to checking **one hash** against a published release.
  * That is the whole point of this script. It:
  *
@@ -108,6 +110,19 @@ const js = readFileSync(join(dist, 'app.js'));
 const css = readFileSync(join(here, 'src/theme.css'));
 writeFileSync(join(dist, 'theme.css'), css);
 
+// The favicon ships as a file rather than inline, and that is a deliberate
+// trade. Inlining it as a data: URI would put it under the hash root — but it
+// is 2 KB of base64, which would quadruple index.html and drop an opaque blob
+// into the one file whose entire value is being readable by eye.
+//
+// A favicon cannot execute. Swapping it is a cosmetic attack, not a code one,
+// so the chain that matters — HTML → JS → WASM — stays fully enforced. Its
+// hash is published in release.json regardless: not browser-enforced (no
+// `integrity` on `<link rel=icon>`), but checkable by anyone verifying a
+// deployment against the release.
+const favicon = readFileSync(join(here, 'src/favicon.png'));
+writeFileSync(join(dist, 'favicon.png'), favicon);
+
 // -- 3. the one human-readable file ---------------------------------------
 
 // Kept deliberately small and free of logic. Everything here should be
@@ -128,6 +143,7 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${csp(extraConnect)}">
 <title>Stonechat</title>
+<link rel="icon" type="image/png" href="/favicon.png">
 <link rel="stylesheet" href="/theme.css" integrity="${sri(css)}">
 </head>
 <body>
@@ -152,6 +168,8 @@ writeFileSync(
         'app.js': sri(js),
         'theme.css': sri(css),
         'stonechat_core.wasm': wasmIntegrity,
+        // Published but not browser-enforced — see the note above.
+        'favicon.png': sri(favicon),
       },
     },
     null,
@@ -165,6 +183,7 @@ console.log(`  index.html            ${kb(Buffer.from(html))}`);
 console.log(`  app.js                ${kb(js)}   ${sri(js)}`);
 console.log(`  theme.css             ${kb(css)}   ${sri(css)}`);
 console.log(`  stonechat_core.wasm   ${kb(wasm)}  ${wasmIntegrity}`);
+console.log(`  favicon.png           ${kb(favicon)}    (hashed, not enforced)`);
 console.log('');
 console.log(`  hash root  ${root}`);
 if (extraConnect) console.log(`  connect-src also allows  ${extraConnect}`);

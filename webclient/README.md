@@ -45,13 +45,21 @@ helps if the verifier lives outside the delivery channel being attacked". What
 is achievable is making the attack **detectable**:
 
 ```
-  index.html            0.7 KB      ← the whole root of trust, readable by eye
-  app.js               26.9 KB      ← pinned by SRI from the HTML
-  theme.css             5.9 KB      ← pinned by SRI from the HTML
-  stonechat_core.wasm  558.5 KB     ← integrity-fetched, hash compiled into app.js
+  index.html            0.8 KB      ← the whole root of trust, readable by eye
+  app.js              132.5 KB      ← pinned by SRI from the HTML
+  theme.css             7.5 KB      ← pinned by SRI from the HTML
+  stonechat_core.wasm  562.7 KB     ← integrity-fetched, hash compiled into app.js
+  favicon.png           1.5 KB      ← hashed in release.json, not browser-enforced
 
-  hash root  550a2261790521ef147e72a679fd732d25e33125623da2a7a8f855d245a90567
+  hash root  55e17010f349673bcf6eaf0ef24359948bdc55d5ac795e5ebb23efa11c1522d9
 ```
+
+Every *executable* resource is covered: `<link rel=icon>` takes no `integrity`
+attribute, so the favicon is the one served file outside the enforced chain.
+Inlining it would close that, at the cost of putting 2 KB of base64 in the one
+file whose entire value is being readable by eye — a bad trade for something
+that cannot run. Its hash is published either way, so a verifier checking a
+deployment against a release still catches a swap.
 
 Verifying a deployment is `curl -s https://<origin>/ | shasum -a 256` against
 a published release. That is what makes a transparency log meaningful, and it
