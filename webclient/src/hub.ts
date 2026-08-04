@@ -62,15 +62,29 @@ export class Hub {
     sealPub: string,
     sigPub: string,
   ): Promise<void> {
-    const r = await fetch(`${this.baseUrl}/v1/link/offer`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      credentials: 'omit',
-      body: JSON.stringify({
-        key: commitment,
-        offer: { seal: sealPub, sig: sigPub },
-      }),
-    });
+    let r: Response;
+    try {
+      r = await fetch(`${this.baseUrl}/v1/link/offer`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'omit',
+        body: JSON.stringify({
+          key: commitment,
+          offer: { seal: sealPub, sig: sigPub },
+        }),
+      });
+    } catch (e) {
+      // A blocked fetch and an unreachable host are the same `TypeError` here
+      // — the browser deliberately tells a page nothing about why. The CSP is
+      // by far the likelier cause when the hub is on plain HTTP, and the fix
+      // is not guessable, so name it.
+      throw new HubError(
+        `cannot reach ${this.baseUrl}. If the page's Content-Security-Policy ` +
+          'does not allow that origin, rebuild with ' +
+          `STONECHAT_CONNECT="${this.baseUrl}" npm run build`,
+        0,
+      );
+    }
     if (!r.ok) throw new HubError(`could not park the offer (${r.status})`, r.status);
   }
 

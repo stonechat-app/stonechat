@@ -162,6 +162,15 @@ console.log(`  stonechat_core.wasm   ${kb(wasm)}  ${wasmIntegrity}`);
 console.log('');
 console.log(`  hash root  ${root}`);
 if (extraConnect) console.log(`  connect-src also allows  ${extraConnect}`);
+else {
+  // The failure this prevents is genuinely nasty: the client renders, the QR
+  // scans, and linking fails on the phone with "that code has expired" —
+  // three steps away from the cause.
+  console.log(
+    '  note: only https: hubs are reachable. For a hub on plain HTTP, build\n' +
+      '        with STONECHAT_CONNECT="http://host:port" or the CSP blocks it.',
+  );
+}
 console.log('');
 console.log('  Verify a deployment against this:');
 console.log("    curl -s https://<origin>/ | shasum -a 256");

@@ -61,7 +61,45 @@ class LinkScreen {
     private readonly offer: LinkOffer,
   ) {}
 
-  mount(into: HTMLElement): void {
+  /// Park the keys, then draw. A QR is a commitment to keys the phone will go
+  /// looking for; showing one before they are parked produces a code that
+  /// scans perfectly and then fails with "that code has expired", which sends
+  /// everyone hunting in the wrong place. Ask me how I know.
+  async mount(into: HTMLElement): Promise<void> {
+    try {
+      await this.hub.putLinkOffer(
+        offerCommitment(this.core, this.offer.sealPub, this.offer.sigPub),
+        b64encode(this.offer.sealPub),
+        b64encode(this.offer.sigPub),
+      );
+    } catch (e) {
+      this.mountFailure(into, (e as Error).message);
+      return;
+    }
+    this.draw(into);
+  }
+
+  /** No QR, because there is no code that could work. */
+  private mountFailure(into: HTMLElement, message: string): void {
+    const bar = el('header', 'appbar');
+    bar.append(el('span', 'appbar__title', 'Stonechat'));
+    const card = el('div', 'card');
+    card.style.margin = 'var(--gutter)';
+    card.style.padding = '16px';
+    card.style.maxWidth = '640px';
+    card.style.borderColor = 'var(--danger)';
+    const title = el('div', 'mono', 'CANNOT SHOW A LINK CODE');
+    title.style.color = 'var(--danger)';
+    title.style.marginBottom = '8px';
+    const body = el('p', undefined, message);
+    body.style.color = 'var(--muted)';
+    card.append(title, body);
+    const wrap = el('div', 'app');
+    wrap.append(bar, card);
+    into.replaceChildren(wrap);
+  }
+
+  private draw(into: HTMLElement): void {
     const bar = el('header', 'appbar');
     bar.append(el('span', 'appbar__title', 'Stonechat'));
     const build = el('span', 'mono');
@@ -179,28 +217,12 @@ class LinkScreen {
 
     this.root.append(bar, this.status, body);
     into.replaceChildren(this.root);
-    // Park the keys before anything can be scanned. If this fails the QR is
-    // useless — the phone would scan a commitment to keys it cannot fetch — so
-    // it is reported rather than left to fail later and less clearly.
-    void this.publishOffer().then(() => this.startPolling());
+    this.startPolling();
   }
 
   private setStatus(kind: 'live' | 'warn' | 'down', text: string): void {
     this.dot.className = `dot dot--${kind}`;
     this.statusText.textContent = text;
-  }
-
-  private async publishOffer(): Promise<void> {
-    try {
-      await this.hub.putLinkOffer(
-        offerCommitment(this.core, this.offer.sealPub, this.offer.sigPub),
-        b64encode(this.offer.sealPub),
-        b64encode(this.offer.sigPub),
-      );
-    } catch (e) {
-      this.setStatus('down', `could not publish this session's keys — ${(e as Error).message}`);
-      throw e;
-    }
   }
 
   private startPolling(): void {
@@ -343,7 +365,7 @@ async function main(): Promise<void> {
     sigPub: keys.sigPublic,
     lookup: randomBytes(32),
   };
-  new LinkScreen(core, keys, hub, offer).mount(mount);
+  void new LinkScreen(core, keys, hub, offer).mount(mount);
 }
 
 void main();
