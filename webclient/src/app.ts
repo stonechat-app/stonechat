@@ -337,6 +337,10 @@ async function main(): Promise<void> {
   const stored = store.grant();
   const storedKeys = store.deviceKeys();
   if (stored && storedKeys) {
+    // Use the hub the grant names, not the query string. A linked session
+    // knows where its hub is; requiring `?hub=` on every reload meant a plain
+    // reload silently pointed the client at its own origin and failed with a
+    // directory 404, which says nothing about the real problem.
     // Already linked. The certificate is checked again on every start: it is
     // short-lived by design, and using an expired one would fail later and
     // less clearly.
@@ -354,7 +358,8 @@ async function main(): Promise<void> {
       );
       return;
     }
-    new App(new Protocol(core, hub, keys, stored)).mount(mount);
+    const linkedHub = new Hub(stored.hub_url || hubUrl);
+    new App(new Protocol(core, linkedHub, keys, stored)).mount(mount);
     return;
   }
 

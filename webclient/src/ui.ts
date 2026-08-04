@@ -58,7 +58,20 @@ export class App {
     const title = el('span', 'appbar__title', 'Stonechat');
     const who = el('span', 'mono mono--id', shortId(this.protocol.stonechatId));
     who.style.marginLeft = 'auto';
-    bar.append(back, title, who);
+    // Unlinking needs an affordance. A browser session is meant to be
+    // disposable, and "clear localStorage in DevTools" is not a way to
+    // dispose of one — it is also the only recovery when a link dies with
+    // the mailbox it was registered on, which happens.
+    const reset = el('button', 'secondary', 'Unlink');
+    reset.style.marginLeft = '12px';
+    reset.addEventListener('click', () => {
+      if (!confirm('Unlink this browser? Its keys and messages are forgotten.')) {
+        return;
+      }
+      store.clear();
+      location.reload();
+    });
+    bar.append(back, title, who, reset);
     this.backButton = back;
     this.title = title;
 
@@ -141,7 +154,18 @@ export class App {
       // The generator ending means the socket closed cleanly.
       this.setStatus('warn', 'disconnected — reload to reconnect');
     } catch (e) {
-      this.setStatus('down', (e as Error).message);
+      const message = (e as Error).message;
+      // 410 is the relay saying this device is gone — revoked, or its mailbox
+      // was replaced. Nothing here recovers from that, so say what to do
+      // rather than showing a network error forever.
+      const dead =
+        /\b410\b/.test(message) || /revoked/i.test(message);
+      this.setStatus(
+        'down',
+        dead
+          ? 'This browser is no longer linked — press Unlink and link again.'
+          : message,
+      );
     }
   }
 
