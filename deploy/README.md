@@ -78,6 +78,7 @@ Knobs (env vars):
 | `STONECHAT_RELAY_BINARY` | — | Static x86_64-musl `stonechat-relay` on this box (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for sovereign VMs (authenticated with the per-server token in their startup script). Unset → fleet hosts compile the crate on first ignite; sovereign provisioning refused. |
 | `STONECHAT_HUB_URL` | — | Public base URL of the hub (`https://hub.example.com`) — how sovereign startup scripts reach `/v1/relay-binary` |
 | `STONECHAT_RELAY_BINARY_URL` | — | Override: fetch the relay from an external artifact URL (GCS/GitHub release) instead of the hub |
+| `STONECHAT_CORS_EXTRA` | — | Comma-separated extra browser origins allowed to call the hub. **The web client needs this**: it is a browser, so every call is cross-origin. Serving it from `http://localhost:3000` during a test means setting `STONECHAT_CORS_EXTRA=http://localhost:3000`. Without it the client fails with a bare "Failed to fetch" and the symptom appears on the *phone* as "that code has expired" |
 
 ## 5. Open the CLOUD firewall too
 

@@ -118,8 +118,17 @@ app.include_router(admin_router)
 # because nobody has configured a way to read it is the wrong failure.
 app.include_router(report_router)
 
-# Browser access is only the landing page's activation lookup (GET); the
-# webhook is server-to-server and the app is not a browser.
+# Browser access used to be only the landing page's activation lookup, hence
+# GET-only. The **web client** is a browser too, and it needs POST: parking its
+# link offer is a POST with a JSON content-type, which is not CORS-safelisted
+# and so also triggers a preflight. Without this the client fails with a bare
+# "Failed to fetch" — the browser tells the page nothing — and the symptom
+# surfaces two hops away, on the *phone*, as "that code has expired".
+#
+# The origin list stays a small allowlist. Serving the web client from an
+# origin means naming it here or in STONECHAT_CORS_EXTRA; there is no wildcard,
+# and `allow_credentials` stays off because every authenticated call carries a
+# bearer token rather than a cookie.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -127,7 +136,7 @@ app.add_middleware(
         "https://www.stonechat.app",
         *[o for o in os.environ.get("STONECHAT_CORS_EXTRA", "").split(",") if o],
     ],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
