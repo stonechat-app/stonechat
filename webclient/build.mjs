@@ -45,6 +45,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 
+import { csp } from './csp.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = join(here, 'dist');
 const wasmSource = join(
@@ -113,14 +115,13 @@ writeFileSync(join(dist, 'theme.css'), css);
 //
 //   STONECHAT_CONNECT="http://35.225.244.167:8000" npm run build
 const extraConnect = (process.env.STONECHAT_CONNECT ?? '').trim();
-const connectSrc = ["'self'", 'https:', extraConnect].filter(Boolean).join(' ');
 
 const html = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; connect-src ${connectSrc}; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<meta http-equiv="Content-Security-Policy" content="${csp(extraConnect)}">
 <title>Stonechat</title>
 <link rel="stylesheet" href="/theme.css" integrity="${sri(css)}">
 </head>

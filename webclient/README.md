@@ -176,9 +176,8 @@ simply stops working after a week and must be re-linked.
 names arrive in `contact_request`/`contact_accept`, which this client does not
 handle.
 
-**A browser in the test suite.** The largest gap, and the one that let four
-bugs through in a single day — see "Tested by nothing that runs in a browser"
-below.
+**Everything above is what is missing; the browser gap is closed** — see "The
+browser smoke test".
 
 ## Decisions
 
@@ -250,10 +249,35 @@ security argument that justifies the whole project.
 - **CORS on the relay** (there is none) and moving `?token=` out of the query
   string.
 
-## Tested by nothing that runs in a browser
+## The browser smoke test
 
-Every test here runs in Node. That is structurally blind to a whole class of
-failure, and on 2026-08-04 it let four bugs reach a live deployment in one day:
+`npm run smoke` — part of `npm run check`.
+
+It starts a real relay, a stub hub whose CORS mirrors the real one, and a
+static server, then drives headless Chrome at a page served under the
+**identical CSP as the release** (`csp.mjs`, shared with the build — a smoke
+test with its own relaxed policy would pass while the real page failed). In the
+page it asserts, against the real modules:
+
+| assertion | catches |
+|---|---|
+| `core-instantiates` | CSP `wasm-unsafe-eval`, and the WASM integrity hash |
+| `hub-reachable` | CSP `connect-src`, and the hub's CORS |
+| `pins-verify` | the schedule's owner signature |
+| `webtransport-connects` | certificate SAN, pins, UDP reachability |
+| `request-round-trips` | the stream framing |
+
+Each was checked by reintroducing the corresponding bug and watching it fail —
+including rebuilding the relay to mint SAN-less certificates again, since that
+is the one no other test in this repo can see.
+
+It skips (exit 0, loudly) without Chrome or a built relay, so it can sit in the
+default check without becoming machine-specific.
+
+### Why it exists
+
+Every other test here runs in Node, which is structurally blind to browser
+policy. On 2026-08-04 that let four bugs reach a live deployment in one day:
 
 | bug | found by |
 |---|---|
@@ -267,7 +291,4 @@ certificate hashes, so a certificate with no SAN passed the unit tests, all
 three end-to-end WebTransport tests, and a live connection against production.
 The tests were not weak; they could not see it.
 
-A headless-Chrome smoke test — start a relay, serve `dist/`, assert the core
-instantiates and a WebTransport session opens — would have caught three of the
-four. It has been built twice, in a scratch directory, and thrown away twice.
-It should live here.
+All four are now covered by `npm run smoke`.

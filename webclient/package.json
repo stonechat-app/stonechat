@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Stonechat web client — a tethered, ephemeral device.",
+  "description": "Stonechat web client \u2014 a tethered, ephemeral device.",
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node test/run.mjs",
-    "check": "npm run typecheck && npm test && npm run build"
+    "check": "npm run typecheck && npm test && npm run build && npm run smoke",
+    "smoke": "node test/smoke/run.mjs"
   },
   "devDependencies": {
     "esbuild": "0.28.1",
