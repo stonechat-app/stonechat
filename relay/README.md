@@ -156,6 +156,20 @@ id=$(docker create --platform linux/amd64 stonechat-relay-build) && \
 # → scp to the hub box, set STONECHAT_RELAY_BINARY=/path/to/stonechat-relay
 ```
 
+That covers mailboxes created *after* the release. Mailboxes already running
+are upgraded in place — `scripts/roll_relay.py` copies the binary over the
+entrypoint and restarts each container — because their data lives in the
+container itself and recreating one would reset a user's mailbox. See
+deploy/README.md "Upgrading the relay without destroying mailboxes".
+
+`/status` reports `build`: BLAKE2b-256 of the executable the process is
+actually running, first 16 hex chars, computed at boot from
+`current_exe()`. That is what makes an in-place swap verifiable — a version
+constant compiled into the source would report the new number whether or not
+the file on disk had changed. It is on `/status` (owner token) rather than
+`/health` (open) so an exact build fingerprint is not handed to anyone who
+asks the day a relay bug is published.
+
 ## Tests
 
 ```bash

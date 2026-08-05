@@ -151,12 +151,49 @@ cd ~/stonechat && git pull && \
   sudo STONECHAT_PUBLIC_IP=<HUB_IP> STONECHAT_FLEET_HOSTS="fleet1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>" deploy/setup.sh
 ```
 
+### Upgrading the relay without destroying mailboxes
+
+`git pull && deploy/setup.sh` updates the **hub**. It does not touch mailboxes:
+they are running containers, and a mailbox's queue, prekeys, TLS key and
+WebTransport certificates live in its container — not in a volume — so that
+destroying it destroys the data with it. Recreating a container to pick up new
+relay code would therefore reset every user's mailbox.
+
+So relay releases are rolled in place: the new binary is copied over the
+entrypoint and the container restarted. The data layer survives a restart, and
+the published ports are pinned at create time, so the address the hub already
+handed out stays valid.
+
+```bash
+# 1. build the artifact (see relay/README.md "Producing the production artifact")
+docker build --platform linux/amd64 -t stonechat-relay-build relay/
+id=$(docker create --platform linux/amd64 stonechat-relay-build) && \
+  docker cp "$id":/stonechat-relay ./stonechat-relay && docker rm "$id"
+
+# 2. see what would change, without changing it
+hub/.venv/bin/python scripts/roll_relay.py --binary ./stonechat-relay --dry-run
+
+# 3. roll it
+hub/.venv/bin/python scripts/roll_relay.py --binary ./stonechat-relay
+```
+
+Each relay reports the hash of the binary it is running on `/status`, so the
+script verifies the swap took rather than assuming it did. It goes one mailbox
+at a time, and on the first failure it rolls that mailbox back to its previous
+binary and stops — leaving the rest of the fleet up on the old release.
+
+New mailboxes are built from `STONECHAT_RELAY_BINARY`, so point that at the
+same artifact and restart the hub, or the next user provisioned lands on the
+old code.
+
 State that survives restarts: the hub DB at
 `/var/lib/stonechat/hub.db` (WAL mode — recent writes live in the `-wal`/`-shm`
 sidecars, so snapshot a *live* hub with `sqlite3 hub.db ".backup out.db"`,
-not a bare `cp hub.db`) and each mailbox's SQLite + TLS key inside its
-container volume. Destroying a mailbox from the app (or `docker rm -f`) is
-final — its undelivered ciphertext is gone, by design.
+not a bare `cp hub.db`) and each mailbox's SQLite + TLS key in its container's
+own writable layer — no volume, deliberately. Destroying a mailbox from the app
+(or `docker rm -f`) is final: the layer goes with the container and its
+undelivered ciphertext is gone, by design. That is also why relay upgrades are
+a binary swap rather than a recreate (above).
 
 ### The reusable tester code (`STONECHAT_TEST_CODE`)
 

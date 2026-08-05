@@ -82,6 +82,16 @@ pub struct AppState {
     pub blobs: blobs::BlobStore,
     pub link: link::DeviceLinks,
     pub tls_fp: String,
+    /// Which binary this process is running: BLAKE2b-256 of its own
+    /// executable, first 16 hex characters.
+    ///
+    /// The relay can be upgraded **in place** — the new binary copied over the
+    /// entrypoint and the container restarted — which is what keeps a mailbox's
+    /// data alive across a release. That leaves the operator needing to know
+    /// whether the swap actually took, and a version baked in at compile time
+    /// cannot answer it: it would report the new number whether or not the file
+    /// on disk changed. Hashing the file we are executing does.
+    pub build: String,
     /// The browser transport's certificate schedule, if it is enabled.
     pub wt_certs: Option<Arc<wtcert::CertSchedule>>,
     pub http: reqwest::Client,
@@ -108,6 +118,23 @@ impl AppState {
             }
         }
     }
+}
+
+/// BLAKE2b-256 of our own executable, truncated. Empty when it cannot be read
+/// — an unreadable binary is not worth refusing to boot over, and an empty
+/// build id reads as "unknown" rather than as a wrong answer.
+fn own_build_id() -> String {
+    use blake2::digest::consts::U32;
+    use blake2::{Blake2b, Digest};
+    let Ok(path) = std::env::current_exe() else {
+        return String::new();
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return String::new();
+    };
+    let mut h = Blake2b::<U32>::new();
+    h.update(&bytes);
+    h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -194,6 +221,7 @@ async fn main() {
         blobs: blobs::BlobStore::open(&blob_dir).expect("blob store"),
         link: link::DeviceLinks::new(),
         tls_fp: tls.fingerprint_b64.clone(),
+        build: own_build_id(),
         wt_certs: wt_certs.clone(),
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(5))

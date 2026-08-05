@@ -106,6 +106,10 @@ pub async fn status(
         // mailbox's devices, and it cannot derive the token itself (that
         // needs the owner token, which it deliberately does not hold).
         "bundle_token": bundle_token(&state.cfg.owner_token),
+        // Deliberately here and not on /health, which is unauthenticated: an
+        // exact build fingerprint handed to anyone who asks tells an attacker
+        // precisely which version to target the day a relay bug is published.
+        "build": state.build,
     }))
     .into_response()
 }
