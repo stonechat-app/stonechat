@@ -22,15 +22,24 @@ gVisor (host must have it installed).
 
 import json
 import os
+import random
 import subprocess
 from dataclasses import dataclass
 
 from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
-from .bootstrap import SERVER_PORT, WT_PORT
+from .bootstrap import (
+    PORT_ATTEMPTS,
+    SERVER_PORT,
+    WT_PORT,
+    is_port_conflict,
+    pick_ports,
+    replace_ports,
+)
 from .local import IMAGE, image_context
 
 FLEET_LABEL = "stonechat.fleet=1"
+
 MEMORY_LIMIT = "192m"
 CPU_LIMIT = "0.5"
 PIDS_LIMIT = "128"
@@ -125,14 +134,19 @@ class FleetProvider(CloudProvider):
         self._ensure_image(host)
 
         name = f"stonechat-{req.owner_id[3:11].lower().replace('-', '')}"
+        tcp_port, udp_port = pick_ports()
         args = [
             "run", "-d",
             "--name", name,
             "--restart", "unless-stopped",
-            "-p", f"0:{SERVER_PORT}",
-            # The browser transport. The host port is Docker's choice, which
-            # is exactly why it must be published rather than derived.
-            "-p", f"0:{WT_PORT}/udp",
+            # **Pinned, not `0:`.** Letting Docker choose means it chooses
+            # again on every restart — and `--restart unless-stopped` means a
+            # host reboot restarts everything. Every stored address would then
+            # be wrong, with nothing in any log to say why. Pinned ports
+            # survive restarts; verified, not assumed.
+            "-p", f"{tcp_port}:{SERVER_PORT}",
+            # The browser transport, same reasoning. UDP, because QUIC.
+            "-p", f"{udp_port}:{WT_PORT}/udp",
             # The names the browser transport's certificates must carry. The
             # relay cannot discover this — inside the container it sees a
             # private address — and a certificate without a matching SAN is
@@ -150,7 +164,7 @@ class FleetProvider(CloudProvider):
         if self.runtime:
             args += ["--runtime", self.runtime]
         args.append(IMAGE)
-        self._docker(host, *args)
+        self._run_with_free_ports(host, name, args)
 
         port = self._published_port(host, name)
         wt_port = self._published_port(host, name, WT_PORT, "udp")
@@ -170,6 +184,34 @@ class FleetProvider(CloudProvider):
                 return
             except ProviderError:
                 continue  # not on this host / already gone — idempotent
+
+    def _run_with_free_ports(self, host: FleetHost, name: str, args: list[str]) -> None:
+        """Start the container, re-rolling the ports if either is taken.
+
+        Check-then-act would still race two concurrent provisions against each
+        other; letting `docker run` fail cannot. It also catches the case
+        Docker cannot see — the kernel handing that port to an outbound socket,
+        since this *is* the ephemeral range.
+
+        A failed `docker run` leaves the container in `created` state, so the
+        name has to be freed before retrying.
+        """
+        for _ in range(PORT_ATTEMPTS):
+            try:
+                self._docker(host, *args)
+                return
+            except ProviderError as e:
+                if not is_port_conflict(e):
+                    raise  # a real failure — do not mask it as a collision
+                try:
+                    self._docker(host, "rm", "-f", name)
+                except ProviderError:
+                    pass
+                tcp, udp = pick_ports()
+                args = replace_ports(args, tcp, udp)
+        raise ProviderError(
+            f"no free port pair on {host.name} after {PORT_ATTEMPTS} attempts"
+        )
 
     def _published_port(
         self, host: FleetHost, name: str, port: int = SERVER_PORT, proto: str = "tcp"

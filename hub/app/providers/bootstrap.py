@@ -37,6 +37,7 @@ import base64
 import gzip
 import hashlib
 import os
+import random
 from pathlib import Path
 
 from ..pushkey import mint_push_key
@@ -202,6 +203,46 @@ SERVER_PORT = 8080
 # is. Separate from SERVER_PORT so a host that blocks UDP loses browser
 # sessions rather than its mailbox.
 WT_PORT = 8443
+
+# Docker's default ephemeral range, and the range the firewall rules already
+# open on fleet hosts (deploy/fleet-host.sh, and the cloud rules). Allocating
+# inside it means pinning ports needs no firewall change.
+EPHEMERAL_RANGE = (32768, 61000)
+PORT_ATTEMPTS = 20
+
+
+def pick_ports() -> tuple[int, int]:
+    """A TCP and a UDP port, chosen at random.
+
+    Random rather than sequential: sequential allocation would leak how many
+    mailboxes a host carries and the order they were created, which is cheap
+    metadata to give away for nothing. It also keeps two concurrent provisions
+    from converging on the same candidate.
+    """
+    return (
+        random.randrange(*EPHEMERAL_RANGE),
+        random.randrange(*EPHEMERAL_RANGE),
+    )
+
+
+def is_port_conflict(error: Exception) -> bool:
+    text = str(error).lower()
+    return (
+        "port is already allocated" in text
+        or "external connectivity" in text
+        or "address already in use" in text
+    )
+
+
+def replace_ports(args: list[str], tcp: int, udp: int) -> list[str]:
+    out = list(args)
+    for i, a in enumerate(out):
+        if a.endswith(f":{SERVER_PORT}") and ":" in a:
+            out[i] = f"{tcp}:{SERVER_PORT}"
+        elif a.endswith(f":{WT_PORT}/udp"):
+            out[i] = f"{udp}:{WT_PORT}/udp"
+    return out
+
 TURN_PORT = 3478
 TURN_RELAY_PORTS = (49152, 65535)  # coturn's default ephemeral relay range
 HOST_AGENT_PORT = 8200

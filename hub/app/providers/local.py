@@ -22,7 +22,15 @@ from pathlib import Path
 
 from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
-from .bootstrap import RELAY_RUNTIME_DOCKERFILE, SERVER_PORT, WT_PORT, relay_binary_path
+from .bootstrap import (
+    PORT_ATTEMPTS,
+    RELAY_RUNTIME_DOCKERFILE,
+    SERVER_PORT,
+    WT_PORT,
+    is_port_conflict,
+    pick_ports,
+    relay_binary_path,
+)
 
 IMAGE = "stonechat-server:dev"
 RELAY_DIR = Path(__file__).resolve().parents[3] / "relay"
@@ -64,16 +72,44 @@ class LocalDockerProvider(CloudProvider):
     def provision(self, req: ProvisionRequest) -> ProvisionResult:
         self._ensure_image()
         name = f"stonechat-{req.owner_id[3:11].lower().replace('-', '')}"
+        tcp_port, udp_port = pick_ports()
+        for attempt in range(PORT_ATTEMPTS):
+            try:
+                self._run_container(name, tcp_port, udp_port, req)
+                break
+            except ProviderError as e:
+                if not is_port_conflict(e):
+                    raise
+                # A failed `docker run` leaves the container in `created`
+                # state, so the name must be freed before retrying.
+                subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+                tcp_port, udp_port = pick_ports()
+        else:
+            raise ProviderError(f"no free port pair after {PORT_ATTEMPTS} attempts")
+
+        port = self._host_port(name)
+        host = os.environ.get("STONECHAT_LOCAL_HOST", "127.0.0.1")
+        wt_port = self._host_port(name, WT_PORT, "udp")
+        return ProvisionResult(
+            resource_id=name,
+            address=f"https://{host}:{port}",
+            wt_address=f"{host}:{wt_port}" if wt_port else None,
+            meta={},
+        )
+
+    def _run_container(
+        self, name: str, tcp_port: int, udp_port: int, req: ProvisionRequest
+    ) -> None:
         _run(
             [
                 "docker", "run", "-d",
                 "--name", name,
                 "--restart", "unless-stopped",
-                "-p", f"0:{SERVER_PORT}",
-                # The browser transport. Docker picks the host port, so it is
-                # discovered after the fact rather than chosen — which is why
-                # it has to be published and cannot be derived.
-                "-p", f"0:{WT_PORT}/udp",
+                # Pinned rather than `0:` — see fleet.py. Docker re-picks a
+                # `0:` port on every restart, which would make the stored
+                # address wrong the moment a container bounced.
+                "-p", f"{tcp_port}:{SERVER_PORT}",
+                "-p", f"{udp_port}:{WT_PORT}/udp",
                 "-e",
                 f"STONECHAT_WT_ADVERTISE="
                 f"{os.environ.get('STONECHAT_LOCAL_HOST', '127.0.0.1')}",
@@ -84,15 +120,6 @@ class LocalDockerProvider(CloudProvider):
                 "--label", f"stonechat.machine_type={req.spec.machine_type}",
                 IMAGE,
             ]
-        )
-        port = self._host_port(name)
-        host = os.environ.get("STONECHAT_LOCAL_HOST", "127.0.0.1")
-        wt_port = self._host_port(name, WT_PORT, "udp")
-        return ProvisionResult(
-            resource_id=name,
-            address=f"https://{host}:{port}",
-            wt_address=f"{host}:{wt_port}" if wt_port else None,
-            meta={},
         )
 
     def destroy(self, resource_id: str, meta: dict) -> None:
