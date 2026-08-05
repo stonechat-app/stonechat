@@ -36,7 +36,7 @@ from .bootstrap import (
     pick_ports,
     replace_ports,
 )
-from .local import IMAGE, image_context
+from .local import image_context, image_tag
 
 FLEET_LABEL = "stonechat.fleet=1"
 
@@ -116,7 +116,7 @@ class FleetProvider(CloudProvider):
     def _ensure_image(self, host: FleetHost) -> None:
         probe = subprocess.run(
             ["docker"] + (["-H", host.endpoint] if host.endpoint else [])
-            + ["image", "inspect", IMAGE],
+            + ["image", "inspect", image_tag()],
             capture_output=True,
         )
         if probe.returncode != 0:
@@ -125,7 +125,7 @@ class FleetProvider(CloudProvider):
             # without it the host compiles the crate — dev only, keep real
             # fleet hosts on the prebuilt path.
             with image_context() as ctx:
-                self._docker(host, "build", "-t", IMAGE, ctx)
+                self._docker(host, "build", "-t", image_tag(), ctx)
 
     # -- provider interface ----------------------------------------------------------
 
@@ -163,7 +163,7 @@ class FleetProvider(CloudProvider):
         ]
         if self.runtime:
             args += ["--runtime", self.runtime]
-        args.append(IMAGE)
+        args.append(image_tag())
         self._run_with_free_ports(host, name, args)
 
         port = self._published_port(host, name)

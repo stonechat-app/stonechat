@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import hashlib
 from pathlib import Path
 
 from ..pushkey import mint_push_key
@@ -34,6 +35,32 @@ from .bootstrap import (
 
 IMAGE = "stonechat-server:dev"
 RELAY_DIR = Path(__file__).resolve().parents[3] / "relay"
+
+
+def image_tag() -> str:
+    """The tag to build and run mailboxes from.
+
+    Derived from the relay binary's content when STONECHAT_RELAY_BINARY is set,
+    because both providers only build the image when it is ABSENT — a cache
+    that is right almost always and catastrophically wrong on release day. With
+    a fixed tag, shipping a new binary to the hub changes nothing: every host
+    already has an image by that name, so new mailboxes keep launching the old
+    relay, silently and indefinitely. Content-addressing the tag turns "new
+    binary" into "absent image", which is the one condition the cache honours.
+
+    Unset (the self-building dev path) keeps the plain `:dev` tag — there is no
+    artifact to hash, and a laptop rebuilding its own image is the upgrade.
+
+    The hash is deliberately the same one the relay computes for itself and
+    reports as `build` on /status (see relay/src/main.rs `own_build_id`), so a
+    tag on a host and a running relay's answer are the same string: `docker
+    images` and scripts/roll_relay.py can be read against each other directly.
+    """
+    binary = relay_binary_path()
+    if binary is None or not binary.is_file():
+        return IMAGE
+    h = hashlib.blake2b(binary.read_bytes(), digest_size=32).hexdigest()[:16]
+    return f"stonechat-server:{h}"
 
 
 @contextlib.contextmanager
@@ -118,7 +145,7 @@ class LocalDockerProvider(CloudProvider):
                 "-e", f"STONECHAT_PUSH_GATEWAY={os.environ.get('STONECHAT_PUSH_GATEWAY', '')}",
                 "-e", f"STONECHAT_PUSH_KEY={mint_push_key()}",
                 "--label", f"stonechat.machine_type={req.spec.machine_type}",
-                IMAGE,
+                image_tag(),
             ]
         )
 
@@ -129,11 +156,11 @@ class LocalDockerProvider(CloudProvider):
 
     def _ensure_image(self) -> None:
         exists = subprocess.run(
-            ["docker", "image", "inspect", IMAGE], capture_output=True
+            ["docker", "image", "inspect", image_tag()], capture_output=True
         )
         if exists.returncode != 0:
             with image_context() as ctx:
-                _run(["docker", "build", "-t", IMAGE, ctx])
+                _run(["docker", "build", "-t", image_tag(), ctx])
 
     def _host_port(
         self, name: str, port: int = SERVER_PORT, proto: str = "tcp"
