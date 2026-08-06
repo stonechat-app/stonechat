@@ -397,7 +397,12 @@ pub async fn mint_device(
     let body = parsed.as_ref().unwrap();
     let kind = match body.get("kind").and_then(Value::as_str) {
         None => "linked",
-        Some(k @ ("linked" | "web")) => k,
+        // "agent" is a headless device: no screen, no user, and typically not
+        // on hardware the owner is holding (agent_client/README.md). The relay
+        // treats it exactly like any other device — the kind is recorded so
+        // the device list can say what it is and the authorising device can
+        // pick a certificate lifetime for it.
+        Some(k @ ("linked" | "web" | "agent")) => k,
         // "primary" is not mintable: device 1 is whoever holds the owner
         // token, and a second claimant to that role would be a lie.
         Some(_) => return detail(StatusCode::BAD_REQUEST, "bad kind"),

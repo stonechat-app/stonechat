@@ -832,5 +832,52 @@
         }
       ]
     }
+  ],
+  "devices-mint-agent": [
+    200,
+    {
+      "device_id": 5,
+      "kind": "agent",
+      "expires_at": null,
+      "devices_v": 6
+    }
+  ],
+  "devices-list-with-agent": [
+    200,
+    {
+      "devices_v": 6,
+      "devices": [
+        {
+          "device_id": 1,
+          "kind": "primary",
+          "cert": null,
+          "created_at": "X",
+          "expires_at": null,
+          "last_seen": null
+        },
+        {
+          "device_id": 3,
+          "kind": "web",
+          "cert": null,
+          "created_at": "X",
+          "expires_at": "X",
+          "last_seen": null
+        },
+        {
+          "device_id": 5,
+          "kind": "agent",
+          "cert": null,
+          "created_at": "X",
+          "expires_at": null,
+          "last_seen": null
+        }
+      ]
+    }
+  ],
+  "devices-mint-still-rejects-junk-kind": [
+    400,
+    {
+      "detail": "bad kind"
+    }
   ]
 }

@@ -59,6 +59,8 @@ ENV_OK = {"v": 1, "id": "e-0001", "to": OWNER, "sealed": "aGVsbG8=", "device": 1
 DEV2 = "dev2-token-0123456789abcdef0123456789"
 DEV3 = "dev3-token-0123456789abcdef0123456789"
 DEV4 = "dev4-token-0123456789abcdef0123456789"
+DEV5 = "dev5-token-0123456789abcdef0123456789"
+DEV6 = "dev6-token-0123456789abcdef0123456789"
 BUNDLE = hashlib.blake2b(
     TOKEN.encode() + b"|stonechat-bundle|", digest_size=32
 ).hexdigest()
@@ -237,6 +239,21 @@ CORPUS = [
     ("status-expired-device", "GET", f"/status?token={DEV4}", None, None),
     ("inbox-expired-device", "POST", "/inbox", {**ENV_OK, "id": "e-exp", "device": 4}, None),
     ("devices-list-hides-expired", "GET", f"/devices?token={TOKEN}", None, norm_devices),
+    # -- headless agents (agent_client/) ---------------------------------------
+    # A third kind, minted through the same path as any other. Appended rather
+    # than filed next to the web cases on purpose: inserting a device mint
+    # earlier would renumber every device id after it and rewrite most of this
+    # file's expectations for no reason.
+    ("devices-mint-agent", "POST", f"/devices?token={TOKEN}",
+     {"device_token": DEV5, "kind": "agent"}, None),
+    # Unbounded by default: an agent runs unattended, so its lifetime is the
+    # certificate's (set by the authorising device), not a device-row expiry.
+    ("devices-list-with-agent", "GET", f"/devices?token={TOKEN}", None, norm_devices),
+    # A fresh token, because "already in use" is checked before the kind is
+    # parsed — reusing DEV5 here would record a 409 and prove nothing about
+    # the whitelist.
+    ("devices-mint-still-rejects-junk-kind", "POST", f"/devices?token={TOKEN}",
+     {"device_token": DEV6, "kind": "agentt"}, None),
 ]
 
 
