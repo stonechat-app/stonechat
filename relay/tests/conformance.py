@@ -240,6 +240,17 @@ CORPUS = [
 ]
 
 
+def stamp_build(body):
+    """The relay reports which binary is running on /status (added 2026-08-05).
+    Its *presence* is contract; its value is a fingerprint that changes with
+    every compile, so recording the value would make this corpus fail on the
+    next build. Applied globally rather than per-entry so a future authenticated
+    endpoint that grows the field cannot forget to normalize it."""
+    if isinstance(body, dict) and "build" in body:
+        return {**body, "build": "X"}
+    return body
+
+
 def run(base):
     out, raw = {}, {}
     for label, method, path, body, norm in CORPUS:
@@ -252,7 +263,7 @@ def run(base):
             continue
         status, resp = req(base, method, path(raw) if callable(path) else path, body)
         raw[label] = resp if isinstance(resp, dict) else {}
-        out[label] = [status, norm(resp) if norm else resp]
+        out[label] = [status, stamp_build(norm(resp) if norm else resp)]
     return out
 
 

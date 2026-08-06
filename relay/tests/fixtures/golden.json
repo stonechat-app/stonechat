@@ -27,7 +27,8 @@
       },
       "device_id": 1,
       "devices_v": 1,
-      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1",
+      "build": "X"
     }
   ],
   "owner-missing": [
@@ -270,7 +271,8 @@
       },
       "device_id": 1,
       "devices_v": 1,
-      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1",
+      "build": "X"
     }
   ],
   "push-config-noauth": [
@@ -487,7 +489,8 @@
       },
       "device_id": 2,
       "devices_v": 2,
-      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1",
+      "build": "X"
     }
   ],
   "prekeys-device2": [
@@ -522,7 +525,8 @@
       },
       "device_id": 1,
       "devices_v": 2,
-      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1",
+      "build": "X"
     }
   ],
   "prekey-devices-noauth": [
@@ -656,7 +660,8 @@
       },
       "device_id": 2,
       "devices_v": 2,
-      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1",
+      "build": "X"
     }
   ],
   "revoke-noauth": [
@@ -781,7 +786,8 @@
       },
       "device_id": 4,
       "devices_v": 5,
-      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1"
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1",
+      "build": "X"
     }
   ],
   "sleep-past-expiry": [
