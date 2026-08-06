@@ -41,12 +41,29 @@ const linkedCertLifetime = Duration(days: 180);
 /// mitigation measured in months is not one.
 const webCertLifetime = Duration(days: 7);
 
+/// A headless agent (agent_client/): a device with no screen and nobody
+/// sitting at it, usually on a server rather than in a pocket.
+///
+/// Same as a linked device, and the reasoning runs opposite to the browser's.
+/// Renewal is the primary's job, so a short lifetime here does not buy
+/// vigilance — it buys an unattended process that stops receiving mail on a
+/// Tuesday, months later, with the owner nowhere near it. Revocation is
+/// immediate and is the control that matters; expiry is the backstop for a
+/// device someone forgot, and 180 days is short enough to be that.
+///
+/// The key material is worse protected than a phone's (a file on a host, not
+/// a keystore), which argues for shorter. What answers it is scope: an agent
+/// holds no identity secret, so a stolen one is bounded by exactly this
+/// certificate — the same bound a linked device gets.
+const agentCertLifetime = Duration(days: 180);
+
 /// The lifetime for a device of the given kind, matching the relay's
 /// `devices.kind` column. Unknown kinds get the shortest, not the longest:
 /// a typo should under-grant.
 Duration certLifetimeFor(String kind) => switch (kind) {
   'primary' => primaryCertLifetime,
   'linked' => linkedCertLifetime,
+  'agent' => agentCertLifetime,
   _ => webCertLifetime,
 };
 

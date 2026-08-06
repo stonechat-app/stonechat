@@ -167,10 +167,49 @@ class _DevicesScreenState extends State<DevicesScreen> {
     await _authorise(offer);
   }
 
+  /// What kind of device is on the other end of that code.
+  ///
+  /// Asked rather than inferred, because nothing in the offer says: it carries
+  /// a lookup secret and a commitment to two public keys, and adding a `kind`
+  /// field would be a claim the *scanned device* makes about itself, outside
+  /// the commitment, that decides its own certificate lifetime. The trust
+  /// anchor for linking is the user's eyes, so the answer comes from the
+  /// person holding both devices.
+  Future<String?> _askKind() => showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: Zn.surface,
+      title: const Text('What is this?'),
+      content: const Text(
+        'A device is a phone, tablet or desktop you use.\n\n'
+        'An agent is a headless program — no screen, nobody sitting at it, '
+        'usually on a server. It can read and send your messages like any '
+        'other device.',
+        style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.4),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, 'agent'),
+          child: const Text('Agent'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(ctx, 'linked'),
+          child: const Text('Device'),
+        ),
+      ],
+    ),
+  );
+
   /// The half both entry points share: mint, certify, seal, park.
   Future<void> _authorise(LinkOffer offer) async {
     final mailbox = _mailbox;
     if (mailbox == null) return;
+    final kind = await _askKind();
+    if (kind == null || !mounted) return;
     final app = context.read<AppState>();
     setState(() => _busy = true);
     try {
@@ -181,6 +220,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         ownerToken: mailbox.token,
         hubUrl: app.api.baseUrl,
         bundleToken: context.read<ChatState>().myBundleToken,
+        kind: kind,
       );
       if (mounted) {
         showZnSnack(context, 'Authorised — finish on the other device');
@@ -254,6 +294,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
       leading: Icon(switch (kind) {
         'web' => Icons.language,
         'primary' => Icons.smartphone,
+        'agent' => Icons.terminal,
         _ => Icons.devices_other,
       }, color: Zn.muted),
       title: Text(
