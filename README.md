@@ -31,6 +31,7 @@ See PROTOCOL.md (notes/docs/PROTOCOL.md, internal) for the full wire protocol an
 | `hub/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Stonechat IDs → pubkeys + current relay address. Never sees message content. |
 | `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
 |  `host_agent/` | Host agent ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
+| `agent_client/` | Agent client. A headless **device** on a user's identity — links like a phone or a browser tab, holds no identity secret, runs unattended on a server. Rust, links `core` directly. |
 
 Marketing site lives in its own private repo: `stonechat-app/landing`.
 

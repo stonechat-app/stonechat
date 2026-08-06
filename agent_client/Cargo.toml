@@ -1,0 +1,44 @@
+[package]
+name = "stonechat-agent"
+version = "0.1.0"
+edition = "2024"
+description = "Stonechat agent client: a headless device on a user's identity. Links like any other device, holds no identity secret, speaks the protocol through stonechat-core."
+
+[[bin]]
+name = "stonechat-agent"
+path = "src/main.rs"
+
+[dependencies]
+# The single implementation of the session protocol. Linked as a crate, not
+# through the C ABI: that exists for Dart, Swift and wasm hosts, and a Rust
+# host has no reason to marshal through it.
+stonechat-core = { path = "../core" }
+
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+rustls = { version = "0.23", features = ["ring"] }
+futures-util = "0.3"
+
+serde = { version = "1", features = ["derive"] }
+# preserve_order so a certificate re-serialized on its way back out keeps the
+# field order it arrived in. Nothing signs JSON here (devcert signing bytes are
+# length-prefixed on purpose), but a stable shape makes the state file diffable.
+serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Every secret in this crate comes straight from the OS CSPRNG. core takes
+# randomness as an argument (its rule), so this is the only place entropy is
+# drawn.
+getrandom = "0.3"
+# Terminal QR for the link code. default-features off drops `image`/`svg`/`pic`
+# — we render half-block Unicode to a terminal and want none of that weight.
+qrcode = { version = "0.14.1", default-features = false }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
+[workspace]
