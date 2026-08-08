@@ -54,108 +54,118 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 28),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Spacer(),
-              Text('STONECHAT',
-                  style: Zn.mono(
-                      size: 42,
-                      color: Zn.orange,
-                      weight: FontWeight.w700,
-                      letterSpacing: 10)),
-              const SizedBox(height: 8),
-              const Text(
-                'Private messaging through a mailbox only you own.\n'
-                'No phone number. No email. Your messages stay on your phone.',
-                style: TextStyle(color: Zn.muted, height: 1.5),
-              ),
-              const SizedBox(height: 40),
-              const Text('Your name',
-                  style: TextStyle(
-                      color: Zn.text, fontSize: 13, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: _name,
-                maxLength: 32,
-                decoration: const InputDecoration(
-                    hintText: 'Only your friends will ever see it',
-                    counterText: ''),
-              ),
-              const SizedBox(height: 28),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: FilledButton(
-                  onPressed: _working ? null : _createAccount,
-                  child: _working
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Create account'),
+        // Scrollable, but still full-height so the Spacers place the wordmark
+        // and the footer links as designed when there is room. Without it the
+        // keyboard shrinks the viewport and the fixed Column overflows.
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: IntrinsicHeight(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Spacer(),
+                    Text('STONECHAT',
+                        style: Zn.mono(
+                            size: 42,
+                            color: Zn.orange,
+                            weight: FontWeight.w700,
+                            letterSpacing: 10)),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Private messaging through a mailbox only you own.\n'
+                      'No phone number. No email. Your messages stay on your phone.',
+                      style: TextStyle(color: Zn.muted, height: 1.5),
+                    ),
+                    const SizedBox(height: 40),
+                    const Text('Your name',
+                        style: TextStyle(
+                            color: Zn.text, fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _name,
+                      maxLength: 32,
+                      decoration: const InputDecoration(
+                          hintText: 'Only your friends will ever see it',
+                          counterText: ''),
+                    ),
+                    const SizedBox(height: 28),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: FilledButton(
+                        onPressed: _working ? null : _createAccount,
+                        child: _working
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Text('Create account'),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'No sign-up form. Your account is an encryption key created '
+                      'on this phone — we never learn who you are.',
+                      style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
+                    ),
+                    const Spacer(flex: 2),
+                    Center(
+                      child: TextButton(
+                        onPressed: _working
+                            ? null
+                            : () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => LinkDeviceScreen(
+                                        hubUrl: _url.text.trim()),
+                                  ),
+                                ),
+                        child: const Text('Link to a device I already have',
+                            style: TextStyle(color: Zn.muted, fontSize: 12)),
+                      ),
+                    ),
+                    Center(
+                      child: TextButton(
+                        onPressed: _working
+                            ? null
+                            : () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => IdentityRestoreScreen(
+                                        hubUrl: _url.text.trim()),
+                                  ),
+                                ),
+                        child: const Text('Restore an exported identity',
+                            style: TextStyle(color: Zn.muted, fontSize: 12)),
+                      ),
+                    ),
+                    Center(
+                      child: TextButton(
+                        onPressed: () => setState(() => _showAdvanced = !_showAdvanced),
+                        child: Text('Advanced',
+                            style: Zn.mono(size: 10, letterSpacing: 2)),
+                      ),
+                    ),
+                    if (_showAdvanced) ...[
+                      Text('Service address (self-hosters only)',
+                          style: Zn.mono(size: 10, letterSpacing: 1)),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: _url,
+                        style: Zn.mono(size: 13, color: Zn.text),
+                        decoration: InputDecoration(
+                            hintText: AppState.hostedHubUrl),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    const SizedBox(height: 8),
+                  ],
                 ),
               ),
-              const SizedBox(height: 12),
-              const Text(
-                'No sign-up form. Your account is an encryption key created '
-                'on this phone — we never learn who you are.',
-                style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
-              ),
-              const Spacer(flex: 2),
-              Center(
-                child: TextButton(
-                  onPressed: _working
-                      ? null
-                      : () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => LinkDeviceScreen(
-                                  hubUrl: _url.text.trim()),
-                            ),
-                          ),
-                  child: const Text('Link to a device I already have',
-                      style: TextStyle(color: Zn.muted, fontSize: 12)),
-                ),
-              ),
-              Center(
-                child: TextButton(
-                  onPressed: _working
-                      ? null
-                      : () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => IdentityRestoreScreen(
-                                  hubUrl: _url.text.trim()),
-                            ),
-                          ),
-                  child: const Text('Restore an exported identity',
-                      style: TextStyle(color: Zn.muted, fontSize: 12)),
-                ),
-              ),
-              Center(
-                child: TextButton(
-                  onPressed: () => setState(() => _showAdvanced = !_showAdvanced),
-                  child: Text('Advanced',
-                      style: Zn.mono(size: 10, letterSpacing: 2)),
-                ),
-              ),
-              if (_showAdvanced) ...[
-                Text('Service address (self-hosters only)',
-                    style: Zn.mono(size: 10, letterSpacing: 1)),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: _url,
-                  style: Zn.mono(size: 13, color: Zn.text),
-                  decoration: InputDecoration(
-                      hintText: AppState.hostedHubUrl),
-                ),
-                const SizedBox(height: 12),
-              ],
-              const SizedBox(height: 8),
-            ],
+            ),
           ),
         ),
       ),
