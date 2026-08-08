@@ -661,11 +661,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				CORE_LIB = "$(PROJECT_DIR)/Core/libstonechat_core.a";
+				"CORE_LIB[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/Core/sim/libstonechat_core.a";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-force_load",
-					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"$(CORE_LIB)",
 					"-Wl,-exported_symbol,_stonechat_*",
+					"-Wl,-exported_symbol,_main",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -690,9 +693,11 @@
 				INFOPLIST_FILE = NotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				CORE_LIB = "$(PROJECT_DIR)/Core/libstonechat_core.a";
+				"CORE_LIB[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/Core/sim/libstonechat_core.a";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"$(CORE_LIB)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -767,9 +772,11 @@
 				INFOPLIST_FILE = NotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				CORE_LIB = "$(PROJECT_DIR)/Core/libstonechat_core.a";
+				"CORE_LIB[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/Core/sim/libstonechat_core.a";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"$(CORE_LIB)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -910,11 +917,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				CORE_LIB = "$(PROJECT_DIR)/Core/libstonechat_core.a";
+				"CORE_LIB[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/Core/sim/libstonechat_core.a";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-force_load",
-					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"$(CORE_LIB)",
 					"-Wl,-exported_symbol,_stonechat_*",
+					"-Wl,-exported_symbol,_main",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -944,11 +954,14 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				CORE_LIB = "$(PROJECT_DIR)/Core/libstonechat_core.a";
+				"CORE_LIB[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/Core/sim/libstonechat_core.a";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-force_load",
-					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"$(CORE_LIB)",
 					"-Wl,-exported_symbol,_stonechat_*",
+					"-Wl,-exported_symbol,_main",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -973,9 +986,11 @@
 				INFOPLIST_FILE = NotificationService/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = "$(FLUTTER_BUILD_NAME)";
+				CORE_LIB = "$(PROJECT_DIR)/Core/libstonechat_core.a";
+				"CORE_LIB[sdk=iphonesimulator*]" = "$(PROJECT_DIR)/Core/sim/libstonechat_core.a";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Core/libstonechat_core.a",
+					"$(CORE_LIB)",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = app.stonechat.mobile.NotificationService;
 				PRODUCT_NAME = "$(TARGET_NAME)";

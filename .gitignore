@@ -15,3 +15,4 @@ credentials/
 target/
 # Device staticlib installed by scripts/build_core.sh ios
 app/ios/Core/*.a
+app/ios/Core/sim/*.a

@@ -39,9 +39,20 @@ ios() {
   cp target/aarch64-apple-ios/release/libstonechat_core.a ../app/ios/Core/
   echo "installed: app/ios/Core/libstonechat_core.a"
 
-  # Simulator slice, built on demand for `flutter run` on a simulator:
-  #   cargo build --release --target aarch64-apple-ios-sim
-  # and point OTHER_LDFLAGS at it, or lipo/xcframework as needed.
+  # Simulator slice. Same arch as the device slice on Apple Silicon but a
+  # different platform, so the two can't be lipo'd together — they live in
+  # separate dirs and CORE_LIB[sdk=iphonesimulator*] picks between them.
+  # Both sim archs, fat: `flutter build ios --simulator` resolves ARCHS to
+  # "arm64 x86_64" (no -destination to narrow it), so an arm64-only slice
+  # links on Apple Silicon but leaves x86_64 undefined.
+  rustup target add aarch64-apple-ios-sim x86_64-apple-ios >/dev/null 2>&1 || true
+  cargo build --release --target aarch64-apple-ios-sim
+  cargo build --release --target x86_64-apple-ios
+  mkdir -p ../app/ios/Core/sim
+  lipo -create -output ../app/ios/Core/sim/libstonechat_core.a \
+    target/aarch64-apple-ios-sim/release/libstonechat_core.a \
+    target/x86_64-apple-ios/release/libstonechat_core.a
+  echo "installed: app/ios/Core/sim/libstonechat_core.a (arm64 + x86_64)"
 }
 
 case "${1:-all}" in
