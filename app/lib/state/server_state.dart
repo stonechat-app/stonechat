@@ -324,16 +324,20 @@ class ServerState extends ChangeNotifier {
         friendHosted: true);
   }
 
+  /// Pass [country] and the hub picks the cloud; pass provider+machine to say
+  /// exactly where (local Docker in development, and the e2e scripts).
   Future<void> create({
-    required String provider,
-    required String machineType,
-    required String region,
+    String? country,
+    String? provider,
+    String? machineType,
+    String? region,
     int diskGb = 10,
   }) async {
     busy = true;
     notifyListeners();
     try {
       await app.api.createServer(
+        country: country,
         provider: provider,
         machineType: machineType,
         region: region,

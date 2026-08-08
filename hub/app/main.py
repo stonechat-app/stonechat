@@ -36,12 +36,15 @@ import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import os
 
 from .admin import router as admin_router
 from .billing import router as billing_router
+from .countries import UnavailableCountry
+from .countries import catalog as country_catalog
+from .countries import resolve as resolve_country
 from .deps import UnbannedUser, User, store
 from .identity import PQ_PK_LEN, PUBKEY_LEN, normalize_stonechat_id, stonechat_id_from_pubkey
 from .ratelimit import RateLimiter
@@ -186,8 +189,26 @@ class MachineIn(BaseModel):
 
 
 class ServerIn(BaseModel):
-    provider: str
-    machine: MachineIn
+    """Either a country (the app's vocabulary) or an explicit provider+machine.
+
+    `country` is what clients send: the hub resolves it against the catalog and
+    the caller's plan, so which cloud serves which flag stays a server-side
+    decision (countries.py). provider+machine remains for scripts, tests and
+    app builds that predate the picker — dropping it would break every
+    installed client the moment this deploys.
+    """
+
+    country: str | None = Field(default=None, max_length=2, examples=["CH"])
+    provider: str | None = None
+    machine: MachineIn | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_form(self):
+        if (self.country is None) == (self.provider is None):
+            raise ValueError("send either 'country' or 'provider'+'machine'")
+        if self.provider is not None and self.machine is None:
+            raise ValueError("'provider' requires 'machine'")
+        return self
 
 
 class ExternalServerIn(BaseModel):
@@ -514,13 +535,38 @@ def directory(stonechat_id: str, request: Request):
     }
 
 
+@app.get("/v1/countries")
+def list_countries():
+    """Where a mailbox can live, in the app's vocabulary.
+
+    Unauthenticated on purpose: the picker is shown during onboarding, and the
+    answer is identical for everyone — it reveals our provider footprint, which
+    is a marketing page, not a secret. Each entry carries both the jurisdiction
+    line and its caveat; clients must render both (countries.py).
+    """
+    return {"countries": country_catalog()}
+
+
 @app.post("/v1/server", status_code=202)
 def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTasks):
-    if body.provider not in available_providers():
+    provider, machine = body.provider, body.machine
+    if body.country is not None:
+        # Country form: the plan decides the tier, the catalog decides the
+        # cloud. Resolve before the gate so an unplaced country fails with
+        # "not available there" rather than a misleading payment prompt.
+        entitlement = store.entitlement_for(user["stonechat_id"]) if BILLING else None
+        plan = entitlement["plan"] if entitlement else "sovereign"
+        try:
+            provider, machine_dict = resolve_country(body.country, plan)
+        except UnavailableCountry as e:
+            raise HTTPException(400, {"code": "country_unavailable", "message": str(e)})
+        machine = MachineIn(**machine_dict)
+
+    if provider not in available_providers():
         raise HTTPException(
             400, f"unknown provider; available: {', '.join(available_providers())}"
         )
-    required = GATED_PROVIDERS.get(body.provider)
+    required = GATED_PROVIDERS.get(provider)
     if required is not None:
         entitlement = store.entitlement_for(user["stonechat_id"])
         if entitlement is None or (
@@ -529,7 +575,7 @@ def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTask
             raise HTTPException(402, {
                 "code": "subscription_required",
                 "plan_required": required,
-                "message": f"the '{body.provider}' provider requires an active"
+                "message": f"the '{provider}' provider requires an active"
                            f" {required} plan",
             })
     server_token = secrets.token_urlsafe(32)
@@ -537,16 +583,16 @@ def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTask
     # agent") — mint its admin token here so the app can pick it up from
     # GET /v1/server and mint invites with zero manual setup.
     host_agent_token = (
-        secrets.token_urlsafe(32) if body.provider in DEDICATED_PROVIDERS else None
+        secrets.token_urlsafe(32) if provider in DEDICATED_PROVIDERS else None
     )
     if not store.create_server(
-        user["stonechat_id"], body.provider, body.machine.model_dump(), server_token,
+        user["stonechat_id"], provider, machine.model_dump(), server_token,
         host_agent_token,
     ):
         raise HTTPException(409, "you already have a server (one per user)")
 
     background.add_task(
-        _provision, user["stonechat_id"], body.provider, body.machine, server_token,
+        _provision, user["stonechat_id"], provider, machine, server_token,
         host_agent_token,
     )
     return {"status": "provisioning"}

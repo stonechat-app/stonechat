@@ -142,6 +142,47 @@ class ServerRecord {
   });
 }
 
+/// One country a mailbox can live in, as the hub's catalog describes it.
+///
+/// Everything here is server-authored on purpose: which cloud serves which
+/// flag is a hub decision (hub/app/countries.py), so changing a provider — or
+/// the wording of a jurisdiction line — never needs an app release.
+class MailboxCountry {
+  final String code; // ISO 3166-1 alpha-2; what /v1/server is sent
+  final String name;
+  final String city;
+  final String flag; // emoji
+  /// What the country buys the user.
+  final String jurisdiction;
+  /// What it does not. Never render one without the other — a picker that
+  /// shows only the flattering half is marketing, not a privacy feature.
+  final String caveat;
+  /// Plans that can place a mailbox here today ("sovereign", "private").
+  final List<String> plans;
+
+  MailboxCountry({
+    required this.code,
+    required this.name,
+    required this.city,
+    required this.flag,
+    required this.jurisdiction,
+    required this.caveat,
+    required this.plans,
+  });
+
+  factory MailboxCountry.fromJson(Map<String, dynamic> j) => MailboxCountry(
+        code: j['code'] as String,
+        name: j['name'] as String,
+        city: j['city'] as String,
+        flag: j['flag'] as String? ?? '',
+        jurisdiction: j['jurisdiction'] as String? ?? '',
+        caveat: j['caveat'] as String? ?? '',
+        plans: ((j['plans'] as List?) ?? const []).cast<String>(),
+      );
+
+  bool allows(String? plan) => plan == null || plans.contains(plan);
+}
+
 /// Talks to the provisioner + directory. Holds the account bearer token.
 class HubApi {
   String baseUrl;
@@ -239,23 +280,41 @@ class HubApi {
     });
   }
 
+  /// Where a mailbox may live. Unauthenticated, so the picker can render
+  /// during onboarding before an account exists.
+  Future<List<MailboxCountry>> getCountries() async {
+    final r = await http.get(Uri.parse('$baseUrl/v1/countries'));
+    return _check(r, (j) => ((j['countries'] as List?) ?? const [])
+        .map((e) => MailboxCountry.fromJson(e as Map<String, dynamic>))
+        .toList());
+  }
+
+  /// Create the mailbox. Pass [country] — the hub resolves it against its
+  /// catalog and the account's plan. [provider]/[machineType]/[region] is the
+  /// older explicit form, kept for tests and local Docker development where
+  /// there is no country to speak of.
   Future<void> createServer({
-    required String provider,
-    required String machineType,
-    required String region,
+    String? country,
+    String? provider,
+    String? machineType,
+    String? region,
     int diskGb = 10,
   }) async {
+    assert((country != null) != (provider != null),
+        'pass either a country or a provider+machine, not both');
     final r = await http.post(
       Uri.parse('$baseUrl/v1/server'),
       headers: _auth,
-      body: jsonEncode({
-        'provider': provider,
-        'machine': {
-          'machine_type': machineType,
-          'region': region,
-          'disk_gb': diskGb,
-        },
-      }),
+      body: jsonEncode(country != null
+          ? {'country': country}
+          : {
+              'provider': provider,
+              'machine': {
+                'machine_type': machineType,
+                'region': region,
+                'disk_gb': diskGb,
+              },
+            }),
     );
     await _check(r, (_) => null);
   }
@@ -305,10 +364,12 @@ class HubApi {
   }
 
   Future<void> deleteServer() async {
-    final r = await http.delete(
-      Uri.parse('$baseUrl/v1/server'),
-      headers: _auth,
-    );
+    final r = await http
+        .delete(
+          Uri.parse('$baseUrl/v1/server'),
+          headers: _auth,
+        )
+        .timeout(const Duration(seconds: 10));
     await _check(r, (_) => null);
   }
 
