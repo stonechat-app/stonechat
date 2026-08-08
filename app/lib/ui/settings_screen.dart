@@ -2,6 +2,8 @@
 /// device-local — none of it is visible to the hub or any mailbox.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -144,15 +146,27 @@ class SettingsScreen extends StatelessWidget {
         ],
       ),
     );
-    if (confirmed != true) return;
-    await call.reset(); // release camera/mic before the identity dies
-    await app.resetIdentity(); // needs the account token (deleteServer)
-    server.reset();
-    chat.reset();
-    // The identity is gone; drop every screen and land back on onboarding.
-    if (context.mounted) {
-      Navigator.of(context).pushNamedAndRemoveUntil('/onboarding', (_) => false);
+    if (confirmed != true || !context.mounted) return;
+    // The wipe tears the mailbox down over the network before it touches
+    // anything local, so it can sit for a few seconds — hold the screen with a
+    // spinner instead of leaving the tap looking ignored. Captured up front:
+    // the dialog and the onboarding jump both run after awaits.
+    final navigator = Navigator.of(context, rootNavigator: true);
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _BusyDialog('Erasing this identity…'),
+    ));
+    try {
+      await call.reset(); // release camera/mic before the identity dies
+      await app.resetIdentity(); // needs the account token (deleteServer)
+      server.reset();
+      chat.reset();
+    } finally {
+      navigator.pop(); // dismiss the spinner
     }
+    // The identity is gone; drop every screen and land back on onboarding.
+    navigator.pushNamedAndRemoveUntil('/onboarding', (_) => false);
   }
 
   /// Both directions require passing the device auth once — enabling proves
@@ -181,6 +195,34 @@ class SettingsScreen extends StatelessWidget {
       }
     }
   }
+}
+
+/// Modal "this is running" spinner. Not dismissible in any way — the caller
+/// pops it when the work finishes, and there is nothing sane to do with a
+/// half-erased identity in the meantime.
+class _BusyDialog extends StatelessWidget {
+  final String message;
+  const _BusyDialog(this.message);
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          backgroundColor: Zn.surface,
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Zn.orange),
+              ),
+              const SizedBox(width: 16),
+              Expanded(child: Text(message)),
+            ],
+          ),
+        ),
+      );
 }
 
 /// Current plan (fetched from the hub) + the redeem entry point.
