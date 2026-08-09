@@ -50,6 +50,39 @@ class FleetHost:
     name: str
     endpoint: str  # docker -H value; "" = local daemon
     advertise: str  # public address clients connect to
+    country: str  # ISO 3166-1 alpha-2 — the jurisdiction this host sells
+
+
+def parse_fleet_hosts(raw: str) -> list[FleetHost]:
+    """`name=docker_endpoint|advertise_host|COUNTRY, …` → hosts.
+
+    The country is **required and never defaulted**. A host whose jurisdiction
+    we guessed is a host that can place a mailbox in the wrong country — the
+    one failure this feature exists to prevent, and an invisible one, because
+    the mailbox works perfectly, it is simply in the wrong place.
+    """
+    hosts = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            name, rest = part.split("=", 1)
+            endpoint, advertise, country = rest.split("|", 2)
+        except ValueError:
+            raise ProviderError(
+                f"bad STONECHAT_FLEET_HOSTS entry {part!r}; "
+                "expected name=docker_endpoint|advertise_host|COUNTRY"
+            )
+        country = country.strip().upper()
+        if len(country) != 2 or not country.isalpha():
+            raise ProviderError(
+                f"bad country {country!r} in STONECHAT_FLEET_HOSTS entry {part!r}; "
+                "expected an ISO 3166-1 alpha-2 code such as DE"
+            )
+        hosts.append(FleetHost(name=name.strip(), endpoint=endpoint.strip(),
+                               advertise=advertise.strip(), country=country))
+    return hosts
 
 
 def _parse_hosts() -> list[FleetHost]:
@@ -60,20 +93,20 @@ def _parse_hosts() -> list[FleetHost]:
         raise ProviderError(
             "STONECHAT_FLEET_HOSTS is not set; the fleet provider never uses the "
             "local daemon implicitly (mailboxes don't run on the "
-            'hub box). For laptop dev use "local=|127.0.0.1".'
+            'hub box). For laptop dev use "local=|127.0.0.1|DE".'
         )
-    hosts = []
-    for part in raw.split(","):
-        try:
-            name, rest = part.strip().split("=", 1)
-            endpoint, advertise = rest.split("|", 1)
-        except ValueError:
-            raise ProviderError(
-                f"bad STONECHAT_FLEET_HOSTS entry {part!r}; "
-                "expected name=docker_endpoint|advertise_host"
-            )
-        hosts.append(FleetHost(name=name, endpoint=endpoint, advertise=advertise))
-    return hosts
+    return parse_fleet_hosts(raw)
+
+
+def configured_countries() -> set[str]:
+    """Countries the fleet can actually place into, read off the host list.
+
+    Derived, never configured alongside: a second copy of this fact is exactly
+    what let the hub advertise five countries while every container landed on
+    the one host it had. If it isn't in STONECHAT_FLEET_HOSTS, it isn't sold.
+    """
+    raw = os.environ.get("STONECHAT_FLEET_HOSTS", "").strip()
+    return {h.country for h in parse_fleet_hosts(raw)} if raw else set()
 
 
 class FleetProvider(CloudProvider):
@@ -129,8 +162,26 @@ class FleetProvider(CloudProvider):
 
     # -- provider interface ----------------------------------------------------------
 
+    def _pick_host(self, country: str) -> FleetHost:
+        """Least-loaded host **in the requested country**.
+
+        Never falls back to another country. `countries.resolve()` already
+        refuses a country we cannot place into, so reaching here with no
+        candidate means the catalog and the host list disagree — a config
+        bug, and one that must not be papered over by shipping the user's
+        mailbox to whichever host happened to be emptiest.
+        """
+        want = (country or "").strip().upper()
+        candidates = [h for h in self.hosts if h.country == want]
+        if not candidates:
+            have = ", ".join(sorted({h.country for h in self.hosts})) or "none"
+            raise ProviderError(
+                f"no fleet host in {want!r}; configured countries: {have}"
+            )
+        return min(candidates, key=self._tenant_count)
+
     def provision(self, req: ProvisionRequest) -> ProvisionResult:
-        host = min(self.hosts, key=self._tenant_count)
+        host = self._pick_host(req.region)
         self._ensure_image(host)
 
         name = f"stonechat-{req.owner_id[3:11].lower().replace('-', '')}"

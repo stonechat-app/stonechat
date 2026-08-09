@@ -29,8 +29,10 @@ Hetzner later is a cost optimisation for DE/FI, not a coverage prerequisite.
 
 from __future__ import annotations
 
-import os
+import logging
 from dataclasses import dataclass
+
+log = logging.getLogger("stonechat.hub.countries")
 
 
 @dataclass(frozen=True)
@@ -124,18 +126,26 @@ CATALOG: tuple[Country, ...] = (
 _BY_CODE = {c.code: c for c in CATALOG}
 
 
-# Which countries have a *fleet* host with spare capacity, i.e. where the
-# Mailbox tier can actually place a container. Empty by default and set from
-# the environment, because it is a fact about deployed infrastructure rather
-# than a fact about the world — and claiming a country we cannot place into
-# fails at provision time, after the user has already chosen.
+# Which countries the Mailbox tier can actually place a container in — read
+# straight off the configured fleet hosts, intersected with this catalog.
 #
-# Per-country fleet pools (TODO §20) are what will populate this; until then
-# Mailbox subscribers get the single shared pool and no country choice, which
-# is the honest state rather than a broken picker.
+# Derived on purpose. This used to be its own env var (STONECHAT_FLEET_COUNTRIES)
+# maintained beside the host list, and the two drifted: the hub advertised five
+# countries while every container landed on the single host it had. A fact about
+# deployed infrastructure has exactly one home, and it is the host list.
 def fleet_countries() -> set[str]:
-    raw = os.environ.get("STONECHAT_FLEET_COUNTRIES", "")
-    return {c.strip().upper() for c in raw.split(",") if c.strip()} & set(_BY_CODE)
+    from .providers import ProviderError
+    from .providers.fleet import configured_countries  # local: keeps hub start cheap
+
+    try:
+        return configured_countries() & set(_BY_CODE)
+    except ProviderError:
+        # Malformed STONECHAT_FLEET_HOSTS. This feeds the public picker, so it
+        # fails *closed* — offer no Mailbox country — rather than 500ing
+        # onboarding. Provisioning still raises loudly (FleetProvider), and the
+        # only unsafe direction is over-claiming, which an empty set cannot do.
+        log.exception("STONECHAT_FLEET_HOSTS is unparseable — Mailbox plan offered nowhere")
+        return set()
 
 
 def plans_for(country: Country, fleet: set[str]) -> list[str]:

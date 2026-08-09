@@ -26,6 +26,24 @@ TEST_CODE = os.environ.get("STONECHAT_TEST_CODE") or sys.exit(
     "set STONECHAT_TEST_CODE (the tester activation code from the hub's drop-in)")
 H = {"X-Stonechat-Version": "1"}
 
+
+def fleet_country(hub_url: str) -> str:
+    """A country the hub can actually place a Mailbox-plan container in.
+
+    The fleet places by country now, so `region` is no longer a placeholder —
+    it must name a country STONECHAT_FLEET_HOSTS configures a host for. Read
+    it from the catalog instead of hardcoding, so this follows whatever the
+    hub under test is configured with.
+    """
+    for c in httpx.get(f"{hub_url}/v1/countries").json()["countries"]:
+        if "mailbox" in c["plans"]:
+            return c["code"]
+    raise SystemExit(
+        "no country offers the mailbox plan — give STONECHAT_FLEET_HOSTS a "
+        'host with a country, e.g. "local=|127.0.0.1|DE"'
+    )
+
+
 sk = SigningKey.generate()
 pub = base64.b64encode(sk.verify_key.encode()).decode()
 
@@ -42,7 +60,8 @@ print("entitlement:", r.json()["plan"], r.json()["status"])
 
 r = httpx.post(f"{HUB}/v1/mailbox", headers=auth, json={
     "provider": "fleet",
-    "machine": {"machine_type": "container", "region": "fleet1", "disk_gb": 10},
+    "machine": {"machine_type": "container", "region": fleet_country(HUB),
+                "disk_gb": 10},
 })
 assert r.status_code == 202, (r.status_code, r.text)
 print("provisioning started…")

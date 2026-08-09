@@ -11,7 +11,10 @@
 # port range. Idempotent: safe to re-run.
 #
 # The hub then lists this host in STONECHAT_FLEET_HOSTS, e.g.:
-#     STONECHAT_FLEET_HOSTS="fleet1=ssh://stonechat-fleet@<internal-ip>|<public-ip>"
+#     STONECHAT_FLEET_HOSTS="de1=ssh://stonechat-fleet@<internal-ip>|<public-ip>|DE"
+# The trailing ISO 3166-1 alpha-2 code is required — it is the jurisdiction
+# this host sells, and mailboxes are only ever placed on a host in the
+# country the user picked.
 #
 set -euo pipefail
 
@@ -68,7 +71,7 @@ ufw --force enable
 
 echo
 echo "Fleet host ready. On the hub box, add it to the pool:"
-echo "    STONECHAT_FLEET_HOSTS=\"fleet1=ssh://$FLEET_USER@<this-host-reachable-addr>|<this-host-PUBLIC-ip>\""
+echo "    STONECHAT_FLEET_HOSTS=\"de1=ssh://$FLEET_USER@<this-host-reachable-addr>|<this-host-PUBLIC-ip>|<ISO-COUNTRY>\""
 echo
 echo "REMEMBER: open ${MAILBOX_PORT_RANGE/:/-} in the CLOUD firewall for this"
 echo "host too (security group / VPC rule), and pre-trust this host's key on"

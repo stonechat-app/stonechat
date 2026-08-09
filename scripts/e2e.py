@@ -63,6 +63,23 @@ TLS_SIG_CONTEXT = b"stonechat-v1-tls"
 WTCERTS_SIG_CONTEXT = b"stonechat-v1-wtcerts"
 
 
+def fleet_country(hub_url: str) -> str:
+    """A country the hub can actually place a Mailbox-plan container in.
+
+    The fleet places by country now, so `region` is no longer a placeholder —
+    it must name a country STONECHAT_FLEET_HOSTS configures a host for. Read
+    it from the catalog instead of hardcoding, so this follows whatever the
+    hub under test is configured with.
+    """
+    for c in httpx.get(f"{hub_url}/v1/countries").json()["countries"]:
+        if "mailbox" in c["plans"]:
+            return c["code"]
+    raise SystemExit(
+        "no country offers the mailbox plan — give STONECHAT_FLEET_HOSTS a "
+        'host with a country, e.g. "local=|127.0.0.1|DE"'
+    )
+
+
 def wtcerts_signing_bytes(certs: list[dict]) -> bytes:
     """Mirrors core/src/wtcerts.rs — length-prefixed and ordered, not JSON.
 
@@ -862,7 +879,8 @@ def main():
     carol = Phone("carol")
     carol.register()
     fleet_req = {"provider": "fleet",
-                 "machine": {"machine_type": "container", "region": "fleet"}}
+                 "machine": {"machine_type": "container",
+                             "region": fleet_country(HUB)}}
 
     # paid providers 402 without an entitlement (PROTOCOL.md "Billing")
     r = httpx.post(f"{HUB}/v1/mailbox", headers=carol.auth, json=fleet_req)

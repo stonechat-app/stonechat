@@ -59,7 +59,7 @@ docker -H ssh://stonechat-fleet@<FLEET_ADDR> version
 
 ```bash
 sudo STONECHAT_PUBLIC_IP=<HUB_IP> \
-     STONECHAT_FLEET_HOSTS="fleet1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>" \
+     STONECHAT_FLEET_HOSTS="de1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>|DE" \
      deploy/setup.sh
 ```
 
@@ -73,7 +73,7 @@ Knobs (env vars):
 | Var | Default | Meaning |
 |---|---|---|
 | `STONECHAT_PUBLIC_IP` | — (required) | Address phones use for the hub |
-| `STONECHAT_FLEET_HOSTS` | — | Fleet host pool: `name=ssh://user@addr\|advertise_ip,…` (unset → fleet provider disabled) |
+| `STONECHAT_FLEET_HOSTS` | — | Fleet host pool: `name=ssh://user@addr\|advertise_ip\|COUNTRY,…` (unset → fleet provider disabled). The ISO country code is required and is the single source of both placement and which countries the Mailbox plan offers. |
 | `STONECHAT_HUB_PORT` | `8000` | Hub listen port |
 | `STONECHAT_RELAY_BINARY` | — | Static x86_64-musl `stonechat-relay` on this box (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for dedicated VMs (authenticated with the per-mailbox token in their startup script). Unset → fleet hosts compile the crate on first ignite; dedicated-VM provisioning refused. |
 | `STONECHAT_HUB_URL` | — | Public base URL of the hub (`https://hub.example.com`) — how dedicated-VM startup scripts reach `/v1/relay-binary` |
@@ -148,7 +148,7 @@ systemctl restart stonechat-hub         # after config changes
 
 # update to the latest code:
 cd ~/stonechat && git pull && \
-  sudo STONECHAT_PUBLIC_IP=<HUB_IP> STONECHAT_FLEET_HOSTS="fleet1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>" deploy/setup.sh
+  sudo STONECHAT_PUBLIC_IP=<HUB_IP> STONECHAT_FLEET_HOSTS="de1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>|DE" deploy/setup.sh
 ```
 
 ### Upgrading the relay without destroying mailboxes
@@ -270,7 +270,7 @@ per-relay push keys — recommended; see PROTOCOL.md "Push gateway":
 ```bash
 cd ~/stonechat
 sudo STONECHAT_PUBLIC_IP=<HUB_IP> \
-     STONECHAT_FLEET_HOSTS="fleet1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>" \
+     STONECHAT_FLEET_HOSTS="de1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>|DE" \
      STONECHAT_PUSH_GATEWAY=http://<CP_INTERNAL_IP>:8100 \
      STONECHAT_PUSH_MINT_SECRET=<openssl rand -hex 32, same as gateway> deploy/setup.sh
 ```
@@ -345,7 +345,7 @@ invites from the app ("Host friends on your machine"). Friends redeem with
 
 You're already on the production topology (hub + fleet hosts).
 When you outgrow one fleet host, the moves — all already scaffolded in the
-codebase — are: add hosts to `STONECHAT_FLEET_HOSTS` (placement is least-loaded),
+codebase — are: add hosts to `STONECHAT_FLEET_HOSTS` (placement is least-loaded *within the requested country*),
 harden containers with `STONECHAT_FLEET_RUNTIME=runsc` (gVisor), offer per-user
 VMs as the premium tier (`gcp` provider today; `DigitalOceanProvider`/
 `HetznerProvider` adapters to come), pin the mailbox port range, add the

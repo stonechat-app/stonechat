@@ -292,8 +292,8 @@ def ensure_provisioned(bot: Phone) -> None:
     if srv["status"] == "none":
         body = {
             "provider": "fleet",
-            "machine": {"machine_type": "container", "region": "fleet1",
-                        "disk_gb": 10},
+            "machine": {"machine_type": "container",
+                        "region": e2e.fleet_country(HUB), "disk_gb": 10},
         }
         r = httpx.post(f"{HUB}/v1/mailbox", headers=bot.auth, json=body, timeout=30)
         if r.status_code == 402:

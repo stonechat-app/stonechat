@@ -27,14 +27,11 @@ SERVICE_USER="${SERVICE_USER:-root}"
 STONECHAT_HUB_DOMAIN="${STONECHAT_HUB_DOMAIN:-}"
 # Fleet host pool for the "fleet" provider (mailbox containers on SEPARATE
 # machines — mailboxes never run on this box; see deploy/README.md):
-#   STONECHAT_FLEET_HOSTS="fleet1=ssh://stonechat-fleet@10.0.0.5|203.0.113.5"
+#   STONECHAT_FLEET_HOSTS="de1=ssh://stonechat-fleet@10.0.0.5|203.0.113.5|DE"
+# The trailing ISO country code is required: it is both where the container
+# lands and which countries the picker offers on the Mailbox plan. There is no
+# separate country list any more (there was, and the two drifted).
 STONECHAT_FLEET_HOSTS="${STONECHAT_FLEET_HOSTS:-}"
-# Which catalog countries the Mailbox plan may be offered in (hub/app/countries.py):
-#   STONECHAT_FLEET_COUNTRIES="DE,FI"
-# Empty → Mailbox is hidden everywhere and only Machine is offered. NOTE:
-# placement is still least-loaded across the WHOLE pool, so a country listed
-# here is a claim about the picker, not about where the container lands.
-STONECHAT_FLEET_COUNTRIES="${STONECHAT_FLEET_COUNTRIES:-}"
 # Optional: address of the push gateway, reachable from mailbox CONTAINERS.
 # On Linux that's the Docker bridge host address (172.17.0.1), not 127.0.0.1.
 # Leave empty to run without push (see deploy/README.md "Enable push").
@@ -80,8 +77,7 @@ echo "    repo:        $REPO_ROOT"
 echo "    public IP:   $STONECHAT_PUBLIC_IP"
 echo "    hub port:    $STONECHAT_HUB_PORT"
 echo "    gcp project: ${STONECHAT_GCP_PROJECT:-(unset — gcp provider disabled)}"
-echo "    fleet hosts: ${STONECHAT_FLEET_HOSTS:-(unset — fleet provider disabled)}"
-echo "    fleet countries: ${STONECHAT_FLEET_COUNTRIES:-(unset — Mailbox hidden, Machine only)}"
+echo "    fleet hosts: ${STONECHAT_FLEET_HOSTS:-(unset — fleet provider disabled, Mailbox plan unavailable)}"
 echo "    domain:      ${STONECHAT_HUB_DOMAIN:-(unset — plain HTTP, no TLS)}"
 echo "    billing:     $STONECHAT_BILLING"
 
@@ -138,7 +134,6 @@ Environment=STONECHAT_PUSH_GATEWAY=$STONECHAT_PUSH_GATEWAY
 Environment=STONECHAT_PUSH_MINT_SECRET=$STONECHAT_PUSH_MINT_SECRET
 Environment=STONECHAT_GCP_PROJECT=$STONECHAT_GCP_PROJECT
 Environment="STONECHAT_FLEET_HOSTS=$STONECHAT_FLEET_HOSTS"
-Environment="STONECHAT_FLEET_COUNTRIES=$STONECHAT_FLEET_COUNTRIES"
 Environment=STONECHAT_RELAY_BINARY=$STONECHAT_RELAY_BINARY
 Environment=STONECHAT_HUB_URL=$STONECHAT_HUB_URL
 Environment=STONECHAT_RELAY_BINARY_URL=$STONECHAT_RELAY_BINARY_URL
