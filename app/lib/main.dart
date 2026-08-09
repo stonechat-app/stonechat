@@ -10,7 +10,7 @@ import 'core/push.dart';
 import 'state/app_state.dart';
 import 'state/call_state.dart';
 import 'state/chat_state.dart';
-import 'state/server_state.dart';
+import 'state/mailbox_state.dart';
 import 'ui/add_contact_screen.dart';
 import 'ui/backup_screen.dart';
 import 'ui/call_screen.dart';
@@ -22,7 +22,7 @@ import 'ui/lock_screen.dart';
 import 'ui/mailbox_setup_screen.dart';
 import 'ui/my_id_screen.dart';
 import 'ui/onboarding_screen.dart';
-import 'ui/server_screen.dart';
+import 'ui/mailbox_screen.dart';
 import 'ui/settings_screen.dart';
 import 'ui/theme.dart';
 
@@ -39,7 +39,7 @@ Future<void> main() async {
   // Surface backgrounded events (e.g. a contact accepting your request) as
   // local notifications.
   chat.onNotice = notices.show;
-  final server = ServerState(
+  final mailbox = MailboxState(
     app,
     onEnvelope: chat.handleIncoming,
     onConnected: () async {
@@ -78,8 +78,8 @@ Future<void> main() async {
 
   if (app.hasIdentity) {
     await chat.load();
-    await server.loadOutage();
-    await server.refresh();
+    await mailbox.loadOutage();
+    await mailbox.refresh();
   }
 
   // Optional content-free push wake-ups. No Firebase config → stays disabled,
@@ -91,7 +91,7 @@ Future<void> main() async {
       if (app.hasIdentity) {
         // onForeground connects straight to the mailbox — refresh() alone
         // would leave us socketless whenever the hub is unreachable.
-        server
+        mailbox
           ..onForeground()
           ..refresh();
         chat.retryPending();
@@ -105,7 +105,7 @@ Future<void> main() async {
         ChangeNotifierProvider.value(value: app),
         ChangeNotifierProvider.value(value: chat),
         ChangeNotifierProvider.value(value: call),
-        ChangeNotifierProvider.value(value: server),
+        ChangeNotifierProvider.value(value: mailbox),
         Provider<PushService>.value(value: push),
       ],
       child: const StonechatApp(),
@@ -187,7 +187,7 @@ class _StonechatAppState extends State<StonechatApp>
       // it); if the call ends while we're still backgrounded, close it now
       // so queued envelopes go through the push gateway.
       if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
-        context.read<ServerState>().onBackground();
+        context.read<MailboxState>().onBackground();
       }
     }
   }
@@ -198,13 +198,13 @@ class _StonechatAppState extends State<StonechatApp>
     if (!app.hasIdentity) return;
     if (state == AppLifecycleState.resumed) {
       final chat = context.read<ChatState>();
-      final server = context.read<ServerState>();
+      final mailbox = context.read<MailboxState>();
       // Reconcile with what the notification extension wrote BEFORE the
       // socket reconnects — new envelopes must never meet a stale session
       // cache (chat_state.reloadAfterExtension).
       unawaited(
         chat.reloadAfterExtension().then((_) {
-          server
+          mailbox
             ..onForeground()
             ..refresh();
           chat.retryPending();
@@ -215,7 +215,7 @@ class _StonechatAppState extends State<StonechatApp>
       // (ICE, hangup) rides this socket — those envelopes are transient,
       // never queued, so a closed socket would drop them.
       if (!(_call?.inCall ?? false)) {
-        context.read<ServerState>().onBackground();
+        context.read<MailboxState>().onBackground();
       }
     }
   }
@@ -238,7 +238,7 @@ class _StonechatAppState extends State<StonechatApp>
         '/add-contact': (_) => const AddContactScreen(),
         '/create-group': (_) => const CreateGroupScreen(),
         '/my-id': (_) => const MyIdScreen(),
-        '/server': (_) => const ServerScreen(),
+        '/mailbox': (_) => const MailboxScreen(),
         '/invites': (_) => const InvitesScreen(),
         '/settings': (_) => const SettingsScreen(),
         '/backup': (_) => const BackupScreen(),

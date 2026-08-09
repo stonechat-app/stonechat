@@ -75,8 +75,8 @@ Knobs (env vars):
 | `STONECHAT_PUBLIC_IP` | — (required) | Address phones use for the hub |
 | `STONECHAT_FLEET_HOSTS` | — | Fleet host pool: `name=ssh://user@addr\|advertise_ip,…` (unset → fleet provider disabled) |
 | `STONECHAT_HUB_PORT` | `8000` | Hub listen port |
-| `STONECHAT_RELAY_BINARY` | — | Static x86_64-musl `stonechat-relay` on this box (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for sovereign VMs (authenticated with the per-server token in their startup script). Unset → fleet hosts compile the crate on first ignite; sovereign provisioning refused. |
-| `STONECHAT_HUB_URL` | — | Public base URL of the hub (`https://hub.example.com`) — how sovereign startup scripts reach `/v1/relay-binary` |
+| `STONECHAT_RELAY_BINARY` | — | Static x86_64-musl `stonechat-relay` on this box (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for dedicated VMs (authenticated with the per-mailbox token in their startup script). Unset → fleet hosts compile the crate on first ignite; dedicated-VM provisioning refused. |
+| `STONECHAT_HUB_URL` | — | Public base URL of the hub (`https://hub.example.com`) — how dedicated-VM startup scripts reach `/v1/relay-binary` |
 | `STONECHAT_RELAY_BINARY_URL` | — | Override: fetch the relay from an external artifact URL (GCS/GitHub release) instead of the hub |
 | `STONECHAT_CORS_EXTRA` | — | Comma-separated extra browser origins allowed to call the hub. **The web client needs this**: it is a browser, so every call is cross-origin. Serving it from `http://localhost:3000` during a test means setting `STONECHAT_CORS_EXTRA=http://localhost:3000`. Without it the client fails with a bare "Failed to fetch" and the symptom appears on the *phone* as "that code has expired" |
 
@@ -113,7 +113,7 @@ flutter build ipa \
   --dart-define=STONECHAT_PROVIDER=fleet
 ```
 
-Baking `STONECHAT_HUB` in means neither of you has to type the server address.
+Baking `STONECHAT_HUB` in means neither of you has to type the hub address.
 Upload the archive (Xcode → Organizer, or `xcrun altool`) to **TestFlight**,
 then add your friend as an **internal tester** in App Store Connect — internal
 testing needs no Apple review, so this is same-day.
@@ -132,7 +132,7 @@ Both of you, in the app:
 3. Exchange **handles** (the `zn-word-word-word` on your ID screen) — type or QR.
 4. Send a message, a photo, a voice note.
 5. The finale: hit **Turn off** and watch the mailbox container get destroyed —
-   "delete the only server my messages ever touched."
+   "delete the only machine my messages ever touched."
 
 Keep the app **foregrounded**: there are no push notifications yet, so delivery
 happens over the live WebSocket while the app is open or on resume.
@@ -204,9 +204,9 @@ across code updates:
 
 ```bash
 # on the hub box — set (or rotate) the codes; several codes with per-code
-# plans are supported (plan omitted → private):
+# plans are supported (plan omitted → mailbox):
 sudo mkdir -p /etc/systemd/system/stonechat-hub.service.d
-printf '[Service]\nEnvironment=STONECHAT_TEST_CODES=STONECHAT-XXXX-XXXX=private,STONECHAT-YYYY-YYYY=sovereign\n' \
+printf '[Service]\nEnvironment=STONECHAT_TEST_CODES=STONECHAT-XXXX-XXXX=mailbox,STONECHAT-YYYY-YYYY=machine\n' \
   | sudo tee /etc/systemd/system/stonechat-hub.service.d/test-code.conf
 sudo systemctl daemon-reload && sudo systemctl restart stonechat-hub
 
@@ -309,8 +309,8 @@ setup: create a service account for the hub, grant it
 project, attach it to the hub VM (`--scopes=cloud-platform` — ADC, no key
 files), and deploy with `STONECHAT_GCP_PROJECT=<PROJECT_ID>` set (this installs
 `google-cloud-compute`). Mailbox VMs get their own auto-created firewall rule
-(`stonechat-allow-server`, tcp:8080). Release builds pick the provider from the
-account's plan (private → `fleet`, sovereign → `gcp`, defaults `e2-micro` /
+(`stonechat-allow-mailbox`, tcp:8080). Release builds pick the provider from the
+account's plan (mailbox → `fleet`, machine → `gcp`, defaults `e2-micro` /
 `us-central1-a`); baking `--dart-define=STONECHAT_PROVIDER=...` into a build
 overrides the plan mapping for every install — test builds only. Cost note: a
 per-user `e2-micro` + IPv4 runs ~$7–10/mo, vs ~$0.30/user on a shared fleet
@@ -326,7 +326,7 @@ Want your VM to also host a few friends' mailboxes? Run the **host agent**
 a container per invited friend on the same box, each end-to-end encrypted and
 unreadable to you. Open port 8200 (host agent) plus the guest mailbox ports
 (42000–42024 by default; `STONECHAT_HOST_AGENT_PORT_BASE`), and share
-invites from the app ("Host friends on my server"). Friends redeem with
+invites from the app ("Host friends on your machine"). Friends redeem with
 "Join a friend's host."
 
 ## What this setup skips (fine for two people)

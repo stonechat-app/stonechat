@@ -12,7 +12,7 @@ import 'package:provider/provider.dart';
 import '../core/api.dart';
 import '../state/app_state.dart';
 import '../state/chat_state.dart';
-import '../state/server_state.dart';
+import '../state/mailbox_state.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -38,9 +38,9 @@ class _InvitesScreenState extends State<InvitesScreen> {
       _address.text = app.hostAgentAddress!;
       _refresh();
     } else {
-      // Sovereign VMs come with the host agent pre-installed — the hub gave
+      // Machine-plan VMs come with the host agent pre-installed — the hub gave
       // us its address + admin token, so connect without asking anything.
-      final record = context.read<ServerState>().record;
+      final record = context.read<MailboxState>().record;
       if (record.hostAgentAddress != null &&
           record.hostAgentAdminToken != null) {
         _address.text = record.hostAgentAddress!;
@@ -138,7 +138,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
   // -- first run: point the app at your own host agent ----------------------
 
   Widget _setupView() {
-    // Sovereign VM: the host agent is already on the box and the hub gave us
+    // Machine-plan VM: the host agent is already on the box and the hub gave us
     // its credentials — no form, just a connect (with retry while the VM is
     // still finishing its first boot).
     if (_autoSetup) {
@@ -184,7 +184,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Run the Stonechat host agent on your server, then connect it here to '
+          'Run the Stonechat host agent on your machine, then connect it here to '
           'create invites. Each friend who accepts gets their own mailbox on '
           'your box — you can see that they host with you, never their '
           'messages.',

@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:stonechat/state/server_state.dart';
+import 'package:stonechat/state/mailbox_state.dart';
 
 void main() {
   group('formatOutage', () {
@@ -34,9 +34,9 @@ void main() {
     // The number itself is a product call; this pins the intent so a casual
     // edit to "5 minutes" (which would fire on every VM restart) or to
     // "3 days" (useless) trips a test.
-    expect(ServerState.outageNoticeAfter, greaterThanOrEqualTo(
+    expect(MailboxState.outageNoticeAfter, greaterThanOrEqualTo(
         const Duration(minutes: 30)));
-    expect(ServerState.outageNoticeAfter,
+    expect(MailboxState.outageNoticeAfter,
         lessThanOrEqualTo(const Duration(hours: 8)));
   });
 }

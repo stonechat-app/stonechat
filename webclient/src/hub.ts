@@ -111,7 +111,7 @@ export interface DirectoryEntry {
   pubkey: string;
   pq_pk?: string;
   pq_sig?: string;
-  server?: {
+  mailbox?: {
     address?: string;
     tls_fp?: string;
     tls_sig?: string;

@@ -13,7 +13,7 @@ import 'package:stonechat/ui/country_picker.dart';
 
 MailboxCountry _country({
   String code = 'SG',
-  List<String> plans = const ['sovereign'],
+  List<String> plans = const ['machine'],
 }) =>
     MailboxCountry(
       code: code,
@@ -72,16 +72,16 @@ void main() {
       (tester) async {
     var taps = 0;
     await tester.pumpWidget(_host(CountryPicker(
-      countries: [_country(plans: const ['sovereign'])],
+      countries: [_country(plans: const ['machine'])],
       selected: null,
-      plan: 'private',
+      plan: 'mailbox',
       onSelect: (_) => taps++,
     )));
 
     // Visible on purpose — "Finland, but not on your plan" is information;
     // a country that vanishes between screens is confusing.
     expect(find.text('Singapore'), findsWidgets);
-    expect(find.text('Sovereign only'), findsOneWidget);
+    expect(find.text('Machine only'), findsOneWidget);
     await tester.tap(find.text('Singapore').first);
     expect(taps, 0);
   });

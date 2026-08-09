@@ -13,7 +13,7 @@ import '../core/push.dart';
 import '../state/app_state.dart';
 import '../state/call_state.dart';
 import '../state/chat_state.dart';
-import '../state/server_state.dart';
+import '../state/mailbox_state.dart';
 import 'devices_screen.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
@@ -123,7 +123,7 @@ class SettingsScreen extends StatelessWidget {
   Future<void> _resetIdentity(BuildContext context, AppState app) async {
     // Grab the sibling states up front — the dialog await may outlive us.
     final call = context.read<CallState>();
-    final server = context.read<ServerState>();
+    final mailbox = context.read<MailboxState>();
     final chat = context.read<ChatState>();
     final confirmed = await showDialog<bool>(
       context: context,
@@ -159,8 +159,8 @@ class SettingsScreen extends StatelessWidget {
     ));
     try {
       await call.reset(); // release camera/mic before the identity dies
-      await app.resetIdentity(); // needs the account token (deleteServer)
-      server.reset();
+      await app.resetIdentity(); // needs the account token (deleteMailbox)
+      mailbox.reset();
       chat.reset();
     } finally {
       navigator.pop(); // dismiss the spinner
@@ -265,10 +265,10 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
               AsyncSnapshot(hasError: true) => (
                   'Unavailable',
                   Zn.muted,
-                  "Couldn't reach the server",
+                  "Couldn't reach the mailbox",
                 ),
               AsyncSnapshot(data: final e?) => (
-                  e.plan == 'sovereign' ? 'Sovereign' : 'Private',
+                  e.plan == 'machine' ? 'Machine' : 'Mailbox',
                   e.status == 'grace' ? Zn.danger : Zn.ok,
                   e.status == 'grace'
                       ? 'Payment issue — check your card with Stripe'

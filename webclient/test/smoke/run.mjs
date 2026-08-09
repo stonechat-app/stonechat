@@ -152,7 +152,7 @@ const hub = createServer((req, res) => {
       JSON.stringify({
         stonechat_id: identity.id,
         pubkey: identity.pubkey,
-        server: {
+        mailbox: {
           address: `https://127.0.0.1:${relayPort}`,
           wt_address: `127.0.0.1:${relayWtPort}`,
           wt_certs: schedule.certs,

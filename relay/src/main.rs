@@ -1,7 +1,7 @@
-//! Stonechat routing server — a single user's encrypted mailbox.
+//! Stonechat relay — the program behind a single user's encrypted mailbox.
 //!
 //! The relay implementation (ported from the retired Python relay —
-//! notes/docs/RUST_PORT.md is the port record; PROTOCOL.md "Routing server API"
+//! notes/docs/RUST_PORT.md is the port record; PROTOCOL.md "Mailbox API"
 //! is the wire contract). Runs on a VM the user owns.
 //! Stores only sealed envelopes addressed to its owner and deletes each one
 //! the moment the owner's device acks it. Plaintext never exists here, and

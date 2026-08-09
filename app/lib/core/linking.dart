@@ -111,7 +111,7 @@ Uint8List offerCommitment(
 ///   included), sign a TLS fingerprint, or recover the account. It gets
 ///   `identity_pub` instead, which is what its certificate verifies against
 ///   and what the SC- ID commits to.
-/// - **the hub account token** — server management and billing stay with the
+/// - **the hub account token** — mailbox management and billing stay with the
 ///   primary, so a linked device cannot destroy the mailbox it lives on.
 /// - **history** — that arrives separately, if at all.
 class LinkGrant {

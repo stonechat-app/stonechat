@@ -1,6 +1,6 @@
 # Stonechat
 
-Privacy-first messaging where **every user runs their own server**.
+Privacy-first messaging where **every user runs their own relay**.
 
 - No central message store. Your "relay" is a tiny VM you spin up (GCP, AWS, or
   a local Docker container for dev) whose only job is to hold **end-to-end
@@ -27,7 +27,7 @@ See PROTOCOL.md (notes/docs/PROTOCOL.md, internal) for the full wire protocol an
 | Directory | What it is |
 |---|---|
 | `app/` | Flutter app (iOS/Android). Keys, history, encryption — all client-side. |
-| `relay/` | Routing server ("relay", "mailbox"). Rust + SQLite; a static binary that runs on the user's VM. Stores ciphertext only, deletes on ack. |
+| `relay/` | The mailbox program ("relay" = the software, "mailbox" = one running instance). Rust + SQLite; a static binary that runs on the user's VM. Stores ciphertext only, deletes on ack. |
 | `hub/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Stonechat IDs → pubkeys + current relay address. Never sees message content. |
 | `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
 |  `host_agent/` | Host agent ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
@@ -68,7 +68,7 @@ you can message everyone, and the mailbox token never leaves your phone:
 docker run -d --restart unless-stopped -p 8080:8080 \
   -e STONECHAT_OWNER_ID=<your SC- id> \
   -e STONECHAT_OWNER_TOKEN=<any long random secret you keep> \
-  stonechat-server   # image built from relay/ (see relay/README.md)
+  stonechat-relay    # image built from relay/ (see relay/README.md)
 ```
 
 In the app: Mailbox → **I already run a mailbox** → enter
@@ -78,7 +78,7 @@ if the mailbox at that address reports *your* Stonechat ID as its owner.
 ### Host your circle (one box, invited friends)
 
 Want to self-host for yourself **and a few friends** without each of them
-running a server? Run the **host agent** (`host_agent/`) on one box you own.
+running a machine? Run the **host agent** (`host_agent/`) on one box you own.
 It hosts your mailbox plus a container-per-friend — each with its own port,
 token, TLS cert, and resource caps — and it's the only thing on the box with
 Docker access; the hub never touches this machine.
@@ -93,7 +93,7 @@ STONECHAT_HOST_AGENT_ADVERTISE_HOST=<your-public-ip> \
 ```
 
 Open ports **8200** (the agent) and **42000–42024** (guest mailboxes) in your
-firewall or home router. In the app: Mailbox → **Host friends on my server** →
+firewall or home router. In the app: Mailbox → **Host friends on your machine** →
 enter the agent's address + admin token → **Create an invite** → share the
 `stonechat-host:…` string. Friends install the app, forge an identity, and paste it
 under **Join a friend's host** — their mailbox appears in the directory as an
@@ -130,7 +130,7 @@ SHA-256, so an adapter is only "create VM, pass script, return IP".
 | `gcp` | `pip install google-cloud-compute`, set `STONECHAT_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier). |
 | `aws` | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`. |
 | `local` | Docker only. For development. |
-| `fleet` | Container-per-user across a pool of shared Docker hosts (`STONECHAT_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `STONECHAT_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Private-plan workhorse — see notes/BUSINESS.md (internal). |
+| `fleet` | Container-per-user across a pool of shared Docker hosts (`STONECHAT_FLEET_HOSTS="name=ssh://user@addr\|advertise_host,…"` — required; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `STONECHAT_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Mailbox-plan workhorse — see notes/BUSINESS.md (internal). |
 
 Adding one: subclass `CloudProvider` (two methods: `provision`, `destroy`) and
 register it in `providers/__init__.py`.
@@ -186,7 +186,7 @@ python3 scripts/bench_devices.py 127.0.0.1 <relay_port>   # multi-device: does
   (relays self-sign; clients pin an owner-signed fingerprint through the
   directory — no CAs), so on-path observers no longer read envelope metadata
   or the owner token. But one mailbox = one user, so *which IP you connect to*
-  still reveals *that* you contacted that person. Inherent to per-user servers;
+  still reveals *that* you contacted that person. Inherent to per-user mailboxes;
   hiding it (padding, onion routing) is a separate, larger project.
 - **The ratchet is young.** The protocol implements PQXDH + double ratchet to
   spec (see notes/docs/PROTOCOL.md "Session crypto"), but it has not had an external

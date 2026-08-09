@@ -21,8 +21,8 @@ from .bootstrap import (
     build_startup_script,
 )
 
-FIREWALL_NAME = "stonechat-allow-server"
-NETWORK_TAG = "stonechat-server"
+FIREWALL_NAME = "stonechat-allow-mailbox"
+NETWORK_TAG = "stonechat-mailbox"
 SOURCE_IMAGE = "projects/debian-cloud/global/images/family/debian-12"
 
 

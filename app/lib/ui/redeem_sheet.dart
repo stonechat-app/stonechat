@@ -55,7 +55,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
           await context.read<AppState>().api.redeemCode(code);
       if (!mounted) return;
       Navigator.pop(context, true);
-      final plan = result.plan == 'sovereign' ? 'Sovereign' : 'Private';
+      final plan = result.plan == 'machine' ? 'Machine' : 'Mailbox';
       showZnSnack(context, '$plan plan activated');
     } on ApiException catch (e) {
       setState(() {
@@ -65,7 +65,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
     } catch (_) {
       setState(() {
         _busy = false;
-        _error = "Couldn't reach the server — try again";
+        _error = "Couldn't reach the mailbox — try again";
       });
     }
   }

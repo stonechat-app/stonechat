@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../state/server_state.dart';
+import '../state/mailbox_state.dart';
 import 'theme.dart';
 
 /// The signature element: a thin status line that always tells you whether
@@ -16,13 +16,13 @@ class RelayStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final server = context.watch<ServerState>();
+    final mailbox = context.watch<MailboxState>();
 
     // A confirmed outage outranks "connecting…": we've already checked with
     // the hub that the network is fine and the mailbox simply isn't there.
-    final down = server.mailboxDownFor;
+    final down = mailbox.mailboxDownFor;
 
-    final (dot, label, color) = switch ((server.record.status, server.socketConnected)) {
+    final (dot, label, color) = switch ((mailbox.record.status, mailbox.socketConnected)) {
       ('running', true) => ('●', "You're reachable", Zn.ok),
       ('running', false) when down != null => (
           '✕',
@@ -36,7 +36,7 @@ class RelayStrip extends StatelessWidget {
     };
 
     return InkWell(
-      onTap: () => Navigator.pushNamed(context, '/server'),
+      onTap: () => Navigator.pushNamed(context, '/mailbox'),
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 7),

@@ -326,7 +326,7 @@ class CallState extends ChangeNotifier {
   /// Own mailbox's TURN (when it runs one) + public STUN. Either side's
   /// relay candidates can carry the call, so we only need our own.
   Future<List<Map<String, Object?>>> _iceServers() async {
-    final servers = <Map<String, Object?>>[
+    final mailboxes = <Map<String, Object?>>[
       {'urls': 'stun:stun.l.google.com:19302'},
     ];
     final address = chat.mailboxAddress;
@@ -335,14 +335,14 @@ class CallState extends ChangeNotifier {
     if (address != null && token != null && tlsFp != null) {
       final turn = await fetchTurnCredentials(address, token, tlsFp);
       if (turn != null) {
-        servers.add({
+        mailboxes.add({
           'urls': turn.urls,
           'username': turn.username,
           'credential': turn.credential,
         });
       }
     }
-    return servers;
+    return mailboxes;
   }
 
   /// Trickle ICE, batched: one envelope per ~300 ms burst instead of one

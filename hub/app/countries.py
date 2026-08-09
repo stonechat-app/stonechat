@@ -35,7 +35,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Hosting:
-    """Where a dedicated (Sovereign) mailbox for this country actually boots."""
+    """Where a dedicated (Machine plan) mailbox for this country actually boots."""
 
     provider: str
     region: str          # provider-native: GCP wants a *zone*
@@ -52,7 +52,7 @@ class Country:
     # user; `caveat` is what it does not. Never show one without the other.
     jurisdiction: str
     caveat: str
-    sovereign: Hosting
+    hosting: Hosting
 
 
 # Ordered as the picker shows them: Europe first (the strongest privacy story
@@ -69,7 +69,7 @@ CATALOG: tuple[Country, ...] = (
                "arrangement.",
         # Swap to Hetzner (Falkenstein/Nuremberg) when that adapter lands —
         # same country, roughly a fifth of the cost.
-        sovereign=Hosting("gcp", "europe-west3-a", "e2-micro"),
+        hosting=Hosting("gcp", "europe-west3-a", "e2-micro"),
     ),
     Country(
         code="FI",
@@ -81,8 +81,8 @@ CATALOG: tuple[Country, ...] = (
         caveat="Finnish law has permitted state network surveillance since the "
                "2019 intelligence acts.",
         # Hetzner Helsinki is the cheapest RAM in the industry — this is the
-        # country where the Private tier's margin is actually decided.
-        sovereign=Hosting("gcp", "europe-north1-a", "e2-micro"),
+        # country where the Mailbox tier's margin is actually decided.
+        hosting=Hosting("gcp", "europe-north1-a", "e2-micro"),
     ),
     Country(
         code="CH",
@@ -94,7 +94,7 @@ CATALOG: tuple[Country, ...] = (
         caveat="Swiss surveillance law can oblige telecoms operators to retain "
                "metadata; how far that reaches hosting customers has been "
                "fought over in court.",
-        sovereign=Hosting("gcp", "europe-west6-a", "e2-micro"),
+        hosting=Hosting("gcp", "europe-west6-a", "e2-micro"),
     ),
     Country(
         code="BR",
@@ -105,7 +105,7 @@ CATALOG: tuple[Country, ...] = (
                      "on the GDPR.",
         caveat="Brazil's Marco Civil requires application providers to keep "
                "access logs for six months.",
-        sovereign=Hosting("gcp", "southamerica-east1-a", "e2-micro"),
+        hosting=Hosting("gcp", "southamerica-east1-a", "e2-micro"),
     ),
     Country(
         code="SG",
@@ -117,7 +117,7 @@ CATALOG: tuple[Country, ...] = (
         caveat="Singapore law grants broad state access powers, including "
                "compelling assistance with decryption. It is on this list for "
                "reach, not for privacy.",
-        sovereign=Hosting("gcp", "asia-southeast1-a", "e2-micro"),
+        hosting=Hosting("gcp", "asia-southeast1-a", "e2-micro"),
     ),
 )
 
@@ -125,13 +125,13 @@ _BY_CODE = {c.code: c for c in CATALOG}
 
 
 # Which countries have a *fleet* host with spare capacity, i.e. where the
-# Private tier can actually place a container. Empty by default and set from
+# Mailbox tier can actually place a container. Empty by default and set from
 # the environment, because it is a fact about deployed infrastructure rather
 # than a fact about the world — and claiming a country we cannot place into
 # fails at provision time, after the user has already chosen.
 #
 # Per-country fleet pools (TODO §20) are what will populate this; until then
-# Private subscribers get the single shared pool and no country choice, which
+# Mailbox subscribers get the single shared pool and no country choice, which
 # is the honest state rather than a broken picker.
 def fleet_countries() -> set[str]:
     raw = os.environ.get("STONECHAT_FLEET_COUNTRIES", "")
@@ -140,9 +140,9 @@ def fleet_countries() -> set[str]:
 
 def plans_for(country: Country, fleet: set[str]) -> list[str]:
     """Which plans can place a mailbox in this country right now."""
-    plans = ["sovereign"]
+    plans = ["machine"]
     if country.code in fleet:
-        plans.append("private")
+        plans.append("mailbox")
     return plans
 
 
@@ -180,14 +180,14 @@ def resolve(code: str, plan: str) -> tuple[str, dict]:
             f"unknown country {code!r}; available: "
             f"{', '.join(c.code for c in CATALOG)}"
         )
-    if plan == "private":
+    if plan == "mailbox":
         if country.code not in fleet_countries():
             raise UnavailableCountry(
-                f"{country.name} is not available on the private plan yet"
+                f"{country.name} is not available on the Mailbox plan yet"
             )
         # The fleet provider places by pool name, not by cloud region.
         return "fleet", {"machine_type": "container", "region": country.code}
-    h = country.sovereign
+    h = country.hosting
     return h.provider, {
         "machine_type": h.machine_type,
         "region": h.region,

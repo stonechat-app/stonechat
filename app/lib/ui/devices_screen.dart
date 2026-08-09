@@ -183,7 +183,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
       content: const Text(
         'A device is a phone, tablet or desktop you use.\n\n'
         'An agent is a headless program — no screen, nobody sitting at it, '
-        'usually on a server. It can read and send your messages like any '
+        'usually on a mailbox. It can read and send your messages like any '
         'other device.',
         style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.4),
       ),

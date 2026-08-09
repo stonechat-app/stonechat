@@ -93,7 +93,7 @@ def assert_pinned(phone: "Phone") -> None:
     """The full client-side transport check: directory fp is vouched for by
     the owner's identity key AND matches the certificate actually served."""
     entry = httpx.get(f"{HUB}/v1/directory/{phone.stonechat_id}").json()
-    srv = entry["server"]
+    srv = entry["mailbox"]
     VerifyKey(base64.b64decode(entry["pubkey"])).verify(
         TLS_SIG_CONTEXT + base64.b64decode(srv["tls_fp"]),
         base64.b64decode(srv["tls_sig"]),
@@ -253,7 +253,7 @@ class Phone:
         self.pubkey_b64 = b64(bytes(self.identity.verify_key))
         self.stonechat_id = None
         self.token = None
-        self.server = None
+        self.mailbox = None
         # (peer stonechat_id, device) -> ratchet state. Keyed by device
         # because a double ratchet is mutable state that advances on every
         # message: two of a peer's devices cannot share one
@@ -327,7 +327,7 @@ class Phone:
         data = r.json()
         self.stonechat_id, self.token = data["stonechat_id"], data["account_token"]
         expected = stonechat_id_from_pubkey(bytes(self.identity.verify_key))
-        assert self.stonechat_id == expected, "server-derived ID != client-derived ID"
+        assert self.stonechat_id == expected, "mailbox-derived ID != client-derived ID"
         assert "handle" not in data, "handles were removed; register must not return one"
         print(f"  {self.name}: {self.stonechat_id}")
 
@@ -359,7 +359,7 @@ class Phone:
 
     def provision(self):
         r = httpx.post(
-            f"{HUB}/v1/server",
+            f"{HUB}/v1/mailbox",
             headers=self.auth,
             json={
                 "provider": "local",
@@ -371,11 +371,11 @@ class Phone:
     def wait_running(self, timeout=300):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            r = httpx.get(f"{HUB}/v1/server", headers=self.auth)
+            r = httpx.get(f"{HUB}/v1/mailbox", headers=self.auth)
             r.raise_for_status()
             s = r.json()
             if s["status"] == "running":
-                self.server = s
+                self.mailbox = s
                 print(f"  {self.name} relay: {s['address']}")
                 return
             if s["status"] == "error":
@@ -412,8 +412,8 @@ class Phone:
         sig = self.dev_sig.sign(SPK_SIG_CONTEXT + self.spk["pub"]).signature
         ksig = self.dev_sig.sign(KSPK_SIG_CONTEXT + self.kspk["pub"]).signature
         r = MX.post(
-            f"{self.server['address']}/prekeys",
-            params={"token": self.server["server_token"]},
+            f"{self.mailbox['address']}/prekeys",
+            params={"token": self.mailbox["mailbox_token"]},
             json={"spk": {"id": self.spk["id"], "pub": b64(self.spk["pub"]),
                           "sig": b64(sig)},
                   "opks": new_opks,
@@ -434,26 +434,26 @@ class Phone:
         present; only the owner can say the list is theirs. Without this the
         directory serves nothing and a browser cannot pin — which is the safe
         failure, not a broken one."""
-        r = MX.get(f"{self.server['address']}/wt/certs")
+        r = MX.get(f"{self.mailbox['address']}/wt/certs")
         if r.status_code == 404:
             return None  # browser transport disabled on this relay
         r.raise_for_status()
         certs = r.json()["certs"]
         sig = self.identity.sign(
             WTCERTS_SIG_CONTEXT + wtcerts_signing_bytes(certs)).signature
-        httpx.post(f"{HUB}/v1/server/wt", headers=self.auth,
+        httpx.post(f"{HUB}/v1/mailbox/wt", headers=self.auth,
                    json={"certs": certs, "wt_sig": b64(sig)}).raise_for_status()
         return certs
 
     def publish_tls_sig(self):
         """The owner's half of pinned TLS: confirm the fingerprint the control
         plane observed matches the live certificate, sign it, publish."""
-        record = httpx.get(f"{HUB}/v1/server", headers=self.auth).json()
+        record = httpx.get(f"{HUB}/v1/mailbox", headers=self.auth).json()
         fp = record["tls_fp"]
-        assert fp == live_cert_fp(self.server["address"]), \
+        assert fp == live_cert_fp(self.mailbox["address"]), \
             "hub fp must match the certificate the relay serves"
         sig = self.identity.sign(TLS_SIG_CONTEXT + unb64(fp)).signature
-        httpx.post(f"{HUB}/v1/server/tls", headers=self.auth,
+        httpx.post(f"{HUB}/v1/mailbox/tls", headers=self.auth,
                    json={"tls_fp": fp, "tls_sig": b64(sig)}).raise_for_status()
 
     # -- sessions --------------------------------------------------------------------
@@ -466,10 +466,10 @@ class Phone:
         bundle is device 1's by design, so anything else goes through
         ?device= with the peer's bundle token."""
         if device == PRIMARY_DEVICE:
-            r = MX.get(f"{to.server['address']}/prekeys/bundle")
+            r = MX.get(f"{to.mailbox['address']}/prekeys/bundle")
         else:
             assert bundle_token, "a sibling device needs the peer's bundle token"
-            r = MX.get(f"{to.server['address']}/prekeys/bundle",
+            r = MX.get(f"{to.mailbox['address']}/prekeys/bundle",
                        params={"device": device, "token": bundle_token})
         r.raise_for_status()
         bundle = r.json()
@@ -687,13 +687,13 @@ class Phone:
     # -- transport --------------------------------------------------------------------
 
     def deliver_to(self, to: "Phone", envelope: dict):
-        r = MX.post(f"{to.server['address']}/inbox", json=envelope)
+        r = MX.post(f"{to.mailbox['address']}/inbox", json=envelope)
         r.raise_for_status()
 
     async def receive_one(self, timeout=15, process=None) -> dict:
         """Receive one envelope, run `process(envelope)` BEFORE acking (the
         app does the same: persist/download first, ack last), then ack."""
-        url = self.server["address"].replace("http", "ws") + f"/ws?token={self.server['server_token']}"
+        url = self.mailbox["address"].replace("http", "ws") + f"/ws?token={self.mailbox['mailbox_token']}"
         async with websockets.connect(url, ssl=WS_SSL) as ws:
             raw = await asyncio.wait_for(ws.recv(), timeout)
             envelope = json.loads(raw)
@@ -704,11 +704,11 @@ class Phone:
             return envelope
 
     def queue_depth(self):
-        return MX.get(f"{self.server['address']}/status",
-                      params={"token": self.server["server_token"]}).json()["queued"]
+        return MX.get(f"{self.mailbox['address']}/status",
+                      params={"token": self.mailbox["mailbox_token"]}).json()["queued"]
 
     def destroy(self):
-        r = httpx.delete(f"{HUB}/v1/server", headers=self.auth, timeout=30)
+        r = httpx.delete(f"{HUB}/v1/mailbox", headers=self.auth, timeout=30)
         r.raise_for_status()
 
 
@@ -728,7 +728,7 @@ def main():
     assert entry["pq_pk"] == bob.pq_pk_b64
     VerifyKey(unb64(entry["pubkey"])).verify(
         PQPK_SIG_CONTEXT + unb64(entry["pq_pk"]), unb64(entry["pq_sig"]))
-    assert entry["server"] is None
+    assert entry["mailbox"] is None
 
     print("2a2) registration rejects a pq_pk the identity key didn't sign")
     mallory = Phone("mallory")
@@ -756,9 +756,9 @@ def main():
 
     print("3a) pinned TLS: owners vouch for their relays' certificates")
     # before publication the directory has the fingerprint but no signature —
-    # pinning clients treat that as "no server"
+    # pinning clients treat that as "no mailbox"
     entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
-    assert entry["server"]["tls_sig"] is None
+    assert entry["mailbox"]["tls_sig"] is None
     alice.publish_tls_sig()
     bob.publish_tls_sig()
     assert_pinned(alice)
@@ -766,14 +766,14 @@ def main():
 
     # a signature that doesn't verify against the identity key is rejected
     wrong = alice.identity.sign(TLS_SIG_CONTEXT + b"\x00" * 32).signature
-    fp = httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["tls_fp"]
-    r = httpx.post(f"{HUB}/v1/server/tls", headers=alice.auth,
+    fp = httpx.get(f"{HUB}/v1/mailbox", headers=alice.auth).json()["tls_fp"]
+    r = httpx.post(f"{HUB}/v1/mailbox/tls", headers=alice.auth,
                    json={"tls_fp": fp, "tls_sig": b64(wrong)})
     assert r.status_code == 400, f"forged sig: expected 400, got {r.status_code}"
     # and so is a signature over a fingerprint that isn't this mailbox's
     other_fp = b64(b"\x11" * 32)
     sig = alice.identity.sign(TLS_SIG_CONTEXT + unb64(other_fp)).signature
-    r = httpx.post(f"{HUB}/v1/server/tls", headers=alice.auth,
+    r = httpx.post(f"{HUB}/v1/mailbox/tls", headers=alice.auth,
                    json={"tls_fp": other_fp, "tls_sig": b64(sig)})
     assert r.status_code == 400, f"wrong fp: expected 400, got {r.status_code}"
 
@@ -784,18 +784,18 @@ def main():
     # a browser that pinned an unsigned list has pinned whatever the network
     # said (WEB_CLIENT.md "the code-delivery problem", relay/src/wtcert.rs).
     entry = httpx.get(f"{HUB}/v1/directory/{alice.stonechat_id}").json()
-    assert entry["server"]["wt_certs"] is None, "unsigned schedule must not be served"
+    assert entry["mailbox"]["wt_certs"] is None, "unsigned schedule must not be served"
     certs = alice.publish_wt_certs()
     if certs is None:
         print("  --   relay has no browser transport; skipping")
     else:
         assert len(certs) >= 2, "the schedule should run ahead of the live cert"
         entry = httpx.get(f"{HUB}/v1/directory/{alice.stonechat_id}").json()
-        served = entry["server"]["wt_certs"]
+        served = entry["mailbox"]["wt_certs"]
         assert served == certs, "the directory must serve exactly what was signed"
         VerifyKey(unb64(alice.pubkey_b64)).verify(
             WTCERTS_SIG_CONTEXT + wtcerts_signing_bytes(served),
-            unb64(entry["server"]["wt_sig"]))
+            unb64(entry["mailbox"]["wt_sig"]))
         # Every certificate is inside the browser's 14-day cap, and the
         # schedule reaches months ahead so rotation needs no network.
         for c in served:
@@ -807,11 +807,11 @@ def main():
         # And somewhere to send them. Not derivable from the mailbox address:
         # container providers map a *random* host port for each, so a mailbox
         # at 1.2.3.4:49173 says nothing about where its QUIC listener landed.
-        wt_address = entry["server"]["wt_address"]
+        wt_address = entry["mailbox"]["wt_address"]
         assert wt_address, "a provisioned mailbox must publish its browser transport"
         wt_host, wt_port = wt_address.rsplit(":", 1)
         assert 0 < int(wt_port) <= 65535, wt_address
-        assert wt_address != alice.server["address"].removeprefix("https://"), \
+        assert wt_address != alice.mailbox["address"].removeprefix("https://"), \
             "the browser transport is a separate port, not the mailbox's"
         # It really is listening: QUIC is UDP, and an unbound port answers
         # nothing at all.
@@ -832,14 +832,14 @@ def main():
             ("reordered", list(reversed(certs))),
             ("tampered", [{**certs[0], "sha256": b64(b"\x11" * 32)}] + certs[1:]),
         ):
-            r = httpx.post(f"{HUB}/v1/server/wt", headers=alice.auth,
+            r = httpx.post(f"{HUB}/v1/mailbox/wt", headers=alice.auth,
                            json={"certs": mutated,
                                  "wt_sig": b64(alice.identity.sign(
                                      WTCERTS_SIG_CONTEXT
                                      + wtcerts_signing_bytes(certs)).signature)})
             assert r.status_code == 400, f"{name}: expected 400, got {r.status_code}"
         # And a schedule signed by somebody else.
-        r = httpx.post(f"{HUB}/v1/server/wt", headers=alice.auth,
+        r = httpx.post(f"{HUB}/v1/mailbox/wt", headers=alice.auth,
                        json={"certs": certs,
                              "wt_sig": b64(bob.identity.sign(
                                  WTCERTS_SIG_CONTEXT
@@ -850,8 +850,8 @@ def main():
     print("3a2) publish prekeys — mailboxes serve public halves only")
     alice.upload_prekeys()
     bob.upload_prekeys()
-    health = MX.get(f"{bob.server['address']}/status",
-                    params={"token": bob.server["server_token"]}).json()
+    health = MX.get(f"{bob.mailbox['address']}/status",
+                    params={"token": bob.mailbox["mailbox_token"]}).json()
     assert health["prekeys"]["spk"] is True
     assert health["prekeys"]["kspk"] is True
     opks_before = health["prekeys"]["opks"]
@@ -865,15 +865,15 @@ def main():
                  "machine": {"machine_type": "container", "region": "fleet"}}
 
     # paid providers 402 without an entitlement (PROTOCOL.md "Billing")
-    r = httpx.post(f"{HUB}/v1/server", headers=carol.auth, json=fleet_req)
+    r = httpx.post(f"{HUB}/v1/mailbox", headers=carol.auth, json=fleet_req)
     assert r.status_code == 402, f"unpaid fleet: expected 402, got {r.status_code}"
     assert r.json()["detail"]["code"] == "subscription_required"
-    assert r.json()["detail"]["plan_required"] == "private"
+    assert r.json()["detail"]["plan_required"] == "mailbox"
 
     # comp grant → redeem → entitlement live (same path a paid code takes)
     r = httpx.post(f"{HUB}/v1/billing/comp",
                    headers={"X-Admin-Token": ADMIN_TOKEN},
-                   json={"plan": "private", "note": "e2e"})
+                   json={"plan": "mailbox", "note": "e2e"})
     assert r.status_code == 201, (
         f"comp grant failed ({r.status_code}) — start the hub with "
         f"STONECHAT_ADMIN_TOKEN={ADMIN_TOKEN}")
@@ -881,7 +881,7 @@ def main():
     httpx.post(f"{HUB}/v1/billing/redeem", headers=carol.auth,
                json={"code": code}).raise_for_status()
     ent = httpx.get(f"{HUB}/v1/billing/entitlement", headers=carol.auth).json()
-    assert ent["plan"] == "private" and ent["status"] == "active"
+    assert ent["plan"] == "mailbox" and ent["status"] == "active"
     # a code is single-use
     r = httpx.post(f"{HUB}/v1/billing/redeem", headers=carol.auth,
                    json={"code": code})
@@ -899,21 +899,21 @@ def main():
             f"STONECHAT_TEST_CODE={TEST_CODE}")
         ent = httpx.get(f"{HUB}/v1/billing/entitlement",
                         headers=tess.auth).json()
-        assert ent["plan"] == "private" and ent["source"] == "test"
+        assert ent["plan"] == "mailbox" and ent["source"] == "test"
 
-    r = httpx.post(f"{HUB}/v1/server", headers=carol.auth, json=fleet_req)
+    r = httpx.post(f"{HUB}/v1/mailbox", headers=carol.auth, json=fleet_req)
     r.raise_for_status()
     carol.wait_running()
-    assert MX.get(f"{carol.server['address']}/owner",
+    assert MX.get(f"{carol.mailbox['address']}/owner",
                   params={"stonechat_id": carol.stonechat_id}).status_code == 200, \
         "mailbox must confirm its own owner"
-    assert MX.get(f"{carol.server['address']}/owner",
+    assert MX.get(f"{carol.mailbox['address']}/owner",
                   params={"stonechat_id": "SC-NOT-THE-OWNER"}).status_code == 404, \
         "mailbox must not confirm a stranger's ID (no address→identity leak)"
     carol.destroy()
-    assert httpx.get(f"{HUB}/v1/server", headers=carol.auth).json()["status"] == "none"
+    assert httpx.get(f"{HUB}/v1/mailbox", headers=carol.auth).json()["status"] == "none"
 
-    print("3c) external relay: bring-your-own server, token stays client-side")
+    print("3c) external relay: bring-your-own mailbox, token stays client-side")
     dave = Phone("dave")
     dave.register()
     dave_token = "dave-keeps-this-token-himself"
@@ -921,7 +921,7 @@ def main():
         ["docker", "run", "-d", "-p", "0:8080",
          "-e", f"STONECHAT_OWNER_ID={dave.stonechat_id}",
          "-e", f"STONECHAT_OWNER_TOKEN={dave_token}",
-         "stonechat-server:dev"],
+         "stonechat-mailbox:dev"],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     try:
@@ -939,19 +939,19 @@ def main():
         # impersonation rejected: eve cannot claim dave's relay
         eve = Phone("eve")
         eve.register()
-        r = httpx.post(f"{HUB}/v1/server/external", headers=eve.auth,
+        r = httpx.post(f"{HUB}/v1/mailbox/external", headers=eve.auth,
                        json={"address": dave_address})
         assert r.status_code == 400, f"expected 400, got {r.status_code}"
 
         # dave registers his own relay; only the address reaches the directory
-        r = httpx.post(f"{HUB}/v1/server/external", headers=dave.auth,
+        r = httpx.post(f"{HUB}/v1/mailbox/external", headers=dave.auth,
                        json={"address": dave_address})
         r.raise_for_status()
-        record = httpx.get(f"{HUB}/v1/server", headers=dave.auth).json()
-        assert record["provider"] == "external" and record["server_token"] is None
+        record = httpx.get(f"{HUB}/v1/mailbox", headers=dave.auth).json()
+        assert record["provider"] == "external" and record["mailbox_token"] is None
         entry = httpx.get(f"{HUB}/v1/directory/{dave.stonechat_id}").json()
-        assert entry["server"]["address"] == dave_address
-        dave.server = {"address": dave_address, "server_token": dave_token,
+        assert entry["mailbox"]["address"] == dave_address
+        dave.mailbox = {"address": dave_address, "mailbox_token": dave_token,
                        "status": "running"}
 
         # and he's a full participant: TLS vouched, prekeys up, alice
@@ -964,11 +964,11 @@ def main():
         assert dave.open_envelope(got, alice) == {"text": "hi dave"}
 
         # disconnect = directory delisting only (no provider destroy)
-        httpx.delete(f"{HUB}/v1/server", headers=dave.auth).raise_for_status()
+        httpx.delete(f"{HUB}/v1/mailbox", headers=dave.auth).raise_for_status()
         entry = httpx.get(f"{HUB}/v1/directory/{dave.stonechat_id}").json()
-        assert entry["server"] is None
+        assert entry["mailbox"] is None
         assert MX.get(f"{dave_address}/health").status_code == 200, \
-            "dave's own server must keep running after disconnect"
+            "dave's own mailbox must keep running after disconnect"
     finally:
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
 
@@ -1028,9 +1028,9 @@ def main():
 
         # frank connects it exactly like a self-hosted relay: the hub
         # proves ownership via /owner, the token never leaves frank's device
-        frank.server = {"address": hosted["address"],
-                        "server_token": hosted["server_token"], "status": "running"}
-        httpx.post(f"{HUB}/v1/server/external", headers=frank.auth,
+        frank.mailbox = {"address": hosted["address"],
+                        "mailbox_token": hosted["mailbox_token"], "status": "running"}
+        httpx.post(f"{HUB}/v1/mailbox/external", headers=frank.auth,
                    json={"address": hosted["address"]}).raise_for_status()
         frank.publish_tls_sig()
         assert_pinned(frank)
@@ -1060,7 +1060,7 @@ def main():
         # host-owner evicts frank -> his container is destroyed
         MX.delete(f"{agent_url}/v1/guest/{frank.stonechat_id}",
                   headers=admin_hdr).raise_for_status()
-        httpx.delete(f"{HUB}/v1/server", headers=frank.auth)  # tidy the directory
+        httpx.delete(f"{HUB}/v1/mailbox", headers=frank.auth)  # tidy the directory
     finally:
         agent_proc.terminate()
         try:
@@ -1073,9 +1073,9 @@ def main():
         if leftover:
             subprocess.run(["docker", "rm", "-f", *leftover], capture_output=True)
 
-    print("4) one-server-per-user enforced")
+    print("4) one-mailbox-per-user enforced")
     r = httpx.post(
-        f"{HUB}/v1/server", headers=alice.auth,
+        f"{HUB}/v1/mailbox", headers=alice.auth,
         json={"provider": "local", "machine": {"machine_type": "x", "region": "y"}},
     )
     assert r.status_code == 409, f"expected 409, got {r.status_code}"
@@ -1165,17 +1165,17 @@ def main():
         "sent_at": datetime.now(timezone.utc).isoformat(),
         "nonce": b64(nacl_random(24)), "ciphertext": b64(nacl_random(64)),
     }
-    r = MX.post(f"{bob.server['address']}/inbox", json=cleartext_env)
+    r = MX.post(f"{bob.mailbox['address']}/inbox", json=cleartext_env)
     assert r.status_code == 400, f"expected 400 for unsealed envelope, got {r.status_code}"
     wrong_version = {"v": 2, "id": str(uuid.uuid4()), "to": bob.stonechat_id,
                      "sealed": b64(nacl_random(64))}
-    r = MX.post(f"{bob.server['address']}/inbox", json=wrong_version)
+    r = MX.post(f"{bob.mailbox['address']}/inbox", json=wrong_version)
     assert r.status_code == 400, f"expected 400 for wrong version, got {r.status_code}"
 
-    print("6c) one-time prekeys are consumed server-side")
+    print("6c) one-time prekeys are consumed mailbox-side")
     ids = set()
     for _ in range(2):
-        b = MX.get(f"{bob.server['address']}/prekeys/bundle").json()
+        b = MX.get(f"{bob.mailbox['address']}/prekeys/bundle").json()
         assert b["opk"] is not None
         ids.add(b["opk"]["id"])
     assert len(ids) == 2, "each bundle fetch must consume a distinct OPK"
@@ -1188,7 +1188,7 @@ def main():
     # core stonechat_blob_seal); libsodium's secretbox is gone.
     sealed_blob = crypto_aead_xchacha20poly1305_ietf_encrypt(
         photo, b"", blob_nonce, blob_key)
-    r = MX.post(f"{bob.server['address']}/blob", content=sealed_blob, timeout=30)
+    r = MX.post(f"{bob.mailbox['address']}/blob", content=sealed_blob, timeout=30)
     r.raise_for_status()
     blob_id = r.json()["blob_id"]
 
@@ -1205,8 +1205,8 @@ def main():
     def fetch_and_decrypt(envelope):
         payload = bob.open_envelope(envelope, alice)
         dl = MX.get(
-            f"{bob.server['address']}/blob/{payload['blob_id']}",
-            params={"token": bob.server["server_token"]}, timeout=30,
+            f"{bob.mailbox['address']}/blob/{payload['blob_id']}",
+            params={"token": bob.mailbox["mailbox_token"]}, timeout=30,
         )
         dl.raise_for_status()
         recovered_holder["data"] = crypto_aead_xchacha20poly1305_ietf_decrypt(
@@ -1218,10 +1218,10 @@ def main():
     asyncio.run(bob.receive_one(process=fetch_and_decrypt))
     assert recovered_holder["data"] == photo, "media round-trip corrupted"
     # unauthenticated download must fail; after ack the blob must be gone
-    assert MX.get(f"{bob.server['address']}/blob/{blob_id}").status_code == 401
+    assert MX.get(f"{bob.mailbox['address']}/blob/{blob_id}").status_code == 401
     time.sleep(0.5)
-    gone = MX.get(f"{bob.server['address']}/blob/{blob_id}",
-                  params={"token": bob.server["server_token"]})
+    gone = MX.get(f"{bob.mailbox['address']}/blob/{blob_id}",
+                  params={"token": bob.mailbox["mailbox_token"]})
     assert gone.status_code == 404, "blob should be deleted after ack"
 
     print("6e) group media: one shared blob on the sender's box, fetched by token")
@@ -1231,11 +1231,11 @@ def main():
     clip = nacl_random(150_000)
     g_key, g_nonce = nacl_random(32), nacl_random(24)
     g_sealed = crypto_aead_xchacha20poly1305_ietf_encrypt(clip, b"", g_nonce, g_key)
-    r = MX.post(f"{alice.server['address']}/blob", params={"shared": "1"},
+    r = MX.post(f"{alice.mailbox['address']}/blob", params={"shared": "1"},
                 content=g_sealed, timeout=30)
     r.raise_for_status()
     g_blob_id, g_token = r.json()["blob_id"], r.json()["fetch_token"]
-    assert g_token and g_token != alice.server["server_token"], \
+    assert g_token and g_token != alice.mailbox["mailbox_token"], \
         "the fetch token must not be (or reveal) the owner token"
 
     gmedia = alice.seal(bob, "group_media", {
@@ -1244,8 +1244,8 @@ def main():
         "key": base64.b64encode(g_key).decode(),
         "blob_nonce": base64.b64encode(g_nonce).decode(),
         "fetch_token": g_token,
-        "blob_host": alice.server["address"],
-        "blob_tls_fp": alice.server["tls_fp"],
+        "blob_host": alice.mailbox["address"],
+        "blob_tls_fp": alice.mailbox["tls_fp"],
         "mime": "video/mp4", "kind": "video", "size": len(clip),
     })
     # No blob_id on the outer envelope: the blob lives on Alice's mailbox, so
@@ -1273,27 +1273,27 @@ def main():
 
     # The capability is scoped: it opens that one blob, and it is not an
     # owner token for anything else on Alice's mailbox.
-    assert MX.get(f"{alice.server['address']}/blob/{g_blob_id}").status_code == 401
-    assert MX.get(f"{alice.server['address']}/status",
+    assert MX.get(f"{alice.mailbox['address']}/blob/{g_blob_id}").status_code == 401
+    assert MX.get(f"{alice.mailbox['address']}/status",
                   params={"token": g_token}).status_code == 401
 
     # A member's ack must NOT collect the sender's blob — she still owes it to
     # every member who hasn't fetched yet.
     time.sleep(0.5)
-    assert MX.get(f"{alice.server['address']}/blob/{g_blob_id}",
+    assert MX.get(f"{alice.mailbox['address']}/blob/{g_blob_id}",
                   params={"token": g_token}).status_code == 200, \
         "a member's ack must not GC the sender's shared blob"
 
     # She reclaims it herself once everyone has it.
-    assert MX.delete(f"{alice.server['address']}/blob/{g_blob_id}",
-                     params={"token": alice.server["server_token"]}).status_code == 200
-    assert MX.get(f"{alice.server['address']}/blob/{g_blob_id}",
+    assert MX.delete(f"{alice.mailbox['address']}/blob/{g_blob_id}",
+                     params={"token": alice.mailbox["mailbox_token"]}).status_code == 200
+    assert MX.get(f"{alice.mailbox['address']}/blob/{g_blob_id}",
                   params={"token": g_token}).status_code == 404, \
         "the capability must not outlive the blob"
 
     print("7) wrong recipient rejected by mailbox")
     r = MX.post(
-        f"{bob.server['address']}/inbox",
+        f"{bob.mailbox['address']}/inbox",
         json=alice.seal(alice, "msg", {"text": "misrouted"}),
     )
     assert r.status_code == 403, f"expected 403, got {r.status_code}"
@@ -1310,8 +1310,8 @@ def main():
     if push_gateway:
         print("8b) offline owner triggers a content-free gateway ping")
         r = MX.post(
-            f"{bob.server['address']}/push-config",
-            params={"token": bob.server["server_token"]},
+            f"{bob.mailbox['address']}/push-config",
+            params={"token": bob.mailbox["mailbox_token"]},
             json={"device_token": "e2e-test-token-bob", "platform": "ios"},
         )
         r.raise_for_status()
@@ -1336,7 +1336,7 @@ def main():
     mallory.register()
     mallory.provision()
     mallory.wait_running()
-    host = urlsplit(mallory.server["address"]).hostname
+    host = urlsplit(mallory.mailbox["address"]).hostname
 
     # admin surface is closed without the token — no anonymous fleet enumeration
     assert httpx.get(f"{HUB}/v1/admin/whois", params={"host": host}).status_code == 403
@@ -1345,48 +1345,48 @@ def main():
 
     r = httpx.get(f"{HUB}/v1/admin/whois", params={"host": host}, headers=admin_hdr)
     r.raise_for_status()
-    hit = next(s for s in r.json()["servers"] if s["stonechat_id"] == mallory.stonechat_id)
+    hit = next(s for s in r.json()["mailboxes"] if s["stonechat_id"] == mallory.stonechat_id)
     assert hit["provider"] == "local" and hit["prior_destroys"] == 0
     assert hit["banned_at"] is None
-    assert "server_token" not in r.text and "host_agent_token" not in r.text, \
+    assert "mailbox_token" not in r.text and "host_agent_token" not in r.text, \
         "triage output must not hand back credentials"
 
     # exact host match, not a substring: 27.0.0.1 must not resolve to 127.0.0.1's
     # owner, or a malformed report destroys the wrong customer's mailbox
     r = httpx.get(f"{HUB}/v1/admin/whois", params={"host": host[1:]}, headers=admin_hdr)
-    assert r.json()["servers"] == [], "substring matched — wrong customer at risk"
+    assert r.json()["mailboxes"] == [], "substring matched — wrong customer at risk"
 
     # ban shuts BOTH provisioning doors; the external one is the cheap bypass
     r = httpx.post(f"{HUB}/v1/admin/users/{mallory.stonechat_id}/ban",
                    headers=admin_hdr, json={"reason": "e2e: phishing report"})
     r.raise_for_status()
-    r = httpx.post(f"{HUB}/v1/server", headers=mallory.auth,
+    r = httpx.post(f"{HUB}/v1/mailbox", headers=mallory.auth,
                    json={"provider": "local",
                          "machine": {"machine_type": "x", "region": "y"}})
-    assert r.status_code == 403, f"banned /v1/server: expected 403, got {r.status_code}"
+    assert r.status_code == 403, f"banned /v1/mailbox: expected 403, got {r.status_code}"
     assert r.json()["detail"]["code"] == "account_suspended"
-    r = httpx.post(f"{HUB}/v1/server/external", headers=mallory.auth,
+    r = httpx.post(f"{HUB}/v1/mailbox/external", headers=mallory.auth,
                    json={"address": "https://198.51.100.9:8443"})
     assert r.status_code == 403, \
-        f"banned /v1/server/external: expected 403, got {r.status_code}"
+        f"banned /v1/mailbox/external: expected 403, got {r.status_code}"
 
     # ...but a ban is narrow: it refuses infrastructure, it does not erase the
     # account. Making "banned" and "never existed" the same state would be a
     # censorship lever the hub shouldn't have.
-    assert httpx.get(f"{HUB}/v1/server", headers=mallory.auth).status_code == 200
+    assert httpx.get(f"{HUB}/v1/mailbox", headers=mallory.auth).status_code == 200
     assert httpx.get(f"{HUB}/v1/directory/{mallory.stonechat_id}").status_code == 200
 
-    r = httpx.post(f"{HUB}/v1/admin/servers/{mallory.stonechat_id}/destroy",
+    r = httpx.post(f"{HUB}/v1/admin/mailboxes/{mallory.stonechat_id}/destroy",
                    headers=admin_hdr, json={"reason": "e2e: provider case 12345"})
     r.raise_for_status()
-    assert httpx.get(f"{HUB}/v1/server", headers=mallory.auth).json()["status"] == "none"
-    assert httpx.get(f"{HUB}/v1/directory/{mallory.stonechat_id}").json()["server"] is None
+    assert httpx.get(f"{HUB}/v1/mailbox", headers=mallory.auth).json()["status"] == "none"
+    assert httpx.get(f"{HUB}/v1/directory/{mallory.stonechat_id}").json()["mailbox"] is None
     try:
-        MX.get(f"{mallory.server['address']}/health", timeout=3)
+        MX.get(f"{mallory.mailbox['address']}/health", timeout=3)
         raise AssertionError("mailbox still answering after destroy")
     except httpx.HTTPError:
         pass  # container is gone, not merely delisted
-    r = httpx.post(f"{HUB}/v1/admin/servers/{mallory.stonechat_id}/destroy",
+    r = httpx.post(f"{HUB}/v1/admin/mailboxes/{mallory.stonechat_id}/destroy",
                    headers=admin_hdr, json={"reason": "e2e: repeat"})
     assert r.status_code == 404, f"second destroy: expected 404, got {r.status_code}"
 
@@ -1397,9 +1397,9 @@ def main():
     mallory.provision()
     mallory.wait_running()
     r = httpx.get(f"{HUB}/v1/admin/whois",
-                  params={"host": urlsplit(mallory.server["address"]).hostname},
+                  params={"host": urlsplit(mallory.mailbox["address"]).hostname},
                   headers=admin_hdr)
-    hit = next(s for s in r.json()["servers"] if s["stonechat_id"] == mallory.stonechat_id)
+    hit = next(s for s in r.json()["mailboxes"] if s["stonechat_id"] == mallory.stonechat_id)
     assert hit["prior_destroys"] == 1, "tombstone did not survive the destroy"
     assert hit["banned_at"] is None
     mallory.destroy()
@@ -1488,9 +1488,9 @@ def main():
     print("9) destroy relays")
     alice.destroy()
     bob.destroy()
-    assert httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["status"] == "none"
+    assert httpx.get(f"{HUB}/v1/mailbox", headers=alice.auth).json()["status"] == "none"
     entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
-    assert entry["server"] is None
+    assert entry["mailbox"] is None
 
     print("\nALL E2E CHECKS PASSED")
 

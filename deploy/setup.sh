@@ -29,9 +29,9 @@ STONECHAT_HUB_DOMAIN="${STONECHAT_HUB_DOMAIN:-}"
 # machines — mailboxes never run on this box; see deploy/README.md):
 #   STONECHAT_FLEET_HOSTS="fleet1=ssh://stonechat-fleet@10.0.0.5|203.0.113.5"
 STONECHAT_FLEET_HOSTS="${STONECHAT_FLEET_HOSTS:-}"
-# Which catalog countries the Private plan may be offered in (hub/app/countries.py):
+# Which catalog countries the Mailbox plan may be offered in (hub/app/countries.py):
 #   STONECHAT_FLEET_COUNTRIES="DE,FI"
-# Empty → Private is hidden everywhere and only Sovereign is offered. NOTE:
+# Empty → Mailbox is hidden everywhere and only Machine is offered. NOTE:
 # placement is still least-loaded across the WHOLE pool, so a country listed
 # here is a claim about the picker, not about where the container lands.
 STONECHAT_FLEET_COUNTRIES="${STONECHAT_FLEET_COUNTRIES:-}"
@@ -56,11 +56,11 @@ STONECHAT_BILLING="${STONECHAT_BILLING:-on}"
 
 # Relay binary (Rust, docs/RUST_PORT.md). A static x86_64-musl `stonechat-relay`
 # on this box: fleet hosts then build their image from it instantly (no
-# compile), and sovereign VM startup scripts fetch it (served by the hub at
+# compile), and dedicated VM startup scripts fetch it (served by the hub at
 # /v1/relay-binary, SHA-256-pinned). Without it, fleet/local hosts compile
-# the crate via relay/'s Dockerfile and sovereign provisioning is refused.
+# the crate via relay/'s Dockerfile and dedicated-VM provisioning is refused.
 STONECHAT_RELAY_BINARY="${STONECHAT_RELAY_BINARY:-}"
-# Public base URL of this hub (e.g. https://hub.example.com) — how sovereign
+# Public base URL of this hub (e.g. https://hub.example.com) — how dedicated
 # VMs reach /v1/relay-binary. STONECHAT_RELAY_BINARY_URL overrides with an
 # external artifact URL (GCS bucket, GitHub release).
 STONECHAT_HUB_URL="${STONECHAT_HUB_URL:-}"
@@ -81,7 +81,7 @@ echo "    public IP:   $STONECHAT_PUBLIC_IP"
 echo "    hub port:    $STONECHAT_HUB_PORT"
 echo "    gcp project: ${STONECHAT_GCP_PROJECT:-(unset — gcp provider disabled)}"
 echo "    fleet hosts: ${STONECHAT_FLEET_HOSTS:-(unset — fleet provider disabled)}"
-echo "    fleet countries: ${STONECHAT_FLEET_COUNTRIES:-(unset — Private hidden, Sovereign only)}"
+echo "    fleet countries: ${STONECHAT_FLEET_COUNTRIES:-(unset — Mailbox hidden, Machine only)}"
 echo "    domain:      ${STONECHAT_HUB_DOMAIN:-(unset — plain HTTP, no TLS)}"
 echo "    billing:     $STONECHAT_BILLING"
 

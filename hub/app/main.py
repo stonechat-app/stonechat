@@ -13,7 +13,7 @@ Config (env):
                                 abuse routes under /v1/admin (admin.py)
     STONECHAT_TEST_CODE              reusable tester activation code (billing.py)
     STONECHAT_CORS_EXTRA             comma-separated extra CORS origins (dev)
-    STONECHAT_REAP_RETENTION_DAYS    destroy servers this many days after their
+    STONECHAT_REAP_RETENTION_DAYS    destroy mailboxes this many days after their
                                 subscription lapses (default 14; -1 disables)
     STONECHAT_REAP_INTERVAL_S        seconds between reap passes (default 3600)
     STONECHAT_REPORT_RETENTION_DAYS  delete user-filed abuse reports this many days
@@ -150,17 +150,17 @@ app.add_middleware(
 
 HEALTH_TIMEOUT_S = 240  # cloud VMs need to apt-get + pip install on first boot
 
-# Paid providers and the plan each requires. Sovereign outranks private, so a
-# Sovereign subscriber may also run on the shared fleet. `local` and
+# Paid providers and the plan each requires. Machine outranks mailbox, so a
+# Machine subscriber may also run on the shared fleet. `local` and
 # `external` (self-hosted free tier) stay ungated. With billing off nothing
 # is gated (and the reap query, which sweeps these providers, matches nothing).
 GATED_PROVIDERS = {
-    "fleet": "private",
-    "gcp": "sovereign",
-    "aws": "sovereign",
-    "digitalocean": "sovereign",
+    "fleet": "mailbox",
+    "gcp": "machine",
+    "aws": "machine",
+    "digitalocean": "machine",
 } if BILLING else {}
-PLAN_RANK = {"private": 1, "sovereign": 2}
+PLAN_RANK = {"mailbox": 1, "machine": 2}
 # Dedicated-VM providers get the host agent baked into the VM.
 DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean"}
 
@@ -188,11 +188,11 @@ class MachineIn(BaseModel):
     disk_gb: int = Field(default=10, ge=10, le=100)
 
 
-class ServerIn(BaseModel):
+class MailboxIn(BaseModel):
     """Either a country (the app's vocabulary) or an explicit provider+machine.
 
     `country` is what clients send: the hub resolves it against the catalog and
-    the caller's plan, so which cloud serves which flag stays a server-side
+    the caller's plan, so which cloud serves which flag stays a hub-side
     decision (countries.py). provider+machine remains for scripts, tests and
     app builds that predate the picker — dropping it would break every
     installed client the moment this deploys.
@@ -211,7 +211,7 @@ class ServerIn(BaseModel):
         return self
 
 
-class ExternalServerIn(BaseModel):
+class ExternalMailboxIn(BaseModel):
     address: str = Field(max_length=200, examples=["https://203.0.113.7:8080"])
     # Where the browser transport listens, if it does. Stated by the owner
     # because for a mailbox the hub did not provision, nobody else can know —
@@ -247,15 +247,15 @@ async def health():
 
 @app.get("/v1/relay-binary")
 def relay_binary(authorization: str | None = Header(default=None)):
-    """The static relay binary sovereign startup scripts fetch (their pinned
+    """The static relay binary dedicated-VM startup scripts fetch (their pinned
     SHA-256 makes this integrity-critical path tamper-evident — bootstrap.py).
-    Auth is the fetching VM's server_token, which the startup script already
+    Auth is the fetching VM's mailbox_token, which the startup script already
     carries; it gates egress cost only — integrity comes from the pin, and
     the binary itself is not secret. 404 until the operator sets
     STONECHAT_RELAY_BINARY."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "missing bearer token")
-    if not store.server_by_token(authorization.removeprefix("Bearer ").strip()):
+    if not store.mailbox_by_token(authorization.removeprefix("Bearer ").strip()):
         raise HTTPException(401, "invalid token")
     path = relay_binary_path()
     if path is None or not path.is_file():
@@ -502,34 +502,34 @@ def directory(stonechat_id: str, request: Request):
     if not user:
         raise HTTPException(404, "unknown Stonechat ID")
 
-    server = store.server_for(user["stonechat_id"])
+    mailbox = store.mailbox_for(user["stonechat_id"])
     return {
         "stonechat_id": user["stonechat_id"],
         "pubkey": user["pubkey"],
         "pq_pk": user["pq_pk"],
         "pq_sig": user["pq_sig"],
-        "server": (
+        "mailbox": (
             {
-                "address": server["address"],
-                "status": server["status"],
-                "tls_fp": server["tls_fp"],
-                "tls_sig": server["tls_sig"],
+                "address": mailbox["address"],
+                "status": mailbox["status"],
+                "tls_fp": mailbox["tls_fp"],
+                "tls_sig": mailbox["tls_sig"],
                 # Where the browser transport listens (UDP). Unsigned, and
-                # safe to be: rewriting it sends a client to a server whose
+                # safe to be: rewriting it sends a client to a mailbox whose
                 # certificate is not in the owner-signed schedule, so the
                 # connection is refused. Denial of service, not compromise —
                 # the same property `address` has behind `tls_fp`.
-                "wt_address": server["wt_address"],
+                "wt_address": mailbox["wt_address"],
                 # The browser transport's pinned certificate schedule. Null
                 # when the mailbox has no browser transport, or when the owner
                 # has not vouched for it yet — an unsigned schedule is served
                 # as no schedule, because a client must not pin one.
                 "wt_certs": (
-                    json.loads(server["wt_certs"]) if server["wt_certs"] else None
+                    json.loads(mailbox["wt_certs"]) if mailbox["wt_certs"] else None
                 ),
-                "wt_sig": server["wt_sig"],
+                "wt_sig": mailbox["wt_sig"],
             }
-            if server and server["status"] == "running"
+            if mailbox and mailbox["status"] == "running"
             else None
         ),
     }
@@ -547,15 +547,15 @@ def list_countries():
     return {"countries": country_catalog()}
 
 
-@app.post("/v1/server", status_code=202)
-def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTasks):
+@app.post("/v1/mailbox", status_code=202)
+def create_mailbox(body: MailboxIn, user: UnbannedUser, background: BackgroundTasks):
     provider, machine = body.provider, body.machine
     if body.country is not None:
         # Country form: the plan decides the tier, the catalog decides the
         # cloud. Resolve before the gate so an unplaced country fails with
         # "not available there" rather than a misleading payment prompt.
         entitlement = store.entitlement_for(user["stonechat_id"]) if BILLING else None
-        plan = entitlement["plan"] if entitlement else "sovereign"
+        plan = entitlement["plan"] if entitlement else "machine"
         try:
             provider, machine_dict = resolve_country(body.country, plan)
         except UnavailableCountry as e:
@@ -578,34 +578,34 @@ def create_server(body: ServerIn, user: UnbannedUser, background: BackgroundTask
                 "message": f"the '{provider}' provider requires an active"
                            f" {required} plan",
             })
-    server_token = secrets.token_urlsafe(32)
+    mailbox_token = secrets.token_urlsafe(32)
     # Dedicated VMs ship with the host agent pre-installed (PROTOCOL.md "Host
     # agent") — mint its admin token here so the app can pick it up from
-    # GET /v1/server and mint invites with zero manual setup.
+    # GET /v1/mailbox and mint invites with zero manual setup.
     host_agent_token = (
         secrets.token_urlsafe(32) if provider in DEDICATED_PROVIDERS else None
     )
-    if not store.create_server(
-        user["stonechat_id"], provider, machine.model_dump(), server_token,
+    if not store.create_mailbox(
+        user["stonechat_id"], provider, machine.model_dump(), mailbox_token,
         host_agent_token,
     ):
-        raise HTTPException(409, "you already have a server (one per user)")
+        raise HTTPException(409, "you already have a mailbox (one per user)")
 
     background.add_task(
-        _provision, user["stonechat_id"], provider, machine, server_token,
+        _provision, user["stonechat_id"], provider, machine, mailbox_token,
         host_agent_token,
     )
     return {"status": "provisioning"}
 
 
-@app.post("/v1/server/external", status_code=201)
-def register_external_server(body: ExternalServerIn, user: UnbannedUser):
+@app.post("/v1/mailbox/external", status_code=201)
+def register_external_mailbox(body: ExternalMailboxIn, user: UnbannedUser):
     """The free tier: the user runs their own relay anywhere and we list it in
     the directory. Ownership is proven, not claimed: the relay confirms this
     user's Stonechat ID via /owner (it never exposes its owner to anonymous callers,
     so this probe leaks nothing). We never see their token.
 
-    Banned accounts are refused here too, not just on /v1/server: this is the
+    Banned accounts are refused here too, not just on /v1/mailbox: this is the
     cheaper door, and a ban that left it open would be bypassed in one call."""
     address = body.address.strip().rstrip("/")
     if not re.match(r"^https://[a-zA-Z0-9.\-:\[\]]+$", address):
@@ -642,24 +642,24 @@ def register_external_server(body: ExternalServerIn, user: UnbannedUser):
         raise HTTPException(400, "wt_address must look like host:port")
 
     tls_fp = health.get("tls_fp")
-    if not store.create_external_server(user["stonechat_id"], address, tls_fp):
-        raise HTTPException(409, "you already have a server (one per user)")
+    if not store.create_external_mailbox(user["stonechat_id"], address, tls_fp):
+        raise HTTPException(409, "you already have a mailbox (one per user)")
     if wt_address:
         store.set_wt_address(user["stonechat_id"], wt_address)
     log.info("external relay registered for %s", user["stonechat_id"][:12])
     return {"status": "running", "address": address, "tls_fp": tls_fp}
 
 
-@app.post("/v1/server/tls")
+@app.post("/v1/mailbox/tls")
 def publish_tls_sig(body: TlsSigIn, user: User):
     """The owner vouches for their mailbox's TLS key: an Ed25519 signature
     over "stonechat-v1-tls" || fingerprint, verifiable by anyone against the
     identity key their Stonechat ID commits to. We check it so the directory never
     serves garbage, but clients re-verify — our word doesn't count."""
-    server = store.server_for(user["stonechat_id"])
-    if not server or server["status"] != "running":
-        raise HTTPException(404, "no running server")
-    if server["tls_fp"] is not None and server["tls_fp"] != body.tls_fp:
+    mailbox = store.mailbox_for(user["stonechat_id"])
+    if not mailbox or mailbox["status"] != "running":
+        raise HTTPException(404, "no running mailbox")
+    if mailbox["tls_fp"] is not None and mailbox["tls_fp"] != body.tls_fp:
         raise HTTPException(400, "fingerprint does not match this mailbox's certificate")
     try:
         from nacl.signing import VerifyKey
@@ -674,7 +674,7 @@ def publish_tls_sig(body: TlsSigIn, user: User):
     return {"status": "ok"}
 
 
-@app.post("/v1/server/wt")
+@app.post("/v1/mailbox/wt")
 def publish_wt_certs(body: WtCertsIn, user: User):
     """The owner vouches for their mailbox's **browser-transport** certificate
     schedule.
@@ -688,9 +688,9 @@ def publish_wt_certs(body: WtCertsIn, user: User):
     because our word does not count. A client that pins these hashes without
     checking the signature has pinned whatever the network told it to.
     """
-    server = store.server_for(user["stonechat_id"])
-    if not server or server["status"] != "running":
-        raise HTTPException(404, "no running server")
+    mailbox = store.mailbox_for(user["stonechat_id"])
+    if not mailbox or mailbox["status"] != "running":
+        raise HTTPException(404, "no running mailbox")
     certs = [c.model_dump() for c in body.certs]
     try:
         from nacl.signing import VerifyKey
@@ -726,58 +726,58 @@ def _wtcerts_signing_bytes(certs: list[dict]) -> bytes:
     return bytes(out)
 
 
-def _host_agent_address(server_address: str) -> str:
+def _host_agent_address(mailbox_address: str) -> str:
     """The host agent lives on the same VM as the mailbox, on its own port:
     https://<ip>:8080 → https://<ip>:8200."""
-    host = server_address.rsplit(":", 1)[0]
+    host = mailbox_address.rsplit(":", 1)[0]
     return f"{host}:{HOST_AGENT_PORT}"
 
 
-@app.get("/v1/server")
-def get_server(user: User):
-    server = store.server_for(user["stonechat_id"])
-    if not server:
+@app.get("/v1/mailbox")
+def get_mailbox(user: User):
+    mailbox = store.mailbox_for(user["stonechat_id"])
+    if not mailbox:
         return {"status": "none"}
     return {
-        "status": server["status"],
-        "provider": server["provider"],
-        "machine": server["machine"],
-        "address": server["address"],
-        "server_token": server["server_token"],
-        "tls_fp": server["tls_fp"],
-        "error": server["error"],
+        "status": mailbox["status"],
+        "provider": mailbox["provider"],
+        "machine": mailbox["machine"],
+        "address": mailbox["address"],
+        "mailbox_token": mailbox["mailbox_token"],
+        "tls_fp": mailbox["tls_fp"],
+        "error": mailbox["error"],
         # Dedicated VMs come with the host agent pre-installed; hand the app
         # its address + admin token so the Invites screen connects itself.
         "host_agent": (
             {
-                "address": _host_agent_address(server["address"]),
-                "admin_token": server["host_agent_token"],
+                "address": _host_agent_address(mailbox["address"]),
+                "admin_token": mailbox["host_agent_token"],
             }
-            if server["host_agent_token"] and server["status"] == "running"
-            and server["address"]
+            if mailbox["host_agent_token"] and mailbox["status"] == "running"
+            and mailbox["address"]
             else None
         ),
     }
 
 
-@app.delete("/v1/server")
-def delete_server(user: User):
-    server = store.server_for(user["stonechat_id"])
-    if not server:
-        raise HTTPException(404, "no server")
-    if server["resource_id"]:
+@app.delete("/v1/mailbox")
+def delete_mailbox(user: User):
+    mailbox = store.mailbox_for(user["stonechat_id"])
+    if not mailbox:
+        raise HTTPException(404, "no mailbox")
+    if mailbox["resource_id"]:
         try:
-            provider = get_provider(server["provider"])
-            provider.destroy(server["resource_id"], server["meta"])
+            provider = get_provider(mailbox["provider"])
+            provider.destroy(mailbox["resource_id"], mailbox["meta"])
         except ProviderError as e:
             raise HTTPException(502, f"failed to destroy: {e}")
-    store.delete_server(user["stonechat_id"])
+    store.delete_mailbox(user["stonechat_id"])
     return {"status": "deleted"}
 
 
 # -- provisioning (background) ---------------------------------------------------
 
-def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, server_token: str,
+def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, mailbox_token: str,
                host_agent_token: str | None = None):
     """Runs in a worker thread (sync BackgroundTask). Updates the row when done."""
     try:
@@ -785,7 +785,7 @@ def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, server
         result = provider.provision(
             ProvisionRequest(
                 owner_id=stonechat_id,
-                owner_token=server_token,
+                owner_token=mailbox_token,
                 spec=MachineSpec(**machine.model_dump()),
                 host_agent_token=host_agent_token,
             )
@@ -793,7 +793,7 @@ def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, server
         tls_fp = _wait_healthy(result.address)
         store.mark_running(stonechat_id, result.resource_id, result.address,
                            result.meta, tls_fp, result.wt_address)
-        log.info("server for %s running at %s", stonechat_id[:12], result.address)
+        log.info("mailbox for %s running at %s", stonechat_id[:12], result.address)
     except Exception as e:
         log.exception("provisioning failed for %s", stonechat_id[:12])
         store.mark_error(stonechat_id, str(e))
@@ -835,22 +835,22 @@ async def _purge_reports_loop():
 
 def _reap_once() -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=REAP_RETENTION_DAYS)
-    for server in store.reapable_servers(tuple(GATED_PROVIDERS), cutoff.isoformat()):
-        stonechat_id = server["stonechat_id"]
+    for mailbox in store.reapable_mailboxes(tuple(GATED_PROVIDERS), cutoff.isoformat()):
+        stonechat_id = mailbox["stonechat_id"]
         try:
-            if server["resource_id"]:
-                provider = get_provider(server["provider"])
-                provider.destroy(server["resource_id"], server["meta"])
-            store.delete_server(stonechat_id)
+            if mailbox["resource_id"]:
+                provider = get_provider(mailbox["provider"])
+                provider.destroy(mailbox["resource_id"], mailbox["meta"])
+            store.delete_mailbox(stonechat_id)
             # The one place user data dies without the user asking — keep an
             # audit trail for the support inbox.
             log.info(
-                "reaped %s server %s of %s: subscription lapsed > %d days",
-                server["provider"], server["resource_id"], stonechat_id[:12],
+                "reaped %s mailbox %s of %s: subscription lapsed > %d days",
+                mailbox["provider"], mailbox["resource_id"], stonechat_id[:12],
                 REAP_RETENTION_DAYS,
             )
         except Exception:
-            log.exception("failed to reap server of %s — retrying next pass",
+            log.exception("failed to reap mailbox of %s — retrying next pass",
                           stonechat_id[:12])
 
 
@@ -872,6 +872,6 @@ def _wait_healthy(address: str) -> str | None:
             last_error = str(e)
         time.sleep(3)
     raise ProviderError(
-        f"server never became healthy at {address} ({last_error}) — VM left running, "
+        f"mailbox never became healthy at {address} ({last_error}) — VM left running, "
         "delete and retry"
     )

@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../models.dart';
 import '../state/chat_state.dart';
-import '../state/server_state.dart';
+import '../state/mailbox_state.dart';
 import 'chat_screen.dart';
 import 'report_sheet.dart';
 import 'theme.dart';
@@ -102,7 +102,7 @@ class _HomeScreenState extends State<HomeScreen> {
               color: Zn.muted,
             ),
             tooltip: 'Mailbox',
-            onPressed: () => Navigator.pushNamed(context, '/server'),
+            onPressed: () => Navigator.pushNamed(context, '/mailbox'),
           ),
           IconButton(
             icon: const Icon(Icons.settings_outlined, color: Zn.muted),
@@ -121,8 +121,8 @@ class _HomeScreenState extends State<HomeScreen> {
             child: RefreshIndicator(
               color: Zn.orange,
               onRefresh: () async {
-                final server = context.read<ServerState>();
-                await server.reconnectMailbox();
+                final mailbox = context.read<MailboxState>();
+                await mailbox.reconnectMailbox();
                 await chat.retryPending();
               },
               child: tabEmpty

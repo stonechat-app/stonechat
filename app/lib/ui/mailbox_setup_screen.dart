@@ -10,7 +10,7 @@ import 'package:provider/provider.dart';
 
 import '../core/api.dart';
 import '../state/app_state.dart';
-import '../state/server_state.dart';
+import '../state/mailbox_state.dart';
 import 'country_picker.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
@@ -70,7 +70,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
   /// falls back to the pre-picker behaviour rather than blocking setup.
   List<MailboxCountry>? _countries;
   String? _country; // deliberately null: we never choose a jurisdiction for you
-  String? _plan; // "private" | "sovereign" | null (unknown / no plan yet)
+  String? _plan; // "mailbox" | "machine" | null (unknown / no plan yet)
 
   bool get _usesLocalProvider => _envProvider != '' || kDebugMode;
 
@@ -127,13 +127,13 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
   }
 
   Future<void> _setupCloud() async {
-    final server = context.read<ServerState>();
+    final mailbox = context.read<MailboxState>();
     setState(() => _pending = _Choice.cloud);
     try {
       final local = _localProvider();
       if (local != null) {
         final d = _defaults[local] ?? _defaults['gcp']!;
-        await server.create(
+        await mailbox.create(
           provider: local,
           machineType: d.machineType,
           region: d.region,
@@ -155,9 +155,9 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         // Hub unreachable or older than the catalog: fall back to the plan →
         // provider mapping this screen used before the picker existed, so a
         // stale hub degrades to "no country choice" instead of "no mailbox".
-        final provider = _plan == 'sovereign' ? 'gcp' : 'fleet';
+        final provider = _plan == 'machine' ? 'gcp' : 'fleet';
         final d = _defaults[provider]!;
-        await server.create(
+        await mailbox.create(
           provider: provider,
           machineType: d.machineType,
           region: d.region,
@@ -172,11 +172,11 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         }
         return;
       }
-      await server.create(country: _country);
+      await mailbox.create(country: _country);
     } on ApiException catch (e) {
       if (!mounted) return;
       if (e.code == 'subscription_required') {
-        // Belt and braces: the server re-checks the entitlement (it may have
+        // Belt and braces: the mailbox re-checks the entitlement (it may have
         // lapsed since we looked). Offer the code path and retry.
         setState(() => _pending = null);
         final activated = await showRedeemSheet(context);
@@ -197,10 +197,10 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
       showZnSnack(context, 'Paste the invite first', error: true);
       return;
     }
-    final server = context.read<ServerState>();
+    final mailbox = context.read<MailboxState>();
     setState(() => _pending = _Choice.friend);
     try {
-      await server.joinHost(invite);
+      await mailbox.joinHost(invite);
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
     } finally {
@@ -215,10 +215,10 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
       showZnSnack(context, 'Enter your mailbox address and token', error: true);
       return;
     }
-    final server = context.read<ServerState>();
+    final mailbox = context.read<MailboxState>();
     setState(() => _pending = _Choice.selfHost);
     try {
-      await server.connectExternal(address, token);
+      await mailbox.connectExternal(address, token);
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
     } finally {
@@ -248,12 +248,12 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final server = context.watch<ServerState>();
-    final ready = server.isRunning;
+    final mailbox = context.watch<MailboxState>();
+    final ready = mailbox.isRunning;
 
     return Scaffold(
       body: SafeArea(
-        child: ready ? _readyView(context) : _chooseView(server),
+        child: ready ? _readyView(context) : _chooseView(mailbox),
       ),
     );
   }
@@ -312,8 +312,8 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
     ];
   }
 
-  Widget _chooseView(ServerState server) {
-    final settingUpCloud = _pending == _Choice.cloud || server.isProvisioning;
+  Widget _chooseView(MailboxState mailbox) {
+    final settingUpCloud = _pending == _Choice.cloud || mailbox.isProvisioning;
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
       children: [
@@ -338,7 +338,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         const SizedBox(height: 16),
         ZnOptionCard(
           title: 'Stonechat Cloud',
-          subtitle: 'An isolated container on our servers that only you can '
+          subtitle: 'An isolated container on our machines that only you can '
               'use — destroy it and start fresh whenever you want.',
           selected: _choice == _Choice.cloud,
           onTap: _select(_Choice.cloud),
@@ -371,7 +371,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         const SizedBox(height: 10),
         ZnOptionCard(
           title: "A friend's machine",
-          subtitle: 'Your mailbox lives on the server of someone you trust. '
+          subtitle: 'Your mailbox lives on the machine of someone you trust. '
               'All you need is their invite.',
           selected: _choice == _Choice.friend,
           onTap: _select(_Choice.friend),
@@ -389,8 +389,8 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
               width: double.infinity,
               height: 44,
               child: FilledButton(
-                onPressed: server.busy ? null : _joinHost,
-                child: _spinnerOr("Setting up on your friend's server…",
+                onPressed: mailbox.busy ? null : _joinHost,
+                child: _spinnerOr("Setting up on your friend's machine…",
                     'Join with invite', _Choice.friend),
               ),
             ),
@@ -399,7 +399,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         const SizedBox(height: 10),
         ZnOptionCard(
           title: 'Self-host',
-          subtitle: 'Your mailbox runs on your own server. Free, forever.',
+          subtitle: 'Your mailbox runs on your own machine. Free, forever.',
           selected: _choice == _Choice.selfHost,
           onTap: _select(_Choice.selfHost),
           children: [
@@ -418,7 +418,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
               width: double.infinity,
               height: 44,
               child: FilledButton(
-                onPressed: server.busy ? null : _connectExternal,
+                onPressed: mailbox.busy ? null : _connectExternal,
                 child: _spinnerOr(
                     'Connecting…', 'Connect my mailbox', _Choice.selfHost),
               ),
@@ -426,7 +426,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
           ],
         ),
         const SizedBox(height: 16),
-        if (server.isProvisioning)
+        if (mailbox.isProvisioning)
           const Padding(
             padding: EdgeInsets.only(bottom: 8),
             child: Text(
@@ -439,7 +439,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         Center(
           child: TextButton(
             onPressed: () => Navigator.pushReplacementNamed(context, '/home'),
-            child: Text(server.isProvisioning ? 'Continue' : 'Skip for now',
+            child: Text(mailbox.isProvisioning ? 'Continue' : 'Skip for now',
                 style: const TextStyle(color: Zn.muted)),
           ),
         ),

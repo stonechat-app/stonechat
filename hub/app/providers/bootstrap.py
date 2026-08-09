@@ -13,7 +13,7 @@ Where the binary comes from (hub env):
 
     STONECHAT_RELAY_BINARY      path to a static x86_64-musl `stonechat-relay` on the
                            hub box. The hub serves it at GET /v1/relay-binary
-                           (auth: the fetching VM's server_token, which this
+                           (auth: the fetching VM's mailbox_token, which this
                            script already carries) and pins its SHA-256 in
                            every startup script.
     STONECHAT_RELAY_BINARY_URL  URL the VM fetches. Defaults to
@@ -24,7 +24,7 @@ Where the binary comes from (hub env):
                            https://hub.stonechat.app) — needed only to build
                            the default URL above.
 
-Dedicated (sovereign) VMs additionally get the **host agent** pre-installed
+Dedicated (Machine plan) VMs additionally get the **host agent** pre-installed
 (PROTOCOL.md "Host agent"): the hub mints an admin token, bakes it into the
 startup script, and the owner's app connects to `https://<vm>:8200` to mint
 invites — no SSH required. The agent is still Python, so its section installs
@@ -151,9 +151,9 @@ _HOST_AGENT_TEMPLATE = """
 set +e
 
 # Guest-mailbox build context: the relay binary + its runtime Dockerfile.
-mkdir -p /opt/stonechat/server
-cp /opt/stonechat/stonechat-relay /opt/stonechat/server/stonechat-relay
-cat > /opt/stonechat/server/Dockerfile <<'DOCKER_EOF'
+mkdir -p /opt/stonechat/relay
+cp /opt/stonechat/stonechat-relay /opt/stonechat/relay/stonechat-relay
+cat > /opt/stonechat/relay/Dockerfile <<'DOCKER_EOF'
 {runtime_dockerfile}DOCKER_EOF
 
 cat > /opt/stonechat/host_agent.py.gz.b64 <<'STONECHAT_EOF'
@@ -183,7 +183,7 @@ Environment=STONECHAT_HOST_AGENT_ADVERTISE_HOST=$PUBLIC_IP
 Environment=STONECHAT_HOST_AGENT_PORT={host_agent_port}
 Environment=STONECHAT_HOST_AGENT_DB=/var/lib/stonechat/host_agent.db
 Environment=STONECHAT_HOST_AGENT_TLS_DIR=/var/lib/stonechat
-Environment=STONECHAT_HOST_AGENT_SERVER_DIR=/opt/stonechat/server
+Environment=STONECHAT_HOST_AGENT_RELAY_DIR=/opt/stonechat/relay
 Environment=STONECHAT_PUSH_GATEWAY={push_gateway}
 ExecStart=/opt/stonechat/venv/bin/python /opt/stonechat/host_agent.py
 Restart=always
@@ -262,7 +262,7 @@ def _relay_binary_sha256() -> str:
     path = relay_binary_path()
     if path is None or not path.is_file():
         raise ProviderError(
-            "sovereign provisioning needs STONECHAT_RELAY_BINARY: a static "
+            "dedicated-VM provisioning needs STONECHAT_RELAY_BINARY: a static "
             "x86_64-musl stonechat-relay build on the hub box (see relay/README.md)"
         )
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -305,7 +305,7 @@ def build_startup_script(
             host_agent_port=HOST_AGENT_PORT,
             push_gateway=push_gateway,
         )
-    # Hub-served downloads authenticate with the server_token this script
+    # Hub-served downloads authenticate with the mailbox_token this script
     # already carries (egress gate — main.py relay_binary). An external
     # artifact URL (GCS, GitHub) is fetched anonymously.
     hub_served = not os.environ.get("STONECHAT_RELAY_BINARY_URL", "")

@@ -16,7 +16,7 @@ class Contact {
   final String pubkeyB64;
   String? pqPkB64; // X-Wing identity key (envelope seal), sig-verified on resolve
   String status;
-  String? serverAddress; // last known, refreshed from directory on demand
+  String? mailboxAddress; // last known, refreshed from directory on demand
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
   String? hub; // home hub base URL; null = the hub this app uses (cross-hub)
   final int createdAt;
@@ -44,7 +44,7 @@ class Contact {
     required this.pubkeyB64,
     this.pqPkB64,
     required this.status,
-    this.serverAddress,
+    this.mailboxAddress,
     this.tlsFp,
     this.hub,
     required this.createdAt,
@@ -73,7 +73,7 @@ class Contact {
         'pubkey': pubkeyB64,
         'pq_pk': pqPkB64,
         'status': status,
-        'server_address': serverAddress,
+        'mailbox_address': mailboxAddress,
         'tls_fp': tlsFp,
         'hub': hub,
         'created_at': createdAt,
@@ -95,7 +95,7 @@ class Contact {
         pubkeyB64: r['pubkey'] as String,
         pqPkB64: r['pq_pk'] as String?,
         status: r['status'] as String,
-        serverAddress: r['server_address'] as String?,
+        mailboxAddress: r['mailbox_address'] as String?,
         tlsFp: r['tls_fp'] as String?,
         hub: r['hub'] as String?,
         createdAt: r['created_at'] as int,
@@ -134,7 +134,7 @@ class MuteDuration {
 
 class MessageStatus {
   static const pending = 'pending'; // queued locally, recipient unreachable
-  static const sent = 'sent'; // accepted by their routing server
+  static const sent = 'sent'; // accepted by their mailbox
   static const delivered = 'delivered'; // their device persisted it
   static const read = 'read'; // displayed on their screen
 
@@ -396,7 +396,8 @@ class ReceiptKind {
   static const read = 'read';
 }
 
-/// A group lives only on members' phones — no server knows it exists.
+/// A group lives only on members' phones — neither the hub nor any
+/// mailbox knows it exists.
 class Group {
   final String id;
   String name;
@@ -460,7 +461,7 @@ class GroupMember {
   final String pubkeyB64;
   String? pqPkB64; // X-Wing identity key (envelope seal), sig-verified on resolve
   String displayName;
-  String? serverAddress; // cached, refreshed on delivery failure
+  String? mailboxAddress; // cached, refreshed on delivery failure
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
   /// Learned from any envelope they send us — a fellow member need never
   /// have been a contact, so this is the only way we get it. Null until then,
@@ -473,7 +474,7 @@ class GroupMember {
     required this.pubkeyB64,
     this.pqPkB64,
     required this.displayName,
-    this.serverAddress,
+    this.mailboxAddress,
     this.tlsFp,
     this.bundleToken,
   });
@@ -484,7 +485,7 @@ class GroupMember {
         'pubkey': pubkeyB64,
         'pq_pk': pqPkB64,
         'display_name': displayName,
-        'server_address': serverAddress,
+        'mailbox_address': mailboxAddress,
         'tls_fp': tlsFp,
         'bundle_token': bundleToken,
       };
@@ -495,7 +496,7 @@ class GroupMember {
         pubkeyB64: r['pubkey'] as String,
         pqPkB64: r['pq_pk'] as String?,
         displayName: r['display_name'] as String,
-        serverAddress: r['server_address'] as String?,
+        mailboxAddress: r['mailbox_address'] as String?,
         tlsFp: r['tls_fp'] as String?,
         bundleToken: r['bundle_token'] as String?,
       );
@@ -504,7 +505,7 @@ class GroupMember {
 /// The inner envelope (PROTOCOL.md "Envelope") — what the recipient sees
 /// after opening the sealed wire form. `ratchet` is the double-ratchet
 /// header; `x3dh` appears only on a session's initial envelopes. Never
-/// travels unsealed: servers see only [SealedEnvelope].
+/// travels unsealed: mailboxes see only [SealedEnvelope].
 class Envelope {
   final int v;
   final String id;
@@ -592,12 +593,12 @@ class Envelope {
 /// cleartext routing fact; sender, type and session header ride inside
 /// `sealed` — an anonymous box only the recipient's identity key opens, so
 /// the mailbox never learns who wrote. `blobId` (media envelopes) is the one
-/// other cleartext hint, used by the server purely to garbage-collect the
+/// other cleartext hint, used by the mailbox purely to garbage-collect the
 /// blob on ack. Three optional delivery hints (PROTOCOL.md "Envelope"):
 /// `transient` — deliver only if the owner is connected right now, never
 /// queue, never push (typing, call ICE); `push: false` — queue and deliver
 /// normally but never wake the owner's phone (receipts); `ring: true` —
-/// queue and wake loudly (call offers). All are server-visible by
+/// queue and wake loudly (call offers). All are mailbox-visible by
 /// necessity; none says anything an observer couldn't already infer from
 /// envelope size and timing.
 class SealedEnvelope {

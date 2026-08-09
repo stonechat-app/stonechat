@@ -210,7 +210,7 @@ fn adopt(
     }
 
     Ok(state::State {
-        // Deliberately no hub account token: server management and billing
+        // Deliberately no hub account token: mailbox management and billing
         // stay with the primary, so an agent cannot destroy the mailbox it
         // lives on.
         hub_url: grant

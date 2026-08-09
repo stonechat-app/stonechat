@@ -1,6 +1,6 @@
 """Storage. Deliberately minimal — this is the whole privacy budget of the
 hub: a pubkey, an ID derived from it, a hashed auth token, the
-current server record, and (since billing) a subscription row. No names, no
+current mailbox record, and (since billing) a subscription row. No names, no
 emails, no contact graph, no messages.
 
 Billing expands the budget deliberately: after a code is redeemed the hub
@@ -36,6 +36,7 @@ class Store:
     def __init__(self, path: str):
         self._path = path
         self._local = threading.local()
+        self._rename_legacy_tables()
         self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -48,14 +49,14 @@ class Store:
                 banned_at  TEXT,                   -- abuse: no more provisioning
                 ban_reason TEXT
             );
-            CREATE TABLE IF NOT EXISTS servers (
+            CREATE TABLE IF NOT EXISTS mailboxes (
                 stonechat_id      TEXT PRIMARY KEY REFERENCES users(stonechat_id),
                 provider     TEXT NOT NULL,
                 status       TEXT NOT NULL,        -- provisioning | running | error
                 machine      TEXT NOT NULL,        -- MachineSpec as JSON
                 resource_id  TEXT,
                 address      TEXT,
-                server_token TEXT,
+                mailbox_token TEXT,
                 host_agent_token TEXT,             -- dedicated VMs: agent admin secret
                 tls_fp       TEXT,                 -- relay cert fingerprint (observed)
                 tls_sig      TEXT,                 -- owner's signature over it
@@ -69,7 +70,7 @@ class Store:
             CREATE TABLE IF NOT EXISTS subscriptions (
                 id                     TEXT PRIMARY KEY,  -- uuid4
                 source                 TEXT NOT NULL,     -- stripe | comp
-                plan                   TEXT NOT NULL,     -- private | sovereign
+                plan                   TEXT NOT NULL,     -- mailbox | machine
                 status                 TEXT NOT NULL,     -- active | grace | lapsed
                 stripe_customer_id     TEXT,
                 stripe_subscription_id TEXT UNIQUE,
@@ -92,7 +93,7 @@ class Store:
                 received_at TEXT NOT NULL
             );
             -- Append-only record of machines we destroyed for abuse. Separate
-            -- from `servers` on purpose: `servers` holds at most one *live*
+            -- from `mailboxes` on purpose: `mailboxes` holds at most one *live*
             -- machine per user (that PRIMARY KEY is the one-per-user claim), so
             -- a tombstone kept there would lock a wrongly-hit user out of
             -- re-provisioning. Here it can be preserved indefinitely — abuse
@@ -133,7 +134,7 @@ class Store:
                 offer      TEXT NOT NULL,      -- JSON {seal, sig}
                 created_at TEXT NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS server_tombstones (
+            CREATE TABLE IF NOT EXISTS mailbox_tombstones (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 stonechat_id      TEXT NOT NULL,
                 provider     TEXT NOT NULL,
@@ -145,7 +146,7 @@ class Store:
                 destroyed_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_tombstones_stonechat
-                ON server_tombstones(stonechat_id);
+                ON mailbox_tombstones(stonechat_id);
             -- Abuse reports raised by users against other users (report.py).
             --
             -- This table is the largest deliberate expansion of the privacy
@@ -157,7 +158,7 @@ class Store:
             -- is one cheap brute-force away. Retention is the real mitigation
             -- (STONECHAT_REPORT_RETENTION_DAYS, purged by the reaper), and the
             -- outcome of an actioned report outlives its row in
-            -- `server_tombstones` and `users.ban_reason` anyway.
+            -- `mailbox_tombstones` and `users.ban_reason` anyway.
             --
             -- `evidence` is an opaque JSON document composed by the reporting
             -- client and stored verbatim: the hub never parses it and its
@@ -183,6 +184,37 @@ class Store:
             """
         )
         self._migrate()
+
+    def _rename_legacy_tables(self) -> None:
+        """`servers` → `mailboxes` (2026-08 vocabulary rename).
+
+        Runs BEFORE the CREATE TABLE script, not in `_migrate()` with the other
+        migrations: `CREATE TABLE IF NOT EXISTS mailboxes` would otherwise
+        build an empty table next to the populated `servers` one, and every
+        user would silently lose their mailbox. Order is the correctness
+        argument here, so it lives in its own method rather than as a comment.
+
+        Idempotent — after the first boot neither legacy name exists.
+        """
+        names = {
+            r["name"]
+            for r in self._db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        if "servers" in names and "mailboxes" not in names:
+            self._db.execute("ALTER TABLE servers RENAME TO mailboxes")
+            cols = {
+                r["name"] for r in self._db.execute("PRAGMA table_info(mailboxes)")
+            }
+            if "server_token" in cols:
+                self._db.execute(
+                    "ALTER TABLE mailboxes RENAME COLUMN server_token TO mailbox_token"
+                )
+        if "server_tombstones" in names and "mailbox_tombstones" not in names:
+            self._db.execute(
+                "ALTER TABLE server_tombstones RENAME TO mailbox_tombstones"
+            )
 
     # -- link grants (MULTIDEVICE.md "Linking a device") ----------------------
 
@@ -263,9 +295,10 @@ class Store:
         self._db.commit()
 
     def _migrate(self) -> None:
-        """Additive column migrations for hubs whose DB predates them.
-        CREATE TABLE IF NOT EXISTS only builds fresh databases; the deployed
-        hub.db needs the ALTER. Idempotent, so it runs on every boot."""
+        """Additive column migrations (plus one value rewrite) for hubs whose
+        DB predates them. CREATE TABLE IF NOT EXISTS only builds fresh
+        databases; the deployed hub.db needs the ALTER. Idempotent, so it runs
+        on every boot."""
         have = {r["name"] for r in self._db.execute("PRAGMA table_info(users)")}
         for column, ddl in (
             ("banned_at", "ALTER TABLE users ADD COLUMN banned_at TEXT"),
@@ -279,17 +312,27 @@ class Store:
         ):
             if column not in have:
                 self._db.execute(ddl)
-        have = {r["name"] for r in self._db.execute("PRAGMA table_info(servers)")}
+        have = {r["name"] for r in self._db.execute("PRAGMA table_info(mailboxes)")}
         for column, ddl in (
             # The browser transport's certificate schedule and the owner's
             # signature over it. Absent means "this mailbox has no browser
             # transport", which is a normal state, not a legacy one.
-            ("wt_address", "ALTER TABLE servers ADD COLUMN wt_address TEXT"),
-            ("wt_certs", "ALTER TABLE servers ADD COLUMN wt_certs TEXT"),
-            ("wt_sig", "ALTER TABLE servers ADD COLUMN wt_sig TEXT"),
+            ("wt_address", "ALTER TABLE mailboxes ADD COLUMN wt_address TEXT"),
+            ("wt_certs", "ALTER TABLE mailboxes ADD COLUMN wt_certs TEXT"),
+            ("wt_sig", "ALTER TABLE mailboxes ADD COLUMN wt_sig TEXT"),
         ):
             if column not in have:
                 self._db.execute(ddl)
+        # Plan rename (2026-08): private → mailbox, sovereign → machine. The
+        # ids are a clean break — billing.PLANS no longer accepts the old
+        # spellings — so rows written before the rename have to be rewritten
+        # or their owners lose entitlement. Matches nothing once it has run.
+        for old, new in (("private", "mailbox"), ("sovereign", "machine")):
+            self._db.execute(
+                "UPDATE subscriptions SET plan = ?, updated_at = updated_at"
+                " WHERE plan = ?",
+                (new, old),
+            )
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -365,29 +408,29 @@ class Store:
         )
         return cur.rowcount > 0
 
-    # -- servers -------------------------------------------------------------
+    # -- mailboxes -------------------------------------------------------------
 
-    def create_server(self, stonechat_id: str, provider: str, machine: dict, server_token: str,
+    def create_mailbox(self, stonechat_id: str, provider: str, machine: dict, mailbox_token: str,
                       host_agent_token: str | None = None) -> bool:
-        """Atomically claim the one-server-per-user slot. False if occupied."""
+        """Atomically claim the one-mailbox-per-user slot. False if occupied."""
         try:
             self._db.execute(
-                "INSERT INTO servers (stonechat_id, provider, status, machine, server_token,"
+                "INSERT INTO mailboxes (stonechat_id, provider, status, machine, mailbox_token,"
                 " host_agent_token, created_at)"
                 " VALUES (?, ?, 'provisioning', ?, ?, ?, ?)",
-                (stonechat_id, provider, json.dumps(machine), server_token,
+                (stonechat_id, provider, json.dumps(machine), mailbox_token,
                  host_agent_token, _now()),
             )
             return True
         except sqlite3.IntegrityError:
             return False
 
-    def create_external_server(self, stonechat_id: str, address: str, tls_fp: str | None) -> bool:
+    def create_external_mailbox(self, stonechat_id: str, address: str, tls_fp: str | None) -> bool:
         """User provisioned their own relay; we only list its address.
-        No server_token stored — it never leaves the user's device."""
+        No mailbox_token stored — it never leaves the user's device."""
         try:
             self._db.execute(
-                "INSERT INTO servers (stonechat_id, provider, status, machine, address, tls_fp, created_at)"
+                "INSERT INTO mailboxes (stonechat_id, provider, status, machine, address, tls_fp, created_at)"
                 " VALUES (?, 'external', 'running', '{}', ?, ?, ?)",
                 (stonechat_id, address, tls_fp, _now()),
             )
@@ -395,30 +438,30 @@ class Store:
         except sqlite3.IntegrityError:
             return False
 
-    def server_for(self, stonechat_id: str) -> dict | None:
+    def mailbox_for(self, stonechat_id: str) -> dict | None:
         row = self._db.execute(
-            "SELECT * FROM servers WHERE stonechat_id = ?", (stonechat_id,)
+            "SELECT * FROM mailboxes WHERE stonechat_id = ?", (stonechat_id,)
         ).fetchone()
         if not row:
             return None
-        server = dict(row)
-        server["machine"] = json.loads(server["machine"])
-        server["meta"] = json.loads(server["meta"])
-        return server
+        mailbox = dict(row)
+        mailbox["machine"] = json.loads(mailbox["machine"])
+        mailbox["meta"] = json.loads(mailbox["meta"])
+        return mailbox
 
-    def server_by_token(self, server_token: str) -> dict | None:
+    def mailbox_by_token(self, mailbox_token: str) -> dict | None:
         """Auth for GET /v1/relay-binary: the fetching VM presents the
-        server_token its startup script carries. External servers never
+        mailbox_token its startup script carries. External mailboxes never
         match — their token is NULL (never stored)."""
         row = self._db.execute(
-            "SELECT * FROM servers WHERE server_token = ?", (server_token,)
+            "SELECT * FROM mailboxes WHERE mailbox_token = ?", (mailbox_token,)
         ).fetchone()
         return dict(row) if row else None
 
     def mark_running(self, stonechat_id: str, resource_id: str, address: str, meta: dict,
                      tls_fp: str | None, wt_address: str | None = None) -> None:
         self._db.execute(
-            "UPDATE servers SET status='running', resource_id=?, address=?, meta=?,"
+            "UPDATE mailboxes SET status='running', resource_id=?, address=?, meta=?,"
             " tls_fp=?, tls_sig=NULL, wt_address=?, wt_certs=NULL, wt_sig=NULL,"
             " error=NULL"  # new box, new cert — old sig is void
             " WHERE stonechat_id=?",
@@ -429,13 +472,13 @@ class Store:
         """For mailboxes the hub did not provision: the owner states where
         their browser transport listens, because nobody else can know."""
         self._db.execute(
-            "UPDATE servers SET wt_address=? WHERE stonechat_id=?",
+            "UPDATE mailboxes SET wt_address=? WHERE stonechat_id=?",
             (wt_address, stonechat_id),
         )
 
     def set_tls_sig(self, stonechat_id: str, tls_sig: str) -> None:
         self._db.execute(
-            "UPDATE servers SET tls_sig=? WHERE stonechat_id=?", (tls_sig, stonechat_id)
+            "UPDATE mailboxes SET tls_sig=? WHERE stonechat_id=?", (tls_sig, stonechat_id)
         )
 
     def set_wt_certs(self, stonechat_id: str, wt_certs: str, wt_sig: str) -> None:
@@ -444,18 +487,18 @@ class Store:
         vouched for — which is the exact failure this signature exists to
         prevent."""
         self._db.execute(
-            "UPDATE servers SET wt_certs=?, wt_sig=? WHERE stonechat_id=?",
+            "UPDATE mailboxes SET wt_certs=?, wt_sig=? WHERE stonechat_id=?",
             (wt_certs, wt_sig, stonechat_id),
         )
 
     def mark_error(self, stonechat_id: str, error: str) -> None:
         self._db.execute(
-            "UPDATE servers SET status='error', error=? WHERE stonechat_id=?",
+            "UPDATE mailboxes SET status='error', error=? WHERE stonechat_id=?",
             (error[:1000], stonechat_id),
         )
 
-    def reapable_servers(self, providers: tuple[str, ...], lapsed_before: str) -> list[dict]:
-        """Servers on paid providers whose owner has no live subscription and
+    def reapable_mailboxes(self, providers: tuple[str, ...], lapsed_before: str) -> list[dict]:
+        """Mailboxes on paid providers whose owner has no live subscription and
         whose most recent one lapsed before the cutoff. Owners with no
         subscription rows at all are left alone — ambiguous state (pre-billing
         data, manual grants) is not a kill signal."""
@@ -463,7 +506,7 @@ class Store:
             return []
         marks = ",".join("?" * len(providers))
         rows = self._db.execute(
-            f"SELECT s.* FROM servers s"
+            f"SELECT s.* FROM mailboxes s"
             f" WHERE s.provider IN ({marks})"
             "  AND NOT EXISTS (SELECT 1 FROM subscriptions"
             "    WHERE stonechat_id = s.stonechat_id AND status IN ('active', 'grace'))"
@@ -471,18 +514,18 @@ class Store:
             "    WHERE stonechat_id = s.stonechat_id AND status = 'lapsed') <= ?",
             (*providers, lapsed_before),
         ).fetchall()
-        servers = []
+        mailboxes = []
         for row in rows:
-            server = dict(row)
-            server["machine"] = json.loads(server["machine"])
-            server["meta"] = json.loads(server["meta"])
-            servers.append(server)
-        return servers
+            mailbox = dict(row)
+            mailbox["machine"] = json.loads(mailbox["machine"])
+            mailbox["meta"] = json.loads(mailbox["meta"])
+            mailboxes.append(mailbox)
+        return mailboxes
 
-    def delete_server(self, stonechat_id: str) -> None:
-        self._db.execute("DELETE FROM servers WHERE stonechat_id = ?", (stonechat_id,))
+    def delete_mailbox(self, stonechat_id: str) -> None:
+        self._db.execute("DELETE FROM mailboxes WHERE stonechat_id = ?", (stonechat_id,))
 
-    def servers_by_host(self, host: str) -> list[dict]:
+    def mailboxes_by_host(self, host: str) -> list[dict]:
         """Abuse triage: an abuse report carries an IP and nothing else, so
         this is the only lookup that matters operationally.
 
@@ -493,30 +536,30 @@ class Store:
         the table is one row per customer, and this runs when a human asks."""
         wanted = host.strip().lower().strip("[]")
         found = []
-        for row in self._db.execute("SELECT * FROM servers WHERE address IS NOT NULL"):
-            server = dict(row)
-            hostname = urlsplit(server["address"]).hostname or ""
+        for row in self._db.execute("SELECT * FROM mailboxes WHERE address IS NOT NULL"):
+            mailbox = dict(row)
+            hostname = urlsplit(mailbox["address"]).hostname or ""
             if hostname.lower() == wanted:
-                server["machine"] = json.loads(server["machine"])
-                server["meta"] = json.loads(server["meta"])
-                found.append(server)
+                mailbox["machine"] = json.loads(mailbox["machine"])
+                mailbox["meta"] = json.loads(mailbox["meta"])
+                found.append(mailbox)
         return found
 
-    def record_tombstone(self, server: dict, reason: str) -> None:
+    def record_tombstone(self, mailbox: dict, reason: str) -> None:
         """Write the abuse record *before* the machine goes away — a destroy
         that half-fails must not also lose the evidence of what was there."""
         self._db.execute(
-            "INSERT INTO server_tombstones (stonechat_id, provider, resource_id, address,"
+            "INSERT INTO mailbox_tombstones (stonechat_id, provider, resource_id, address,"
             " meta, reason, created_at, destroyed_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (server["stonechat_id"], server["provider"], server["resource_id"],
-             server["address"], json.dumps(server.get("meta") or {}), reason,
-             server["created_at"], _now()),
+            (mailbox["stonechat_id"], mailbox["provider"], mailbox["resource_id"],
+             mailbox["address"], json.dumps(mailbox.get("meta") or {}), reason,
+             mailbox["created_at"], _now()),
         )
 
     def tombstones_for(self, stonechat_id: str) -> list[dict]:
         return [dict(r) for r in self._db.execute(
-            "SELECT * FROM server_tombstones WHERE stonechat_id = ? ORDER BY id DESC",
+            "SELECT * FROM mailbox_tombstones WHERE stonechat_id = ? ORDER BY id DESC",
             (stonechat_id,),
         )]
 
@@ -577,7 +620,7 @@ class Store:
 
         Resolving also drops the evidence: it has served its purpose once a
         human has decided, and the decision itself is preserved here, in
-        `server_tombstones`, and in `users.ban_reason`. Keeping the plaintext
+        `mailbox_tombstones`, and in `users.ban_reason`. Keeping the plaintext
         past the decision buys nothing and costs everything."""
         cur = self._db.execute(
             "UPDATE reports SET status = ?, resolution = ?, resolved_at = ?,"
@@ -667,12 +710,12 @@ class Store:
         return dict(row) if row else None
 
     def entitlement_for(self, stonechat_id: str) -> dict | None:
-        """The account's best live subscription (sovereign beats private).
+        """The account's best live subscription (machine beats mailbox).
         `grace` still counts — payment trouble shouldn't cut service instantly."""
         row = self._db.execute(
             "SELECT * FROM subscriptions"
             " WHERE stonechat_id = ? AND status IN ('active', 'grace')"
-            " ORDER BY CASE plan WHEN 'sovereign' THEN 0 ELSE 1 END, created_at"
+            " ORDER BY CASE plan WHEN 'machine' THEN 0 ELSE 1 END, created_at"
             " LIMIT 1",
             (stonechat_id,),
         ).fetchone()

@@ -3,12 +3,12 @@
 Run this on a VM **you own** to host your own mailbox *plus* invited friends'
 mailboxes on the same box. A shared host, but only with people you choose.
 
-> Sovereign-tier VMs provisioned by the hub come with this agent
+> Machine-tier VMs provisioned by the hub come with this agent
 > **pre-installed** (see `hub/app/providers/bootstrap.py`) — the app picks up
-> its address and admin token from `GET /v1/server` automatically. The manual
+> its address and admin token from `GET /v1/mailbox` automatically. The manual
 > steps below are for self-hosters.
 
-Each guest gets their own `stonechat-server` container — own port, own token, own
+Each guest gets their own `stonechat-relay` container — own port, own token, own
 TLS cert, cgroup/pids caps. From the directory's point of view a guest's mailbox
 is just an ordinary self-hosted ("external") relay that happens to live on your
 box. The hub and Stonechat-the-company never touch this machine; the agent
@@ -80,7 +80,7 @@ Environment=STONECHAT_HOST_AGENT_ADMIN_TOKEN=<your admin token>
 Environment=STONECHAT_HOST_AGENT_ADVERTISE_HOST=<your static public IP>
 Environment=STONECHAT_HOST_AGENT_DB=/var/lib/stonechat/host_agent.db
 Environment=STONECHAT_HOST_AGENT_TLS_DIR=/var/lib/stonechat
-Environment=STONECHAT_HOST_AGENT_SERVER_DIR=/opt/stonechat/server
+Environment=STONECHAT_HOST_AGENT_RELAY_DIR=/opt/stonechat/relay
 ExecStart=/opt/stonechat/host_agent/.venv/bin/python /opt/stonechat/host_agent/main.py
 Restart=always
 RestartSec=2
@@ -95,8 +95,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now stonechat-host-agent
 curl -sk https://<your-ip>:8200/health    # → {"status":"ok","v":1,"tls_fp":"..."}
 ```
 
-The first mailbox provision builds the `stonechat-server` image from
-`/opt/stonechat/server`, so it takes an extra minute; later ones are seconds.
+The first mailbox provision builds the `stonechat-relay` image from
+`/opt/stonechat/relay`, so it takes an extra minute; later ones are seconds.
 
 (Just kicking the tires? You can skip systemd and run it in the foreground:)
 
@@ -114,7 +114,7 @@ All the knobs:
 | `STONECHAT_HOST_AGENT_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
 | `STONECHAT_HOST_AGENT_CAPACITY` | `25` | Max guest mailboxes on this host |
 | `STONECHAT_HOST_AGENT_PORT_BASE` | `42000` | First guest mailbox port; guests get `base…base+capacity−1` |
-| `STONECHAT_HOST_AGENT_IMAGE` | `stonechat-server:dev` | Mailbox image (built from `../server` if missing) |
+| `STONECHAT_HOST_AGENT_IMAGE` | `stonechat-relay:dev` | Mailbox image (built from `../relay` if missing) |
 | `STONECHAT_HOST_AGENT_RUNTIME` | — | Set to `runsc` for gVisor hardening |
 | `STONECHAT_PUSH_GATEWAY` | — | Passed through to guest mailboxes |
 | `STONECHAT_HOST_AGENT_PORT` | `8200` | Listen port |
@@ -122,7 +122,7 @@ All the knobs:
 ### 4. Connect your app
 
 Install Stonechat, **forge your identity**, then: mailbox screen → **Host friends
-on my server** → enter `https://<your-ip>:8200` + your admin token. Turn on
+on your machine** → enter `https://<your-ip>:8200` + your admin token. Turn on
 your own mailbox there, then **Create an invite**.
 
 ### 5. Bring the friends
@@ -151,7 +151,7 @@ lives on their phones, and they can re-home their mailboxes anywhere.
 5. Run `main.py` with `STONECHAT_HOST_AGENT_ADMIN_TOKEN` and
    `STONECHAT_HOST_AGENT_ADVERTISE_HOST` set (systemd unit above), then
    `curl -sk https://<ip>:8200/health`.
-6. In your app: forge identity → **Host friends on my server** → agent
+6. In your app: forge identity → **Host friends on your machine** → agent
    address + admin token → mailbox on, **Create an invite**.
 7. Friends: install app → forge identity → **Join a friend's host** → paste
    the invite.
@@ -166,7 +166,7 @@ Guests never call the admin endpoints; the app does the redeem for them.
 | GET | `/health` | none | Liveness + pinning: `{status, v, tls_fp}`. Guest count/capacity are admin-only (see `/v1/guests`). |
 | POST | `/v1/invite` | admin | `{uses, ttl_hours}` → `{invite}` — the string you share |
 | GET | `/v1/invites` | admin | every minted invite with status: `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by}]}` |
-| POST | `/v1/redeem` | none | `{invite: <token>, owner_id}` → `{address, server_token, tls_fp}` |
+| POST | `/v1/redeem` | none | `{invite: <token>, owner_id}` → `{address, mailbox_token, tls_fp}` |
 | POST | `/v1/guest` | admin | `{owner_id}` — provision directly, no invite (e.g. your own mailbox) |
 | GET | `/v1/guests` | admin | list current guests |
 | DELETE | `/v1/guest/{owner_id}` | admin | evict — destroys that guest's container |

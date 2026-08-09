@@ -10,7 +10,7 @@ import '../core/api.dart';
 import '../models.dart';
 import 'app_state.dart';
 
-/// kv key holding the outage clock across launches (see [ServerState]'s
+/// kv key holding the outage clock across launches (see [MailboxState]'s
 /// "unplanned outage" section).
 const _outageKey = 'mailbox_outage';
 
@@ -23,7 +23,7 @@ String formatOutage(Duration d) {
   return '${d.inDays}d';
 }
 
-class ServerState extends ChangeNotifier {
+class MailboxState extends ChangeNotifier {
   final AppState app;
   final Future<void> Function(SealedEnvelope) onEnvelope;
   final Future<void> Function() onConnected; // e.g. retry pending outbox
@@ -36,7 +36,7 @@ class ServerState extends ChangeNotifier {
   /// to be worth interrupting the user about. Fires once per outage.
   final void Function(Duration down)? onOutage;
 
-  ServerRecord record = ServerRecord(status: 'none');
+  MailboxRecord record = MailboxRecord(status: 'none');
   bool socketConnected = false;
   bool busy = false;
 
@@ -59,7 +59,7 @@ class ServerState extends ChangeNotifier {
   /// fix it — we deliberately never restart a mailbox on their behalf.
   static const outageNoticeAfter = Duration(hours: 2);
 
-  ServerState(this.app,
+  MailboxState(this.app,
       {required this.onEnvelope,
       required this.onConnected,
       this.onMailbox,
@@ -83,13 +83,13 @@ class ServerState extends ChangeNotifier {
   // -- unplanned outage -------------------------------------------------------
   //
   // "Turned off" and "died" must never be confused: turning a mailbox off
-  // deletes the hub row (DELETE /v1/server), so `record.status` drops to
+  // deletes the hub row (DELETE /v1/mailbox), so `record.status` drops to
   // 'none' and nothing below ever arms. An outage is therefore, by
   // construction, something the user did NOT ask for.
   //
   // We only ever *tell* them. Nothing here restarts or re-provisions a
   // mailbox — for a product whose whole promise is that the user owns the
-  // one server their messages touch, quietly resurrecting a box they may
+  // one mailbox their messages touch, quietly resurrecting a box they may
   // have destroyed themselves (in their own cloud console, out of band)
   // would break the promise far worse than an outage does.
 
@@ -143,7 +143,7 @@ class ServerState extends ChangeNotifier {
     if (!isRunning || _socket == null || socketConnected) return;
     if (_outageSince != null) return; // already counting
     try {
-      final probe = await app.api.getServer();
+      final probe = await app.api.getMailbox();
       // Turned off elsewhere, or rebuilt — either way not an outage.
       if (probe.status != 'running') return;
     } on Exception {
@@ -176,7 +176,7 @@ class ServerState extends ChangeNotifier {
   Future<void> refresh() async {
     final wasProvisioning = isProvisioning;
     try {
-      record = await app.api.getServer();
+      record = await app.api.getMailbox();
     } on Exception {
       return; // hub unreachable — keep last known state
     }
@@ -195,7 +195,7 @@ class ServerState extends ChangeNotifier {
 
     // External relays: the token — and the trust-on-first-use fingerprint —
     // never touched the hub; they come from local secure storage.
-    final token = record.serverToken ?? app.externalMailboxToken;
+    final token = record.mailboxToken ?? app.externalMailboxToken;
     final tlsFp = isExternal ? app.externalMailboxTlsFp : record.tlsFp;
     if (isRunning && record.address != null && token != null && tlsFp != null) {
       await _vouchForTls(tlsFp);
@@ -273,7 +273,7 @@ class ServerState extends ChangeNotifier {
   bool get isExternal => record.provider == 'external';
 
   /// External mailbox that came from a friend's invite (joinHost) rather
-  /// than the user's own server. Locally-stored distinction — the hub sees
+  /// than the user's own mailbox. Locally-stored distinction — the hub sees
   /// both as `external`.
   bool get isFriendHosted => isExternal && app.externalMailboxFriendHosted;
 
@@ -294,7 +294,7 @@ class ServerState extends ChangeNotifier {
       if (!probe.ownerMatches) {
         throw ApiException('That mailbox belongs to a different Stonechat ID');
       }
-      await app.api.registerExternalServer(address);
+      await app.api.registerExternalMailbox(address);
       await app.setExternalMailbox(token.trim(), probe.tlsFp,
           friendHosted: friendHosted);
       await _clearOutage(); // different mailbox — the old clock is meaningless
@@ -312,7 +312,7 @@ class ServerState extends ChangeNotifier {
     final invite = HostInvite.parse(rawInvite); // may throw FormatException
     busy = true;
     notifyListeners();
-    ({String address, String serverToken, String tlsFp}) mailbox;
+    ({String address, String mailboxToken, String tlsFp}) mailbox;
     try {
       mailbox = await redeemHostInvite(invite, app.stonechatId!);
     } finally {
@@ -320,7 +320,7 @@ class ServerState extends ChangeNotifier {
       notifyListeners();
     }
     // connectExternal manages its own busy flag + does the owner check / pin.
-    await connectExternal(mailbox.address, mailbox.serverToken,
+    await connectExternal(mailbox.address, mailbox.mailboxToken,
         friendHosted: true);
   }
 
@@ -336,7 +336,7 @@ class ServerState extends ChangeNotifier {
     busy = true;
     notifyListeners();
     try {
-      await app.api.createServer(
+      await app.api.createMailbox(
         country: country,
         provider: provider,
         machineType: machineType,
@@ -355,7 +355,7 @@ class ServerState extends ChangeNotifier {
     busy = true;
     notifyListeners();
     try {
-      await app.api.deleteServer();
+      await app.api.deleteMailbox();
       await app.setExternalMailbox(null, null);
       _vouchedTlsFp = null;
       // Deliberate: from here on, silence from this address is expected.
@@ -377,7 +377,7 @@ class ServerState extends ChangeNotifier {
     _pollTimer = null;
     _dropSocket();
     unawaited(_clearOutage());
-    record = ServerRecord(status: 'none');
+    record = MailboxRecord(status: 'none');
     _vouchedTlsFp = null;
     busy = false;
     onMailbox?.call(null, null, null);
@@ -397,7 +397,7 @@ class ServerState extends ChangeNotifier {
   /// hold. refresh() alone isn't enough — it bails early when the hub is
   /// unreachable, and the mailbox doesn't need the hub to be up.
   void onForeground() {
-    final token = record.serverToken ?? app.externalMailboxToken;
+    final token = record.mailboxToken ?? app.externalMailboxToken;
     final tlsFp = isExternal ? app.externalMailboxTlsFp : record.tlsFp;
     if (isRunning && record.address != null && token != null && tlsFp != null) {
       _ensureSocket(record.address!, token, tlsFp);
@@ -406,7 +406,7 @@ class ServerState extends ChangeNotifier {
 
   /// Manual refresh (pull-to-refresh): tear the socket down and reconnect.
   /// The relay drains its queue to a fresh owner connection, so this is
-  /// "check for mail now" — plus a server-record refresh for good measure.
+  /// "check for mail now" — plus a mailbox-record refresh for good measure.
   Future<void> reconnectMailbox() async {
     _dropSocket();
     notifyListeners();

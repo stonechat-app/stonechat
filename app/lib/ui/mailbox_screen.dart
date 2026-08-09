@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../core/api.dart';
 import '../state/app_state.dart';
-import '../state/server_state.dart';
+import '../state/mailbox_state.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -30,14 +30,14 @@ const _providerLabels = {
 /// The three ways to get a mailbox.
 enum _Choice { cloud, friend, selfHost }
 
-class ServerScreen extends StatefulWidget {
-  const ServerScreen({super.key});
+class MailboxScreen extends StatefulWidget {
+  const MailboxScreen({super.key});
 
   @override
-  State<ServerScreen> createState() => _ServerScreenState();
+  State<MailboxScreen> createState() => _MailboxScreenState();
 }
 
-class _ServerScreenState extends State<ServerScreen> {
+class _MailboxScreenState extends State<MailboxScreen> {
   _Choice _choice = _Choice.cloud;
   // Which card's action is in flight. Drives that button's spinner and
   // freezes the other cards — switching options mid-provision would fire a
@@ -63,23 +63,23 @@ class _ServerScreenState extends State<ServerScreen> {
     }
   }
 
-  /// Sovereign plans and self-hosters can host friends' mailboxes.
-  bool _canHostFriends(ServerState server) {
-    if (!server.isRunning) return false;
-    final p = server.record.provider;
-    return server.isExternal ||
+  /// Machine plans and self-hosters can host friends' mailboxes.
+  bool _canHostFriends(MailboxState mailbox) {
+    if (!mailbox.isRunning) return false;
+    final p = mailbox.record.provider;
+    return mailbox.isExternal ||
         p == 'gcp' ||
         p == 'aws' ||
-        _plan == 'sovereign' ||
+        _plan == 'machine' ||
         (kDebugMode && p == 'local');
   }
 
   /// Which card a live mailbox record lights up. Friend-hosted and self-hosted
   /// mailboxes are both `external` records on the hub; the locally-stored
   /// friend-hosted flag (AppState) tells them apart.
-  _Choice _activeChoice(ServerState server) => server.isFriendHosted
+  _Choice _activeChoice(MailboxState mailbox) => mailbox.isFriendHosted
       ? _Choice.friend
-      : server.isExternal
+      : mailbox.isExternal
           ? _Choice.selfHost
           : _Choice.cloud;
 
@@ -90,12 +90,12 @@ class _ServerScreenState extends State<ServerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final server = context.watch<ServerState>();
+    final mailbox = context.watch<MailboxState>();
     // A mailbox exists (running, setting up, or errored): the choice cards
     // stay visible so the other options are discoverable, but they're locked —
     // the live one is marked, the rest are dimmed and tapping them explains.
-    final locked = server.record.status != 'none';
-    final active = locked ? _activeChoice(server) : null;
+    final locked = mailbox.record.status != 'none';
+    final active = locked ? _activeChoice(mailbox) : null;
 
     return Scaffold(
       appBar: AppBar(
@@ -105,7 +105,7 @@ class _ServerScreenState extends State<ServerScreen> {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          _StatusCard(server: server),
+          _StatusCard(mailbox: mailbox),
           const SizedBox(height: 20),
           if (!locked) ...[
             const Text(
@@ -133,7 +133,7 @@ class _ServerScreenState extends State<ServerScreen> {
                 width: double.infinity,
                 height: 48,
                 child: FilledButton(
-                  onPressed: server.busy ? null : () => _createCloud(server),
+                  onPressed: mailbox.busy ? null : () => _createCloud(mailbox),
                   child: _pending == _Choice.cloud
                       ? const SizedBox(
                           width: 18,
@@ -148,7 +148,7 @@ class _ServerScreenState extends State<ServerScreen> {
           ZnOptionCard(
             title: "A friend's machine",
             subtitle: 'Someone you trust hosts your mailbox on their '
-                'server. You just need their invite.',
+                'mailbox. You just need their invite.',
             selected: !locked && _choice == _Choice.friend,
             active: active == _Choice.friend,
             dimmed: locked && active != _Choice.friend,
@@ -174,7 +174,7 @@ class _ServerScreenState extends State<ServerScreen> {
                 width: double.infinity,
                 height: 44,
                 child: FilledButton(
-                  onPressed: server.busy ? null : () => _joinHost(server),
+                  onPressed: mailbox.busy ? null : () => _joinHost(mailbox),
                   child: _pending == _Choice.friend
                       ? const Row(
                           mainAxisSize: MainAxisSize.min,
@@ -187,7 +187,7 @@ class _ServerScreenState extends State<ServerScreen> {
                             SizedBox(width: 10),
                             Flexible(
                                 child: Text(
-                                    'Setting up on your friend\'s server…',
+                                    'Setting up on your friend\'s mailbox…',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis)),
                           ],
@@ -200,7 +200,7 @@ class _ServerScreenState extends State<ServerScreen> {
           const SizedBox(height: 10),
           ZnOptionCard(
             title: 'Self-host',
-            subtitle: 'Run the mailbox on your own server. '
+            subtitle: 'Run the relay on your own machine. '
                 'Free, forever.',
             selected: !locked && _choice == _Choice.selfHost,
             active: active == _Choice.selfHost,
@@ -228,7 +228,7 @@ class _ServerScreenState extends State<ServerScreen> {
                 height: 44,
                 child: FilledButton(
                   onPressed:
-                      server.busy ? null : () => _connectExternal(server),
+                      mailbox.busy ? null : () => _connectExternal(mailbox),
                   child: _pending == _Choice.selfHost
                       ? const SizedBox(
                           width: 18,
@@ -240,7 +240,7 @@ class _ServerScreenState extends State<ServerScreen> {
             ],
           ),
           const SizedBox(height: 10),
-          if (server.isProvisioning)
+          if (mailbox.isProvisioning)
             const Padding(
               padding: EdgeInsets.only(top: 8),
               child: Text(
@@ -250,12 +250,12 @@ class _ServerScreenState extends State<ServerScreen> {
                 style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
               ),
             ),
-          if (_canHostFriends(server)) ...[
+          if (_canHostFriends(mailbox)) ...[
             _InvitesEntry(
                 onTap: () => Navigator.pushNamed(context, '/invites')),
             const SizedBox(height: 12),
           ],
-          if (server.isRunning || server.record.status == 'error') ...[
+          if (mailbox.isRunning || mailbox.record.status == 'error') ...[
             const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
@@ -265,8 +265,8 @@ class _ServerScreenState extends State<ServerScreen> {
                   foregroundColor: Zn.danger,
                   side: const BorderSide(color: Zn.danger),
                 ),
-                onPressed: server.busy ? null : () => _destroy(server),
-                child: server.busy
+                onPressed: mailbox.busy ? null : () => _destroy(mailbox),
+                child: mailbox.busy
                     ? Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -277,21 +277,21 @@ class _ServerScreenState extends State<ServerScreen> {
                                 strokeWidth: 2, color: Zn.danger),
                           ),
                           const SizedBox(width: 10),
-                          Text(server.isExternal
+                          Text(mailbox.isExternal
                               ? 'Disconnecting…'
                               : 'Turning off…'),
                         ],
                       )
-                    : Text(server.isExternal
+                    : Text(mailbox.isExternal
                         ? 'Disconnect mailbox'
                         : 'Turn off mailbox'),
               ),
             ),
             const SizedBox(height: 8),
             Text(
-              server.isExternal
+              mailbox.isExternal
                   ? 'Disconnecting removes your address from the directory — '
-                      'your server keeps running and is yours to stop. Your '
+                      'your mailbox keeps running and is yours to stop. Your '
                       'chat history on this phone is never affected.'
                   : 'While your mailbox is off you won\'t receive messages — '
                       'they\'ll wait on your friends\' phones and arrive once '
@@ -307,8 +307,8 @@ class _ServerScreenState extends State<ServerScreen> {
 
   // In debug builds default to a local Docker mailbox so development never
   // needs a cloud account; release builds pick the provider the account's
-  // plan entitles it to (PROTOCOL.md "Billing"): private → fleet,
-  // sovereign → gcp. --dart-define=STONECHAT_PROVIDER overrides everything.
+  // plan entitles it to (PROTOCOL.md "Billing"): mailbox → fleet,
+  // machine → gcp. --dart-define=STONECHAT_PROVIDER overrides everything.
   static const _envProvider = String.fromEnvironment('STONECHAT_PROVIDER');
 
   /// null → no plan on this account yet (caller offers the redeem sheet).
@@ -317,10 +317,10 @@ class _ServerScreenState extends State<ServerScreen> {
     if (kDebugMode) return 'local';
     final entitlement = await context.read<AppState>().api.getEntitlement();
     if (entitlement == null) return null;
-    return entitlement.plan == 'sovereign' ? 'gcp' : 'fleet';
+    return entitlement.plan == 'machine' ? 'gcp' : 'fleet';
   }
 
-  Future<void> _createCloud(ServerState server) async {
+  Future<void> _createCloud(MailboxState mailbox) async {
     setState(() => _pending = _Choice.cloud);
     try {
       var provider = await _resolveProvider();
@@ -331,7 +331,7 @@ class _ServerScreenState extends State<ServerScreen> {
         if (provider == null) return;
       }
       final d = _providerDefaults[provider] ?? _providerDefaults['gcp']!;
-      await server.create(
+      await mailbox.create(
         provider: provider,
         machineType: d.machineType,
         region: d.region,
@@ -340,10 +340,10 @@ class _ServerScreenState extends State<ServerScreen> {
     } on ApiException catch (e) {
       if (!mounted) return;
       if (e.code == 'subscription_required') {
-        // Belt and braces: the server re-checks the entitlement (it may have
+        // Belt and braces: the mailbox re-checks the entitlement (it may have
         // lapsed since we looked). Offer the code path and retry.
         final activated = await showRedeemSheet(context);
-        if (activated && mounted) await _createCloud(server);
+        if (activated && mounted) await _createCloud(mailbox);
       } else {
         showZnSnack(context, '$e', error: true);
       }
@@ -354,7 +354,7 @@ class _ServerScreenState extends State<ServerScreen> {
     }
   }
 
-  Future<void> _connectExternal(ServerState server) async {
+  Future<void> _connectExternal(MailboxState mailbox) async {
     final address = _extAddress.text.trim();
     final token = _extToken.text.trim();
     if (address.isEmpty || token.isEmpty) {
@@ -363,7 +363,7 @@ class _ServerScreenState extends State<ServerScreen> {
     }
     setState(() => _pending = _Choice.selfHost);
     try {
-      await server.connectExternal(address, token);
+      await mailbox.connectExternal(address, token);
       if (mounted) showZnSnack(context, 'Connected — friends can reach you now');
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
@@ -372,7 +372,7 @@ class _ServerScreenState extends State<ServerScreen> {
     }
   }
 
-  Future<void> _joinHost(ServerState server) async {
+  Future<void> _joinHost(MailboxState mailbox) async {
     final invite = _inviteInput.text.trim();
     if (invite.isEmpty) {
       showZnSnack(context, 'Paste the invite first', error: true);
@@ -380,7 +380,7 @@ class _ServerScreenState extends State<ServerScreen> {
     }
     setState(() => _pending = _Choice.friend);
     try {
-      await server.joinHost(invite);
+      await mailbox.joinHost(invite);
       if (mounted) {
         showZnSnack(context, 'Joined — your mailbox is live on your friend\'s host');
       }
@@ -391,8 +391,8 @@ class _ServerScreenState extends State<ServerScreen> {
     }
   }
 
-  Future<void> _destroy(ServerState server) async {
-    final external = server.isExternal;
+  Future<void> _destroy(MailboxState mailbox) async {
+    final external = mailbox.isExternal;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -402,7 +402,7 @@ class _ServerScreenState extends State<ServerScreen> {
             : 'Turn off your mailbox?'),
         content: Text(
             external
-                ? 'Your address is removed from the directory; the server '
+                ? 'Your address is removed from the directory; the mailbox '
                     'itself keeps running and stays yours. Your chat history '
                     'stays on this phone.'
                 : 'You\'ll stop receiving messages until you turn it back on. '
@@ -422,7 +422,7 @@ class _ServerScreenState extends State<ServerScreen> {
     );
     if (confirmed != true) return;
     try {
-      await server.destroy();
+      await mailbox.destroy();
       if (mounted) {
         showZnSnack(context,
             external ? 'Mailbox disconnected' : 'Mailbox turned off');
@@ -434,26 +434,26 @@ class _ServerScreenState extends State<ServerScreen> {
 }
 
 class _StatusCard extends StatelessWidget {
-  final ServerState server;
-  const _StatusCard({required this.server});
+  final MailboxState mailbox;
+  const _StatusCard({required this.mailbox});
 
   @override
   Widget build(BuildContext context) {
-    final r = server.record;
+    final r = mailbox.record;
     final (color, headline) = switch (r.status) {
       // busy while running can only be the teardown call — surface it.
-      'running' when server.busy => (
+      'running' when mailbox.busy => (
           Zn.amber,
-          server.isExternal ? 'Disconnecting…' : 'Turning off…'
+          mailbox.isExternal ? 'Disconnecting…' : 'Turning off…'
         ),
       // The record says running, but nothing has answered at that address for
       // a while — trust the socket, not the hub.
-      'running' when server.mailboxDownFor != null => (
+      'running' when mailbox.mailboxDownFor != null => (
           Zn.danger,
           "Your mailbox isn't answering · "
-              '${formatOutage(server.mailboxDownFor!)}'
+              '${formatOutage(mailbox.mailboxDownFor!)}'
         ),
-      'running' when server.mailboxUnreachable => (
+      'running' when mailbox.mailboxUnreachable => (
           Zn.danger,
           "Can't reach your mailbox"
         ),
@@ -491,23 +491,23 @@ class _StatusCard extends StatelessWidget {
             if (r.provider != null)
               _kv(
                   'Runs on',
-                  server.isFriendHosted
+                  mailbox.isFriendHosted
                       ? "A friend's machine"
                       : _providerLabels[r.provider] ?? r.provider!),
             if (r.address != null) _kv('Address', r.address!),
             if (r.status == 'running')
               _kv(
                   'Phone link',
-                  server.mailboxUnreachable || server.mailboxDownFor != null
+                  mailbox.mailboxUnreachable || mailbox.mailboxDownFor != null
                       ? 'Unreachable'
-                      : server.socketConnected
+                      : mailbox.socketConnected
                           ? 'Connected'
                           : 'Reconnecting…'),
             if (r.error != null) _kv('Details', r.error!),
             // Say plainly that nothing happens automatically. The kill switch
             // is the product's promise; a mailbox that restarts itself — or
             // that we restart for you — would quietly break it.
-            if (r.status == 'running' && server.mailboxDownFor != null) ...[
+            if (r.status == 'running' && mailbox.mailboxDownFor != null) ...[
               const SizedBox(height: 12),
               Text(
                 "You didn't turn this off, so something else stopped it — a "
@@ -539,7 +539,7 @@ class _StatusCard extends StatelessWidget {
         ),
       );
 }
-/// Entry point to the invites screen — hosts (self-host or Sovereign) can
+/// Entry point to the invites screen — hosts (self-host or Machine) can
 /// invite friends onto their machine and track who accepted.
 class _InvitesEntry extends StatelessWidget {
   final VoidCallback onTap;

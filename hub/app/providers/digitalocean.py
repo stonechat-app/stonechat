@@ -70,7 +70,7 @@ class DOProvider(CloudProvider):
                     "size": req.spec.machine_type,
                     "image": IMAGE,
                     "user_data": user_data,
-                    "tags": ["stonechat-server"],
+                    "tags": ["stonechat-mailbox"],
                 },
             )
             if resp.status_code >= 400:

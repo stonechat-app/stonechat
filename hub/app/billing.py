@@ -20,14 +20,14 @@ Config (env):
     STONECHAT_ADMIN_TOKEN            enables POST /v1/billing/comp (comp grants
                                 for testers); unset → endpoint disabled
     STONECHAT_TEST_CODES             reusable tester codes with per-code plans:
-                                "STONECHAT-AAAA-AAAA=private,STONECHAT-BBBB-BBBB=sovereign"
-                                (plan omitted → private). Redeeming one mints a
+                                "STONECHAT-AAAA-AAAA=mailbox,STONECHAT-BBBB-BBBB=machine"
+                                (plan omitted → mailbox). Redeeming one mints a
                                 fresh comp subscription every time instead of
                                 consuming a stored one (TestFlight testers can
                                 reset identity and reactivate with the same
                                 code); unset → disabled
     STONECHAT_TEST_CODE              legacy single code, still honored
-    STONECHAT_TEST_CODE_PLAN         plan the legacy code grants (default private)
+    STONECHAT_TEST_CODE_PLAN         plan the legacy code grants (default mailbox)
 """
 
 import logging
@@ -49,7 +49,7 @@ log = logging.getLogger("stonechat.hub.billing")
 
 router = APIRouter()
 
-PLANS = ("private", "sovereign")
+PLANS = ("mailbox", "machine")
 
 # No 0/O/1/I/L/U — codes get read off a screen and typed on a phone.
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"
@@ -217,22 +217,22 @@ def _test_code_plan(normalized: str) -> str | None:
     """The plan granted if `normalized` is a configured tester code, else None.
 
     STONECHAT_TEST_CODES holds several codes with per-code plans:
-    "STONECHAT-AAAA-AAAA=private,STONECHAT-BBBB-BBBB=sovereign" (plan omitted →
-    private). The legacy single STONECHAT_TEST_CODE (+ STONECHAT_TEST_CODE_PLAN) is
+    "STONECHAT-AAAA-AAAA=mailbox,STONECHAT-BBBB-BBBB=machine" (plan omitted →
+    mailbox). The legacy single STONECHAT_TEST_CODE (+ STONECHAT_TEST_CODE_PLAN) is
     still honored alongside."""
     entries: list[tuple[str, str]] = []
     for part in os.environ.get("STONECHAT_TEST_CODES", "").split(","):
         part = part.strip()
         if part:
             code, _, plan = part.partition("=")
-            entries.append((normalize_code(code), plan.strip() or "private"))
+            entries.append((normalize_code(code), plan.strip() or "mailbox"))
     legacy = normalize_code(os.environ.get("STONECHAT_TEST_CODE", ""))
     if legacy:
-        entries.append((legacy, os.environ.get("STONECHAT_TEST_CODE_PLAN", "private")))
+        entries.append((legacy, os.environ.get("STONECHAT_TEST_CODE_PLAN", "mailbox")))
     granted = None
     for code, plan in entries:  # no early exit — comparisons stay constant-time
         if code and secrets.compare_digest(code, normalized):
-            granted = plan if plan in PLANS else "private"
+            granted = plan if plan in PLANS else "mailbox"
     return granted
 
 
@@ -293,7 +293,7 @@ def entitlement(user: User):
 # -- admin ----------------------------------------------------------------------
 
 class CompIn(BaseModel):
-    plan: Literal["private", "sovereign"]
+    plan: Literal["mailbox", "machine"]
     note: str = Field(default="", max_length=200)
 
 

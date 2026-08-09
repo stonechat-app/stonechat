@@ -18,7 +18,7 @@ type Blake2b256 = Blake2b<U32>;
 
 /// The bootstrap device: provisioning mints one credential, and the device
 /// holding it is device 1. `STONECHAT_OWNER_TOKEN` is its token, which is what
-/// makes the hub's `server_token` handoff a device login without needing a
+/// makes the hub's `mailbox_token` handoff a device login without needing a
 /// second concept.
 pub const PRIMARY_DEVICE: i64 = 1;
 

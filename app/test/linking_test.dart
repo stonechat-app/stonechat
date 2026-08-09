@@ -155,7 +155,7 @@ void main() {
     });
 
     test('carries no hub account token', () {
-      // Server management and billing stay with the primary: a linked device
+      // Mailbox management and billing stay with the primary: a linked device
       // must not be able to destroy the mailbox it lives on.
       final keys = grant.toJson().keys.toSet();
       expect(keys.any((k) => k.contains('account')), isFalse);

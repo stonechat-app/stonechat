@@ -42,7 +42,7 @@ const linkedCertLifetime = Duration(days: 180);
 const webCertLifetime = Duration(days: 7);
 
 /// A headless agent (agent_client/): a device with no screen and nobody
-/// sitting at it, usually on a server rather than in a pocket.
+/// sitting at it, usually on a mailbox rather than in a pocket.
 ///
 /// Same as a linked device, and the reasoning runs opposite to the browser's.
 /// Renewal is the primary's job, so a short lifetime here does not buy

@@ -31,7 +31,7 @@ class Phone:
         self.pubkey_b64 = base64.b64encode(bytes(self.key.public_key)).decode()
         self.stonechat_id = None
         self.token = None
-        self.server = None
+        self.mailbox = None
 
     def register(self):
         r = httpx.post(f"{HUB}/v1/register", json={"pubkey": self.pubkey_b64})
@@ -39,7 +39,7 @@ class Phone:
         data = r.json()
         self.stonechat_id, self.token = data["stonechat_id"], data["account_token"]
         expected = stonechat_id_from_pubkey(bytes(self.key.public_key))
-        assert self.stonechat_id == expected, "server-derived ID != client-derived ID"
+        assert self.stonechat_id == expected, "mailbox-derived ID != client-derived ID"
         print(f"  {self.name}: {self.stonechat_id}")
 
     @property
@@ -48,7 +48,7 @@ class Phone:
 
     def provision(self):
         r = httpx.post(
-            f"{HUB}/v1/server",
+            f"{HUB}/v1/mailbox",
             headers=self.auth,
             json={
                 "provider": "local",
@@ -60,11 +60,11 @@ class Phone:
     def wait_running(self, timeout=300):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            r = httpx.get(f"{HUB}/v1/server", headers=self.auth)
+            r = httpx.get(f"{HUB}/v1/mailbox", headers=self.auth)
             r.raise_for_status()
             s = r.json()
             if s["status"] == "running":
-                self.server = s
+                self.mailbox = s
                 print(f"  {self.name} relay: {s['address']}")
                 return
             if s["status"] == "error":
@@ -95,11 +95,11 @@ class Phone:
         return json.loads(plain)
 
     def deliver_to(self, to: "Phone", envelope: dict):
-        r = httpx.post(f"{to.server['address']}/inbox", json=envelope, timeout=10)
+        r = httpx.post(f"{to.mailbox['address']}/inbox", json=envelope, timeout=10)
         r.raise_for_status()
 
     async def receive_one(self, timeout=15) -> dict:
-        url = self.server["address"].replace("http", "ws") + f"/ws?token={self.server['server_token']}"
+        url = self.mailbox["address"].replace("http", "ws") + f"/ws?token={self.mailbox['mailbox_token']}"
         async with websockets.connect(url) as ws:
             raw = await asyncio.wait_for(ws.recv(), timeout)
             envelope = json.loads(raw)
@@ -108,11 +108,11 @@ class Phone:
             return envelope
 
     def queue_depth(self):
-        return httpx.get(f"{self.server['address']}/status",
-                         params={"token": self.server["server_token"]}).json()["queued"]
+        return httpx.get(f"{self.mailbox['address']}/status",
+                         params={"token": self.mailbox["mailbox_token"]}).json()["queued"]
 
     def destroy(self):
-        r = httpx.delete(f"{HUB}/v1/server", headers=self.auth, timeout=30)
+        r = httpx.delete(f"{HUB}/v1/mailbox", headers=self.auth, timeout=30)
         r.raise_for_status()
 
 
@@ -127,7 +127,7 @@ def main():
     entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
     assert entry["pubkey"] == bob.pubkey_b64
     assert stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.stonechat_id
-    assert entry["server"] is None
+    assert entry["mailbox"] is None
     lower = bob.stonechat_id.lower().replace("-", "")
     assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
     assert "handle" not in entry, "directory must not return a handle"
@@ -140,9 +140,9 @@ def main():
     alice.wait_running()
     bob.wait_running()
 
-    print("4) one-server-per-user enforced")
+    print("4) one-mailbox-per-user enforced")
     r = httpx.post(
-        f"{HUB}/v1/server", headers=alice.auth,
+        f"{HUB}/v1/mailbox", headers=alice.auth,
         json={"provider": "local", "machine": {"machine_type": "x", "region": "y"}},
     )
     assert r.status_code == 409, f"expected 409, got {r.status_code}"
@@ -166,7 +166,7 @@ def main():
 
     print("7) wrong recipient rejected by mailbox")
     r = httpx.post(
-        f"{bob.server['address']}/inbox",
+        f"{bob.mailbox['address']}/inbox",
         json=alice.seal(alice, "msg", {"text": "misrouted"}),
     )
     assert r.status_code == 403, f"expected 403, got {r.status_code}"
@@ -182,9 +182,9 @@ def main():
     print("9) destroy relays")
     alice.destroy()
     bob.destroy()
-    assert httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["status"] == "none"
+    assert httpx.get(f"{HUB}/v1/mailbox", headers=alice.auth).json()["status"] == "none"
     entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
-    assert entry["server"] is None
+    assert entry["mailbox"] is None
 
     print("\nALL E2E CHECKS PASSED")
 

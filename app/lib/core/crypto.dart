@@ -329,7 +329,7 @@ class CryptoService {
 
   /// Encrypt a media file with a fresh random key. The key+nonce travel to
   /// the recipient inside the session-encrypted envelope payload; the blob
-  /// itself is opaque to every server that touches it.
+  /// itself is opaque to every mailbox that touches it.
   ({Uint8List key, Uint8List nonce, Uint8List ciphertext}) sealBlob(
     Uint8List data,
   ) {

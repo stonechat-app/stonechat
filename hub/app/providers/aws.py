@@ -1,7 +1,7 @@
 """AWS EC2 provider.
 
-⚠️ KNOWN-BROKEN for sovereign provisioning (see TODO.md "AWS provider is
-dead code"): EC2 caps user-data at 16 KB and the sovereign startup script
+⚠️ KNOWN-BROKEN for dedicated-VM provisioning (see TODO.md "AWS provider is
+dead code"): EC2 caps user-data at 16 KB and the dedicated startup script
 (host agent included) is ~30 KB even with gzipped payloads, so run_instances
 rejects it. EC2's 1:1 NAT also breaks the host agent's from-inside guest
 health checks (no hairpin to the instance's own public IP). Needs a
@@ -27,7 +27,7 @@ from .bootstrap import (
     build_startup_script,
 )
 
-SECURITY_GROUP = "stonechat-server"
+SECURITY_GROUP = "stonechat-mailbox"
 AL2023_SSM_PARAM = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
 
 
@@ -111,7 +111,7 @@ class AWSProvider(CloudProvider):
         else:
             sg_id = ec2.create_security_group(
                 GroupName=SECURITY_GROUP,
-                Description="Stonechat routing server inbound",
+                Description="Stonechat mailbox inbound",
             )["GroupId"]
         # Re-assert ingress every time (duplicates are swallowed) so groups
         # created before TURN existed grow the UDP rules on the next provision.

@@ -111,7 +111,7 @@ can use it:
    bytes independently rather than asking the core for them, so a drift
    between the four implementations fails here rather than as "the signature
    does not verify".
-2. ~~Address discovery.~~ **Done.** `server.wt_address` in the directory;
+2. ~~Address discovery.~~ **Done.** `mailbox.wt_address` in the directory;
    `routeFor()` returns somewhere to dial alongside the pins, and
    `connectMailbox()` opens the WebTransport session with
    `serverCertificateHashes`. The address is validated before it reaches a URL

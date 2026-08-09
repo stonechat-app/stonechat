@@ -27,7 +27,7 @@ HttpClient _pinnedHttpClient(String expectedFpB64) =>
       ..badCertificateCallback = (X509Certificate cert, _, _) =>
           certFingerprinter!(Uint8List.fromList(cert.der)) == expectedFpB64;
 
-/// An HTTP client that accepts exactly one server certificate: the one whose
+/// An HTTP client that accepts exactly one mailbox certificate: the one whose
 /// fingerprint the mailbox owner signed. Everything else — including
 /// CA-signed certificates — is rejected.
 http.Client pinnedClient(String tlsFpB64) =>
@@ -73,7 +73,7 @@ Future<({String tlsFp, bool ownerMatches})?> observeMailbox(
 class ApiException implements Exception {
   final String message;
   final int? status;
-  final Object? detail; // parsed JSON `detail` when the server sent one
+  final Object? detail; // parsed JSON `detail` when the mailbox sent one
 
   /// This send was *refused*, not merely unlucky: a directory key that doesn't
   /// hash to its ID, a prekey that doesn't verify, a peer with no usable
@@ -102,39 +102,39 @@ class DirectoryEntry {
   final String pubkeyB64;
   final String? pqPkB64; // X-Wing identity key (hybrid envelope seal)…
   final String? pqSigB64; // …signed by the Ed25519 identity key
-  final String? serverAddress; // null → peer's mailbox is off right now
-  final String? serverTlsFp; // pinned cert fingerprint…
-  final String? serverTlsSig; // …vouched for by the owner's identity key
+  final String? mailboxAddress; // null → peer's mailbox is off right now
+  final String? mailboxTlsFp; // pinned cert fingerprint…
+  final String? mailboxTlsSig; // …vouched for by the owner's identity key
 
   DirectoryEntry({
     required this.stonechatId,
     required this.pubkeyB64,
     this.pqPkB64,
     this.pqSigB64,
-    this.serverAddress,
-    this.serverTlsFp,
-    this.serverTlsSig,
+    this.mailboxAddress,
+    this.mailboxTlsFp,
+    this.mailboxTlsSig,
   });
 }
 
-class ServerRecord {
+class MailboxRecord {
   final String status; // none | provisioning | running | error
   final String? provider;
   final String? address;
-  final String? serverToken;
+  final String? mailboxToken;
   final String? tlsFp; // observed by the hub at provision time
   final String? error;
-  // Dedicated (Sovereign) VMs ship with the host agent pre-installed; the hub
+  // Dedicated (Machine plan) VMs ship with the host agent pre-installed; the hub
   // hands back where it lives and the admin token it was minted with, so the
   // Invites screen connects without any manual setup.
   final String? hostAgentAddress;
   final String? hostAgentAdminToken;
 
-  ServerRecord({
+  MailboxRecord({
     required this.status,
     this.provider,
     this.address,
-    this.serverToken,
+    this.mailboxToken,
     this.tlsFp,
     this.error,
     this.hostAgentAddress,
@@ -144,11 +144,11 @@ class ServerRecord {
 
 /// One country a mailbox can live in, as the hub's catalog describes it.
 ///
-/// Everything here is server-authored on purpose: which cloud serves which
+/// Everything here is mailbox-authored on purpose: which cloud serves which
 /// flag is a hub decision (hub/app/countries.py), so changing a provider — or
 /// the wording of a jurisdiction line — never needs an app release.
 class MailboxCountry {
-  final String code; // ISO 3166-1 alpha-2; what /v1/server is sent
+  final String code; // ISO 3166-1 alpha-2; what /v1/mailbox is sent
   final String name;
   final String city;
   final String flag; // emoji
@@ -157,7 +157,7 @@ class MailboxCountry {
   /// What it does not. Never render one without the other — a picker that
   /// shows only the flattering half is marketing, not a privacy feature.
   final String caveat;
-  /// Plans that can place a mailbox here today ("sovereign", "private").
+  /// Plans that can place a mailbox here today ("machine", "mailbox").
   final List<String> plans;
 
   MailboxCountry({
@@ -267,15 +267,15 @@ class HubApi {
       Uri.parse('${hubUrl ?? baseUrl}/v1/directory/$stonechatId'),
     );
     return _check(r, (j) {
-      final server = j['server'] as Map<String, dynamic>?;
+      final mailbox = j['mailbox'] as Map<String, dynamic>?;
       return DirectoryEntry(
         stonechatId: j['stonechat_id'] as String,
         pubkeyB64: j['pubkey'] as String,
         pqPkB64: j['pq_pk'] as String?,
         pqSigB64: j['pq_sig'] as String?,
-        serverAddress: server?['address'] as String?,
-        serverTlsFp: server?['tls_fp'] as String?,
-        serverTlsSig: server?['tls_sig'] as String?,
+        mailboxAddress: mailbox?['address'] as String?,
+        mailboxTlsFp: mailbox?['tls_fp'] as String?,
+        mailboxTlsSig: mailbox?['tls_sig'] as String?,
       );
     });
   }
@@ -293,7 +293,7 @@ class HubApi {
   /// catalog and the account's plan. [provider]/[machineType]/[region] is the
   /// older explicit form, kept for tests and local Docker development where
   /// there is no country to speak of.
-  Future<void> createServer({
+  Future<void> createMailbox({
     String? country,
     String? provider,
     String? machineType,
@@ -303,7 +303,7 @@ class HubApi {
     assert((country != null) != (provider != null),
         'pass either a country or a provider+machine, not both');
     final r = await http.post(
-      Uri.parse('$baseUrl/v1/server'),
+      Uri.parse('$baseUrl/v1/mailbox'),
       headers: _auth,
       body: jsonEncode(country != null
           ? {'country': country}
@@ -319,15 +319,15 @@ class HubApi {
     await _check(r, (_) => null);
   }
 
-  Future<ServerRecord> getServer() async {
-    final r = await http.get(Uri.parse('$baseUrl/v1/server'), headers: _auth);
+  Future<MailboxRecord> getMailbox() async {
+    final r = await http.get(Uri.parse('$baseUrl/v1/mailbox'), headers: _auth);
     return _check(r, (j) {
       final hostAgent = j['host_agent'] as Map<String, dynamic>?;
-      return ServerRecord(
+      return MailboxRecord(
         status: j['status'] as String,
         provider: j['provider'] as String?,
         address: j['address'] as String?,
-        serverToken: j['server_token'] as String?,
+        mailboxToken: j['mailbox_token'] as String?,
         tlsFp: j['tls_fp'] as String?,
         error: j['error'] as String?,
         hostAgentAddress: hostAgent?['address'] as String?,
@@ -340,7 +340,7 @@ class HubApi {
   /// signature over its fingerprint so peers can pin it via the directory.
   Future<void> publishTlsSig(String tlsFp, String tlsSig) async {
     final r = await http.post(
-      Uri.parse('$baseUrl/v1/server/tls'),
+      Uri.parse('$baseUrl/v1/mailbox/tls'),
       headers: _auth,
       body: jsonEncode({'tls_fp': tlsFp, 'tls_sig': tlsSig}),
     );
@@ -356,17 +356,17 @@ class HubApi {
     String wtSig,
   ) async {
     final r = await http.post(
-      Uri.parse('$baseUrl/v1/server/wt'),
+      Uri.parse('$baseUrl/v1/mailbox/wt'),
       headers: _auth,
       body: jsonEncode({'certs': certs, 'wt_sig': wtSig}),
     );
     await _check(r, (_) => null);
   }
 
-  Future<void> deleteServer() async {
+  Future<void> deleteMailbox() async {
     final r = await http
         .delete(
-          Uri.parse('$baseUrl/v1/server'),
+          Uri.parse('$baseUrl/v1/mailbox'),
           headers: _auth,
         )
         .timeout(const Duration(seconds: 10));
@@ -375,9 +375,9 @@ class HubApi {
 
   /// Free tier: list a self-provisioned relay in the directory. The relay's
   /// token never goes to the hub — only the address does.
-  Future<void> registerExternalServer(String address) async {
+  Future<void> registerExternalMailbox(String address) async {
     final r = await http.post(
-      Uri.parse('$baseUrl/v1/server/external'),
+      Uri.parse('$baseUrl/v1/mailbox/external'),
       headers: _auth,
       body: jsonEncode({'address': address}),
     );
@@ -471,13 +471,13 @@ Future<String> fileReport({
 /// Returns null when the mailbox has no browser transport, which is a normal
 /// state and not an error.
 Future<Map<String, dynamic>?> fetchWtCerts(
-  String serverAddress,
+  String mailboxAddress,
   String tlsFp,
 ) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$serverAddress/wt/certs'))
+        .get(Uri.parse('$mailboxAddress/wt/certs'))
         .timeout(const Duration(seconds: 10));
     if (r.statusCode == 404) return null; // browser transport disabled
     if (r.statusCode >= 400) {
@@ -490,16 +490,16 @@ Future<Map<String, dynamic>?> fetchWtCerts(
 }
 
 /// Fetch a peer's prekey bundle from their mailbox (consumes a one-time
-/// prekey server-side). The caller must verify the SPK signature against the
+/// prekey mailbox-side). The caller must verify the SPK signature against the
 /// peer's directory identity key.
 Future<Map<String, dynamic>> fetchPrekeyBundle(
-  String serverAddress,
+  String mailboxAddress,
   String tlsFp,
 ) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$serverAddress/prekeys/bundle'))
+        .get(Uri.parse('$mailboxAddress/prekeys/bundle'))
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
       throw ApiException(
@@ -520,7 +520,7 @@ Future<Map<String, dynamic>> fetchPrekeyBundle(
 /// [expiresInSeconds] bounds the new device's authority — set for a browser
 /// session, whose whole defence is that it ends on its own.
 Future<({int deviceId, String kind, String? expiresAt})> mintDevice(
-  String serverAddress,
+  String mailboxAddress,
   String token,
   String tlsFp,
   String newDeviceToken, {
@@ -531,7 +531,7 @@ Future<({int deviceId, String kind, String? expiresAt})> mintDevice(
   try {
     final r = await client
         .post(
-          Uri.parse('$serverAddress/devices').replace(
+          Uri.parse('$mailboxAddress/devices').replace(
             queryParameters: {'token': token},
           ),
           headers: {'Content-Type': 'application/json'},
@@ -560,14 +560,14 @@ Future<({int deviceId, String kind, String? expiresAt})> mintDevice(
 
 /// The devices on our own mailbox, for the management screen.
 Future<({int devicesV, List<Map<String, dynamic>> devices})> listDevices(
-  String serverAddress,
+  String mailboxAddress,
   String token,
   String tlsFp,
 ) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$serverAddress/devices').replace(
+        .get(Uri.parse('$mailboxAddress/devices').replace(
           queryParameters: {'token': token},
         ))
         .timeout(const Duration(seconds: 10));
@@ -591,7 +591,7 @@ Future<({int devicesV, List<Map<String, dynamic>> devices})> listDevices(
 /// revoked device still holds the identity secret (MULTIDEVICE.md
 /// "Revocation and threat notes").
 Future<void> revokeDevice(
-  String serverAddress,
+  String mailboxAddress,
   String token,
   String tlsFp,
   int deviceId,
@@ -599,7 +599,7 @@ Future<void> revokeDevice(
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .delete(Uri.parse('$serverAddress/devices/$deviceId').replace(
+        .delete(Uri.parse('$mailboxAddress/devices/$deviceId').replace(
           queryParameters: {'token': token},
         ))
         .timeout(const Duration(seconds: 10));
@@ -693,14 +693,14 @@ Future<String?> takeLinkGrant(String hubUrl, String key) async {
 /// what a stranger sending a contact request gets.
 Future<({int devicesV, List<int> devices, Map<int, Map<String, dynamic>> certs})>
 fetchDeviceList(
-  String serverAddress,
+  String mailboxAddress,
   String bundleToken,
   String tlsFp,
 ) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$serverAddress/prekeys/devices?token=$bundleToken'))
+        .get(Uri.parse('$mailboxAddress/prekeys/devices?token=$bundleToken'))
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
       throw ApiException(
@@ -732,7 +732,7 @@ fetchDeviceList(
 
 /// One device's prekey bundle. Costs exactly one OPK, for one named device.
 Future<Map<String, dynamic>> fetchDeviceBundle(
-  String serverAddress,
+  String mailboxAddress,
   int deviceId,
   String bundleToken,
   String tlsFp,
@@ -742,7 +742,7 @@ Future<Map<String, dynamic>> fetchDeviceBundle(
     final r = await client
         .get(
           Uri.parse(
-            '$serverAddress/prekeys/bundle?device=$deviceId&token=$bundleToken',
+            '$mailboxAddress/prekeys/bundle?device=$deviceId&token=$bundleToken',
           ),
         )
         .timeout(const Duration(seconds: 10));
@@ -762,7 +762,7 @@ Future<Map<String, dynamic>> fetchDeviceBundle(
 /// Carries both halves of PQXDH: X25519 (spk/opks) and ML-KEM-768
 /// (kspk/kopks).
 Future<void> uploadPrekeys(
-  String serverAddress,
+  String mailboxAddress,
   String token,
   String tlsFp,
   Map<String, Object?> spk,
@@ -778,7 +778,7 @@ Future<void> uploadPrekeys(
   try {
     final r = await client
         .post(
-          Uri.parse('$serverAddress/prekeys?token=$token'),
+          Uri.parse('$mailboxAddress/prekeys?token=$token'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             'spk': spk,
@@ -895,7 +895,7 @@ String _detail(http.Response r) {
 
 /// Redeem a host invite → a mailbox for [ownerId] on that host. Pinned to the
 /// host agent fingerprint carried in the invite (no CA, no MITM).
-Future<({String address, String serverToken, String tlsFp})> redeemHostInvite(
+Future<({String address, String mailboxToken, String tlsFp})> redeemHostInvite(
   HostInvite invite,
   String ownerId,
 ) async {
@@ -912,7 +912,7 @@ Future<({String address, String serverToken, String tlsFp})> redeemHostInvite(
     final j = jsonDecode(r.body) as Map<String, dynamic>;
     return (
       address: j['address'] as String,
-      serverToken: j['server_token'] as String,
+      mailboxToken: j['mailbox_token'] as String,
       tlsFp: j['tls_fp'] as String,
     );
   } finally {
@@ -1029,14 +1029,14 @@ Future<List<HostInviteStatus>> listHostInvites(
 /// STUN-only.
 Future<({List<String> urls, String username, String credential})?>
 fetchTurnCredentials(
-  String serverAddress,
+  String mailboxAddress,
   String ownerToken,
   String tlsFp,
 ) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$serverAddress/turn-credentials?token=$ownerToken'))
+        .get(Uri.parse('$mailboxAddress/turn-credentials?token=$ownerToken'))
         .timeout(const Duration(seconds: 8));
     if (r.statusCode == 404) return null;
     if (r.statusCode >= 400) {
@@ -1061,7 +1061,7 @@ fetchTurnCredentials(
 /// Register this device's push token with our OWN mailbox (owner token +
 /// pinned TLS). The mailbox will ping the push gateway when we're offline.
 Future<void> setPushConfig(
-  String serverAddress,
+  String mailboxAddress,
   String ownerToken,
   String deviceToken,
   String platform,
@@ -1071,7 +1071,7 @@ Future<void> setPushConfig(
   try {
     final r = await client
         .post(
-          Uri.parse('$serverAddress/push-config?token=$ownerToken'),
+          Uri.parse('$mailboxAddress/push-config?token=$ownerToken'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({'device_token': deviceToken, 'platform': platform}),
         )
@@ -1087,7 +1087,7 @@ Future<void> setPushConfig(
 /// Upload an encrypted media blob to a peer's mailbox. Returns the blob id
 /// to reference from the media envelope.
 Future<String> uploadBlob(
-  String serverAddress,
+  String mailboxAddress,
   List<int> bytes,
   String tlsFp,
 ) async {
@@ -1095,7 +1095,7 @@ Future<String> uploadBlob(
   try {
     final r = await client
         .post(
-          Uri.parse('$serverAddress/blob'),
+          Uri.parse('$mailboxAddress/blob'),
           headers: {'Content-Type': 'application/octet-stream'},
           body: bytes,
         )
@@ -1114,7 +1114,7 @@ Future<String> uploadBlob(
 /// returned token to every member inside their envelope, instead of parking a
 /// copy on each of their mailboxes.
 Future<SharedBlobUpload> uploadSharedBlob(
-  String serverAddress,
+  String mailboxAddress,
   List<int> bytes,
   String tlsFp,
 ) async {
@@ -1122,7 +1122,7 @@ Future<SharedBlobUpload> uploadSharedBlob(
   try {
     final r = await client
         .post(
-          Uri.parse('$serverAddress/blob?shared=1'),
+          Uri.parse('$mailboxAddress/blob?shared=1'),
           headers: {'Content-Type': 'application/octet-stream'},
           body: bytes,
         )
@@ -1149,10 +1149,10 @@ class SharedBlobUpload {
   const SharedBlobUpload(this.blobId, this.fetchToken);
 }
 
-/// Drop a blob from *your own* mailbox (owner token). Idempotent server-side;
+/// Drop a blob from *your own* mailbox (owner token). Idempotent mailbox-side;
 /// used to reclaim a shared group blob once every member has fetched it.
 Future<void> deleteBlob(
-  String serverAddress,
+  String mailboxAddress,
   String blobId,
   String token,
   String tlsFp,
@@ -1160,7 +1160,7 @@ Future<void> deleteBlob(
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .delete(Uri.parse('$serverAddress/blob/$blobId?token=$token'))
+        .delete(Uri.parse('$mailboxAddress/blob/$blobId?token=$token'))
         .timeout(const Duration(seconds: 20));
     if (r.statusCode >= 400) {
       throw ApiException('blob delete failed (${r.statusCode})', r.statusCode);
@@ -1173,7 +1173,7 @@ Future<void> deleteBlob(
 /// Download a blob: from your own mailbox with the owner token, or from a
 /// group sender's mailbox with that blob's fetch token.
 Future<List<int>> downloadBlob(
-  String serverAddress,
+  String mailboxAddress,
   String blobId,
   String token,
   String tlsFp,
@@ -1181,7 +1181,7 @@ Future<List<int>> downloadBlob(
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$serverAddress/blob/$blobId?token=$token'))
+        .get(Uri.parse('$mailboxAddress/blob/$blobId?token=$token'))
         .timeout(const Duration(seconds: 60));
     if (r.statusCode >= 400) {
       throw ApiException(
@@ -1195,14 +1195,14 @@ Future<List<int>> downloadBlob(
   }
 }
 
-/// Delivers a sealed envelope to a peer's routing server. Throws on failure —
+/// Delivers a sealed envelope to a peer's mailbox. Throws on failure —
 /// callers keep the message in the pending outbox and retry later.
 Future<void> deliverEnvelope(
-  String serverAddress,
+  String mailboxAddress,
   SealedEnvelope envelope,
   String tlsFp,
 ) async {
-  final link = MailboxLink(serverAddress, tlsFp);
+  final link = MailboxLink(mailboxAddress, tlsFp);
   try {
     await link.deliver(envelope);
   } finally {
@@ -1276,7 +1276,7 @@ int? devicesVOf(ApiException e) {
 }
 
 /// Persistent WebSocket to *your own* mailbox. Reconnects with backoff and
-/// acks every envelope after [onEnvelope] completes (ack ⇒ server deletes it).
+/// acks every envelope after [onEnvelope] completes (ack ⇒ mailbox deletes it).
 class MailboxSocket {
   final String address; // https://host:port
   final String token;

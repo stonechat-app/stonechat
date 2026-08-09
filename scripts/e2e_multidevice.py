@@ -90,10 +90,10 @@ def cleanup():
 def attach_relay(phone: Phone, token: str) -> None:
     """Run a relay for this phone and list it in the directory."""
     address = start_relay(phone.stonechat_id, token)
-    r = httpx.post(f"{HUB}/v1/server/external", headers=phone.auth,
+    r = httpx.post(f"{HUB}/v1/mailbox/external", headers=phone.auth,
                    json={"address": address})
     r.raise_for_status()
-    phone.server = {"address": address, "server_token": token,
+    phone.mailbox = {"address": address, "mailbox_token": token,
                     "tls_fp": r.json()["tls_fp"]}
     phone.publish_tls_sig()
 
@@ -116,8 +116,8 @@ def main() -> int:
     for p in (alice, bob):
         p.upload_prekeys()
 
-    a_addr, a_tok = alice.server["address"], alice.server["server_token"]
-    a_fp = alice.server["tls_fp"]
+    a_addr, a_tok = alice.mailbox["address"], alice.mailbox["mailbox_token"]
+    a_fp = alice.mailbox["tls_fp"]
 
     # -- 1. link a second device to Alice -------------------------------------
     print("1) link grant: mint → certify → seal → park on the hub → collect")
@@ -254,7 +254,7 @@ def main() -> int:
     # Same identity, different ratchets — which is the whole design. Its
     # prekeys are signed by its own key and published with the certificate it
     # was granted; it could not mint one, having no root to sign with.
-    alice2.server = {"address": a_addr, "server_token": dev2_token,
+    alice2.mailbox = {"address": a_addr, "mailbox_token": dev2_token,
                      "tls_fp": a_fp}
     alice2.upload_prekeys()
 
@@ -300,7 +300,7 @@ def main() -> int:
     sent_id = str(uuid.uuid4())
     out = alice.make_envelope(bob, "msg", {"text": "from my phone"},
                               envelope_id=sent_id, device=PRIMARY_DEVICE)
-    MX.post(f"{bob.server['address']}/inbox",
+    MX.post(f"{bob.mailbox['address']}/inbox",
             json=alice.wrap(bob, out)).raise_for_status()
     assert asyncio.run(bob.receive_one(
         process=lambda e: bob.open_envelope(e, alice)))["id"] == sent_id
@@ -336,7 +336,7 @@ def main() -> int:
         env = phone.make_envelope(bob, "receipt",
                                   {"kind": "delivered", "ids": [sent_id]},
                                   device=PRIMARY_DEVICE)
-        MX.post(f"{bob.server['address']}/inbox",
+        MX.post(f"{bob.mailbox['address']}/inbox",
                 json=phone.wrap(bob, env)).raise_for_status()
 
     seen = {}

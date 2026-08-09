@@ -7,7 +7,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import '../core/identity_export.dart';
 import '../state/app_state.dart';
 import '../state/chat_state.dart';
-import '../state/server_state.dart';
+import '../state/mailbox_state.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -186,7 +186,7 @@ class _IdentityRestoreScreenState extends State<IdentityRestoreScreen> {
     setState(() => _busy = true);
     final app = context.read<AppState>();
     final chat = context.read<ChatState>();
-    final server = context.read<ServerState>();
+    final mailbox = context.read<MailboxState>();
     try {
       await app.restoreIdentity(
         export: code,
@@ -194,12 +194,12 @@ class _IdentityRestoreScreenState extends State<IdentityRestoreScreen> {
         hubUrl: widget.hubUrl,
       );
       // Same boot sequence main.dart runs for an existing identity: history
-      // first (empty here), then the server record — a mailbox that survived
+      // first (empty here), then the mailbox record — a mailbox that survived
       // the old phone reconnects right away.
       await chat.load();
-      await server.refresh();
+      await mailbox.refresh();
       if (!mounted) return;
-      final hasMailbox = server.isRunning || server.isProvisioning;
+      final hasMailbox = mailbox.isRunning || mailbox.isProvisioning;
       Navigator.of(context).pushNamedAndRemoveUntil(
           hasMailbox ? '/home' : '/mailbox-setup', (_) => false);
     } on IdentityExportException catch (e) {

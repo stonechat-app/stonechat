@@ -2,7 +2,7 @@
 ///
 /// A user is shared as `https://stonechat.app/add#SC-…`. The SC- ID rides in
 /// the URL **fragment** (after `#`) on purpose: browsers never send a fragment
-/// to the server, so an un-installed tap that falls back to the web page never
+/// to the mailbox, so an un-installed tap that falls back to the web page never
 /// tells stonechat.app whose ID was being added (PROTOCOL.md "No handles").
 ///
 /// Cross-hub builds (`--dart-define=STONECHAT_CROSS_HUB=true`) may append the

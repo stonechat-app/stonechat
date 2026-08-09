@@ -40,7 +40,7 @@ r = httpx.post(f"{HUB}/v1/billing/redeem", json={"code": TEST_CODE}, headers=aut
 r.raise_for_status()
 print("entitlement:", r.json()["plan"], r.json()["status"])
 
-r = httpx.post(f"{HUB}/v1/server", headers=auth, json={
+r = httpx.post(f"{HUB}/v1/mailbox", headers=auth, json={
     "provider": "fleet",
     "machine": {"machine_type": "container", "region": "fleet1", "disk_gb": 10},
 })
@@ -50,7 +50,7 @@ print("provisioning started…")
 t0 = time.time()
 srv = None
 while time.time() - t0 < 300:
-    srv = httpx.get(f"{HUB}/v1/server", headers=auth).json()
+    srv = httpx.get(f"{HUB}/v1/mailbox", headers=auth).json()
     if srv["status"] in ("running", "error"):
         break
     time.sleep(3)
@@ -75,12 +75,12 @@ print("health ok — fingerprint served by mailbox matches hub record")
 env = {"v": 1, "id": "smoke-1", "to": me["stonechat_id"], "sealed": "c21va2U="}
 r = mx.post(f"{addr}/inbox", json=env)
 assert r.json() == {"status": "queued"}, r.text
-st = mx.get(f"{addr}/status", params={"token": srv["server_token"]}).json()
+st = mx.get(f"{addr}/status", params={"token": srv["mailbox_token"]}).json()
 assert st["queued"] == 1, st
 r = mx.post(f"{addr}/inbox", json={**env, "v": 2})
 assert r.status_code == 400, "wrong version must be rejected"
 print("inbox round trip ok: queued=1, v2 rejected")
 
-r = httpx.delete(f"{HUB}/v1/server", headers=auth)
+r = httpx.delete(f"{HUB}/v1/mailbox", headers=auth)
 print("destroyed:", r.status_code)
 print("\nSMOKE PASSED")

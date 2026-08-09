@@ -86,12 +86,12 @@ function signed(certs: WtCert[], seedFill = 7): string {
   );
 }
 
-function entry(overrides: Partial<DirectoryEntry['server']> = {}): DirectoryEntry {
+function entry(overrides: Partial<DirectoryEntry['mailbox']> = {}): DirectoryEntry {
   const certs = schedule();
   return {
     stonechat_id: owner.stonechat_id,
     pubkey: owner.public,
-    server: {
+    mailbox: {
       address: 'https://1.2.3.4:8080',
       tls_fp: 'ZnA=',
       wt_certs: certs,

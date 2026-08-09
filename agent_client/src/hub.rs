@@ -119,11 +119,11 @@ impl Hub {
                 "directory key does not commit to {stonechat_id} — refusing to use it"
             ));
         }
-        let server = body
-            .get("server")
+        let mailbox = body
+            .get("mailbox")
             .filter(|s| !s.is_null())
             .ok_or_else(|| err!("{stonechat_id} has no running mailbox — cannot deliver"))?;
-        let relay_address = server
+        let relay_address = mailbox
             .get("address")
             .and_then(Value::as_str)
             .ok_or_else(|| err!("{stonechat_id}'s directory entry has no mailbox address"))?;
@@ -133,11 +133,11 @@ impl Hub {
         // pinning to it would chain trust to the hub instead of to the
         // identity. Refusing here is the safe failure: it reads as "that
         // mailbox is not vouched for", not as a broken connection later.
-        let fp_b64 = server
+        let fp_b64 = mailbox
             .get("tls_fp")
             .and_then(Value::as_str)
             .ok_or_else(|| err!("{stonechat_id}'s mailbox publishes no TLS fingerprint"))?;
-        let sig_b64 = server
+        let sig_b64 = mailbox
             .get("tls_sig")
             .and_then(Value::as_str)
             .ok_or_else(|| err!("{stonechat_id}'s TLS fingerprint is unsigned — refusing it"))?;

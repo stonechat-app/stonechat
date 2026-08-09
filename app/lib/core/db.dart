@@ -66,7 +66,7 @@ class ChatDb {
             pubkey         TEXT NOT NULL,
             pq_pk          TEXT,
             status         TEXT NOT NULL,
-            server_address TEXT,
+            mailbox_address TEXT,
             tls_fp         TEXT,
             hub            TEXT,
             created_at     INTEGER NOT NULL,
@@ -148,7 +148,7 @@ class ChatDb {
       pubkey         TEXT NOT NULL,
       pq_pk          TEXT,
       display_name   TEXT NOT NULL,
-      server_address TEXT,
+      mailbox_address TEXT,
       tls_fp         TEXT,
       bundle_token   TEXT,
       PRIMARY KEY (group_id, stonechat_id)
@@ -844,7 +844,7 @@ class ChatDb {
   /// so a restored contact re-applies the peer's next profile broadcast and
   /// gets its avatar back that way.
   Future<List<Map<String, Object?>>> backupContacts() => _db.rawQuery(
-    'SELECT stonechat_id, display_name, pubkey, status, server_address, tls_fp, '
+    'SELECT stonechat_id, display_name, pubkey, status, mailbox_address, tls_fp, '
     'hub, created_at, pinned_at, expire_timer_ms, expire_timer_at, '
     'blocked_at, muted_until, archived_at, 0 AS profile_at '
     'FROM contacts ORDER BY created_at',
@@ -881,7 +881,7 @@ class ChatDb {
       'display_name',
       'pubkey',
       'status',
-      'server_address',
+      'mailbox_address',
       'tls_fp',
       'hub',
       'created_at',
@@ -910,7 +910,7 @@ class ChatDb {
       'stonechat_id',
       'pubkey',
       'display_name',
-      'server_address',
+      'mailbox_address',
       'tls_fp',
     },
     'messages': {

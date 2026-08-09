@@ -100,7 +100,7 @@ class Peer:
         self.stonechat_id = stonechat_id
         self.pubkey_b64 = pubkey_b64
         self.address = address
-        self.server = {"address": address}
+        self.mailbox = {"address": address}
         self.cert = cert
         # Only read if `cert` is missing, which for a remote peer means we
         # have no business sending at all — so it fails loudly rather than
@@ -148,7 +148,7 @@ def peer_cert(bot: Phone, peer: Peer, device: int) -> dict:
         if not token:
             raise RuntimeError(f"no bundle token for {peer.stonechat_id}")
         params = {"device": device, "token": token}
-    bundle = MX.get(f"{peer.server['address']}/prekeys/bundle",
+    bundle = MX.get(f"{peer.mailbox['address']}/prekeys/bundle",
                     params=params, timeout=15)
     bundle.raise_for_status()
     cert = bundle.json().get("cert")
@@ -174,7 +174,7 @@ def peer_devices(bot: Phone, peer: Peer) -> list[int]:
     if not token:
         return [e2e.PRIMARY_DEVICE]
     try:
-        listed = MX.get(f"{peer.server['address']}/prekeys/devices",
+        listed = MX.get(f"{peer.mailbox['address']}/prekeys/devices",
                         params={"token": token}, timeout=15)
         listed.raise_for_status()
         ids = sorted(d["device_id"] for d in listed.json()["devices"])
@@ -197,10 +197,10 @@ def resolve(stonechat_id: str) -> Peer:
     VerifyKey(base64.b64decode(entry["pubkey"])).verify(
         e2e.PQPK_SIG_CONTEXT + base64.b64decode(entry["pq_pk"]),
         base64.b64decode(entry["pq_sig"]))
-    if not entry["server"]:
+    if not entry["mailbox"]:
         raise RuntimeError(f"{stonechat_id} has no running relay — can't deliver")
     return Peer(entry["stonechat_id"], entry["pubkey"],
-                entry["server"]["address"])
+                entry["mailbox"]["address"])
 
 
 # -- state ---------------------------------------------------------------------
@@ -211,7 +211,7 @@ def save(bot: Phone) -> None:
         "name": bot.name,
         "stonechat_id": bot.stonechat_id,
         "token": bot.token,
-        "server": bot.server,
+        "mailbox": bot.mailbox,
         "sessions": bot.sessions,
         "spk": bot.spk,
         "opks": bot.opks,
@@ -251,7 +251,7 @@ def load() -> Phone | None:
     bot.cert = s.get("cert")
     bot.peer_certs = s.get("peer_certs", {})
     bot.bundle_tokens = s.get("bundle_tokens", {})
-    bot.stonechat_id, bot.token, bot.server = s["stonechat_id"], s["token"], s["server"]
+    bot.stonechat_id, bot.token, bot.mailbox = s["stonechat_id"], s["token"], s["mailbox"]
     bot.sessions, bot.spk, bot.opks = s["sessions"], s["spk"], s["opks"]
     bot.kspk, bot.kopks = s.get("kspk"), s.get("kopks", {})
     bot._next_prekey_id = s["next_prekey_id"]
@@ -285,7 +285,7 @@ def redeem(bot: Phone) -> None:
 def ensure_provisioned(bot: Phone) -> None:
     """Idempotent: registers/ignites whatever is still missing, so a failed
     first run (bad code, network blip) resumes instead of orphaning IDs."""
-    srv = hub("GET", "/v1/server", headers=bot.auth)
+    srv = hub("GET", "/v1/mailbox", headers=bot.auth)
     if srv["status"] == "error":
         sys.exit(f"relay is in error state: {srv.get('error')} — run "
                  "--destroy and start over")
@@ -295,17 +295,17 @@ def ensure_provisioned(bot: Phone) -> None:
             "machine": {"machine_type": "container", "region": "fleet1",
                         "disk_gb": 10},
         }
-        r = httpx.post(f"{HUB}/v1/server", headers=bot.auth, json=body, timeout=30)
+        r = httpx.post(f"{HUB}/v1/mailbox", headers=bot.auth, json=body, timeout=30)
         if r.status_code == 402:
             redeem(bot)
-            r = httpx.post(f"{HUB}/v1/server", headers=bot.auth, json=body,
+            r = httpx.post(f"{HUB}/v1/mailbox", headers=bot.auth, json=body,
                            timeout=30)
         if r.status_code != 202:
             sys.exit(f"could not ignite a mailbox ({r.status_code}): "
                      f"{r.text[:300]}")
         print("igniting fleet mailbox…")
     if srv["status"] == "running":
-        bot.server = srv
+        bot.mailbox = srv
     else:
         bot.wait_running()
     if bot.spk is None:  # first run (or crashed before prekeys landed)
@@ -332,8 +332,8 @@ def ensure_provisioned(bot: Phone) -> None:
 
 
 def top_up_opks(bot: Phone) -> None:
-    st = MX.get(f"{bot.server['address']}/status",
-                params={"token": bot.server["server_token"]}).json()
+    st = MX.get(f"{bot.mailbox['address']}/status",
+                params={"token": bot.mailbox["mailbox_token"]}).json()
     if st["prekeys"]["opks"] < 8:
         bot.upload_prekeys(opk_count=16)
         save(bot)
@@ -415,8 +415,8 @@ async def handle(bot: Phone, outer: dict) -> None:
 
 
 async def run(bot: Phone) -> None:
-    url = (bot.server["address"].replace("http", "ws", 1)
-           + f"/ws?token={bot.server['server_token']}")
+    url = (bot.mailbox["address"].replace("http", "ws", 1)
+           + f"/ws?token={bot.mailbox['mailbox_token']}")
     while True:
         try:
             async with websockets.connect(url, ssl=WS_SSL, ping_interval=20) as ws:
@@ -438,7 +438,7 @@ async def run(bot: Phone) -> None:
 def main() -> None:
     if "--destroy" in sys.argv:
         bot = load() or sys.exit("no state file — nothing to destroy")
-        httpx.delete(f"{HUB}/v1/server",
+        httpx.delete(f"{HUB}/v1/mailbox",
                      headers=bot.auth, timeout=30).raise_for_status()
         STATE_PATH.unlink()
         print("mailbox destroyed, state removed")

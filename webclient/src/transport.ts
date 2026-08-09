@@ -54,8 +54,8 @@ export function routeFor(
   entry: DirectoryEntry,
   now = new Date(),
 ): MailboxRoute {
-  const server = entry.server;
-  if (!server?.wt_certs || !server.wt_sig) {
+  const mailbox = entry.mailbox;
+  if (!mailbox?.wt_certs || !mailbox.wt_sig) {
     throw new PinRefused(
       'That mailbox publishes no signed browser-transport certificates.',
     );
@@ -67,15 +67,15 @@ export function routeFor(
   // The signature covers the list exactly as published: same fields, same
   // order, same count. Reconstructing it here rather than trusting a
   // server-side re-serialization is what makes that true.
-  const published: WtCertSchedule = { certs: server.wt_certs };
-  if (!core.wtcertsVerify(published, identityPub, b64decode(server.wt_sig))) {
+  const published: WtCertSchedule = { certs: mailbox.wt_certs };
+  if (!core.wtcertsVerify(published, identityPub, b64decode(mailbox.wt_sig))) {
     throw new PinRefused(
       'That certificate schedule is not the one its owner signed.',
     );
   }
 
   const seconds = Math.floor(now.getTime() / 1000);
-  const usable = server.wt_certs.filter((c: WtCert) => c.not_after > seconds);
+  const usable = mailbox.wt_certs.filter((c: WtCert) => c.not_after > seconds);
   if (usable.length === 0) {
     // Every published certificate has expired. The owner's device has not
     // been online to re-vouch, and connecting anyway would mean pinning
@@ -84,7 +84,7 @@ export function routeFor(
       'Their published certificates have all expired — the owner needs to open Stonechat.',
     );
   }
-  const address = server.wt_address;
+  const address = mailbox.wt_address;
   if (!address) {
     // Signed certificates but nowhere to send them. A real state — a provider
     // that has not been taught to map the UDP port, or a host that blocks it.

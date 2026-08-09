@@ -42,17 +42,17 @@ class ReasonIn(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
-def _public(server: dict) -> dict:
-    """Never hand back server_token / host_agent_token — this is a report, not
+def _public(mailbox: dict) -> dict:
+    """Never hand back mailbox_token / host_agent_token — this is a report, not
     a credential dump, and abuse triage never needs them."""
     return {
-        "stonechat_id": server["stonechat_id"],
-        "provider": server["provider"],
-        "status": server["status"],
-        "resource_id": server["resource_id"],
-        "address": server["address"],
-        "meta": server["meta"],
-        "created_at": server["created_at"],
+        "stonechat_id": mailbox["stonechat_id"],
+        "provider": mailbox["provider"],
+        "status": mailbox["status"],
+        "resource_id": mailbox["resource_id"],
+        "address": mailbox["address"],
+        "meta": mailbox["meta"],
+        "created_at": mailbox["created_at"],
     }
 
 
@@ -61,23 +61,23 @@ def whois(host: str, _: Admin):
     """IP (or hostname) → the account behind it, plus its ban and abuse
     history. Step 1 of every abuse report.
 
-    An empty `servers` result usually means the IP is not ours *any more*:
+    An empty `mailboxes` result usually means the IP is not ours *any more*:
     recycled provider IPs arrive carrying someone else's history (ABUSE.md §9),
     and that is an answer worth sending quickly rather than investigating."""
-    servers = store.servers_by_host(host)
+    mailboxes = store.mailboxes_by_host(host)
     out = []
-    for server in servers:
-        user = store.user_by_id(server["stonechat_id"]) or {}
+    for mailbox in mailboxes:
+        user = store.user_by_id(mailbox["stonechat_id"]) or {}
         out.append({
-            **_public(server),
+            **_public(mailbox),
             "banned_at": user.get("banned_at"),
             "ban_reason": user.get("ban_reason"),
-            "prior_destroys": len(store.tombstones_for(server["stonechat_id"])),
+            "prior_destroys": len(store.tombstones_for(mailbox["stonechat_id"])),
         })
-    return {"host": host, "servers": out}
+    return {"host": host, "mailboxes": out}
 
 
-@router.post("/servers/{stonechat_id}/destroy")
+@router.post("/mailboxes/{stonechat_id}/destroy")
 def destroy(stonechat_id: str, body: ReasonIn, _: Admin):
     """Destroy one customer's machine. Does not touch their account, their
     subscription or their identity — only the machine.
@@ -86,35 +86,35 @@ def destroy(stonechat_id: str, body: ReasonIn, _: Admin):
     call that fails halfway leaves us with a record of what existed rather
     than an orphaned VM nobody can name. Subscription rows are deliberately
     left alone — deleting them would make the machine invisible to
-    `reapable_servers`, which skips owners with no subscription, and an
+    `reapable_mailboxes`, which skips owners with no subscription, and an
     un-reapable VM bills forever."""
-    server = store.server_for(stonechat_id)
-    if not server:
-        raise HTTPException(404, "no server for that Stonechat ID")
+    mailbox = store.mailbox_for(stonechat_id)
+    if not mailbox:
+        raise HTTPException(404, "no mailbox for that Stonechat ID")
 
-    store.record_tombstone(server, body.reason)
+    store.record_tombstone(mailbox, body.reason)
 
-    if server["resource_id"]:
+    if mailbox["resource_id"]:
         try:
-            get_provider(server["provider"]).destroy(
-                server["resource_id"], server["meta"])
+            get_provider(mailbox["provider"]).destroy(
+                mailbox["resource_id"], mailbox["meta"])
         except ProviderError as e:
             # The tombstone survives — the machine is still out there and
             # someone has to go and kill it by hand.
             log.error("abuse destroy failed for %s: %s", stonechat_id[:12], e)
             raise HTTPException(502, f"failed to destroy: {e}")
 
-    store.delete_server(stonechat_id)
+    store.delete_mailbox(stonechat_id)
     log.warning("abuse destroy: %s (%s) — %s",
-                stonechat_id[:12], server["provider"], body.reason)
+                stonechat_id[:12], mailbox["provider"], body.reason)
     return {"status": "destroyed", "stonechat_id": stonechat_id,
-            "provider": server["provider"], "address": server["address"]}
+            "provider": mailbox["provider"], "address": mailbox["address"]}
 
 
 @router.post("/users/{stonechat_id}/ban")
 def ban(stonechat_id: str, body: ReasonIn, _: Admin):
-    """Refuse this account further infrastructure. Blocks POST /v1/server and
-    POST /v1/server/external — the second one matters most, because without it
+    """Refuse this account further infrastructure. Blocks POST /v1/mailbox and
+    POST /v1/mailbox/external — the second one matters most, because without it
     a banned user re-enters the directory in one call by pointing it at a
     relay they run themselves.
 
@@ -174,7 +174,7 @@ def get_report(report_id: str, _: Admin):
     if not report:
         raise HTTPException(404, "unknown report")
     user = store.user_by_id(report["reported_id"]) or {}
-    server = store.server_for(report["reported_id"])
+    mailbox = store.mailbox_for(report["reported_id"])
     return {
         "report": report,
         "reported": {
@@ -182,7 +182,7 @@ def get_report(report_id: str, _: Admin):
             "banned_at": user.get("banned_at"),
             "ban_reason": user.get("ban_reason"),
             "prior_destroys": len(store.tombstones_for(report["reported_id"])),
-            "server": _public(server) if server else None,
+            "mailbox": _public(mailbox) if mailbox else None,
             **store.report_counts(report["reported_id"]),
         },
     }

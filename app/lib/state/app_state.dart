@@ -51,7 +51,7 @@ class AppState extends ChangeNotifier {
   String? externalMailboxToken;
   String? externalMailboxTlsFp;
   // Whether the external mailbox came from a friend's invite rather than the
-  // user's own server. Pure UI distinction (both are `external` records on
+  // user's own mailbox. Pure UI distinction (both are `external` records on
   // the hub) — kept locally so the mailbox screen can say which one it is.
   bool externalMailboxFriendHosted = false;
   // The user's own host agent ("host your circle"), if they run one. The
@@ -185,7 +185,7 @@ class AppState extends ChangeNotifier {
     // billing resources alive). Best-effort — an offline reset still proceeds,
     // matching what the confirmation dialog promises either way.
     try {
-      await api.deleteServer();
+      await api.deleteMailbox();
     } catch (_) {}
     // Keep the DB's SQLCipher key: db.wipe() empties the tables but keeps the
     // file, so a new key here would leave it unopenable next launch.
@@ -544,7 +544,7 @@ class AppState extends ChangeNotifier {
       );
     }
     api.baseUrl = grant.hubUrl;
-    // Deliberately no account token: server management and billing stay with
+    // Deliberately no account token: mailbox management and billing stay with
     // the primary device (MULTIDEVICE.md "Decided").
     api.accountToken = null;
 

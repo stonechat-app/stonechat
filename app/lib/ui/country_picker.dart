@@ -2,7 +2,7 @@
 ///
 /// The rest of onboarding deliberately never says "VM", "provider" or
 /// "region". Country is the one piece of infrastructure vocabulary a user
-/// *does* want, because jurisdiction is what the Private tier sells: the first
+/// *does* want, because jurisdiction is what the Mailbox tier sells: the first
 /// question a privacy-minded buyer asks is where their mailbox physically
 /// sits, and "wherever we put it" is not an answer.
 ///
@@ -28,7 +28,7 @@ class CountryPicker extends StatelessWidget {
   final ValueChanged<String> onSelect;
 
   /// The account's plan, if known. Countries the plan cannot place into are
-  /// shown greyed rather than hidden — "Finland, on the Private plan" is
+  /// shown greyed rather than hidden — "Finland, on the Mailbox plan" is
   /// useful information, and a country vanishing between screens is not.
   final String? plan;
   final bool enabled;
@@ -120,7 +120,7 @@ class _CountryRow extends StatelessWidget {
                       ),
                     ),
                     if (!available)
-                      Text('Sovereign only',
+                      Text('Machine only',
                           style: Zn.mono(size: 10, color: Zn.muted))
                     else
                       Container(

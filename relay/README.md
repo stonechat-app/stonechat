@@ -1,6 +1,6 @@
-# stonechat-relay — the routing server
+# stonechat-relay — the mailbox program
 
-The per-user mailbox. Wire contract: PROTOCOL.md "Routing server API";
+The per-user mailbox. Wire contract: PROTOCOL.md "Mailbox API";
 behavioral contract: the golden corpus in `tests/` (recorded at the 2026-07
 cutover that retired the Python relay — notes/docs/RUST_PORT.md is the port
 record). SQLite schema and TLS PEM handling are unchanged from the Python
@@ -8,7 +8,7 @@ era, so a relay pointed at an old volume serves its queued mail with an
 unchanged pinned TLS fingerprint.
 
 Why it exists: one relay process runs per hosted user, so idle RSS is the
-Private plan's unit cost. Measured at port time: **Python 57 MB → Rust
+Mailbox plan's unit cost. Measured at port time: **Python 57 MB → Rust
 10 MB idle** (macOS dev build of the fleet's dominant cost; lower still in
 the `scratch` container). Full economics: notes/docs/COSTS.md.
 
@@ -56,16 +56,16 @@ Separate from the TLS listener on purpose: native clients keep the transport
 they pin today, and a host that blocks UDP loses browser sessions rather than
 its mailbox. A bind failure is logged, not fatal.
 
-The owner's signature over the schedule **now exists** (`POST /v1/server/wt`
+The owner's signature over the schedule **now exists** (`POST /v1/mailbox/wt`
 on the hub, signed with `stonechat-v1-wtcerts` over the canonical form in
 `core/src/wtcerts.rs`). The directory serves the list and the signature
 together, or neither — an unsigned schedule is served as no schedule, because
 a client must not pin one.
 
-The address is published too, as `server.wt_address` in the directory.
+The address is published too, as `mailbox.wt_address` in the directory.
 Container providers map `-p 0:8443/udp` and read the port back; VM providers
 expose the fixed port. Unsigned, and safe to be: rewriting it sends a client to
-a server whose certificate is not in the owner-signed schedule, so the
+a mailbox whose certificate is not in the owner-signed schedule, so the
 connection is refused — denial of service, not compromise, the same property
 `address` already has behind `tls_fp`.
 
@@ -123,29 +123,29 @@ token for the *recipient's* relay. Gating the session made delivery impossible
 for exactly the case this transport exists to serve; it was caught by writing
 the client. Each route authenticates itself, as it does over HTTP.
 
-Docker: `docker build -t stonechat-server:rust .` (self-building dev image;
+Docker: `docker build -t stonechat-relay:rust .` (self-building dev image;
 production ships a prebuilt binary — RUST_PORT.md "Packaging").
 
 ## How deployments consume this crate
 
 All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
 
-- **local / fleet providers** build the image tagged `stonechat-server:dev` from
+- **local / fleet providers** build the image tagged `stonechat-relay:dev` from
   this directory. With `STONECHAT_RELAY_BINARY` set on the hub (path to a static
   **x86_64-musl** `stonechat-relay`), the build context becomes binary + two-line
   Dockerfile — instant, no compile on the host. Unset, hosts compile the
   crate via this Dockerfile (dev fallback; also what produces the right
   architecture on ARM laptops).
-- **Sovereign VM startup scripts** are fetch-stubs (~3 KB — fits every
+- **Dedicated-VM startup scripts** are fetch-stubs (~3 KB — fits every
   cloud's cap, including AWS's 16 KB): they download the binary and verify a
   SHA-256 pinned in the script. The hub serves the artifact at
-  `GET /v1/relay-binary`, authenticated with the per-server token the
+  `GET /v1/relay-binary`, authenticated with the per-mailbox token the
   script already carries — an egress-cost gate, not an integrity measure
   (that's the pin). Set `STONECHAT_HUB_URL` for the default URL, or
   `STONECHAT_RELAY_BINARY_URL` to host it on GCS/GitHub instead (fetched
   anonymously).
-- **Host agent** guest mailboxes build from the same binary; the sovereign
-  startup script writes `/opt/stonechat/server/` (binary + Dockerfile) for it.
+- **Host agent** guest mailboxes build from the same binary; the dedicated-VM
+  startup script writes `/opt/stonechat/relay/` (binary + Dockerfile) for it.
 
 Producing the production artifact (on/for x86_64 Linux):
 

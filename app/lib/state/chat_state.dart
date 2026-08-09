@@ -141,7 +141,7 @@ class ChatState extends ChangeNotifier {
   final Map<String, List<Message>> _messages = {}; // by conversation id
   final Map<String, Message?> lastMessage = {};
 
-  // Own mailbox coordinates, set by ServerState before the socket connects —
+  // Own mailbox coordinates, set by MailboxState before the socket connects —
   // needed to download incoming media blobs and publish prekeys.
   String? mailboxAddress;
   String? mailboxToken;
@@ -401,7 +401,7 @@ class ChatState extends ChangeNotifier {
 
   /// Identity reset: drop every in-memory trace of the dead identity. The DB
   /// is wiped separately (AppState.resetIdentity); mailbox coordinates are
-  /// cleared by ServerState.reset via setMailbox. The device push token
+  /// cleared by MailboxState.reset via setMailbox. The device push token
   /// (_pushToken/_pushPlatform) survives — it belongs to the phone, not the
   /// identity — and re-registers when the next identity gets a mailbox.
   void reset() {
@@ -527,7 +527,7 @@ class ChatState extends ChangeNotifier {
 
   /// Directory lookup with the trust-but-verify steps from PROTOCOL.md: the
   /// pubkey must hash to the ID, and any listed mailbox must carry a TLS
-  /// fingerprint signed by that pubkey. A server that fails the transport
+  /// fingerprint signed by that pubkey. A mailbox that fails the transport
   /// check is treated as absent — never connected to.
   ///
   /// Cross-hub: a peer on another hub is resolved through *their* directory —
@@ -560,9 +560,9 @@ class ChatState extends ChangeNotifier {
         'Directory entry lacks a valid post-quantum key — refusing.',
       );
     }
-    if (entry.serverAddress != null) {
-      final fp = entry.serverTlsFp;
-      final sig = entry.serverTlsSig;
+    if (entry.mailboxAddress != null) {
+      final fp = entry.mailboxTlsFp;
+      final sig = entry.mailboxTlsSig;
       final vouched =
           fp != null &&
           sig != null &&
@@ -584,22 +584,22 @@ class ChatState extends ChangeNotifier {
 
   Future<String> _addressFor(Contact contact, {bool refresh = false}) async {
     if (!refresh &&
-        contact.serverAddress != null &&
+        contact.mailboxAddress != null &&
         contact.tlsFp != null &&
         contact.pqPkB64 != null) {
-      return contact.serverAddress!;
+      return contact.mailboxAddress!;
     }
     final entry = await _resolve(contact.stonechatId);
-    if (entry.serverAddress == null) {
+    if (entry.mailboxAddress == null) {
       throw ApiException(
         "${contact.displayName}'s mailbox is off right now — they'll get it when it's back",
       );
     }
-    contact.serverAddress = entry.serverAddress;
-    contact.tlsFp = entry.serverTlsFp;
+    contact.mailboxAddress = entry.mailboxAddress;
+    contact.tlsFp = entry.mailboxTlsFp;
     contact.pqPkB64 = entry.pqPkB64; // sig-verified in _resolve
     await app.db.upsertContact(contact);
-    return entry.serverAddress!;
+    return entry.mailboxAddress!;
   }
 
   /// Transport wrap (PROTOCOL.md "Envelope"): hybrid-seal the whole envelope
@@ -823,8 +823,8 @@ class ChatState extends ChangeNotifier {
             pubkeyB64,
             payload,
             envelopeId: envelopeId,
-            serverAddress: address,
-            serverTlsFp: tlsFp,
+            mailboxAddress: address,
+            mailboxTlsFp: tlsFp,
             blobId: blobId,
             deviceId: device,
             bundleToken: bundleToken,
@@ -907,7 +907,7 @@ class ChatState extends ChangeNotifier {
     try {
       await attempt(await _addressFor(contact));
     } on Exception {
-      // Their server may have been recreated at a new IP (or with a new TLS
+      // Their mailbox may have been recreated at a new IP (or with a new TLS
       // key) — refresh everything and retry once.
       await attempt(await _addressFor(contact, refresh: true));
     }
@@ -962,8 +962,8 @@ class ChatState extends ChangeNotifier {
           app.stonechatId!,
           app.crypto.publicKeyB64,
           payload,
-          serverAddress: address,
-          serverTlsFp: tlsFp,
+          mailboxAddress: address,
+          mailboxTlsFp: tlsFp,
           deviceId: device,
           bundleToken: myBundleToken,
         );
@@ -1183,8 +1183,8 @@ class ChatState extends ChangeNotifier {
     String peerPubkeyB64, {
     int deviceId = ChatDb.primaryDevice,
     String? bundleToken,
-    String? serverAddress,
-    String? serverTlsFp,
+    String? mailboxAddress,
+    String? mailboxTlsFp,
   }) async {
     final existing = await _loadSession(peerId, deviceId);
     if (existing != null && existing.canSend) return existing;
@@ -1208,19 +1208,19 @@ class ChatState extends ChangeNotifier {
 
     PrekeyBundle bundle;
     try {
-      if (serverAddress == null || serverTlsFp == null) {
+      if (mailboxAddress == null || mailboxTlsFp == null) {
         throw ApiException('no cached address');
       }
-      bundle = await fetchFrom(serverAddress, serverTlsFp);
+      bundle = await fetchFrom(mailboxAddress, mailboxTlsFp);
     } on Exception {
       // No cached address, or their mailbox moved — ask the directory.
       final entry = await _resolve(peerId);
-      if (entry.serverAddress == null) {
+      if (entry.mailboxAddress == null) {
         throw ApiException(
           "Their mailbox is off right now — they'll get it when it's back",
         );
       }
-      bundle = await fetchFrom(entry.serverAddress!, entry.serverTlsFp!);
+      bundle = await fetchFrom(entry.mailboxAddress!, entry.mailboxTlsFp!);
     }
 
     // Prekeys are signed by the DEVICE, and its certificate — already
@@ -1270,8 +1270,8 @@ class ChatState extends ChangeNotifier {
     String toPubkeyB64,
     Map<String, Object?> payload, {
     String? envelopeId,
-    String? serverAddress,
-    String? serverTlsFp,
+    String? mailboxAddress,
+    String? mailboxTlsFp,
     String? blobId,
     int deviceId = ChatDb.primaryDevice,
     String? bundleToken,
@@ -1286,8 +1286,8 @@ class ChatState extends ChangeNotifier {
         toPubkeyB64,
         deviceId: deviceId,
         bundleToken: bundleToken,
-        serverAddress: serverAddress,
-        serverTlsFp: serverTlsFp,
+        mailboxAddress: mailboxAddress,
+        mailboxTlsFp: mailboxTlsFp,
       );
       // Both device numbers are bound, on every message, single-device or
       // not (MULTIDEVICE.md "Associated data"). One form, no conditional:
@@ -1619,14 +1619,14 @@ class ChatState extends ChangeNotifier {
   }) async {
     Future<String> resolve() async {
       final entry = await _resolve(member.stonechatId);
-      if (entry.serverAddress == null) {
+      if (entry.mailboxAddress == null) {
         throw ApiException('${member.displayName} is unreachable right now');
       }
-      member.serverAddress = entry.serverAddress;
-      member.tlsFp = entry.serverTlsFp;
+      member.mailboxAddress = entry.mailboxAddress;
+      member.tlsFp = entry.mailboxTlsFp;
       member.pqPkB64 = entry.pqPkB64; // sig-verified in _resolve
       await app.db.updateMember(member);
-      return entry.serverAddress!;
+      return entry.mailboxAddress!;
     }
 
     Future<void> attempt(String address) => _fanOutToDevices(
@@ -1646,11 +1646,11 @@ class ChatState extends ChangeNotifier {
     );
 
     final known =
-        member.serverAddress != null &&
+        member.mailboxAddress != null &&
         member.tlsFp != null &&
         member.pqPkB64 != null;
     try {
-      await attempt(known ? member.serverAddress! : await resolve());
+      await attempt(known ? member.mailboxAddress! : await resolve());
     } on Exception {
       await attempt(await resolve()); // their mailbox may have moved
     }
@@ -1764,8 +1764,8 @@ class ChatState extends ChangeNotifier {
       pubkeyB64: entry.pubkeyB64,
       pqPkB64: entry.pqPkB64, // sig-verified in _resolve
       status: ContactStatus.pendingOut,
-      serverAddress: entry.serverAddress,
-      tlsFp: entry.serverTlsFp,
+      mailboxAddress: entry.mailboxAddress,
+      tlsFp: entry.mailboxTlsFp,
       hub: hub,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
@@ -1847,7 +1847,7 @@ class ChatState extends ChangeNotifier {
           stonechatId: c.stonechatId,
           pubkeyB64: c.pubkeyB64,
           displayName: c.displayName,
-          serverAddress: c.serverAddress,
+          mailboxAddress: c.mailboxAddress,
           tlsFp: c.tlsFp,
         ),
     ];
@@ -1937,7 +1937,7 @@ class ChatState extends ChangeNotifier {
           stonechatId: c.stonechatId,
           pubkeyB64: c.pubkeyB64,
           displayName: c.displayName,
-          serverAddress: c.serverAddress,
+          mailboxAddress: c.mailboxAddress,
           tlsFp: c.tlsFp,
         ),
     ];
@@ -2692,10 +2692,10 @@ class ChatState extends ChangeNotifier {
     // from it — the one field in this flow that points us somewhere new. A
     // sender who moved mailboxes mid-flight fails closed (media unavailable)
     // rather than teaching us to trust an unverified address.
-    if (host != sender.serverAddress) {
+    if (host != sender.mailboxAddress) {
       // Their directory entry may simply be stale here; a lookup failure is
       // transient and rethrows, so only a real mismatch is fatal.
-      if (host != (await _resolve(sender.stonechatId)).serverAddress) {
+      if (host != (await _resolve(sender.stonechatId)).mailboxAddress) {
         _dropLog(envelope, "blob_host is not the sender's own mailbox");
         return null;
       }
@@ -3471,7 +3471,7 @@ class ChatState extends ChangeNotifier {
   // -- receiving ---------------------------------------------------------------------
 
   /// Called by the mailbox socket for every envelope. Returning normally acks
-  /// (and thus deletes) it server-side, so persist before returning.
+  /// (and thus deletes) it mailbox-side, so persist before returning.
   Future<void> handleIncoming(SealedEnvelope wire) async {
     if (wire.to != app.stonechatId) return;
 
@@ -3581,8 +3581,8 @@ class ChatState extends ChangeNotifier {
           // backfills it (sig-verified) before anything is sealed to them.
           pqPkB64: senderEntry?.pqPkB64,
           status: ContactStatus.pendingIn,
-          serverAddress: senderEntry?.serverAddress,
-          tlsFp: senderEntry?.serverTlsFp,
+          mailboxAddress: senderEntry?.mailboxAddress,
+          tlsFp: senderEntry?.mailboxTlsFp,
           hub: senderHub,
           createdAt: DateTime.now().millisecondsSinceEpoch,
         );
@@ -3911,7 +3911,7 @@ class ChatState extends ChangeNotifier {
     }
     if (!includesUs) {
       // we were removed — drop the group locally, keep history? for now: keep
-      // nothing server-side to worry about; just delete membership records
+      // nothing mailbox-side to worry about; just delete membership records
       if (existing != null) {
         groupMembers[groupId] = [];
         await app.db.replaceMembers(groupId, const []);

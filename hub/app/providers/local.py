@@ -33,7 +33,7 @@ from .bootstrap import (
     relay_binary_path,
 )
 
-IMAGE = "stonechat-server:dev"
+IMAGE = "stonechat-relay:dev"
 RELAY_DIR = Path(__file__).resolve().parents[3] / "relay"
 
 
@@ -60,7 +60,7 @@ def image_tag() -> str:
     if binary is None or not binary.is_file():
         return IMAGE
     h = hashlib.blake2b(binary.read_bytes(), digest_size=32).hexdigest()[:16]
-    return f"stonechat-server:{h}"
+    return f"stonechat-relay:{h}"
 
 
 @contextlib.contextmanager

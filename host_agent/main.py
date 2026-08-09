@@ -7,7 +7,7 @@ sketch).
 
 It is the ONLY thing with Docker access to the host — the hub and
 Stonechat-the-company never touch this machine. Each guest gets their own
-`stonechat-server` container: own port, own token, own volume, own TLS cert,
+`stonechat-relay` container: own port, own token, own volume, own TLS cert,
 cgroup/pids caps. From the directory's point of view a guest's mailbox is just
 an ordinary self-hosted ("external") relay that happens to live on a friend's box.
 
@@ -27,8 +27,8 @@ Config (env):
     STONECHAT_HOST_AGENT_CAPACITY      max guest mailboxes (default 25)
     STONECHAT_HOST_AGENT_PORT_BASE     first guest mailbox port; guests are published
                                   on base..base+capacity-1 (default 42000)
-    STONECHAT_HOST_AGENT_IMAGE         mailbox image (default stonechat-server:dev)
-    STONECHAT_HOST_AGENT_SERVER_DIR    build context if the image is missing (default ../relay)
+    STONECHAT_HOST_AGENT_IMAGE         mailbox image (default stonechat-relay:dev)
+    STONECHAT_HOST_AGENT_RELAY_DIR    build context if the image is missing (default ../relay)
     STONECHAT_HOST_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
     STONECHAT_PUSH_GATEWAY        passed through to guest mailboxes (optional)
     STONECHAT_HOST_AGENT_PORT          listen port (default 8200)
@@ -57,8 +57,8 @@ DB_PATH = os.environ.get("STONECHAT_HOST_AGENT_DB", "host_agent.db")
 TLS_DIR = Path(os.environ.get("STONECHAT_HOST_AGENT_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
 CAPACITY = int(os.environ.get("STONECHAT_HOST_AGENT_CAPACITY", "25"))
 PORT_BASE = int(os.environ.get("STONECHAT_HOST_AGENT_PORT_BASE", "42000"))
-IMAGE = os.environ.get("STONECHAT_HOST_AGENT_IMAGE", "stonechat-server:dev")
-SERVER_DIR = Path(os.environ.get("STONECHAT_HOST_AGENT_SERVER_DIR",
+IMAGE = os.environ.get("STONECHAT_HOST_AGENT_IMAGE", "stonechat-relay:dev")
+RELAY_DIR = Path(os.environ.get("STONECHAT_HOST_AGENT_RELAY_DIR",
                                  str(Path(__file__).resolve().parents[1] / "relay")))
 RUNTIME = os.environ.get("STONECHAT_HOST_AGENT_RUNTIME", "")
 PUSH_GATEWAY = os.environ.get("STONECHAT_PUSH_GATEWAY", "")
@@ -226,9 +226,9 @@ def _docker(*args: str) -> str:
 def _ensure_image() -> None:
     if subprocess.run(["docker", "image", "inspect", IMAGE],
                       capture_output=True).returncode != 0:
-        if not SERVER_DIR.is_dir():
-            raise HTTPException(500, f"image {IMAGE} missing and no build dir at {SERVER_DIR}")
-        _docker("build", "-t", IMAGE, str(SERVER_DIR))
+        if not RELAY_DIR.is_dir():
+            raise HTTPException(500, f"image {IMAGE} missing and no build dir at {RELAY_DIR}")
+        _docker("build", "-t", IMAGE, str(RELAY_DIR))
 
 
 def _launch_container(owner_id: str, owner_token: str, port: int) -> str:
@@ -427,7 +427,7 @@ def _provision_guest(owner_id: str) -> dict:
         store.add_guest(owner_id, container_id, port)
     finally:
         _release_port(port)  # on success the guests row keeps it taken
-    return {"address": address, "server_token": owner_token, "tls_fp": tls_fp}
+    return {"address": address, "mailbox_token": owner_token, "tls_fp": tls_fp}
 
 
 @app.get("/v1/guests", dependencies=[Depends(require_admin)])

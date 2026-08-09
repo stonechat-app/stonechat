@@ -23,7 +23,7 @@ identically on both sides, in two independent implementations, through a
 handshake neither of them hardcoded.
 
 No Docker: mailboxes run as plain binaries and are listed with the hub through
-`/v1/server/external` (the self-hosting path), which keeps this runnable on a
+`/v1/mailbox/external` (the self-hosting path), which keeps this runnable on a
 laptop.
 
     python3 agent_client/tests/e2e_agent.py
@@ -151,9 +151,9 @@ def give_mailbox(phone: Phone) -> str:
     phone.register()
     token = secrets.token_hex(24)
     address = start_relay(phone.stonechat_id, token)
-    httpx.post(f"{HUB}/v1/server/external", headers=phone.auth,
+    httpx.post(f"{HUB}/v1/mailbox/external", headers=phone.auth,
                json={"address": address}, timeout=20).raise_for_status()
-    phone.server = {"address": address, "server_token": token, "status": "running"}
+    phone.mailbox = {"address": address, "mailbox_token": token, "status": "running"}
     phone.publish_tls_sig()
     phone.upload_prekeys(opk_count=8)
     return token
@@ -193,7 +193,7 @@ def authorise(alice: Phone, alice_token: str, code: str, kind: str) -> int:
     # Mint the device. This is where the new `agent` kind is exercised: a relay
     # that does not know it answers 400.
     dev_token = base64.urlsafe_b64encode(nacl_random(32)).decode().rstrip("=")
-    minted = MX.post(f"{alice.server['address']}/devices",
+    minted = MX.post(f"{alice.mailbox['address']}/devices",
                      params={"token": alice_token},
                      json={"device_token": dev_token, "kind": kind})
     assert minted.status_code == 200, \
@@ -206,14 +206,14 @@ def authorise(alice: Phone, alice_token: str, code: str, kind: str) -> int:
     # the primary can do, and the only authority the agent will ever hold.
     cert = alice.sign_cert_for(sig, seal, device=device_id,
                                not_after=int(time.time()) + 180 * 86400)
-    tls_fp = httpx.get(f"{HUB}/v1/server", headers=alice.auth).json()["tls_fp"]
+    tls_fp = httpx.get(f"{HUB}/v1/mailbox", headers=alice.auth).json()["tls_fp"]
     grant = json.dumps({
         "identity_pub": alice.pubkey_b64,
         "cert": cert,
         "stonechat_id": alice.stonechat_id,
         "display_name": alice.name,
         "hub_url": HUB,
-        "relay_address": alice.server["address"],
+        "relay_address": alice.mailbox["address"],
         "relay_tls_fp": tls_fp,
         "device_id": device_id,
         "device_token": dev_token,
@@ -245,8 +245,8 @@ async def talk_to_agent(bob: Phone, alice: Phone, device: int,
     import ssl
     import websockets
 
-    ws_url = (bob.server["address"].replace("https", "wss", 1)
-              + f"/ws?token={bob.server['server_token']}")
+    ws_url = (bob.mailbox["address"].replace("https", "wss", 1)
+              + f"/ws?token={bob.mailbox['mailbox_token']}")
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
