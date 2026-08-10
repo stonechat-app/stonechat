@@ -9,9 +9,11 @@ Usage (the code never lives in the repo — it's in the hub's systemd drop-in):
     STONECHAT_TEST_CODE=STONECHAT-XXXX-XXXX hub/.venv/bin/python scripts/smoke_prod.py
 
 Env: STONECHAT_HUB (default https://hub.stonechat.app), STONECHAT_TEST_CODE (required).
-Needs httpx + pynacl (both in the hub venv).
+Needs httpx + pynacl (both in the hub venv) and the core library for the
+X-Wing identity key — `scripts/build_core.sh host` if pqcore cannot find it.
 """
 import base64
+import hashlib
 import json
 import os
 import ssl
@@ -20,6 +22,13 @@ import time
 
 import httpx
 from nacl.signing import SigningKey
+
+import pqcore  # scripts/pqcore.py — ctypes over the Rust core
+
+# Registration has been hybrid post-quantum since PROTOCOL.md's X-Wing
+# cutover: pubkey alone is a 422. Contexts are the app's (crypto.dart).
+PQID_SEED_KEY = b"stonechat-v1-pqidseed"
+PQPK_SIG_CONTEXT = b"stonechat-v1-pqpk"
 
 HUB = os.environ.get("STONECHAT_HUB", "https://hub.stonechat.app")
 TEST_CODE = os.environ.get("STONECHAT_TEST_CODE") or sys.exit(
@@ -47,7 +56,19 @@ def fleet_country(hub_url: str) -> str:
 sk = SigningKey.generate()
 pub = base64.b64encode(sk.verify_key.encode()).decode()
 
-r = httpx.post(f"{HUB}/v1/register", json={"pubkey": pub}, headers=H)
+# The X-Wing identity is derived from the Ed25519 secret exactly as the app
+# does (crypto.dart, mirrored in e2e.py): seed = BLAKE2b(sk64, key=…), so a
+# smoke-test identity is shaped like a real one rather than a special case.
+sk64 = bytes(sk) + bytes(sk.verify_key)
+pq_seed = hashlib.blake2b(sk64, key=PQID_SEED_KEY, digest_size=32).digest()
+pq_pk = pqcore.xwing_pk_from_seed(pq_seed)
+pq_sig = sk.sign(PQPK_SIG_CONTEXT + pq_pk).signature
+
+r = httpx.post(f"{HUB}/v1/register", json={
+    "pubkey": pub,
+    "pq_pk": base64.b64encode(pq_pk).decode(),
+    "pq_sig": base64.b64encode(pq_sig).decode(),
+}, headers=H)
 r.raise_for_status()
 me = r.json()
 auth = {**H, "Authorization": f"Bearer {me['account_token']}"}

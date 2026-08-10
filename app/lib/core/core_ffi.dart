@@ -17,8 +17,8 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 /// Resolve the shared native library for BOTH pqcore.dart and these
-/// bindings. Host runs (flutter test, tooling) point STONECHAT_CORE_LIB at
-/// a `cargo build` output; scripts/build_core.sh produces every platform's.
+/// bindings. STONECHAT_CORE_LIB overrides; scripts/build_core.sh produces
+/// every platform's artifact.
 DynamicLibrary openCoreLibrary() {
   final override =
       Platform.environment['STONECHAT_CORE_LIB'] ??
@@ -26,8 +26,43 @@ DynamicLibrary openCoreLibrary() {
   if (override != null) return DynamicLibrary.open(override);
   if (Platform.isAndroid) return DynamicLibrary.open('libstonechat_core.so');
   if (Platform.isIOS) return DynamicLibrary.process(); // static-linked
-  if (Platform.isMacOS) return DynamicLibrary.open('libstonechat_core.dylib');
-  return DynamicLibrary.open('libstonechat_core.so');
+  final name = Platform.isMacOS
+      ? 'libstonechat_core.dylib'
+      : 'libstonechat_core.so';
+  // Host runs (flutter test, tooling): dyld has no reason to know about a
+  // cargo artifact, so a bare open fails with "Failed to load dynamic
+  // library" — which reads like the library was never built, and cost us a
+  // long time believing exactly that. Look where build_core.sh puts it,
+  // the same search scripts/pqcore.py does, before giving up.
+  final built = _builtCoreLibrary(name);
+  if (built != null) return DynamicLibrary.open(built);
+  try {
+    return DynamicLibrary.open(name);
+  } on ArgumentError {
+    throw StateError(
+      'stonechat-core not found. Run `scripts/build_core.sh host`, or point '
+      'STONECHAT_CORE_LIB at the library.',
+    );
+  }
+}
+
+/// `core/target/release/<name>`, searched upward from the working directory
+/// — `flutter test` runs in `app/`, tooling from the repo root.
+String? _builtCoreLibrary(String name) {
+  var dir = Directory.current.absolute;
+  for (var i = 0; i < 5; i++) {
+    final candidate = File(
+      '${dir.path}${Platform.pathSeparator}core'
+      '${Platform.pathSeparator}target'
+      '${Platform.pathSeparator}release'
+      '${Platform.pathSeparator}$name',
+    );
+    if (candidate.existsSync()) return candidate.path;
+    final parent = dir.parent;
+    if (parent.path == dir.path) break;
+    dir = parent;
+  }
+  return null;
 }
 
 typedef _PqSeedNative = Int32 Function(Pointer<Uint8>, Pointer<Uint8>);

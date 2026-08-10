@@ -181,7 +181,7 @@ class FleetProvider(CloudProvider):
         return min(candidates, key=self._tenant_count)
 
     def provision(self, req: ProvisionRequest) -> ProvisionResult:
-        host = self._pick_host(req.region)
+        host = self._pick_host(req.spec.region)
         self._ensure_image(host)
 
         name = f"stonechat-{req.owner_id[3:11].lower().replace('-', '')}"
