@@ -296,8 +296,12 @@ walkthrough:
    static **external** IP as the advertise address.
 4. **Cloud firewall**: VPC firewall rules replace the DO/Hetzner cloud
    firewall UI — allow `tcp:8000` to the `stonechat-hub` tag and
-   `tcp:32768-60999` to the `stonechat-fleet` tag. (Same-VPC SSH between the two
-   boxes is covered by `default-allow-internal`.)
+   `tcp:32768-60999` **and `udp:32768-60999`** to the `stonechat-fleet` tag.
+   TCP alone leaves every mailbox reachable from phones and silently
+   unreachable from browsers: the browser transport is QUIC, and Docker
+   publishes it on a random host port from the same range. (Same-VPC SSH
+   between the two boxes is covered by `default-allow-internal`, including
+   across regions.)
 5. **Deploy** as in steps 2–4 above.
 
 ### Optional: per-user mailbox VMs (`gcp` provider)
@@ -340,6 +344,67 @@ invites from the app ("Host friends on your machine"). Friends redeem with
   which fetches and renews the certificate on its own. Then build the app with
   `--dart-define=STONECHAT_HUB=https://hub.example.com`. Set the DNS record *first* —
   Caddy proves ownership over port 80 at startup.
+
+## Adding a country (a new fleet host)
+
+A country is offered on the Mailbox plan exactly when a fleet host declares
+it in `STONECHAT_FLEET_HOSTS` — there is no separate country list, so this
+checklist *is* the feature. Example: Germany, GCP `europe-west3`.
+
+```bash
+# 1. VM, tagged so the fleet firewall rule applies to it
+gcloud compute instances create stonechat-fleet-de-1 --zone europe-west3-a \
+  --machine-type e2-micro --image-family debian-12 --image-project debian-cloud \
+  --tags stonechat-fleet
+
+# 2. Cloud firewall for the mailbox port range — TCP *and* UDP, once per tag
+gcloud compute firewall-rules create stonechat-allow-fleet-mailboxes \
+  --allow tcp:32768-60999,udp:32768-60999 \
+  --target-tags stonechat-fleet --source-ranges 0.0.0.0/0
+
+# 3. STATIC external IP. Easy to skip — nothing complains until much later.
+#    Promoting the ephemeral address the VM already has is in-place and needs
+#    no restart; reserving it up front works too.
+gcloud compute addresses create stonechat-fleet-de-1-ip \
+  --addresses <THE-VM-EXTERNAL-IP> --region europe-west3
+
+# 4. Prepare the host (installs Docker, creates the fleet user, opens ufw)
+gcloud compute scp deploy/fleet-host.sh stonechat-fleet-de-1:/tmp/ --zone europe-west3-a
+gcloud compute ssh stonechat-fleet-de-1 --zone europe-west3-a --command \
+  'sudo STONECHAT_HUB_PUBKEY="<hub root ssh pubkey>" bash /tmp/fleet-host.sh'
+
+# 5. Pre-trust the host key ON THE HUB, or docker-over-SSH fails on first ignite
+gcloud compute ssh <hub> --command \
+  'sudo sh -c "ssh-keyscan -H <FLEET_INTERNAL_IP> >> /root/.ssh/known_hosts"'
+```
+
+Then add it to the pool and restart the hub. A systemd **drop-in** is the safe
+way to change this — re-running `setup.sh` rewrites the whole unit from its
+environment and blanks anything you forget to re-export:
+
+```bash
+# /etc/systemd/system/stonechat-hub.service.d/fleet-hosts.conf
+[Service]
+Environment="STONECHAT_FLEET_HOSTS=de1=ssh://stonechat-fleet@<INTERNAL_IP>|<STATIC_EXTERNAL_IP>|DE"
+```
+
+`systemctl daemon-reload && systemctl restart stonechat-hub`, then verify the
+country actually became purchasable — this reads the host list, so it is a
+real check, not a restatement of what you configured:
+
+```bash
+curl -s https://<hub>/v1/countries | jq '.countries[] | {code, plans}'
+```
+
+**Why the static IP matters.** The host's external address is the advertise
+address: it is baked into every mailbox address the hub stores and hands to
+clients, and nothing re-resolves it. An ephemeral IP survives right up until
+the first stop/start, then every mailbox on that host is unreachable with
+nothing in any log to say why — the same failure the pinned container ports
+avoid one level down (`providers/fleet.py`).
+
+The first ignite on a fresh host is slow: it has no relay image yet and builds
+one from the hub's `STONECHAT_RELAY_BINARY`.
 
 ## Beyond a friends test
 
