@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "net", "fs", "io-util"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 rcgen = "0.13"

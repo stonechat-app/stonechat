@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -14,12 +14,14 @@ use axum::Json;
 use base64::engine::general_purpose::STANDARD as B64;
 use blake2::Digest;
 use base64::Engine;
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
 use sha1::Sha1;
+use tokio::io::AsyncReadExt;
 
 use crate::db::{OpkUpload, SpkUpload};
-use crate::{blobs, push, AppState, MAX_BLOB_BYTES, MAX_CERT_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
+use crate::{blobs, push, AppState, BLOB_CHUNK_BYTES, MAX_BLOB_BYTES, MAX_CERT_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
 
 fn detail(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"detail": msg}))).into_response()
@@ -555,19 +557,51 @@ fn host_from_headers(headers: &HeaderMap) -> Option<String> {
 /// owner. `?shared=1` additionally returns the blob's fetch token — the group
 /// -media path, where the uploader is the owner and the readers are their
 /// fellow members (PROTOCOL.md "Groups").
+/// The body streams to disk in chunks and is never held whole: see blobs.rs.
+/// Taking `Body` rather than `Bytes` opts out of the router's
+/// `DefaultBodyLimit`, which only bounds extractors that buffer — so the
+/// MAX_BLOB_BYTES cap is enforced here, per chunk, and a client that lies in
+/// Content-Length is cut off at the same byte either way.
 pub async fn blob_upload(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
-    body: Bytes,
+    headers: HeaderMap,
+    body: Body,
 ) -> Response {
-    if body.is_empty() {
+    // Cheap pre-checks on a declared length: refuse before streaming rather
+    // than after. Both are re-checked against what actually lands.
+    if let Some(declared) = content_length(&headers) {
+        if declared > MAX_BLOB_BYTES as u64 {
+            return detail(StatusCode::PAYLOAD_TOO_LARGE, "blob too large");
+        }
+        if !state.blobs.has_room(declared) {
+            return detail(StatusCode::INSUFFICIENT_STORAGE, "blob storage full");
+        }
+    }
+
+    let mut incoming = match state.blobs.begin().await {
+        Ok(inc) => inc,
+        Err(_) => return detail(StatusCode::INSUFFICIENT_STORAGE, "blob storage full"),
+    };
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else {
+            // Client vanished or the transport failed; Drop takes the partial.
+            return detail(StatusCode::BAD_REQUEST, "upload interrupted");
+        };
+        if incoming.len() + chunk.len() as u64 > MAX_BLOB_BYTES as u64 {
+            return detail(StatusCode::PAYLOAD_TOO_LARGE, "blob too large");
+        }
+        if incoming.write(&chunk).await.is_err() {
+            return detail(StatusCode::INSUFFICIENT_STORAGE, "blob storage full");
+        }
+    }
+    if incoming.len() == 0 {
         return detail(StatusCode::BAD_REQUEST, "empty blob");
     }
-    if body.len() > MAX_BLOB_BYTES {
-        return detail(StatusCode::PAYLOAD_TOO_LARGE, "blob too large");
-    }
+
     let shared = matches!(q.get("shared").map(String::as_str), Some("1" | "true"));
-    match state.blobs.put(&body) {
+    match state.blobs.commit(incoming).await {
         Ok(blob_id) if shared => {
             let token = blobs::fetch_token(&state.cfg.owner_token, &blob_id);
             Json(json!({"blob_id": blob_id, "fetch_token": token})).into_response()
@@ -593,14 +627,45 @@ pub async fn blob_download(
     if !blobs::valid_blob_id(&blob_id) {
         return detail(StatusCode::BAD_REQUEST, "bad blob id");
     }
-    match state.blobs.get(&blob_id) {
-        Some(data) => (
-            [(header::CONTENT_TYPE, "application/octet-stream")],
-            data,
+    match state.blobs.open_read(&blob_id).await {
+        // Streamed from disk in chunks (blobs.rs): a group of members fetching
+        // one video must not cost the mailbox one full copy of it per reader.
+        // Content-Length is set explicitly — buffering used to supply it, and
+        // clients show upload/download progress with it.
+        Some((file, len)) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream"),
+                (header::CONTENT_LENGTH, &len.to_string()[..]),
+            ],
+            Body::from_stream(file_chunks(file)),
         )
             .into_response(),
         None => detail(StatusCode::NOT_FOUND, "no such blob"),
     }
+}
+
+/// A blob file as a chunk stream. Yields at most one read error and then ends,
+/// so a mid-read failure truncates the response instead of spinning.
+fn file_chunks(
+    file: tokio::fs::File,
+) -> impl futures_util::Stream<Item = std::io::Result<Bytes>> {
+    futures_util::stream::unfold(Some(file), |state| async move {
+        let mut file = state?;
+        let mut buf = vec![0u8; BLOB_CHUNK_BYTES];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok(Bytes::from(buf)), Some(file)))
+            }
+            Err(e) => Some((Err(e), None)),
+        }
+    })
+}
+
+/// Declared body size, when the client sends one.
+fn content_length(headers: &HeaderMap) -> Option<u64> {
+    headers.get(header::CONTENT_LENGTH)?.to_str().ok()?.parse().ok()
 }
 
 /// Owner-only: reclaim the space a shared group blob holds once every member

@@ -47,6 +47,10 @@ pub const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
 pub const MAX_QUEUE_DEPTH: i64 = 10_000;
 pub const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024; // videos/documents; mirrored in the app
 pub const MAX_TOTAL_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
+/// How much of a blob is in memory at once, either direction (blobs.rs).
+/// Peak RSS is a function of this and the number of concurrent transfers —
+/// never of MAX_BLOB_BYTES, which is the whole point of streaming them.
+pub const BLOB_CHUNK_BYTES: usize = 64 * 1024;
 pub const BLOB_TTL: Duration = Duration::from_secs(14 * 24 * 3600);
 pub const MAX_OPKS: usize = 256;
 // ML-KEM-768 one-time prekeys are ~1.6 KB each as base64 (notes/notes/docs/POST_QUANTUM.md, internal);
@@ -278,7 +282,14 @@ async fn main() {
         // about to present anyway. The owner's signature over them lives in
         // the hub directory — this endpoint states, it does not vouch.
         .route("/wt/certs", get(routes::wt_certs))
-        .layer(DefaultBodyLimit::max(MAX_BLOB_BYTES + 1024))
+        // Bounds every route that buffers its body into `Bytes` — envelopes,
+        // prekeys, certs. Blobs are the one large body and they no longer
+        // buffer (routes.rs takes `Body` and streams, which opts out of this
+        // layer and enforces MAX_BLOB_BYTES itself), so this can sit just above
+        // the largest of the rest instead of at blob size. It was 64 MiB, which
+        // meant a junk POST to /inbox could make the relay hold 64 MiB before
+        // the handler's own 64 KiB check ever ran.
+        .layer(DefaultBodyLimit::max(MAX_PREKEY_UPLOAD_BYTES + 1024))
         .with_state(state.clone());
 
     let o = &state.cfg.owner_id;
