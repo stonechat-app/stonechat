@@ -374,15 +374,23 @@ class Phone:
             "signature": b64(self.identity.sign(material).signature),
         })
 
-    def provision(self):
-        r = httpx.post(
-            f"{HUB}/v1/mailbox",
-            headers=self.auth,
-            json={
+    def provision(self, country=None):
+        """Ignite this phone's mailbox.
+
+        With `country`, sends the app's own request shape and lets the hub
+        resolve it against the catalog and this account's plan — that is the
+        path a real device takes, so smoke_prod exercises it rather than a
+        test-only one. Without it, the local Docker provider the e2e run wants.
+        """
+        body = (
+            {"country": country}
+            if country
+            else {
                 "provider": "local",
                 "machine": {"machine_type": "container", "region": "localhost"},
-            },
+            }
         )
+        r = httpx.post(f"{HUB}/v1/mailbox", headers=self.auth, json=body)
         r.raise_for_status()
 
     def wait_running(self, timeout=300):
