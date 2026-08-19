@@ -6,6 +6,13 @@ __pycache__/
 # TLS keypairs. The host agent generates these into its working directory on
 # first run, so they land wherever it was started from.
 *.pem
+# ...except the relay's test fixtures, which are PUBLIC certificates with no
+# key material. The blanket rule above silently excluded openssl_cert.pem, so
+# the TLS-fingerprint parity test — the one guarding that a Rust relay taking
+# over an existing volume keeps every client's pin valid — compiled only on
+# machines that happened to have the untracked file. Fresh clones and CI
+# failed. Only certificates belong here; never a private key.
+!relay/tests/fixtures/*.pem
 
 # App Store Connect credentials
 .env.appstore
