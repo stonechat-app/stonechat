@@ -1,0 +1,147 @@
+# Build the relay binary that production actually ships.
+#
+# The relay runs in a `FROM scratch` mailbox container — no libc, no shell —
+# so the artifact has to be a *statically linked x86_64 musl* ELF, and the
+# build has to happen on x86_64 Linux. Building it from an Apple Silicon
+# laptop means either QEMU emulation (a Rust release build under emulation
+# takes hours) or a C cross-toolchain, because rusqlite's bundled SQLite and
+# ring's assembly are real C compiled for the target. A Linux x86_64 runner
+# has neither problem: it is the native platform, and musl is one apt install.
+#
+# Manual on purpose. Relay changes reach production by a deliberate act —
+# `roll_relay.py` swaps the binary and verifies the reported build hash
+# changed — so an automatic build on every push would produce artifacts
+# nobody asked for. Add a `push:` trigger here when CI-on-every-commit lands
+# (notes TODO §9); nothing below assumes the trigger.
+name: Build relay
+
+on:
+  workflow_dispatch:
+    inputs:
+      conformance:
+        description: "Replay the golden corpus against the built binary"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  # Pinned so two runs of the same commit produce the same bytes. Deliberately
+  # here rather than in a repo-wide rust-toolchain.toml: that would also
+  # re-pin every developer's local build, which is a separate decision
+  # (notes TODO §15 "pin the toolchains").
+  RUST_VERSION: "1.93.0"
+  TARGET: x86_64-unknown-linux-musl
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: relay
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # musl-gcc links the C that rusqlite (bundled SQLite) and ring compile.
+      - name: Install musl toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Pin Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustup target add "$TARGET"
+          rustc --version
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            relay/target
+          key: relay-${{ env.RUST_VERSION }}-${{ env.TARGET }}-${{ hashFiles('relay/Cargo.lock') }}
+          restore-keys: relay-${{ env.RUST_VERSION }}-${{ env.TARGET }}-
+
+      # Built for the shipping target, not the host, so what the tests exercise
+      # is what the artifact contains. Static musl binaries run fine here.
+      - name: Unit and integration tests
+        run: cargo test --release --target "$TARGET"
+
+      - name: Build
+        run: cargo build --release --target "$TARGET"
+
+      # `FROM scratch` supplies nothing: a dynamically linked binary would
+      # build clean here and fail to start in the mailbox. Assert it.
+      - name: Verify the binary is static
+        run: |
+          BIN="target/$TARGET/release/stonechat-relay"
+          file "$BIN"
+          file "$BIN" | grep -q "statically linked" \
+            || { echo "::error::binary is not statically linked — it cannot run in a FROM scratch container"; exit 1; }
+          ldd "$BIN" 2>&1 | grep -qE "not a dynamic executable|statically linked" \
+            || { echo "::error::binary reports dynamic dependencies"; exit 1; }
+
+      # The relay's behavioural contract is the recorded corpus, not the code
+      # (CLAUDE.md). The corpus is stateful and order-dependent, so this needs
+      # a fresh relay with an empty data dir and the fixed test identity.
+      - name: Golden corpus and WebSocket suite
+        if: ${{ inputs.conformance }}
+        run: |
+          set -euo pipefail
+          DATA="$(mktemp -d)"
+          STONECHAT_OWNER_ID=SC-TEST-OWNER \
+          STONECHAT_OWNER_TOKEN=tok-secret \
+          STONECHAT_DB="$DATA/mailbox.db" \
+          STONECHAT_BLOBS="$DATA/blobs" \
+          STONECHAT_TLS_DIR="$DATA" \
+          STONECHAT_PORT=8477 \
+            "target/$TARGET/release/stonechat-relay" > "$DATA/relay.log" 2>&1 &
+          RELAY_PID=$!
+          trap 'kill "$RELAY_PID" 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 40); do
+            if curl -sk https://127.0.0.1:8477/health >/dev/null 2>&1; then break; fi
+            sleep 0.5
+          done
+          curl -sk https://127.0.0.1:8477/health || { cat "$DATA/relay.log"; exit 1; }
+
+          python3 -m venv "$DATA/venv"
+          "$DATA/venv/bin/pip" install --quiet websockets
+          python3 tests/conformance.py https://127.0.0.1:8477
+          "$DATA/venv/bin/python" tests/ws_test.py https://127.0.0.1:8477
+
+      # The hash is how a deploy proves it swapped: the relay reports its build
+      # on /status and roll_relay.py refuses a roll where it did not change.
+      # Publishing it is also the first half of notes TODO §21's "same bytes
+      # we run" claim for self-hosters.
+      - name: Record the build hash
+        id: hash
+        run: |
+          BIN="target/$TARGET/release/stonechat-relay"
+          SUM="$(sha256sum "$BIN" | cut -d' ' -f1)"
+          sha256sum "$BIN" > stonechat-relay.sha256
+          {
+            echo "### Relay build"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| commit | \`${GITHUB_SHA}\` |"
+            echo "| rustc | \`${RUST_VERSION}\` |"
+            echo "| target | \`${TARGET}\` |"
+            echo "| size | $(stat -c%s "$BIN") bytes |"
+            echo "| sha256 | \`${SUM}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stonechat-relay-${{ github.sha }}
+          path: |
+            relay/target/x86_64-unknown-linux-musl/release/stonechat-relay
+            relay/stonechat-relay.sha256
+          if-no-files-found: error
+          retention-days: 30
