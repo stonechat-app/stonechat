@@ -75,16 +75,27 @@ jobs:
       - name: Build
         run: cargo build --release --target "$TARGET"
 
-      # `FROM scratch` supplies nothing: a dynamically linked binary would
-      # build clean here and fail to start in the mailbox. Assert it.
-      - name: Verify the binary is static
+      # `FROM scratch` supplies nothing: a binary needing a loader or a shared
+      # library builds clean here and then fails to start in the mailbox.
+      #
+      # Tested as a property of the ELF, not as a phrase from `file`: the musl
+      # target links static-PIE, which `file` calls "static-pie linked" rather
+      # than "statically linked". Both are fully static — what actually matters
+      # is that nothing has to be resolved at load time, i.e. no INTERP segment
+      # naming a dynamic loader and no NEEDED entries naming shared objects.
+      - name: Verify the binary needs no loader or shared libraries
         run: |
           BIN="target/$TARGET/release/stonechat-relay"
           file "$BIN"
-          file "$BIN" | grep -q "statically linked" \
-            || { echo "::error::binary is not statically linked — it cannot run in a FROM scratch container"; exit 1; }
-          ldd "$BIN" 2>&1 | grep -qE "not a dynamic executable|statically linked" \
-            || { echo "::error::binary reports dynamic dependencies"; exit 1; }
+          INTERP=$(readelf -l "$BIN" | grep -c INTERP || true)
+          NEEDED=$(readelf -d "$BIN" 2>/dev/null | grep -c NEEDED || true)
+          echo "INTERP segments: $INTERP | NEEDED entries: $NEEDED"
+          if [ "$INTERP" -ne 0 ]; then
+            echo "::error::binary wants a dynamic loader — it cannot start in a FROM scratch container"; exit 1
+          fi
+          if [ "$NEEDED" -ne 0 ]; then
+            echo "::error::binary depends on shared libraries — it cannot start in a FROM scratch container"; exit 1
+          fi
 
       # The relay's behavioural contract is the recorded corpus, not the code
       # (CLAUDE.md). The corpus is stateful and order-dependent, so this needs
