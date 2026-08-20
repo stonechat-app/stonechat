@@ -263,6 +263,39 @@ def session_decrypt(state: dict, envelope: dict) -> bytes:
 # -- a simulated phone -----------------------------------------------------------
 
 
+# Every mailbox this run ignites, so a failed assertion cannot leak a
+# container. The local/fleet providers run `docker run --restart
+# unless-stopped`, so a leaked mailbox is not merely a stray container: it
+# comes back on every Docker restart and holds its published ports forever.
+_PROVISIONED: list["Phone"] = []
+
+
+def _container_name(stonechat_id):
+    """The container the local/fleet provider names for this owner.
+
+    Mirrors hub/app/providers/local.py — the sweep needs it because the
+    fallback path runs when the hub is the thing that died.
+    """
+    return f"stonechat-{stonechat_id[3:11].lower().replace('-', '')}"
+
+
+def sweep_mailboxes():
+    """Destroy every mailbox still standing. Best effort, never raises.
+
+    Asks the hub first (the real teardown path, so tombstones and directory
+    delisting happen as they would in production), then removes the container
+    directly in case the hub is down or already forgot it.
+    """
+    for phone in list(_PROVISIONED):
+        try:
+            httpx.delete(f"{HUB}/v1/mailbox", headers=phone.auth, timeout=30)
+        except Exception:
+            pass  # hub unreachable — the docker fallback below still applies
+        subprocess.run(["docker", "rm", "-f", _container_name(phone.stonechat_id)],
+                       capture_output=True)
+        _PROVISIONED.remove(phone)
+
+
 class Phone:
     def __init__(self, name):
         self.name = name
@@ -374,15 +407,19 @@ class Phone:
             "signature": b64(self.identity.sign(material).signature),
         })
 
-    def provision(self, country=None):
+    def provision(self, country=None, body=None):
         """Ignite this phone's mailbox.
 
         With `country`, sends the app's own request shape and lets the hub
         resolve it against the catalog and this account's plan — that is the
         path a real device takes, so smoke_prod exercises it rather than a
-        test-only one. Without it, the local Docker provider the e2e run wants.
+        test-only one. With `body`, sends that request verbatim (the fleet
+        case). Without either, the local Docker provider the e2e run wants.
+
+        Every success is recorded for sweep_mailboxes(), so a later assertion
+        failure cannot leave the container running.
         """
-        body = (
+        body = body or (
             {"country": country}
             if country
             else {
@@ -392,6 +429,8 @@ class Phone:
         )
         r = httpx.post(f"{HUB}/v1/mailbox", headers=self.auth, json=body)
         r.raise_for_status()
+        if self not in _PROVISIONED:
+            _PROVISIONED.append(self)
 
     def wait_running(self, timeout=300):
         deadline = time.monotonic() + timeout
@@ -735,6 +774,8 @@ class Phone:
     def destroy(self):
         r = httpx.delete(f"{HUB}/v1/mailbox", headers=self.auth, timeout=30)
         r.raise_for_status()
+        if self in _PROVISIONED:
+            _PROVISIONED.remove(self)
 
 
 def main():
@@ -927,8 +968,7 @@ def main():
                         headers=tess.auth).json()
         assert ent["plan"] == "mailbox" and ent["source"] == "test"
 
-    r = httpx.post(f"{HUB}/v1/mailbox", headers=carol.auth, json=fleet_req)
-    r.raise_for_status()
+    carol.provision(body=fleet_req)
     carol.wait_running()
     assert MX.get(f"{carol.mailbox['address']}/owner",
                   params={"stonechat_id": carol.stonechat_id}).status_code == 200, \
@@ -1522,4 +1562,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        sweep_mailboxes()
