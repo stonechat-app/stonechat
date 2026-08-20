@@ -522,6 +522,37 @@ async fn binary_bodies_survive_the_framing_in_both_directions() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_oversized_body_is_refused_before_it_is_read() {
+    // This transport buffers whole bodies, so its body limit is a memory
+    // limit: a mailbox runs under a cgroup cap and `POST /blob` needs no
+    // token, so without a ceiling anyone who can reach the QUIC port can push
+    // the relay out of its own memory. The declared length is what gets
+    // refused — the bytes are never read, which is the entire point.
+    let (relay, http, conn) = start_relay_ready().await;
+    let _ = (&relay, &http);
+
+    let too_big = 2 * 1024 * 1024; // over the 1 MiB transport ceiling
+    let (mut send, mut recv) = conn.open_bi().await.unwrap().await.unwrap();
+    let header = serde_json::json!({"method": "POST", "path": "/blob", "len": too_big});
+    send.write_all(format!("{header}\n").as_bytes()).await.unwrap();
+    // Deliberately send almost nothing after the header: a relay that waited
+    // for the body before deciding would hang here instead of answering.
+    send.write_all(&[0u8; 64]).await.unwrap();
+
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 4096];
+    while let Ok(Some(n)) = recv.read(&mut chunk).await {
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.contains(&b'\n') {
+            break;
+        }
+    }
+    let line = buf.split(|b| *b == b'\n').next().unwrap().to_vec();
+    let head: Value = serde_json::from_slice(&line).unwrap();
+    assert_eq!(head["status"], 413, "an oversized body must be answered, not dropped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn many_requests_share_one_session() {
     // One stream per request, many in flight: the session is authenticated
     // once at CONNECT and a stream carries no token of its own. If these

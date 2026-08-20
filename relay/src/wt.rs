@@ -54,15 +54,29 @@ use wtransport::{Endpoint, Identity, ServerConfig};
 
 use crate::link::Frame;
 use crate::wtcert::CertSchedule;
-use crate::{AppState, MAX_BLOB_BYTES};
+use crate::AppState;
 
 /// A request header line longer than this is not a header line.
 const MAX_HEADER: usize = 8 * 1024;
 
-/// Matches the axum router's own `DefaultBodyLimit`, so the two cannot
-/// disagree about what is too big — the router would reject it anyway, but
-/// only after this side had already buffered it.
-const MAX_BODY: usize = MAX_BLOB_BYTES + 1024;
+/// The most this transport will hold in memory for one request or response.
+///
+/// **Not** MAX_BLOB_BYTES. Unlike the HTTP path, which streams blobs to and
+/// from disk (blobs.rs), this adapter buffers whole bodies: `read_body`
+/// collects the request before dispatch, and dispatch collects the response
+/// before framing it. At blob size that made one 64 MiB upload cost 64 MiB of
+/// resident memory — and `POST /blob` needs no token while the QUIC port is
+/// open to the internet, so a mailbox could be pushed out of its cgroup by
+/// anyone who could reach it.
+///
+/// 1 MiB keeps the corpus's 300 KB blob round trip working (tests/
+/// webtransport.rs) and every JSON response far inside the limit, while
+/// cutting the per-request cost by 64x. It is a ceiling, not a fix: N
+/// concurrent streams still cost N MiB, and the real answer is to stream both
+/// directions, which the framing already permits because `len` is known
+/// up front in both — see WEB_CLIENT.md. Until then media does not travel
+/// this way, and the web client does not send any (webclient/src/protocol.ts).
+const MAX_BODY: usize = 1024 * 1024;
 
 /// How often to check whether the live certificate has changed. The schedule
 /// rotates on the order of days, so this is cheap; it exists so rotation
@@ -289,6 +303,21 @@ async fn stream(
         return socket(send, recv, rest, state, device).await;
     }
 
+    // Refused before a byte is read, and answered rather than dropped: an
+    // aborted stream is indistinguishable from a network fault, and a client
+    // that cannot tell "too big" from "connection died" retries forever.
+    if len > MAX_BODY {
+        let body = b"{\"detail\":\"body too large for this transport\"}";
+        let head = format!(
+            "{{\"status\":413,\"headers\":{{\"content-type\":\"application/json\"}},\"len\":{}}}\n",
+            body.len()
+        );
+        send.write_all(head.as_bytes()).await.map_err(|e| e.to_string())?;
+        send.write_all(body).await.map_err(|e| e.to_string())?;
+        let _ = send.finish().await;
+        return Err(format!("request body of {len} bytes exceeds the transport limit"));
+    }
+
     let body = read_body(&mut recv, rest, len).await?;
     let response = dispatch(router, method, &path, body).await?;
     send.write_all(&response).await.map_err(|e| e.to_string())?;
@@ -327,6 +356,29 @@ async fn dispatch(
             v.to_str().ok().map(|v| (k.as_str().to_string(), json!(v)))
         })
         .collect();
+    // Checked from the header rather than by buffering and finding out: a blob
+    // download declares its length (routes.rs sets Content-Length), so an
+    // oversized response is refused without ever allocating it. to_bytes still
+    // carries the same ceiling for responses that declare no length.
+    if let Some(declared) = response
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if declared > MAX_BODY {
+            let body = b"{\"detail\":\"response too large for this transport\"}";
+            let mut out = serde_json::to_vec(&json!({
+                "status": 502,
+                "headers": {"content-type": "application/json"},
+                "len": body.len(),
+            }))
+            .map_err(|e| e.to_string())?;
+            out.push(b'\n');
+            out.extend_from_slice(body);
+            return Ok(out);
+        }
+    }
     let bytes = axum::body::to_bytes(response.into_body(), MAX_BODY)
         .await
         .map_err(|e| e.to_string())?;
