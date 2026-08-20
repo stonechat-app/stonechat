@@ -145,6 +145,27 @@ bool certNeedsRefresh(Map<String, dynamic> signed, {DateTime? now}) {
   return expiry.difference(now ?? DateTime.now().toUtc()) < certRefreshWindow;
 }
 
+/// Whether this device must mint itself a new certificate.
+///
+/// Three ways to need one, and the middle is the one that bites: no
+/// certificate, one belonging to a *previous identity*, or one close enough
+/// to expiry that peers should be refetching already.
+///
+/// A certificate from an earlier identity is unexpired and well-formed, so
+/// every freshness check passes and it gets published — where peers verify it
+/// against the current identity key, fail, and see a forged signature.
+/// Nothing looks wrong locally; the break is visible only to whoever tried to
+/// message us. An identity reset is exactly how one is left behind.
+bool certNeedsReminting(
+  Map<String, dynamic>? signed,
+  String? identityId, {
+  DateTime? now,
+}) {
+  if (signed == null || identityId == null) return true;
+  if (signed['stonechat_id'] != identityId) return true;
+  return certNeedsRefresh(signed, now: now);
+}
+
 /// The seal key a certificate names — the target for envelopes to that
 /// device. Null if the certificate does not carry a usable one; callers skip
 /// the device rather than falling back to anything, because there is nothing

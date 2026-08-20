@@ -407,7 +407,7 @@ class AppState extends ChangeNotifier {
   Future<void> ensureOwnCertificate(int deviceId) async {
     final keys = deviceKeys;
     if (keys == null || stonechatId == null) return;
-    if (deviceCert != null && !certNeedsRefresh(deviceCert!)) return;
+    if (!certNeedsReminting(deviceCert, stonechatId)) return;
     if (deviceId != ChatDb.primaryDevice) {
       // Not ours to mint. If it has run out, the user must re-link; saying so
       // is better than quietly failing to publish.
