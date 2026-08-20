@@ -40,7 +40,24 @@ from .local import image_context, image_tag
 
 FLEET_LABEL = "stonechat.fleet=1"
 
-MEMORY_LIMIT = "192m"
+# Measured, not guessed (2026-08-20, on the DE fleet host, with the streaming
+# relay): under 25 concurrent 64 MiB blob downloads, three concurrent uploads,
+# 1200 queued envelopes and mixed traffic, the container's *unreclaimable*
+# working set peaked at ~9 MiB — anon plus slab. Everything above that is page
+# cache, which cgroup v2 charges here but reclaims under pressure rather than
+# OOM-killing. Runs at 48m, 32m and even 24m completed with zero oom_kill, no
+# measurable slowdown (the 0.5 CPU cap dominates) and byte-identical blobs.
+#
+# 192m was inherited from the Python relay and was never revisited after the
+# Rust port; it also could not be lowered while WebTransport buffered whole
+# 64 MiB bodies, which relay/src/wt.rs now bounds at 1 MiB.
+#
+# 48m is deliberately ~5x the measured peak rather than a tight fit: the
+# measurement is minutes long and says nothing about SQLite page cache or
+# allocator drift over months, and the queue reached 1200 of MAX_QUEUE_DEPTH's
+# 10,000. Watch memory.events on live containers — under `--restart
+# unless-stopped` an OOM kill is otherwise silent.
+MEMORY_LIMIT = "48m"
 CPU_LIMIT = "0.5"
 PIDS_LIMIT = "128"
 
