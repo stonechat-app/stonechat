@@ -270,6 +270,34 @@ test('the address is checked AFTER the signature', () => {
   // thing.
   assert.throws(
     () => routeFor(core, entry({ wt_sig: null, wt_address: null }), NOW),
-    /no signed browser-transport certificates/,
+    /no browser-transport certificates yet/,
+  );
+});
+
+test('a mailbox that is off is not reported as a certificate problem', () => {
+  // These read almost the same and mean nothing alike. "No certificates"
+  // sends you to the relay; the truth is that the identity owns no mailbox
+  // at all — switched off, destroyed, or never set up — and nothing about
+  // the relay or this browser is wrong.
+  const off = { ...entry(), mailbox: null };
+  assert.throws(() => routeFor(core, off, NOW), /switched off/);
+  assert.throws(() => routeFor(core, off, NOW), PinRefused);
+});
+
+test('only a missing schedule is worth re-reading the directory for', () => {
+  // Directory entries are cached for the session. A schedule appears the
+  // moment the owner's phone vouches for one, so that refusal has to be
+  // marked as worth retrying — otherwise a browser that resolved during the
+  // gap between ignite and vouch stays broken until the tab is reloaded,
+  // blaming a mailbox that has since fixed itself.
+  const pending = () => routeFor(core, entry({ wt_sig: null }), NOW);
+  assert.throws(pending, (e: unknown) => e instanceof PinRefused && e.transient);
+
+  // A signature that does not verify is not a race: fetching the same entry
+  // again would refuse it again, and retrying would only hide it.
+  const forged = entry({ wt_sig: b64encode(new Uint8Array(64)) });
+  assert.throws(
+    () => routeFor(core, forged, NOW),
+    (e: unknown) => e instanceof PinRefused && !e.transient,
   );
 });

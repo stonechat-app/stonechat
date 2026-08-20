@@ -32,7 +32,7 @@ import { certSealKey, certSigKey, DeviceKeys, randomBytes } from './device.js';
 import { Hub, type DirectoryEntry } from './hub.js';
 import type { LinkGrant } from './linking.js';
 import { Mailbox } from './mailbox.js';
-import { routeFor } from './transport.js';
+import { PinRefused, routeFor } from './transport.js';
 import { store, type Contact } from './store.js';
 
 const PRIMARY_DEVICE = 1;
@@ -134,7 +134,17 @@ export class Protocol {
       // No token: a peer's relay gets none, and the routes it exposes to a
       // stranger are exactly the ones that take none. Our own mailbox's token
       // rides on the individual requests that need it.
-      const mailbox = await this.dial(entry);
+      //
+      // Entries are cached for the session, so one resolved in the gap between
+      // a mailbox igniting and its owner publishing a certificate schedule
+      // would keep this session broken until the tab was reloaded — reporting
+      // a mailbox problem that had already fixed itself. Re-read once when the
+      // refusal says the answer can change, and only then: a bad signature is
+      // not a race, and retrying it would hide it.
+      const mailbox = await this.dial(entry).catch(async (e: unknown) => {
+        if (!(e instanceof PinRefused) || !e.transient) throw e;
+        return this.dial(await this.resolve(ownerId, { refresh: true }));
+      });
       void mailbox.closed.then(() => this.mailboxes.delete(ownerId));
       return mailbox;
     })();
@@ -144,8 +154,11 @@ export class Protocol {
 
   /** A directory entry, checked to commit to the ID we asked for. Cached: a
    * lying hub can only produce a *failed* lookup, and only if someone checks. */
-  private async resolve(stonechatId: string): Promise<DirectoryEntry> {
-    const held = this.directory.get(stonechatId);
+  private async resolve(
+    stonechatId: string,
+    { refresh = false }: { refresh?: boolean } = {},
+  ): Promise<DirectoryEntry> {
+    const held = refresh ? undefined : this.directory.get(stonechatId);
     if (held) return held;
     const entry = await this.hub.directory(stonechatId);
     if (this.core.stonechatId(b64decode(entry.pubkey)) !== entry.stonechat_id) {

@@ -17,9 +17,21 @@ import { b64decode } from './bytes.js';
 import type { DirectoryEntry } from './hub.js';
 
 export class PinRefused extends Error {
-  constructor(message: string) {
+  /**
+   * Whether re-reading the directory could change the answer.
+   *
+   * A schedule that has not been published yet appears the moment the owner's
+   * phone vouches for one — but the entry that said so is cached, so without
+   * this the session stays broken until the tab is reloaded. A refused
+   * signature or a wrong key is not transient: that entry is wrong, and
+   * fetching it again would only refuse it again.
+   */
+  readonly transient: boolean;
+
+  constructor(message: string, options?: { transient?: boolean }) {
     super(message);
     this.name = 'PinRefused';
+    this.transient = options?.transient ?? false;
   }
 }
 
@@ -55,9 +67,23 @@ export function routeFor(
   now = new Date(),
 ): MailboxRoute {
   const mailbox = entry.mailbox;
-  if (!mailbox?.wt_certs || !mailbox.wt_sig) {
+  // Two different situations, and blaming the certificates for both sends
+  // whoever reads it to look at the relay when the relay is fine.
+  if (!mailbox) {
+    // The identity is in the directory but owns no mailbox: switched off,
+    // destroyed, or never set up. Nothing about this browser is wrong.
     throw new PinRefused(
-      'That mailbox publishes no signed browser-transport certificates.',
+      'That mailbox is switched off — its owner needs to turn it back on.',
+    );
+  }
+  if (!mailbox.wt_certs || !mailbox.wt_sig) {
+    // A mailbox exists but its owner has not vouched for a browser-transport
+    // schedule yet. Ordinary and temporary: the phone publishes one shortly
+    // after ignite, so this resolves itself once it is opened.
+    throw new PinRefused(
+      'That mailbox has no browser-transport certificates yet — its owner ' +
+        'needs to open Stonechat.',
+      { transient: true },
     );
   }
   const identityPub = b64decode(entry.pubkey);
