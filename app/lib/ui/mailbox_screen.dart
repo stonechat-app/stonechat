@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../core/api.dart';
 import '../state/app_state.dart';
 import '../state/mailbox_state.dart';
+import 'country_picker.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -47,11 +48,29 @@ class _MailboxScreenState extends State<MailboxScreen> {
   final _extAddress = TextEditingController();
   final _extToken = TextEditingController();
   String? _plan; // live entitlement plan, for the invites entry
+  /// Null while the catalog is in flight; empty when the hub cannot answer.
+  /// Same three states the setup screen distinguishes, for the same reason:
+  /// "still loading" and "this hub has no catalog" must not both fall through
+  /// to placing a mailbox nobody chose the location of.
+  List<MailboxCountry>? _countries;
+  String? _country; // deliberately null: we never pick a jurisdiction for you
 
   @override
   void initState() {
     super.initState();
     _loadPlan();
+    _loadCountries();
+  }
+
+  Future<void> _loadCountries() async {
+    try {
+      final list = await context.read<AppState>().api.getCountries();
+      if (mounted) setState(() => _countries = list);
+    } catch (_) {
+      // Non-fatal: this screen still has to work against a hub that is down
+      // or older than the catalog.
+      if (mounted) setState(() => _countries = const []);
+    }
   }
 
   Future<void> _loadPlan() async {
@@ -129,6 +148,11 @@ class _MailboxScreenState extends State<MailboxScreen> {
                     ? null
                     : () => setState(() => _choice = _Choice.cloud)),
             children: [
+              // The same choice onboarding offers. It lived only there, so a
+              // mailbox turned on from this screen was placed for the user
+              // without them ever seeing the question — the one outcome the
+              // whole feature exists to prevent.
+              ..._countryChooser(mailbox.busy || _pending != null),
               SizedBox(
                 width: double.infinity,
                 height: 48,
@@ -320,6 +344,42 @@ class _MailboxScreenState extends State<MailboxScreen> {
     return entitlement.plan == 'machine' ? 'gcp' : 'fleet';
   }
 
+  /// The picker, plus the framing that must travel with it.
+  ///
+  /// Empty while the catalog is loading or when the hub has none, so a hub
+  /// that cannot answer leaves the card exactly as it was before the picker
+  /// existed rather than showing an empty list.
+  List<Widget> _countryChooser(bool busy) {
+    final countries = _countries;
+    if (countries == null || countries.isEmpty) return const [];
+    return [
+      Text(
+        'Where should it live?',
+        style: TextStyle(
+            color: Zn.text, fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+      const SizedBox(height: 6),
+      Text(
+        'Your mailbox only ever holds encrypted messages, so this choice '
+        "doesn't decide who can read them — nobody can. It decides whose "
+        'laws apply to the machine, and who could seize it.',
+        style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
+      ),
+      const SizedBox(height: 12),
+      CountryPicker(
+        countries: countries,
+        selected: _country,
+        // Countries this plan cannot place into are greyed, not hidden:
+        // "Finland, on the Machine plan" is useful, and a country vanishing
+        // between screens is not.
+        plan: _plan,
+        enabled: !busy,
+        onSelect: (code) => setState(() => _country = code),
+      ),
+      const SizedBox(height: 14),
+    ];
+  }
+
   Future<void> _createCloud(MailboxState mailbox) async {
     setState(() => _pending = _Choice.cloud);
     try {
@@ -330,12 +390,32 @@ class _MailboxScreenState extends State<MailboxScreen> {
         provider = activated && mounted ? await _resolveProvider() : null;
         if (provider == null) return;
       }
-      final d = _providerDefaults[provider] ?? _providerDefaults['gcp']!;
-      await mailbox.create(
-        provider: provider,
-        machineType: d.machineType,
-        region: d.region,
-      );
+      if (_countries == null) {
+        // Catalog still in flight. Refusing beats falling through to the
+        // fallback below, which would place the mailbox without a choice.
+        if (mounted) showZnSnack(context, 'Still loading locations…');
+        return;
+      }
+      if (_countries!.isEmpty) {
+        // Hub unreachable or older than the catalog: degrade to the plan →
+        // provider mapping this screen used before the picker existed, so a
+        // stale hub means "no country choice" rather than "no mailbox".
+        final d = _providerDefaults[provider] ?? _providerDefaults['gcp']!;
+        await mailbox.create(
+          provider: provider,
+          machineType: d.machineType,
+          region: d.region,
+        );
+        _loadPlan();
+        return;
+      }
+      if (_country == null) {
+        if (mounted) {
+          showZnSnack(context, 'Choose where your mailbox should live first');
+        }
+        return;
+      }
+      await mailbox.create(country: _country);
       _loadPlan();
     } on ApiException catch (e) {
       if (!mounted) return;
