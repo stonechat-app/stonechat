@@ -43,9 +43,10 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::http::{Method, Request};
 use axum::Router;
+use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tower::ServiceExt;
@@ -54,29 +55,39 @@ use wtransport::{Endpoint, Identity, ServerConfig};
 
 use crate::link::Frame;
 use crate::wtcert::CertSchedule;
-use crate::AppState;
+use crate::{AppState, MAX_BLOB_BYTES};
 
 /// A request header line longer than this is not a header line.
 const MAX_HEADER: usize = 8 * 1024;
 
-/// The most this transport will hold in memory for one request or response.
+/// The largest body this transport will carry, either direction.
 ///
-/// **Not** MAX_BLOB_BYTES. Unlike the HTTP path, which streams blobs to and
-/// from disk (blobs.rs), this adapter buffers whole bodies: `read_body`
-/// collects the request before dispatch, and dispatch collects the response
-/// before framing it. At blob size that made one 64 MiB upload cost 64 MiB of
-/// resident memory — and `POST /blob` needs no token while the QUIC port is
-/// open to the internet, so a mailbox could be pushed out of its cgroup by
-/// anyone who could reach it.
+/// Blob-sized again, because nothing buffers it any more: the request streams
+/// from the QUIC stream into the router, and a response with a declared length
+/// streams back out. Routes that *do* buffer bound themselves — `/inbox` and
+/// the prekey routes take `Bytes`, so the router's own `DefaultBodyLimit`
+/// still cuts them off long before this.
+const MAX_BODY: usize = MAX_BLOB_BYTES + 1024;
+
+/// What a response may cost in memory when it declares no length.
 ///
-/// 1 MiB keeps the corpus's 300 KB blob round trip working (tests/
-/// webtransport.rs) and every JSON response far inside the limit, while
-/// cutting the per-request cost by 64x. It is a ceiling, not a fix: N
-/// concurrent streams still cost N MiB, and the real answer is to stream both
-/// directions, which the framing already permits because `len` is known
-/// up front in both — see WEB_CLIENT.md. Until then media does not travel
-/// this way, and the web client does not send any (webclient/src/protocol.ts).
-const MAX_BODY: usize = 1024 * 1024;
+/// A blob download sets Content-Length (routes.rs), so it streams. Everything
+/// else here is JSON measured in kilobytes, and buffering those keeps the
+/// framing simple — the header line has to state `len` before the body, and
+/// for a body of unknown size the only honest way to learn it is to hold it.
+const MAX_BUFFERED_RESPONSE: usize = 1024 * 1024;
+
+/// How much of a body moves at once, mirroring the HTTP path's chunk size.
+const CHUNK: usize = 64 * 1024;
+
+/// How long a body may stall before the stream is abandoned.
+///
+/// The header declares a length and the router then waits for that many
+/// bytes, so a client that promises 64 MiB and sends none would otherwise pin
+/// a task for as long as it kept the stream open — cheap for it, unbounded for
+/// us. Generous enough that an ordinary slow upload never trips it: it bounds
+/// silence between chunks, not total transfer time.
+const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How often to check whether the live certificate has changed. The schedule
 /// rotates on the order of days, so this is cheap; it exists so rotation
@@ -211,24 +222,58 @@ async fn read_header(
     }
 }
 
-/// Read exactly `len` more bytes, given whatever already arrived.
-async fn read_body(
-    recv: &mut wtransport::RecvStream,
-    mut have: Vec<u8>,
-    len: usize,
-) -> Result<Vec<u8>, String> {
-    if len > MAX_BODY {
-        return Err(format!("body of {len} bytes exceeds the limit"));
+/// The request body as a stream the router can consume lazily.
+///
+/// This is what keeps a 64 MiB upload from costing 64 MiB here: the handler
+/// pulls chunks, writes them to disk and drops them (blobs.rs), so the bytes
+/// pass through rather than pile up. QUIC's per-stream flow control supplies
+/// the backpressure — a slow disk throttles the sender instead of growing a
+/// buffer.
+///
+/// `have` is whatever arrived in the same read as the header. Exactly `len`
+/// bytes are yielded; a stream that ends early errors rather than handing the
+/// router a short body it would treat as complete.
+fn body_stream(recv: wtransport::RecvStream, have: Vec<u8>, len: usize) -> Body {
+    struct St {
+        recv: wtransport::RecvStream,
+        have: Vec<u8>,
+        len: usize,
+        sent: usize,
     }
-    let mut buf = vec![0u8; 64 * 1024];
-    while have.len() < len {
-        let Some(n) = recv.read(&mut buf).await.map_err(|e| e.to_string())? else {
-            return Err("stream closed mid-body".into());
-        };
-        have.extend_from_slice(&buf[..n]);
-    }
-    have.truncate(len);
-    Ok(have)
+    Body::from_stream(futures_util::stream::unfold(
+        Some(St { recv, have, len, sent: 0 }),
+        |state| async move {
+            let mut st = state?;
+            if st.sent >= st.len {
+                return None;
+            }
+            // Bytes that came in with the header, before anything else.
+            if !st.have.is_empty() {
+                let take = st.have.len().min(st.len - st.sent);
+                let chunk: Vec<u8> = st.have.drain(..take).collect();
+                st.sent += take;
+                return Some((Ok(Bytes::from(chunk)), Some(st)));
+            }
+            let mut buf = vec![0u8; CHUNK];
+            match tokio::time::timeout(BODY_IDLE_TIMEOUT, st.recv.read(&mut buf)).await {
+                Ok(Ok(Some(n))) if n > 0 => {
+                    let take = n.min(st.len - st.sent);
+                    buf.truncate(take);
+                    st.sent += take;
+                    Some((Ok(Bytes::from(buf)), Some(st)))
+                }
+                Ok(Ok(_)) => Some((
+                    Err(std::io::Error::other("stream closed mid-body")),
+                    None,
+                )),
+                Ok(Err(e)) => Some((Err(std::io::Error::other(e.to_string())), None)),
+                Err(_) => Some((
+                    Err(std::io::Error::other("timed out waiting for body")),
+                    None,
+                )),
+            }
+        },
+    ))
 }
 
 /// Accept a session and serve its streams.
@@ -303,9 +348,11 @@ async fn stream(
         return socket(send, recv, rest, state, device).await;
     }
 
-    // Refused before a byte is read, and answered rather than dropped: an
-    // aborted stream is indistinguishable from a network fault, and a client
-    // that cannot tell "too big" from "connection died" retries forever.
+    // Sanity, not memory: nothing buffers the request any more, so this only
+    // refuses a length no route could serve. Answered rather than dropped —
+    // an aborted stream is indistinguishable from a network fault, and a
+    // client that cannot tell "too big" from "connection died" retries
+    // forever.
     if len > MAX_BODY {
         let body = b"{\"detail\":\"body too large for this transport\"}";
         let head = format!(
@@ -318,9 +365,7 @@ async fn stream(
         return Err(format!("request body of {len} bytes exceeds the transport limit"));
     }
 
-    let body = read_body(&mut recv, rest, len).await?;
-    let response = dispatch(router, method, &path, body).await?;
-    send.write_all(&response).await.map_err(|e| e.to_string())?;
+    dispatch(router, method, &path, body_stream(recv, rest, len), &mut send).await?;
     send.finish().await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -332,16 +377,24 @@ async fn stream(
 /// runs the code it already ran, including its extractors, its body limit and
 /// its status codes, so a browser and a phone cannot disagree about what the
 /// relay does.
+///
+/// Writes the reply itself rather than returning it, because a body worth
+/// streaming must not be collected first. The framing already allows this: the
+/// header line states `len` before the body, and a blob download knows its
+/// length from the file (routes.rs sets Content-Length). Responses that
+/// declare no length are JSON in the kilobytes and are still buffered — the
+/// only honest way to state a length you do not know is to hold the body.
 async fn dispatch(
     router: Router,
     method: &str,
     path: &str,
-    body: Vec<u8>,
-) -> Result<Vec<u8>, String> {
+    body: Body,
+    send: &mut wtransport::SendStream,
+) -> Result<(), String> {
     let request = Request::builder()
         .method(Method::from_bytes(method.as_bytes()).map_err(|_| "bad method")?)
         .uri(path)
-        .body(Body::from(body))
+        .body(body)
         .map_err(|e| e.to_string())?;
 
     let response = router
@@ -352,46 +405,48 @@ async fn dispatch(
     let headers: serde_json::Map<String, Value> = response
         .headers()
         .iter()
-        .filter_map(|(k, v)| {
-            v.to_str().ok().map(|v| (k.as_str().to_string(), json!(v)))
-        })
+        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), json!(v))))
         .collect();
-    // Checked from the header rather than by buffering and finding out: a blob
-    // download declares its length (routes.rs sets Content-Length), so an
-    // oversized response is refused without ever allocating it. to_bytes still
-    // carries the same ceiling for responses that declare no length.
-    if let Some(declared) = response
+    let declared = response
         .headers()
         .get(axum::http::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok())
-    {
-        if declared > MAX_BODY {
-            let body = b"{\"detail\":\"response too large for this transport\"}";
-            let mut out = serde_json::to_vec(&json!({
-                "status": 502,
-                "headers": {"content-type": "application/json"},
-                "len": body.len(),
-            }))
-            .map_err(|e| e.to_string())?;
-            out.push(b'\n');
-            out.extend_from_slice(body);
-            return Ok(out);
+        .and_then(|v| v.parse::<usize>().ok());
+
+    let head = |len: usize| -> Result<Vec<u8>, String> {
+        let mut out = serde_json::to_vec(&json!({
+            "status": status, "headers": headers, "len": len,
+        }))
+        .map_err(|e| e.to_string())?;
+        out.push(b'\n');
+        Ok(out)
+    };
+
+    match declared {
+        Some(len) => {
+            send.write_all(&head(len)?).await.map_err(|e| e.to_string())?;
+            let mut stream = response.into_body().into_data_stream();
+            let mut written = 0usize;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(|e| e.to_string())?;
+                written += chunk.len();
+                send.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            }
+            // The header already promised `len`; a body that disagrees would
+            // desynchronise the client's framing for every later stream.
+            if written != len {
+                return Err(format!("declared {len} bytes, wrote {written}"));
+            }
+        }
+        None => {
+            let bytes = axum::body::to_bytes(response.into_body(), MAX_BUFFERED_RESPONSE)
+                .await
+                .map_err(|e| e.to_string())?;
+            send.write_all(&head(bytes.len())?).await.map_err(|e| e.to_string())?;
+            send.write_all(&bytes).await.map_err(|e| e.to_string())?;
         }
     }
-    let bytes = axum::body::to_bytes(response.into_body(), MAX_BODY)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut out = serde_json::to_vec(&json!({
-        "status": status,
-        "headers": headers,
-        "len": bytes.len(),
-    }))
-    .map_err(|e| e.to_string())?;
-    out.push(b'\n');
-    out.extend_from_slice(&bytes);
-    Ok(out)
+    Ok(())
 }
 
 /// The owner socket: drain on connect, delete rows on ack. Same messages the

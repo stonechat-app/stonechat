@@ -523,15 +523,14 @@ async fn binary_bodies_survive_the_framing_in_both_directions() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_oversized_body_is_refused_before_it_is_read() {
-    // This transport buffers whole bodies, so its body limit is a memory
-    // limit: a mailbox runs under a cgroup cap and `POST /blob` needs no
-    // token, so without a ceiling anyone who can reach the QUIC port can push
-    // the relay out of its own memory. The declared length is what gets
-    // refused — the bytes are never read, which is the entire point.
+    // Bodies stream now, so this ceiling is protocol sanity rather than a
+    // memory limit: a length larger than any route could serve is refused
+    // from the header alone. The bytes are never read, which is the point —
+    // a relay that waited for them would hang instead of answering.
     let (relay, http, conn) = start_relay_ready().await;
     let _ = (&relay, &http);
 
-    let too_big = 2 * 1024 * 1024; // over the 1 MiB transport ceiling
+    let too_big = 65 * 1024 * 1024; // over MAX_BLOB_BYTES, so no route could serve it
     let (mut send, mut recv) = conn.open_bi().await.unwrap().await.unwrap();
     let header = serde_json::json!({"method": "POST", "path": "/blob", "len": too_big});
     send.write_all(format!("{header}\n").as_bytes()).await.unwrap();
@@ -550,6 +549,40 @@ async fn an_oversized_body_is_refused_before_it_is_read() {
     let line = buf.split(|b| *b == b'\n').next().unwrap().to_vec();
     let head: Value = serde_json::from_slice(&line).unwrap();
     assert_eq!(head["status"], 413, "an oversized body must be answered, not dropped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blob_larger_than_a_buffer_streams_both_ways() {
+    // The case media needs and the old 1 MiB ceiling forbade. Several MiB is
+    // enough to span many chunks in both directions; the point is not the size
+    // but that nothing along the path holds the whole thing, which is what
+    // lets a mailbox run under a 48m cgroup cap while carrying a photo.
+    let (relay, http, conn) = start_relay_ready().await;
+    let _ = (&relay, &http);
+
+    // A pattern that repeats but never aligns to the 64 KiB chunk size, so a
+    // dropped, duplicated or misordered chunk cannot cancel out.
+    let blob: Vec<u8> = (0..4_000_003u32).map(|i| (i % 251) as u8).collect();
+
+    let (head, body) = request(&conn, "POST", &format!("/blob?token={TOKEN}"), &blob).await;
+    assert_eq!(head["status"], 200, "{:?}", String::from_utf8_lossy(&body));
+    let blob_id = serde_json::from_slice::<Value>(&body).unwrap()["blob_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let (head, got) = request(&conn, "GET", &format!("/blob/{blob_id}?token={TOKEN}"), b"").await;
+    assert_eq!(head["status"], 200);
+    // The header promises a length before the body streams; a mismatch would
+    // desynchronise framing for every later stream on this session.
+    assert_eq!(head["len"].as_u64().unwrap() as usize, blob.len());
+    assert_eq!(got.len(), blob.len(), "length must survive streaming");
+    assert_eq!(got, blob, "bytes must survive streaming");
+
+    // The session is still usable: framing stayed in step through a body far
+    // larger than any buffer on the path.
+    let (head, _) = request(&conn, "GET", &format!("/status?token={TOKEN}"), b"").await;
+    assert_eq!(head["status"], 200, "session unusable after a streamed blob");
 }
 
 #[tokio::test(flavor = "multi_thread")]
