@@ -113,6 +113,34 @@ test('the hybrid seal round-trips, and only for the right seed', () => {
   assert.equal(core.unseal(crypto.getRandomValues(new Uint8Array(32)), sealed), null);
 });
 
+test('a media blob round-trips, and refuses tampered ciphertext', () => {
+  const key = crypto.getRandomValues(new Uint8Array(32));
+  const nonce = crypto.getRandomValues(new Uint8Array(24));
+  // Bigger than one 64 KiB transport chunk: media is the reason this binding
+  // exists, and a photo spans many. A pattern rather than randomness, both
+  // because getRandomValues caps at 65,536 bytes per call and because a
+  // period that does not divide the chunk size cannot hide a lost or
+  // duplicated chunk the way a uniform fill would.
+  const data = new Uint8Array(200_003);
+  for (let i = 0; i < data.length; i++) data[i] = i % 251;
+
+  const sealed = core.blobSeal(key, nonce, data);
+  assert.ok(sealed.length > data.length, 'ciphertext carries a tag');
+  assert.ok(equalBytes(core.blobOpen(key, nonce, sealed)!, data));
+
+  // The key travels inside the session ciphertext, so a wrong one means the
+  // envelope was not ours to read — never a partially rendered attachment.
+  assert.equal(
+    core.blobOpen(crypto.getRandomValues(new Uint8Array(32)), nonce, sealed),
+    null,
+  );
+  // One flipped byte anywhere in the blob must fail the tag, not decode to
+  // garbage a browser would happily try to render.
+  const tampered = sealed.slice();
+  tampered[tampered.length >> 1] ^= 1;
+  assert.equal(core.blobOpen(key, nonce, tampered), null);
+});
+
 test('device certificates verify, expire, and detect tampering', () => {
   const identity = core.identity(SEED_07, false);
   const now = 1_800_000_000;

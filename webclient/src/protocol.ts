@@ -44,6 +44,36 @@ export interface Message {
   mine: boolean;
   text: string;
   sentAt: string;
+  media?: MediaAttachment;
+}
+
+/**
+ * A decrypted attachment, ready to render.
+ *
+ * `url` is an object URL over bytes this tab decrypted — it never points at
+ * the mailbox, which only ever held ciphertext it had no key for. Revoke it
+ * when the message leaves the view; nothing here does that yet, which is
+ * fine while the cap on kept messages is what bounds it.
+ */
+export interface MediaAttachment {
+  url: string;
+  mime: string;
+  kind: string;
+  size: number;
+  name?: string;
+}
+
+/**
+ * The MessageKind the phone uses for this mime type.
+ *
+ * Kept in step with the app's `_mimeFromPath`/`_mediaKindOf` so a photo sent
+ * from a browser arrives on a phone as an image rather than a file.
+ */
+function kindForMime(mime: string): string {
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  return 'file';
 }
 
 /** How many prekeys to keep published. */
@@ -327,6 +357,85 @@ export class Protocol {
   }
 
   /**
+   * Send an attachment.
+   *
+   * The blob is encrypted under a fresh key and parked on the *recipient's*
+   * mailbox, exactly as the phone does it: one upload, then one envelope per
+   * device carrying the key. The mailbox holds ciphertext it has no key for,
+   * so parking it there costs the recipient storage and tells them nothing.
+   *
+   * Uploaded once rather than per device — the envelopes all name the same
+   * blob, and the relay refcounts it, so a two-device peer does not pay twice.
+   */
+  async sendMedia(peerId: string, file: File): Promise<Message> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const key = randomBytes(32);
+    const nonce = randomBytes(24);
+    const ciphertext = this.core.blobSeal(key, nonce, bytes);
+
+    const mailbox = await this.connect(peerId);
+    const uploaded = await mailbox.request('POST', '/blob', ciphertext);
+    if (uploaded.status < 200 || uploaded.status >= 300) {
+      throw new Error(
+        uploaded.status === 413
+          ? 'That file is too large for a mailbox.'
+          : `Could not upload the attachment (${uploaded.status}).`,
+      );
+    }
+    const blobId = String(
+      (JSON.parse(fromUtf8.decode(uploaded.body)) as Record<string, unknown>)[
+        'blob_id'
+      ],
+    );
+
+    const id = crypto.randomUUID();
+    const sentAt = new Date().toISOString();
+    const payload: Record<string, unknown> = {
+      blob_id: blobId,
+      key: b64encode(key),
+      blob_nonce: b64encode(nonce),
+      mime: file.type || 'application/octet-stream',
+      kind: kindForMime(file.type),
+      size: bytes.length,
+      name: file.name,
+    };
+
+    let delivered = 0;
+    let lastError: unknown = null;
+    for (const device of await this.devicesOf(peerId)) {
+      try {
+        await this.sendTo(peerId, device, id, sentAt, 'media', payload, blobId);
+        delivered++;
+      } catch (e) {
+        lastError = e;
+      }
+    }
+    if (delivered === 0) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error('Could not reach any of their devices.');
+    }
+    return {
+      id,
+      peerId,
+      mine: true,
+      text: '',
+      sentAt,
+      media: {
+        // Our own copy comes from the bytes we just read, not from a fetch:
+        // the blob we uploaded is on *their* mailbox and we hold no token for
+        // it. This is also why an attachment we sent survives only as long as
+        // this tab does.
+        url: URL.createObjectURL(new Blob([bytes], { type: file.type })),
+        mime: file.type || 'application/octet-stream',
+        kind: kindForMime(file.type),
+        size: bytes.length,
+        name: file.name,
+      },
+    };
+  }
+
+  /**
    * Mirror one of our own outgoing messages to our other devices.
    *
    * Best-effort, like receipts: a lost sync costs a stale view on one device,
@@ -355,6 +464,76 @@ export class Protocol {
         // A device that is gone or unreachable is not this send's problem.
       }
     }
+  }
+
+  /**
+   * Fetch and decrypt an attachment someone sent us.
+   *
+   * The blob sits on *our* mailbox — the sender parked it there — so this
+   * fetches with our own device token. A blob that does not open is dropped
+   * rather than shown: the key came from inside the session ciphertext, so a
+   * failure means the bytes were tampered with, and rendering "something" for
+   * a message whose contents we could not authenticate is how a chat client
+   * lies to its user.
+   */
+  private async openMedia(
+    inner: Record<string, unknown>,
+    body: Record<string, unknown>,
+    from: string,
+  ): Promise<Message | null> {
+    const blobId = body['blob_id'];
+    const keyB64 = body['key'];
+    const nonceB64 = body['blob_nonce'];
+    if (
+      typeof blobId !== 'string' ||
+      typeof keyB64 !== 'string' ||
+      typeof nonceB64 !== 'string'
+    ) {
+      return null;
+    }
+    const mailbox = await this.ownMailbox();
+    const got = await mailbox.request(
+      'GET',
+      `/blob/${blobId}?token=${encodeURIComponent(this.grant.device_token)}`,
+    );
+    // 404 is ordinary, not an error: the blob is deleted once every device has
+    // acked, so a second device draining later finds it gone.
+    if (got.status !== 200) return null;
+
+    const plain = this.core.blobOpen(
+      b64decode(keyB64),
+      b64decode(nonceB64),
+      got.body,
+    );
+    if (plain === null) return null;
+
+    const mime =
+      typeof body['mime'] === 'string' ? body['mime'] : 'application/octet-stream';
+    // The sender chose this name; a path in it must not survive into a
+    // download attribute (PROTOCOL.md requires receivers to strip one).
+    const name =
+      typeof body['name'] === 'string'
+        ? body['name'].split(/[\\/]/).pop() || undefined
+        : undefined;
+    return {
+      id: String(inner['id']),
+      peerId: from,
+      mine: false,
+      text: '',
+      sentAt: String(inner['sent_at'] ?? new Date().toISOString()),
+      media: {
+        // `.slice()` copies into a buffer the Blob constructor will accept:
+        // what the core hands back is backed by wasm memory, which TypeScript
+        // types as possibly shared.
+        url: URL.createObjectURL(
+          new Blob([plain.slice().buffer as ArrayBuffer], { type: mime }),
+        ),
+        mime,
+        kind: typeof body['kind'] === 'string' ? body['kind'] : kindForMime(mime),
+        size: plain.length,
+        ...(name ? { name } : {}),
+      },
+    };
   }
 
   /** Our own devices, excluding this one. */
@@ -400,6 +579,7 @@ export class Protocol {
     sentAt: string,
     type: string,
     payload: Record<string, unknown>,
+    blobId?: string,
   ): Promise<void> {
     const state = await this.sessionFor(peerId, device);
     // Held from whichever way the session was established: fetched with their
@@ -462,6 +642,10 @@ export class Protocol {
       to: peerId,
       device,
       sealed: b64encode(sealed),
+      // Outside the ciphertext on purpose: the relay cannot read the payload,
+      // so this is how it knows the blob is still referenced. It drops the
+      // blob when the last envelope naming it is acked (blob_refcount).
+      ...(blobId ? { blob_id: blobId } : {}),
     });
   }
 
@@ -544,7 +728,8 @@ export class Protocol {
       if (from !== this.stonechatId) return null;
       return this.fromSyncSent(body);
     }
-    if (type !== 'msg') return null; // slim: text only
+    if (type === 'media') return await this.openMedia(inner, body, from);
+    if (type !== 'msg') return null; // slim: text and media only
     if (typeof body['text'] !== 'string') return null;
     return {
       id: String(inner['id']),

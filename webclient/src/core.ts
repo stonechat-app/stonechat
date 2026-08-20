@@ -442,6 +442,42 @@ export class StonechatCore {
     ])!;
   }
 
+  // -- media blobs --------------------------------------------------------
+
+  /**
+   * Encrypt a media blob under a fresh symmetric key.
+   *
+   * The key and nonce travel inside the (already end-to-end encrypted)
+   * envelope, never with the blob — so the mailbox holding the ciphertext
+   * cannot read it, which is what lets the sender park it on the *recipient's*
+   * box without trusting that box with anything.
+   */
+  blobSeal(key: Uint8Array, nonce: Uint8Array, data: Uint8Array): Uint8Array {
+    fixed(key, 32, 'blob key');
+    fixed(nonce, 24, 'blob nonce');
+    return this.callOut('stonechat_blob_seal', (a) => [
+      a(key),
+      a(nonce),
+      a(data),
+      data.length,
+    ])!;
+  }
+
+  /** Null on tamper or corruption — a blob that does not open is not shown. */
+  blobOpen(
+    key: Uint8Array,
+    nonce: Uint8Array,
+    data: Uint8Array,
+  ): Uint8Array | null {
+    fixed(key, 32, 'blob key');
+    fixed(nonce, 24, 'blob nonce');
+    return this.callOut(
+      'stonechat_blob_open',
+      (a) => [a(key), a(nonce), a(data), data.length],
+      { allowRefused: true },
+    );
+  }
+
   /** Null when the envelope was not sealed to this device (or is garbage). */
   unseal(deviceSealSeed: Uint8Array, sealed: Uint8Array): Uint8Array | null {
     fixed(deviceSealSeed, XWING_SEED, 'x-wing seed');

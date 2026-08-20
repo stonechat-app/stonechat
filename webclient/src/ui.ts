@@ -12,7 +12,7 @@
  * unusable in practice. `store.ts` holds the reasoning and the bound.
  */
 import birdMark from './bird.png';
-import type { Message, Protocol } from './protocol.js';
+import type { MediaAttachment, Message, Protocol } from './protocol.js';
 import { certExpiry } from './device.js';
 import {
   MAX_MESSAGES_PER_CONVERSATION,
@@ -512,7 +512,7 @@ export class App {
     );
     if (!message.mine) who.style.color = idColor(message.peerId);
     meta.append(who, el('span', undefined, time(message.sentAt)));
-    main.append(meta, el('div', 'row__body', message.text));
+    main.append(meta, message.media ? mediaBody(message.media) : el('div', 'row__body', message.text));
     row.append(rail, main);
     return row;
   }
@@ -523,6 +523,32 @@ export class App {
     input.type = 'text';
     input.placeholder = 'Message';
     const send = el('button', undefined, 'Send');
+    // A hidden input rather than a drop zone: one control, no drag-and-drop
+    // state machine, and it is the affordance people already expect.
+    const picker = el('input');
+    picker.type = 'file';
+    picker.style.display = 'none';
+    const attach = el('button', undefined, 'Attach');
+    attach.title = 'Send a photo or file';
+    attach.addEventListener('click', () => picker.click());
+    picker.addEventListener('change', async () => {
+      const file = picker.files?.[0];
+      picker.value = ''; // so the same file can be picked twice in a row
+      if (!file || !this.open) return;
+      attach.disabled = true;
+      const previous = attach.textContent;
+      // Encrypting and uploading a photo is slow enough to look broken
+      // without this, and there is no outbox to show progress anywhere else.
+      attach.textContent = 'Sending…';
+      try {
+        this.push(await this.protocol.sendMedia(this.open, file));
+      } catch (e) {
+        this.setStatus('down', (e as Error).message);
+      } finally {
+        attach.disabled = false;
+        attach.textContent = previous;
+      }
+    });
     const submit = async () => {
       const text = input.value.trim();
       if (!text || !this.open) return;
@@ -544,10 +570,44 @@ export class App {
       if (e.key === 'Enter') void submit();
     });
     send.addEventListener('click', () => void submit());
-    row.append(input, send);
+    row.append(picker, attach, input, send);
     setTimeout(() => input.focus(), 0);
     return row;
   }
+}
+
+/**
+ * Render a decrypted attachment.
+ *
+ * Images render inline; everything else becomes a download link, because a
+ * browser asked to inline an arbitrary mime type from a stranger is a
+ * decision better left to the person receiving it. The name is whatever the
+ * sender chose, already stripped of any path by the protocol layer.
+ */
+function mediaBody(media: MediaAttachment): HTMLElement {
+  const wrap = el('div', 'row__body');
+  if (media.kind === 'image' || media.mime.startsWith('image/')) {
+    const img = el('img') as HTMLImageElement;
+    img.src = media.url;
+    img.alt = media.name ?? 'attachment';
+    img.style.maxWidth = '320px';
+    img.style.maxHeight = '320px';
+    img.style.borderRadius = '8px';
+    img.style.display = 'block';
+    wrap.append(img);
+    return wrap;
+  }
+  const link = el('a', undefined, media.name ?? 'attachment') as HTMLAnchorElement;
+  link.href = media.url;
+  link.download = media.name ?? 'attachment';
+  wrap.append(link, el('span', undefined, ` · ${sizeLabel(media.size)}`));
+  return wrap;
+}
+
+function sizeLabel(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function time(iso: string): string {
