@@ -1930,6 +1930,13 @@ class ChatState extends ChangeNotifier {
       members.where((m) => m.stonechatId != app.stonechatId),
       (m) async => _deliverToMember(m, EnvelopeType.groupCreate, payload),
     );
+    // Our own other devices are not members, so the fan-out above skips them
+    // — and a linked browser was therefore never told a group existed, even
+    // one created on this phone seconds earlier. It could see the messages
+    // (those do sync) and not the roster, so it could read and never reply.
+    // Sending the same payload to our siblings is enough: _applyMembership
+    // accepts it because we are the admin that signed it.
+    unawaited(_syncToSiblings(EnvelopeType.groupCreate, payload));
     return group;
   }
 
@@ -2035,6 +2042,9 @@ class ChatState extends ChangeNotifier {
       recipients,
       (m) async => _deliverToMember(m, EnvelopeType.groupUpdate, payload),
     );
+    // Same reasoning as create: a roster change our own devices never hear
+    // about leaves them holding a membership list that is quietly wrong.
+    unawaited(_syncToSiblings(EnvelopeType.groupUpdate, payload));
   }
 
   Future<Message> sendGroupMessage(
