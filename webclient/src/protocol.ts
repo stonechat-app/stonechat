@@ -965,7 +965,7 @@ export class Protocol {
       // sender is our own identity — which the session already authenticates,
       // since only our own devices hold a ratchet under our SC- ID.
       if (from !== this.stonechatId) return null;
-      return this.fromSyncSent(body);
+      return await this.fromSyncSent(body);
     }
     if (type === 'group_create' || type === 'group_update') {
       // The only way this browser ever learns a roster: nothing server-side
@@ -1032,19 +1032,33 @@ export class Protocol {
   }
 
   /** A message one of our own devices sent, mirrored to us. */
-  private fromSyncSent(payload: Record<string, unknown>): Message | null {
+  private async fromSyncSent(
+    payload: Record<string, unknown>,
+  ): Promise<Message | null> {
+    // A group conversation is keyed by its group id, a DM by the peer's. Both
+    // are ours to render: this used to drop anything with a group_id, from
+    // when groups were not implemented here, which silently threw away every
+    // group message sent from the phone.
     const peerId = (payload['group_id'] ?? payload['peer']) as string | undefined;
     const inner = payload['payload'] as Record<string, unknown> | undefined;
     const id = payload['id'] as string | undefined;
-    // Groups are not implemented here, so a group_id would render a message
-    // into a conversation this client cannot open. Better to drop it.
-    if (!peerId || !inner || !id || payload['group_id']) return null;
-    if ((payload['type'] ?? 'msg') !== 'msg') return null;
-    if (typeof inner['text'] !== 'string') return null;
+    if (!peerId || !inner || !id) return null;
+    const type = String(payload['type'] ?? 'msg');
     const sentAt =
       typeof payload['sent_at'] === 'number'
         ? new Date(payload['sent_at']).toISOString()
         : new Date().toISOString();
+
+    if (type === 'media' || type === 'group_media') {
+      // The sending device parked a copy on *our own* mailbox precisely so a
+      // sibling could fetch it — that is what the fetch token in the payload
+      // opens (chat_state.dart `_syncSentMedia`).
+      const media = await this.fetchGroupMedia(inner, this.stonechatId);
+      if (!media) return null;
+      return { id, peerId, mine: true, text: '', sentAt, media };
+    }
+    if (type !== 'msg' && type !== 'group_msg') return null;
+    if (typeof inner['text'] !== 'string') return null;
     return { id, peerId, mine: true, text: inner['text'], sentAt };
   }
 
