@@ -1531,7 +1531,18 @@ class ChatState extends ChangeNotifier {
     // them, so publishing one without the other leaves peers unable to check
     // either. Minting it here also renews it when it nears expiry.
     await app.ensureOwnCertificate(myDeviceId);
-    if (app.deviceKeys == null) return;
+    if (app.deviceKeys == null) {
+      // Should be unreachable: an identity that exists has device keys, on
+      // every path that can create one. It was reachable once — a freshly
+      // onboarded session had none — and the cost was a mailbox that answered
+      // every bundle request with 404 while the phone looked perfectly
+      // healthy. Silence is what made that expensive, so it is loud now.
+      debugPrint(
+        'stonechat: no device keys — prekeys and certificate NOT published; '
+        'this identity cannot be messaged until they exist',
+      );
+      return;
+    }
 
     final now = DateTime.now().millisecondsSinceEpoch;
 

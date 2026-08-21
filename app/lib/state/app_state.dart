@@ -307,6 +307,14 @@ class AppState extends ChangeNotifier {
     _crypto = crypto;
     stonechatId = result.stonechatId;
     displayName = name;
+    // This device needs its own keys before it can certify itself, and load()
+    // only makes them when an identity is already in storage — which it was
+    // not, a moment ago. Without this the whole session runs with
+    // deviceKeys == null: publishPrekeys() returns early, no certificate and
+    // no prekeys are ever published, and the mailbox answers every bundle
+    // request with 404. Nothing looks wrong here; the identity simply cannot
+    // be written to until the app is restarted.
+    await _loadOrCreateDeviceKeys();
     notifyListeners();
   }
 
@@ -368,6 +376,14 @@ class AppState extends ChangeNotifier {
     _crypto = crypto;
     stonechatId = result.stonechatId;
     displayName = name;
+    // This device needs its own keys before it can certify itself, and load()
+    // only makes them when an identity is already in storage — which it was
+    // not, a moment ago. Without this the whole session runs with
+    // deviceKeys == null: publishPrekeys() returns early, no certificate and
+    // no prekeys are ever published, and the mailbox answers every bundle
+    // request with 404. Nothing looks wrong here; the identity simply cannot
+    // be written to until the app is restarted.
+    await _loadOrCreateDeviceKeys();
     notifyListeners();
   }
 
