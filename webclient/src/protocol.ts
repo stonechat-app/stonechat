@@ -922,11 +922,18 @@ export class Protocol {
     const type = String(inner['type']);
 
     const entry = await this.resolve(from);
-    const contact: Contact = { stonechatId: from, pubkey: entry.pubkey };
-    if (typeof inner['bundle_token'] === 'string') {
-      contact.bundleToken = inner['bundle_token'];
+    // Not for ourselves. Self-sync envelopes arrive *from* our own identity,
+    // so recording every sender as a contact listed us in our own chat list —
+    // a conversation with yourself, which is not a thing this client has.
+    // Nothing needs the record either: sibling devices come from the grant's
+    // bundle token, not from a contact.
+    if (from !== this.stonechatId) {
+      const contact: Contact = { stonechatId: from, pubkey: entry.pubkey };
+      if (typeof inner['bundle_token'] === 'string') {
+        contact.bundleToken = inner['bundle_token'];
+      }
+      store.setContact(contact);
     }
-    store.setContact(contact);
 
     const ad = utf8.encode(
       `stonechat/v1|${from}|${fromDevice}|${this.stonechatId}|${this.deviceId}|${type}`,

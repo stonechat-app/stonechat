@@ -437,7 +437,12 @@ export class App {
       return;
     }
 
-    const contacts = Object.values(store.contacts());
+    // Sessions from before this was fixed hold a contact for our own
+    // identity; filtering here heals them on reload rather than needing an
+    // unlink to clear.
+    const contacts = Object.values(store.contacts()).filter(
+      (c) => c.stonechatId !== this.protocol.stonechatId,
+    );
     if (contacts.length === 0) {
       const empty = el('div', 'mono');
       empty.style.padding = 'var(--gutter)';

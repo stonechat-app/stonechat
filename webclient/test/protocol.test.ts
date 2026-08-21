@@ -22,6 +22,7 @@ import { Hub, type DirectoryEntry } from '../src/hub.js';
 import type { LinkGrant } from '../src/linking.js';
 import type { Mailbox } from '../src/mailbox.js';
 import { Protocol } from '../src/protocol.js';
+import { store } from '../src/store.js';
 import { b64decode, b64encode, utf8 } from '../src/bytes.js';
 import { certSigKey } from '../src/device.js';
 
@@ -462,6 +463,36 @@ async function ownDevices() {
     as,
   };
 }
+
+test('a self-sync does not make us our own contact', async () => {
+  // sync_sent arrives *from* our own identity, and every sender was recorded
+  // as a contact — so a browser listed its own owner as a conversation, with
+  // no messages in it and no way to have any. Nothing needs the record:
+  // sibling devices come from the grant's bundle token.
+  const { me, them, themProtocol, phone: myPhone, browser, as } =
+    await ownDevices();
+  await as('them', () => themProtocol.publishPrekeys());
+  await as('phone', () => myPhone.publishPrekeys());
+  await as('browser', () => browser.publishPrekeys());
+
+  await as('browser', async () => {
+    await browser.send(them.id, 'hello');
+    await browser.whenSynced();
+  });
+  // The phone drains the sync its sibling sent.
+  await as('phone', async () => {
+    for await (const _ of myPhone.receive()) break;
+  });
+
+  const listed = await as('phone', async () => Object.keys(store.contacts()));
+  assert.ok(
+    !listed.includes(me.id),
+    `our own identity must not be a contact, got: ${listed.join(', ')}`,
+  );
+  // Deliberately not asserting the peer is listed here: this device only saw
+  // a sync, and a sync records the conversation, not a contact. The device
+  // that actually talked to them is the one that knows them.
+});
 
 test('a message sent on one device appears on the other', async () => {
   // The bug: replies from a peer reached both devices, but our own outgoing
