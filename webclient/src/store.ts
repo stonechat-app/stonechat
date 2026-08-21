@@ -165,6 +165,21 @@ export const store = {
     write(MESSAGES, all);
   },
 
+  /**
+   * Drop one conversation's messages, keeping the contact and its session.
+   *
+   * Deliberately narrower than [clear]: the ratchet, the peer's certificates
+   * and its display name all survive, so the next message continues the
+   * conversation instead of starting a handshake. Clearing history must not
+   * cost the relationship.
+   */
+  clearConversation(peerId: string): void {
+    const all = store.messages();
+    if (!(peerId in all)) return;
+    delete all[peerId];
+    write(MESSAGES, all);
+  },
+
   /** Forget everything. Used when a link is refused or a device is revoked —
    * leaving a dead ratchet behind would make the next link fail confusingly. */
   clear(): void {

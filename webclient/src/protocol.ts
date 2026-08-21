@@ -78,6 +78,14 @@ function kindForMime(mime: string): string {
 
 /** How many prekeys to keep published. */
 export class Protocol {
+  /**
+   * A conversation was cleared on another of our devices.
+   *
+   * A cleared conversation is not a message, so it cannot come back through
+   * `receive()` — this is how the view learns to drop what it is showing.
+   */
+  onConversationCleared?: (peerId: string) => void;
+
   private readonly directory = new Map<string, DirectoryEntry>();
   /** One mailbox connection per relay address — a peer's relay is reached the
    * same way our own is, and reusing the session across sends is most of the
@@ -809,6 +817,17 @@ export class Protocol {
       // since only our own devices hold a ratchet under our SC- ID.
       if (from !== this.stonechatId) return null;
       return this.fromSyncSent(body);
+    }
+    if (type === 'sync_clear') {
+      // Only ever from ourselves — the session already authenticates that, and
+      // a peer must never be able to erase our history.
+      if (from !== this.stonechatId) return null;
+      const peer = (body['group_id'] ?? body['peer']) as string | undefined;
+      if (peer) {
+        store.clearConversation(peer);
+        this.onConversationCleared?.(peer);
+      }
+      return null;
     }
     if (type === 'media') return await this.openMedia(inner, body, from);
     if (type !== 'msg') return null; // slim: text and media only

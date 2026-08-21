@@ -353,6 +353,13 @@ export class App {
         'live',
         `connected · device ${this.protocol.deviceId} · session ends in ${days}d`,
       );
+      // A clear performed on the phone has to empty the view here too, or the
+      // browser goes on showing history the user believes they deleted — the
+      // one outcome that makes "clear chat" untrustworthy.
+      this.protocol.onConversationCleared = (peerId) => {
+        this.threads.set(peerId, []);
+        this.render();
+      };
       for await (const message of this.protocol.receive()) {
         this.push(message);
       }

@@ -493,6 +493,61 @@ class ChatState extends ChangeNotifier {
     );
   }
 
+  /// Erase one conversation's history on this device, keeping the
+  /// conversation itself: the contact, its session, its device list and its
+  /// display name all survive. "Clear chat" that dropped the contact would be
+  /// "forget this person", which is a different button with a different
+  /// consequence — the session would have to be rebuilt and the peer would see
+  /// a new handshake.
+  ///
+  /// Local by construction. The peer keeps their copy: nothing here reaches
+  /// them, and claiming otherwise would be the one lie a privacy tool must not
+  /// tell. Our *own* devices do converge — see [_syncToSiblings] below, since
+  /// history cleared on the phone but intact on the laptop has not been
+  /// cleared in any sense the user means.
+  Future<void> clearChat(String conversationId) async {
+    final media = await app.db.clearConversation(conversationId);
+    for (final path in media) {
+      try {
+        await File(path).delete();
+      } catch (_) {
+        // Already gone, or never written. Not worth failing the clear over.
+      }
+    }
+    _messages[conversationId] = [];
+    notifyListeners();
+    unawaited(
+      _syncToSiblings(EnvelopeType.syncClear, {
+        if (groupById(conversationId) != null)
+          'group_id': conversationId
+        else
+          'peer': conversationId,
+      }),
+    );
+  }
+
+  /// A sibling cleared this conversation; do the same here.
+  ///
+  /// Idempotent and order-independent: clearing an already-empty conversation
+  /// is a no-op, so a redelivered envelope costs nothing. Deliberately *not*
+  /// timestamped — a clear that raced with a message in flight would either
+  /// need the peer's clock or ours, and both are wrong. The user asked for
+  /// empty; empty is what they get, and anything that arrives afterwards is a
+  /// new conversation.
+  Future<void> _applySyncClear(Map<String, dynamic> payload) async {
+    final conversationId =
+        (payload['group_id'] ?? payload['peer']) as String? ?? '';
+    if (conversationId.isEmpty) return;
+    final media = await app.db.clearConversation(conversationId);
+    for (final path in media) {
+      try {
+        await File(path).delete();
+      } catch (_) {}
+    }
+    _messages[conversationId] = [];
+    notifyListeners();
+  }
+
   /// A sibling read these; catch up locally without re-receipting the peer —
   /// they already got a receipt from the device that did the reading.
   Future<void> _applySyncRead(Map<String, dynamic> payload) async {
@@ -3793,6 +3848,13 @@ class ChatState extends ChangeNotifier {
           return;
         }
         await _applySyncRead(payload);
+
+      case EnvelopeType.syncClear:
+        if (envelope.from != app.stonechatId) {
+          _dropLog(envelope, 'sync from someone else\'s identity');
+          return;
+        }
+        await _applySyncClear(payload);
 
       case EnvelopeType.typing:
         _applyTyping(envelope, payload);

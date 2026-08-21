@@ -97,3 +97,31 @@ test('corrupt history reads as empty rather than throwing', () => {
   localStorage.setItem('stonechat.messages', '{not json');
   assert.deepEqual(store.messages(), {});
 });
+
+
+test('clearing a conversation keeps the contact and the session', () => {
+  // The whole point of "clear chat" rather than "forget this person": drop
+  // the history and keep talking. A clear that took the ratchet with it would
+  // force a handshake the peer can see, which is a different thing entirely.
+  store.setContact({ stonechatId: 'SC-PEER', pubkey: 'AA==' });
+  store.appendMessage({
+    id: 'm1', peerId: 'SC-PEER', mine: true, text: 'one',
+    sentAt: new Date(0).toISOString(),
+  });
+  store.appendMessage({
+    id: 'm2', peerId: 'SC-OTHER', mine: false, text: 'two',
+    sentAt: new Date(0).toISOString(),
+  });
+
+  store.clearConversation('SC-PEER');
+
+  assert.equal(store.messages()['SC-PEER'], undefined, 'history is gone');
+  assert.equal(store.messages()['SC-OTHER']?.length, 1, 'other chats untouched');
+  assert.ok(store.contacts()['SC-PEER'], 'the contact survives');
+});
+
+test('clearing an unknown conversation is a no-op', () => {
+  // Redelivery is normal, so the same sync_clear can arrive twice.
+  store.clearConversation('SC-NOBODY');
+  assert.ok(true);
+});

@@ -412,6 +412,50 @@ class ChatDb {
     await _db.delete('reactions', where: 'message_id = ?', whereArgs: [id]);
   }
 
+  /// Clear one conversation's history, keeping the conversation itself.
+  ///
+  /// The contact row is deliberately untouched: clearing a chat must not cost
+  /// the session, the display name or the peer's device list, or "clear" would
+  /// quietly mean "start a new relationship with this person".
+  ///
+  /// Returns the media paths that were referenced, so the caller can delete
+  /// the files: the rows are the only record of where they live, and dropping
+  /// them first would leave the media orphaned on disk forever — a "clear"
+  /// that leaves the photos behind is the failure this returns them to avoid.
+  Future<List<String>> clearConversation(String conversationId) async {
+    final rows = await _db.query(
+      'messages',
+      columns: ['id', 'media_path'],
+      where: 'contact_id = ?',
+      whereArgs: [conversationId],
+    );
+    final ids = [for (final r in rows) r['id'] as String];
+    final media = [
+      for (final r in rows)
+        if (r['media_path'] != null) r['media_path'] as String,
+    ];
+    await _db.transaction((txn) async {
+      for (final chunk in _chunks(ids)) {
+        final marks = List.filled(chunk.length, '?').join(',');
+        await txn.delete('receipts',
+            where: 'message_id IN ($marks)', whereArgs: chunk);
+        await txn.delete('reactions',
+            where: 'message_id IN ($marks)', whereArgs: chunk);
+      }
+      await txn.delete('messages',
+          where: 'contact_id = ?', whereArgs: [conversationId]);
+    });
+    return media;
+  }
+
+  /// SQLite caps variables per statement (999 by default), and a long-running
+  /// conversation passes that easily.
+  static Iterable<List<String>> _chunks(List<String> ids, [int size = 500]) sync* {
+    for (var i = 0; i < ids.length; i += size) {
+      yield ids.sublist(i, i + size > ids.length ? ids.length : i + size);
+    }
+  }
+
   // -- receipts -----------------------------------------------------------------
 
   /// Record a peer's receipt; read replaces delivered, never the reverse.

@@ -389,6 +389,10 @@ class EnvelopeType {
   // `from` is our own identity, which the session already authenticates.
   static const syncSent = 'sync_sent'; // a copy of an outgoing message
   static const syncRead = 'sync_read'; // read-state convergence
+  /// One conversation's history cleared. Carries no messages — the receiver
+  /// drops what it holds for that peer, which is the only thing that makes
+  /// "clear chat" mean anything on a user who has more than one device.
+  static const syncClear = 'sync_clear';
 }
 
 class ReceiptKind {

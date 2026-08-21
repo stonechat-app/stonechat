@@ -526,6 +526,41 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Wipe this conversation's history here, keeping the conversation.
+  ///
+  /// The dialog says what it does *and* what it does not: people expect
+  /// "clear" to reach the other person, and it never can — their copy is
+  /// theirs. Saying so up front is cheaper than the support conversation
+  /// after, and honest about what a local history actually means.
+  Future<void> _clearChat() async {
+    final chat = context.read<ChatState>();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Zn.surface,
+        title: const Text('Clear this chat?'),
+        content: const Text(
+          'Every message and attachment here is deleted from your devices. '
+          'The conversation and the contact stay, so you can keep talking.\n\n'
+          "The other person keeps their copy — nothing here can reach it.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Clear', style: TextStyle(color: Zn.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await chat.clearChat(conversationId);
+    if (mounted) showZnSnack(context, 'Chat cleared');
+  }
+
   void _showTimerSheet() {
     final chat = context.read<ChatState>();
     showModalBottomSheet<void>(
@@ -1103,6 +1138,10 @@ class _ChatScreenState extends State<ChatScreen> {
                       _showTimerSheet();
                       return;
                     }
+                    if (value == 'clear') {
+                      await _clearChat();
+                      return;
+                    }
                     if (value == 'info') {
                       await Navigator.push(
                         context,
@@ -1146,6 +1185,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     const PopupMenuItem(
                       value: 'timer',
                       child: Text('Disappearing messages'),
+                    ),
+                    const PopupMenuItem(
+                      value: 'clear',
+                      child: Text('Clear chat'),
                     ),
                     if (!isGroup)
                       PopupMenuItem(
