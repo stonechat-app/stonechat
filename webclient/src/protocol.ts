@@ -428,6 +428,14 @@ export class Protocol {
         ? lastError
         : new Error('Could not reach any of their devices.');
     }
+    // Mirror it to our own other devices, exactly as text is mirrored — but a
+    // sibling cannot read the copy we just uploaded: that one lives on the
+    // *recipient's* mailbox and we hold no token for it. So a second copy goes
+    // on our own mailbox with a fetch token beside it, which is the same
+    // shared-blob path group media uses (chat_state.dart `_syncSentMedia`).
+    // Without this a photo sent from the browser simply never appears on the
+    // phone, while the text beside it does.
+    this.syncing = this.syncSentMedia(peerId, id, sentAt, payload, bytes);
     return {
       id,
       peerId,
@@ -446,6 +454,67 @@ export class Protocol {
         name: file.name,
       },
     };
+  }
+
+  /**
+   * Mirror an outgoing attachment to our own other devices.
+   *
+   * Best-effort, like every other sync: the message has already reached the
+   * person it was for, and a sibling that is offline must never make the send
+   * look failed. A sibling copy that cannot be parked means no sync at all —
+   * the phone's rule too, since a sync naming a blob nobody can fetch renders
+   * as an attachment that never loads.
+   */
+  private async syncSentMedia(
+    peerId: string,
+    id: string,
+    sentAt: string,
+    payload: Record<string, unknown>,
+    bytes: Uint8Array,
+  ): Promise<void> {
+    const siblings = await this.siblingDevices();
+    if (siblings.length === 0) return;
+
+    const entry = await this.resolve(this.stonechatId);
+    const host = entry.mailbox?.address;
+    const tlsFp = entry.mailbox?.tls_fp;
+    if (!host || !tlsFp) return;
+
+    // `?shared=1` is what returns a fetch token: the sibling holds no owner
+    // token for this mailbox, and a per-blob capability is all it needs.
+    const own = await this.connect(this.stonechatId);
+    const key = randomBytes(32);
+    const nonce = randomBytes(24);
+    const parked = await own.request(
+      'POST',
+      '/blob?shared=1',
+      this.core.blobSeal(key, nonce, bytes),
+    );
+    if (parked.status < 200 || parked.status >= 300) return;
+    const body = JSON.parse(fromUtf8.decode(parked.body)) as Record<string, unknown>;
+
+    const forSiblings = {
+      ...payload,
+      blob_id: String(body['blob_id']),
+      key: b64encode(key),
+      blob_nonce: b64encode(nonce),
+      fetch_token: String(body['fetch_token'] ?? ''),
+      blob_host: host,
+      blob_tls_fp: tlsFp,
+    };
+    for (const device of siblings) {
+      try {
+        await this.sendTo(this.stonechatId, device, id, sentAt, 'sync_sent', {
+          peer: peerId,
+          type: 'media',
+          payload: forSiblings,
+          id,
+          sent_at: Date.parse(sentAt),
+        });
+      } catch {
+        // A device that is gone or unreachable is not this send's problem.
+      }
+    }
   }
 
   /**
