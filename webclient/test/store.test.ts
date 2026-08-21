@@ -14,6 +14,9 @@ import type { Message } from '../src/protocol.js';
 
 function memoryStorage(): Storage {
   const box: Record<string, string> = {};
+  // `key` and `length` are real here, not stubs. They were `() => null` and
+  // `0`, which made anything that *enumerates* storage untestable — and the
+  // one thing that needs to enumerate it is the code that forgets a session.
   return {
     getItem: (k) => box[k] ?? null,
     setItem: (k, v) => {
@@ -25,8 +28,10 @@ function memoryStorage(): Storage {
     clear: () => {
       for (const k of Object.keys(box)) delete box[k];
     },
-    key: () => null,
-    length: 0,
+    key: (i: number) => Object.keys(box)[i] ?? null,
+    get length() {
+      return Object.keys(box).length;
+    },
   } as Storage;
 }
 
@@ -153,4 +158,29 @@ test('a roster is kept only when it is newer', () => {
   const v3 = { ...v2, version: 3, name: 'Trip 2' };
   assert.equal(store.upsertGroup(v3), true);
   assert.equal(store.groups()['G1']?.name, 'Trip 2');
+});
+
+
+test('unlink leaves nothing of ours behind', () => {
+  // Every store this module writes, including ones added after clear() was
+  // written — which is exactly how group rosters survived an Unlink.
+  store.setDeviceKeys('k');
+  store.setContact({ stonechatId: 'SC-A', pubkey: 'AA==' });
+  store.appendMessage({
+    id: 'm', peerId: 'SC-A', mine: true, text: 'hi',
+    sentAt: new Date(0).toISOString(),
+  });
+  store.upsertGroup({
+    id: 'G', name: 'Trip', admin: 'SC-A', version: 1,
+    members: [{ stonechatId: 'SC-A', pubkey: 'AA==' }],
+  });
+
+  store.clear();
+
+  const ours: string[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k?.startsWith('stonechat.')) ours.push(k);
+  }
+  assert.deepEqual(ours, [], `left behind: ${ours.join(', ')}`);
 });

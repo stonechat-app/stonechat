@@ -38,6 +38,9 @@ import type { SessionState, SignedCert } from './core.js';
 import type { Message } from './protocol.js';
 import type { LinkGrant } from './linking.js';
 
+/// Every key this module owns starts with this, which is what lets [clear]
+/// find them all without being told.
+const NAMESPACE = 'stonechat.';
 const KEYS = 'stonechat.device_keys';
 const GRANT = 'stonechat.grant';
 const SESSIONS = 'stonechat.sessions';
@@ -223,16 +226,18 @@ export const store = {
   /** Forget everything. Used when a link is refused or a device is revoked —
    * leaving a dead ratchet behind would make the next link fail confusingly. */
   clear(): void {
-    for (const key of [
-      KEYS,
-      GRANT,
-      SESSIONS,
-      PEER_CERTS,
-      CONTACTS,
-      PREKEYS,
-      MESSAGES,
-    ]) {
-      localStorage.removeItem(key);
+    // By prefix, not by list. The list had to be updated every time storage
+    // grew, and the first time it was not, Unlink left group rosters — names,
+    // member IDs and their keys — on a browser somebody had just
+    // disconnected. A forgotten key is silent, survives the one action whose
+    // whole job is to forget, and is only ever found by looking in devtools.
+    // Collected first, then removed: removing during the walk shifts every
+    // later index and silently skips half of them.
+    const ours: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(NAMESPACE)) ours.push(key);
     }
+    for (const key of ours) localStorage.removeItem(key);
   },
 };
