@@ -45,6 +45,7 @@ const PEER_CERTS = 'stonechat.peer_certs';
 const CONTACTS = 'stonechat.contacts';
 const PREKEYS = 'stonechat.prekeys';
 const MESSAGES = 'stonechat.messages';
+const GROUPS = 'stonechat.groups';
 
 /**
  * How much of a conversation a browser keeps.
@@ -58,6 +59,27 @@ const MESSAGES = 'stonechat.messages';
 export const MAX_MESSAGES_PER_CONVERSATION = 200;
 
 /** A peer we have exchanged something with. */
+/**
+ * A group, as this browser understands it.
+ *
+ * Groups exist only on members' devices — no hub row, no mailbox row, nothing
+ * server-side to fetch. Everything here arrives in a `group_create` or
+ * `group_update` envelope, which is also why a browser linked *after* a group
+ * was formed knows nothing about it until the roster changes: there is no
+ * request that asks.
+ *
+ * `version` is what makes an out-of-order update safe to drop. Envelopes are
+ * per-device and retried independently, so an older roster can arrive after a
+ * newer one and would otherwise resurrect a removed member.
+ */
+export interface Group {
+  id: string;
+  name: string;
+  admin: string;
+  version: number;
+  members: { stonechatId: string; pubkey: string; displayName?: string }[];
+}
+
 export interface Contact {
   stonechatId: string;
   /** Their identity key, verified to commit to their SC- ID. */
@@ -163,6 +185,24 @@ export const store = {
     }
     all[message.peerId] = thread;
     write(MESSAGES, all);
+  },
+
+  groups: () => read<Record<string, Group>>(GROUPS) ?? {},
+
+  /**
+   * Record a roster, unless we already hold a newer one.
+   *
+   * Returns whether anything changed, so the view only re-renders on real
+   * news. A same-version repeat is ordinary: `group_create` goes to every
+   * device independently and any of them can be redelivered.
+   */
+  upsertGroup(group: Group): boolean {
+    const all = store.groups();
+    const held = all[group.id];
+    if (held && held.version >= group.version) return false;
+    all[group.id] = group;
+    write(GROUPS, all);
+    return true;
   },
 
   /**

@@ -356,6 +356,9 @@ export class App {
       // A clear performed on the phone has to empty the view here too, or the
       // browser goes on showing history the user believes they deleted — the
       // one outcome that makes "clear chat" untrustworthy.
+      // A roster can arrive long after the first message from a group, so the
+      // list has to be able to turn an id into a name without a reload.
+      this.protocol.onGroupsChanged = () => this.render();
       this.protocol.onConversationCleared = (peerId) => {
         this.threads.set(peerId, []);
         this.render();
@@ -442,7 +445,12 @@ export class App {
     const main = el('div');
     main.style.minWidth = '0';
     const meta = el('div', 'row__meta');
-    const who = el('span', 'row__who mono--id', shortId(contact.stonechatId));
+    const group = store.groups()[contact.stonechatId];
+    // Groups share the thread key space with peers, so the id alone cannot say
+    // which this is — a known roster is what turns an id into a name.
+    const who = group
+      ? el('span', 'row__who', group.name)
+      : el('span', 'row__who mono--id', shortId(contact.stonechatId));
     who.style.color = idColor(contact.stonechatId);
     meta.append(who);
     if (last) meta.append(el('span', undefined, time(last.sentAt)));
@@ -480,7 +488,10 @@ export class App {
       this.open = null;
       this.render();
     });
-    const title = el('span', 'mono mono--id', shortId(this.open));
+    const openGroup = store.groups()[this.open];
+    const title = openGroup
+      ? el('span', undefined, openGroup.name)
+      : el('span', 'mono mono--id', shortId(this.open));
     title.style.color = idColor(this.open);
     title.style.fontSize = '13px';
     const full = el('span', 'mono', this.open);
@@ -515,7 +526,7 @@ export class App {
     const who = el(
       'span',
       'row__who',
-      message.mine ? 'you' : shortId(message.peerId),
+      message.mine ? 'you' : shortId(message.sender ?? message.peerId),
     );
     if (!message.mine) who.style.color = idColor(message.peerId);
     meta.append(who, el('span', undefined, time(message.sentAt)));
@@ -562,7 +573,11 @@ export class App {
       input.value = '';
       send.disabled = true;
       try {
-        this.push(await this.protocol.send(this.open, text));
+        this.push(
+          this.protocol.knowsGroup(this.open)
+            ? await this.protocol.sendGroup(this.open, text)
+            : await this.protocol.send(this.open, text),
+        );
       } catch (e) {
         this.setStatus('down', (e as Error).message);
         // Put it back rather than losing what they typed — there is no outbox

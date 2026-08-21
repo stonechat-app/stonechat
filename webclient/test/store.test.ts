@@ -125,3 +125,32 @@ test('clearing an unknown conversation is a no-op', () => {
   store.clearConversation('SC-NOBODY');
   assert.ok(true);
 });
+
+
+test('a roster is kept only when it is newer', () => {
+  const v2 = {
+    id: 'G1', name: 'Trip', admin: 'SC-A', version: 2,
+    members: [{ stonechatId: 'SC-A', pubkey: 'AA==' }],
+  };
+  assert.equal(store.upsertGroup(v2), true, 'first roster is news');
+
+  // Envelopes are per-device and retried independently, so an older roster
+  // arriving after a newer one is ordinary — and applying it would resurrect
+  // whoever the newer one removed.
+  const v1 = {
+    ...v2, version: 1,
+    members: [
+      { stonechatId: 'SC-A', pubkey: 'AA==' },
+      { stonechatId: 'SC-GONE', pubkey: 'BB==' },
+    ],
+  };
+  assert.equal(store.upsertGroup(v1), false, 'older roster is refused');
+  assert.equal(store.groups()['G1']?.members.length, 1, 'removed member stays gone');
+
+  // A same-version repeat is redelivery, not news: no re-render.
+  assert.equal(store.upsertGroup(v2), false, 'same version is not news');
+
+  const v3 = { ...v2, version: 3, name: 'Trip 2' };
+  assert.equal(store.upsertGroup(v3), true);
+  assert.equal(store.groups()['G1']?.name, 'Trip 2');
+});

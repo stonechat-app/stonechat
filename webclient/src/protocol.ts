@@ -40,11 +40,20 @@ const OPK_TARGET = 20;
 
 export interface Message {
   id: string;
+  /** The conversation this belongs to: a peer's SC- ID, or a group's id. */
   peerId: string;
   mine: boolean;
   text: string;
   sentAt: string;
   media?: MediaAttachment;
+  /**
+   * Who actually sent it, when that is not the same as the conversation.
+   *
+   * In a group the conversation is the group and the sender is a member, so a
+   * thread that labelled everything with the conversation id would credit
+   * every message to the group itself.
+   */
+  sender?: string;
 }
 
 /**
@@ -85,6 +94,9 @@ export class Protocol {
    * `receive()` — this is how the view learns to drop what it is showing.
    */
   onConversationCleared?: (peerId: string) => void;
+
+  /** A roster arrived or changed — the conversation list has new names. */
+  onGroupsChanged?: () => void;
 
   private readonly directory = new Map<string, DirectoryEntry>();
   /** One mailbox connection per relay address — a peer's relay is reached the
@@ -378,6 +390,83 @@ export class Protocol {
   }
 
   /**
+   * Send to a group.
+   *
+   * There is no group mailbox: a group message is N pairwise messages, one per
+   * member per device, each sealed to that device exactly as a DM is. That is
+   * what makes a group cost nothing server-side and also why a member we
+   * cannot reach is an ordinary partial failure rather than a broken send.
+   *
+   * Needs the roster, so it only works for a group we have been told about —
+   * see `sendableGroup`.
+   */
+  async sendGroup(groupId: string, text: string): Promise<Message> {
+    const group = store.groups()[groupId];
+    if (!group) {
+      throw new Error(
+        'This browser has not been told who is in that group — send from your phone.',
+      );
+    }
+    const id = crypto.randomUUID();
+    const sentAt = new Date().toISOString();
+    const payload = { group_id: groupId, text };
+
+    let delivered = 0;
+    let lastError: unknown = null;
+    for (const member of group.members) {
+      if (member.stonechatId === this.stonechatId) continue;
+      for (const device of await this.devicesOf(member.stonechatId)) {
+        try {
+          await this.sendTo(
+            member.stonechatId, device, id, sentAt, 'group_msg', payload,
+          );
+          delivered++;
+        } catch (e) {
+          lastError = e;
+        }
+      }
+    }
+    // A group of one is a legitimate state — everyone else left — so an empty
+    // fan-out is not a failure. Nobody *reachable* is.
+    const others = group.members.filter((m) => m.stonechatId !== this.stonechatId);
+    if (delivered === 0 && others.length > 0) {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error('Could not reach anyone in that group.');
+    }
+    // Our own devices see it as a group message, keyed by group rather than
+    // peer — the same shape the phone's _applySyncSent reads.
+    this.syncing = this.syncSentGroup(groupId, id, sentAt, payload);
+    return { id, peerId: groupId, mine: true, text, sentAt };
+  }
+
+  private async syncSentGroup(
+    groupId: string,
+    id: string,
+    sentAt: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    for (const device of await this.siblingDevices()) {
+      try {
+        await this.sendTo(this.stonechatId, device, id, sentAt, 'sync_sent', {
+          group_id: groupId,
+          type: 'group_msg',
+          payload,
+          id,
+          sent_at: Date.parse(sentAt),
+        });
+      } catch {
+        // A sibling that is gone is not this send's problem.
+      }
+    }
+  }
+
+  /** Whether this browser knows enough about a group to send into it. */
+  knowsGroup(groupId: string): boolean {
+    return groupId in store.groups();
+  }
+
+  /**
    * Send an attachment.
    *
    * The blob is encrypted under a fresh key and parked on the *recipient's*
@@ -626,6 +715,59 @@ export class Protocol {
     };
   }
 
+  /**
+   * Fetch a group attachment from wherever the sender parked it.
+   *
+   * Unlike a DM, the blob is not on our mailbox: the sender uploads **one**
+   * copy to their own box and hands every member a per-blob capability, so N
+   * members cost one upload rather than N. That means dialling a mailbox we do
+   * not own, with a token that opens exactly this blob and nothing else
+   * (`fetch_token`, PROTOCOL.md "Group media").
+   */
+  private async fetchGroupMedia(
+    body: Record<string, unknown>,
+    sender: string,
+  ): Promise<MediaAttachment | undefined> {
+    const blobId = body['blob_id'];
+    const token = body['fetch_token'];
+    const keyB64 = body['key'];
+    const nonceB64 = body['blob_nonce'];
+    if (
+      typeof blobId !== 'string' || typeof token !== 'string' ||
+      typeof keyB64 !== 'string' || typeof nonceB64 !== 'string'
+    ) {
+      return undefined;
+    }
+    // Dialled by *owner*, not by the `blob_host` address the payload also
+    // carries: this transport pins against the owner's signed certificate
+    // schedule from the directory, so an address on its own is not something
+    // it can safely connect to. The sender is the owner — they park one copy
+    // on their own mailbox and hand every member a token for it.
+    const mailbox = await this.connect(sender);
+    const got = await mailbox.request(
+      'GET',
+      `/blob/${blobId}?token=${encodeURIComponent(token)}`,
+    );
+    if (got.status !== 200) return undefined;
+    const plain = this.core.blobOpen(b64decode(keyB64), b64decode(nonceB64), got.body);
+    if (plain === null) return undefined;
+    const mime =
+      typeof body['mime'] === 'string' ? body['mime'] : 'application/octet-stream';
+    const name =
+      typeof body['name'] === 'string'
+        ? body['name'].split(/[\\/]/).pop() || undefined
+        : undefined;
+    return {
+      url: URL.createObjectURL(
+        new Blob([plain.slice().buffer as ArrayBuffer], { type: mime }),
+      ),
+      mime,
+      kind: typeof body['kind'] === 'string' ? body['kind'] : kindForMime(mime),
+      size: plain.length,
+      ...(name ? { name } : {}),
+    };
+  }
+
   /** Our own devices, excluding this one. */
   private async siblingDevices(): Promise<number[]> {
     const token = this.grant.bundle_token;
@@ -817,6 +959,47 @@ export class Protocol {
       // since only our own devices hold a ratchet under our SC- ID.
       if (from !== this.stonechatId) return null;
       return this.fromSyncSent(body);
+    }
+    if (type === 'group_create' || type === 'group_update') {
+      // The only way this browser ever learns a roster: nothing server-side
+      // knows groups exist, so there is nothing to ask.
+      const id = body['group_id'];
+      if (typeof id !== 'string') return null;
+      const members = Array.isArray(body['members']) ? body['members'] : [];
+      const changed = store.upsertGroup({
+        id,
+        name: typeof body['name'] === 'string' ? body['name'] : id.slice(0, 8),
+        admin: typeof body['admin'] === 'string' ? body['admin'] : '',
+        version: Number(body['version'] ?? 0),
+        members: members.map((m: Record<string, unknown>) => ({
+          stonechatId: String(m['stonechat_id']),
+          pubkey: String(m['pubkey']),
+          ...(typeof m['display_name'] === 'string'
+            ? { displayName: m['display_name'] }
+            : {}),
+        })),
+      });
+      if (changed) this.onGroupsChanged?.();
+      return null;
+    }
+    if (type === 'group_msg' || type === 'group_media') {
+      const groupId = body['group_id'];
+      if (typeof groupId !== 'string') return null;
+      // A group we have never been told about: still worth showing. The
+      // alternative is silently dropping messages because we were linked after
+      // the group was formed, which looks exactly like delivery being broken.
+      const media =
+        type === 'group_media' ? await this.fetchGroupMedia(body, from) : undefined;
+      if (type === 'group_media' && !media) return null;
+      return {
+        id: String(inner['id']),
+        peerId: groupId,
+        mine: false,
+        text: typeof body['text'] === 'string' ? body['text'] : '',
+        sentAt: String(inner['sent_at'] ?? new Date().toISOString()),
+        sender: from,
+        ...(media ? { media } : {}),
+      };
     }
     if (type === 'sync_clear') {
       // Only ever from ourselves — the session already authenticates that, and
