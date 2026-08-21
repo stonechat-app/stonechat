@@ -163,7 +163,16 @@ export class App {
     compose.setAttribute('aria-label', 'New conversation');
     compose.append(icon(ICON.compose, 18));
     compose.style.marginLeft = 'auto';
-    compose.addEventListener('click', () => this.openCompose());
+    compose.addEventListener('click', () => {
+      if (this.section === 'groups') {
+        // Creating one means choosing contacts and fanning a roster out to
+        // every member's every device. Reading and replying is the useful
+        // half; making that claim without the fan-out would be worse.
+        this.setStatus('warn', 'Groups are created on your phone.');
+        return;
+      }
+      this.openCompose();
+    });
     head.append(this.sidebarTitle, compose);
 
     const note = el('div', 'sidebar__note');
@@ -176,9 +185,14 @@ export class App {
   private setSection(section: Section): void {
     this.section = section;
     this.sidebarTitle.textContent = section === 'chats' ? 'Chats' : 'Groups';
-    // Leaving a conversation open while switching sections would show a DM
-    // under the Groups heading.
-    if (section === 'groups') this.open = null;
+    // Close whatever is open only if it does not belong to the section being
+    // shown — otherwise entering Groups would close the group you just picked.
+    // A conversation is a DM exactly when we hold a contact for it; anything
+    // else keyed in a thread is a group, named or not.
+    if (this.open !== null) {
+      const isDm = this.open in store.contacts();
+      if ((section === 'chats') !== isDm) this.open = null;
+    }
     this.render();
   }
 
@@ -399,14 +413,27 @@ export class App {
     this.listBody.replaceChildren();
 
     if (this.section === 'groups') {
-      // Honest rather than empty: groups exist in the protocol and on the
-      // phone, and simply are not implemented here.
-      const note = el('div', 'mono');
-      note.style.padding = 'var(--gutter)';
-      note.style.color = 'var(--faint)';
-      note.textContent =
-        'groups are not supported in the browser yet — use your phone';
-      this.listBody.append(note);
+      const known = store.groups();
+      // A group we hold messages for but no roster: linked after it was
+      // formed, so nobody has told us who is in it. Listed anyway — hiding it
+      // would look exactly like its messages never arriving.
+      const unknown = [...this.threads.keys()].filter(
+        (id) => !(id in known) && !(id in store.contacts()),
+      );
+      if (Object.keys(known).length === 0 && unknown.length === 0) {
+        const note = el('div', 'mono');
+        note.style.padding = 'var(--gutter)';
+        note.style.color = 'var(--faint)';
+        note.textContent = 'no groups yet — create one on your phone';
+        this.listBody.append(note);
+        return;
+      }
+      for (const group of Object.values(known)) {
+        this.listBody.append(this.groupRow(group.id, group.name, false));
+      }
+      for (const id of unknown) {
+        this.listBody.append(this.groupRow(id, shortId(id), true));
+      }
       return;
     }
 
@@ -468,14 +495,39 @@ export class App {
     return row;
   }
 
+  /**
+   * One group in the list.
+   *
+   * `rosterless` groups are the ones this browser was linked too late to hear
+   * about. They are readable and not sendable, and the label says which —
+   * "no roster" is a fact about us, not about the group.
+   */
+  private groupRow(id: string, label: string, rosterless: boolean): HTMLElement {
+    const row = el('button', 'conv');
+    if (id === this.open) row.classList.add('conv--open');
+    const name = el('span', 'row__who', label);
+    row.append(name);
+    if (rosterless) {
+      const hint = el('span', 'mono', ' · read-only');
+      hint.style.color = 'var(--faint)';
+      hint.title =
+        'Linked after this group was formed, so this browser has not been ' +
+        'told who is in it. It will be, next time the group changes.';
+      row.append(hint);
+    }
+    row.addEventListener('click', () => {
+      this.open = id;
+      this.render();
+    });
+    return row;
+  }
+
   private renderPane(): void {
     this.pane.replaceChildren();
     if (this.open === null) {
       const empty = el('div', 'pane__empty');
       empty.textContent =
-        this.section === 'groups'
-          ? 'groups are not supported in the browser yet'
-          : 'select a conversation';
+        this.section === 'groups' ? 'select a group' : 'select a conversation';
       this.pane.append(empty);
       return;
     }
