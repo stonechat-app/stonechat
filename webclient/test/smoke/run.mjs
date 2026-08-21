@@ -299,6 +299,7 @@ clearTimeout(deadline);
 
 const expected = [
   'core-instantiates',
+  'blob-image-renders',
   'hub-reachable',
   'pins-verify',
   'webtransport-connects',

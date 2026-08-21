@@ -56,6 +56,30 @@ async function main(): Promise<void> {
     return;
   }
 
+  // 1b. A decrypted attachment renders. Media arrives as ciphertext and
+  //     becomes an object URL, so `img-src` has to allow `blob:` — and when it
+  //     does not, the bytes are perfectly fine and the browser simply refuses
+  //     to display them. That failure is invisible to every other check here:
+  //     the core loads, the transport connects, the message arrives, and the
+  //     user sees a broken-image icon. Checked under the page's real policy,
+  //     which is the only place it can be caught.
+  try {
+    const png = Uint8Array.from(atob(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    ), (c) => c.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([png], { type: 'image/png' }));
+    await new Promise<void>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('blocked — img-src must allow blob:'));
+      img.src = url;
+    });
+    URL.revokeObjectURL(url);
+    report('blob-image-renders', true);
+  } catch (e) {
+    report('blob-image-renders', false, String((e as Error).message));
+  }
+
   // 2. A cross-origin call to the hub. Blocked by `connect-src` or by missing
   //    CORS headers, and a browser reports both identically as a bare
   //    TypeError — which is why this is checked separately from anything else.

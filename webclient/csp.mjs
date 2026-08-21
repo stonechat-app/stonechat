@@ -15,7 +15,18 @@ export function csp(extra = '') {
     "script-src 'self' 'wasm-unsafe-eval'",
     "style-src 'self'",
     `connect-src ${connectSrc}`,
-    "img-src 'self' data:",
+    // `blob:` is what an attachment renders from: media arrives as ciphertext,
+    // is decrypted in the page, and becomes an object URL over bytes that never
+    // touched the network in that form. Without it the browser blocks the image
+    // it just decrypted and shows a broken icon — the bytes are fine, the
+    // policy simply forbids displaying them. Not a loosening toward the
+    // network: a blob URL is same-origin and can only name data this page
+    // created.
+    "img-src 'self' data: blob:",
+    // Same, for video and audio elements. `default-src 'none'` means an
+    // absent media-src is a *deny*, so a video attachment would fail the same
+    // way an image did, and only once someone sent one.
+    "media-src blob:",
     "base-uri 'none'",
     "form-action 'none'",
     "frame-ancestors 'none'",
