@@ -144,7 +144,7 @@ All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
   (that's the pin). Set `STONECHAT_HUB_URL` for the default URL, or
   `STONECHAT_RELAY_BINARY_URL` to host it on GCS/GitHub instead (fetched
   anonymously).
-- **Host agent** guest mailboxes build from the same binary; the dedicated-VM
+- **Machine host** guest mailboxes build from the same binary; the dedicated-VM
   startup script writes `/opt/stonechat/relay/` (binary + Dockerfile) for it.
 
 Producing the production artifact (on/for x86_64 Linux):

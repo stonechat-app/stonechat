@@ -1,4 +1,4 @@
-"""Stonechat host agent — "host your circle."
+"""Stonechat machine host — "host your circle."
 
 Runs on a VM the host-owner owns. Lets them host their OWN mailbox plus
 *invited* friends' mailboxes on the one box — a shared host, but only with
@@ -16,22 +16,22 @@ unreadable, but the host-owner — who has root here — can see *that* a guest 
 a mailbox and its traffic metadata. Same exposure as any relay operator; the
 difference is the guest chose a friend as their operator, not a company.
 
-The agent serves pinned TLS just like a mailbox: the invite carries the agent's
+The machine host serves pinned TLS just like a mailbox: the invite carries its
 certificate fingerprint, so the guest's redeem call can't be MITM'd.
 
 Config (env):
-    STONECHAT_HOST_AGENT_ADMIN_TOKEN   admin secret the host-owner holds (required)
-    STONECHAT_HOST_AGENT_ADVERTISE_HOST public host/IP guests connect to (required)
-    STONECHAT_HOST_AGENT_DB            sqlite path (default host_agent.db)
-    STONECHAT_HOST_AGENT_TLS_DIR       cert/key dir (default: the DB's directory)
-    STONECHAT_HOST_AGENT_CAPACITY      max guest mailboxes (default 25)
-    STONECHAT_HOST_AGENT_PORT_BASE     first guest mailbox port; guests are published
-                                  on base..base+capacity-1 (default 42000)
-    STONECHAT_HOST_AGENT_IMAGE         mailbox image (default stonechat-relay:dev)
-    STONECHAT_HOST_AGENT_RELAY_DIR    build context if the image is missing (default ../relay)
-    STONECHAT_HOST_AGENT_RUNTIME       container runtime, e.g. runsc for gVisor (optional)
-    STONECHAT_PUSH_GATEWAY        passed through to guest mailboxes (optional)
-    STONECHAT_HOST_AGENT_PORT          listen port (default 8200)
+    STONECHAT_MACHINE_HOST_ADMIN_TOKEN     admin secret the host-owner holds (required)
+    STONECHAT_MACHINE_HOST_ADVERTISE_HOST  public host/IP guests connect to (required)
+    STONECHAT_MACHINE_HOST_DB              sqlite path (default machine_host.db)
+    STONECHAT_MACHINE_HOST_TLS_DIR         cert/key dir (default: the DB's directory)
+    STONECHAT_MACHINE_HOST_CAPACITY        max guest mailboxes (default 25)
+    STONECHAT_MACHINE_HOST_PORT_BASE       first guest mailbox port; guests are published
+                                           on base..base+capacity-1 (default 42000)
+    STONECHAT_MACHINE_HOST_IMAGE           mailbox image (default stonechat-relay:dev)
+    STONECHAT_MACHINE_HOST_RELAY_DIR       build context if the image is missing (default ../relay)
+    STONECHAT_MACHINE_HOST_RUNTIME         container runtime, e.g. runsc for gVisor (optional)
+    STONECHAT_MACHINE_HOST_PORT            listen port (default 8200)
+    STONECHAT_PUSH_GATEWAY                 passed through to guest mailboxes (optional)
 """
 
 import base64
@@ -51,20 +51,20 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-ADMIN_TOKEN = os.environ["STONECHAT_HOST_AGENT_ADMIN_TOKEN"]
-ADVERTISE_HOST = os.environ["STONECHAT_HOST_AGENT_ADVERTISE_HOST"]
-DB_PATH = os.environ.get("STONECHAT_HOST_AGENT_DB", "host_agent.db")
-TLS_DIR = Path(os.environ.get("STONECHAT_HOST_AGENT_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
-CAPACITY = int(os.environ.get("STONECHAT_HOST_AGENT_CAPACITY", "25"))
-PORT_BASE = int(os.environ.get("STONECHAT_HOST_AGENT_PORT_BASE", "42000"))
-IMAGE = os.environ.get("STONECHAT_HOST_AGENT_IMAGE", "stonechat-relay:dev")
-RELAY_DIR = Path(os.environ.get("STONECHAT_HOST_AGENT_RELAY_DIR",
+ADMIN_TOKEN = os.environ["STONECHAT_MACHINE_HOST_ADMIN_TOKEN"]
+ADVERTISE_HOST = os.environ["STONECHAT_MACHINE_HOST_ADVERTISE_HOST"]
+DB_PATH = os.environ.get("STONECHAT_MACHINE_HOST_DB", "machine_host.db")
+TLS_DIR = Path(os.environ.get("STONECHAT_MACHINE_HOST_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
+CAPACITY = int(os.environ.get("STONECHAT_MACHINE_HOST_CAPACITY", "25"))
+PORT_BASE = int(os.environ.get("STONECHAT_MACHINE_HOST_PORT_BASE", "42000"))
+IMAGE = os.environ.get("STONECHAT_MACHINE_HOST_IMAGE", "stonechat-relay:dev")
+RELAY_DIR = Path(os.environ.get("STONECHAT_MACHINE_HOST_RELAY_DIR",
                                  str(Path(__file__).resolve().parents[1] / "relay")))
-RUNTIME = os.environ.get("STONECHAT_HOST_AGENT_RUNTIME", "")
+RUNTIME = os.environ.get("STONECHAT_MACHINE_HOST_RUNTIME", "")
 PUSH_GATEWAY = os.environ.get("STONECHAT_PUSH_GATEWAY", "")
 SERVER_PORT = 8080
 # Wire protocol version (PROTOCOL.md "Versioning"), reported in /health so a
-# prober can see what this host agent speaks.
+# prober can see what this machine host speaks.
 WIRE_VERSION = 1
 
 FLEET_LABEL = "stonechat.hosted=1"
@@ -81,14 +81,14 @@ STONECHAT_ID_RE = __import__("re").compile(r"^SC-[A-Z2-7-]{36,}$")
 class Tls:
     def __init__(self, directory: Path):
         directory.mkdir(parents=True, exist_ok=True)
-        self.key_file = directory / "host_agent_tls_key.pem"
-        self.cert_file = directory / "host_agent_tls_cert.pem"
+        self.key_file = directory / "machine_host_tls_key.pem"
+        self.cert_file = directory / "machine_host_tls_cert.pem"
         if not (self.key_file.is_file() and self.cert_file.is_file()):
             subprocess.run(
                 ["openssl", "req", "-x509", "-newkey", "ec",
                  "-pkeyopt", "ec_paramgen_curve:prime256v1",
                  "-keyout", str(self.key_file), "-out", str(self.cert_file),
-                 "-days", "36500", "-nodes", "-subj", "/CN=stonechat-host-agent"],
+                 "-days", "36500", "-nodes", "-subj", "/CN=stonechat-machine-host"],
                 check=True, capture_output=True,
             )
             self.key_file.chmod(0o600)
@@ -273,7 +273,7 @@ def _wait_health(address: str) -> str:
 
 store = Store(DB_PATH)
 tls = Tls(TLS_DIR)
-app = FastAPI(title="stonechat-host-agent")
+app = FastAPI(title="stonechat-machine-host")
 
 # Guests get fixed host ports from [PORT_BASE, PORT_BASE + CAPACITY) rather
 # than Docker-ephemeral ones: the range is known before any guest exists (so
@@ -326,15 +326,15 @@ async def health():
     """Unauthenticated liveness + pinning info only. Guest count and capacity
     are occupancy metadata a stranger shouldn't be able to poll — the
     host-owner reads them through the admin-authed /v1/guests instead
-    (PROTOCOL.md "Host agent"). tls_fp stays: it's the certificate hash,
+    (PROTOCOL.md "Machine host"). tls_fp stays: it's the certificate hash,
     already observable from the TLS handshake."""
     return {"status": "ok", "v": WIRE_VERSION, "tls_fp": tls.fingerprint_b64}
 
 
 def _encode_invite(token: str) -> str:
-    """The shareable string: this agent's address + pinned fingerprint + token."""
+    """The shareable string: this host's address + pinned fingerprint + token."""
     blob = {
-        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('STONECHAT_HOST_AGENT_PORT', '8200')}",
+        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('STONECHAT_MACHINE_HOST_PORT', '8200')}",
         "f": tls.fingerprint_b64,
         "t": token,
     }
@@ -346,7 +346,7 @@ def _encode_invite(token: str) -> str:
 @app.post("/v1/invite", dependencies=[Depends(require_admin)])
 async def create_invite(body: InviteIn):
     """Host-owner mints an invite. The returned `invite` string is what a friend
-    scans/pastes — it bundles this agent's address, its TLS fingerprint, and a
+    scans/pastes — it bundles this host's address, its TLS fingerprint, and a
     single-/multi-use token."""
     token = secrets.token_urlsafe(24)
     store.add_invite(token, body.uses, body.ttl_hours * 3600)
@@ -451,6 +451,6 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        app, host="0.0.0.0", port=int(os.environ.get("STONECHAT_HOST_AGENT_PORT", "8200")),
+        app, host="0.0.0.0", port=int(os.environ.get("STONECHAT_MACHINE_HOST_PORT", "8200")),
         ssl_certfile=str(tls.cert_file), ssl_keyfile=str(tls.key_file),
     )

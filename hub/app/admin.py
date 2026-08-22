@@ -43,7 +43,7 @@ class ReasonIn(BaseModel):
 
 
 def _public(mailbox: dict) -> dict:
-    """Never hand back mailbox_token / host_agent_token — this is a report, not
+    """Never hand back mailbox_token / machine_host_token — this is a report, not
     a credential dump, and abuse triage never needs them."""
     return {
         "stonechat_id": mailbox["stonechat_id"],

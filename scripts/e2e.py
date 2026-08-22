@@ -1039,45 +1039,45 @@ def main():
         subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
 
     print("3d) invite-hosted mailbox: host a friend on your own box")
-    agent_dir = pathlib.Path(__file__).resolve().parents[1] / "host_agent"
-    agent_admin = "e2e-agent-admin"
-    agent_port = "8290"
-    agent_data = tempfile.mkdtemp()
-    agent_url = f"https://127.0.0.1:{agent_port}"
-    agent_proc = subprocess.Popen(
-        [sys.executable, str(agent_dir / "main.py")],
+    mh_dir = pathlib.Path(__file__).resolve().parents[1] / "machine_host"
+    mh_admin = "e2e-machine-host-admin"
+    mh_port = "8290"
+    mh_data = tempfile.mkdtemp()
+    mh_url = f"https://127.0.0.1:{mh_port}"
+    mh_proc = subprocess.Popen(
+        [sys.executable, str(mh_dir / "main.py")],
         env={**os.environ,
-             "STONECHAT_HOST_AGENT_ADMIN_TOKEN": agent_admin,
-             "STONECHAT_HOST_AGENT_ADVERTISE_HOST": "127.0.0.1",
-             "STONECHAT_HOST_AGENT_PORT": agent_port,
-             "STONECHAT_HOST_AGENT_DB": os.path.join(agent_data, "agent.db"),
-             "STONECHAT_HOST_AGENT_TLS_DIR": agent_data},
+             "STONECHAT_MACHINE_HOST_ADMIN_TOKEN": mh_admin,
+             "STONECHAT_MACHINE_HOST_ADVERTISE_HOST": "127.0.0.1",
+             "STONECHAT_MACHINE_HOST_PORT": mh_port,
+             "STONECHAT_MACHINE_HOST_DB": os.path.join(mh_data, "machine_host.db"),
+             "STONECHAT_MACHINE_HOST_TLS_DIR": mh_data},
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    admin_hdr = {"Authorization": f"Bearer {agent_admin}"}
+    admin_hdr = {"Authorization": f"Bearer {mh_admin}"}
     try:
         for _ in range(30):
             try:
-                if MX.get(f"{agent_url}/health", timeout=2).status_code == 200:
+                if MX.get(f"{mh_url}/health", timeout=2).status_code == 200:
                     break
             except httpx.HTTPError:
                 time.sleep(0.5)
 
         # admin auth is enforced on invite minting
-        assert MX.post(f"{agent_url}/v1/invite", json={"uses": 1}).status_code == 401
+        assert MX.post(f"{mh_url}/v1/invite", json={"uses": 1}).status_code == 401
 
         # host-owner mints a single-use invite
-        r = MX.post(f"{agent_url}/v1/invite", headers=admin_hdr,
+        r = MX.post(f"{mh_url}/v1/invite", headers=admin_hdr,
                     json={"uses": 1, "ttl_hours": 24})
         r.raise_for_status()
         blob = r.json()["invite"]
         assert blob.startswith("stonechat-host:")
         invite = json.loads(base64.urlsafe_b64decode(blob.split(":", 1)[1] + "=="))
-        assert invite["f"] == live_cert_fp(agent_url), \
-            "invite must pin the host agent's real certificate"
+        assert invite["f"] == live_cert_fp(mh_url), \
+            "invite must pin the machine host's real certificate"
 
         # a bad token is rejected
-        assert MX.post(f"{agent_url}/v1/redeem",
+        assert MX.post(f"{mh_url}/v1/redeem",
                        json={"invite": "not-a-real-invite-token",
                              "owner_id": "SC-" + "A" * 36}
                        ).status_code == 403
@@ -1085,7 +1085,7 @@ def main():
         # frank redeems it -> a mailbox on the host-owner's box
         frank = Phone("frank")
         frank.register()
-        r = MX.post(f"{agent_url}/v1/redeem",
+        r = MX.post(f"{mh_url}/v1/redeem",
                     json={"invite": invite["t"], "owner_id": frank.stonechat_id})
         r.raise_for_status()
         hosted = r.json()
@@ -1110,13 +1110,13 @@ def main():
         # single-use: a second redeem of the same invite fails
         grace = Phone("grace")
         grace.register()
-        assert MX.post(f"{agent_url}/v1/redeem",
+        assert MX.post(f"{mh_url}/v1/redeem",
                        json={"invite": invite["t"], "owner_id": grace.stonechat_id}
                        ).status_code == 403, "single-use invite must not redeem twice"
 
         # the host-owner sees sent-invite status: who accepted, uses left
-        assert MX.get(f"{agent_url}/v1/invites").status_code == 401
-        r = MX.get(f"{agent_url}/v1/invites", headers=admin_hdr)
+        assert MX.get(f"{mh_url}/v1/invites").status_code == 401
+        r = MX.get(f"{mh_url}/v1/invites", headers=admin_hdr)
         r.raise_for_status()
         mine = [i for i in r.json()["invites"] if i["invite"] == blob]
         assert mine and mine[0]["uses"] == 1 and mine[0]["uses_left"] == 0 \
@@ -1124,15 +1124,15 @@ def main():
             "invite status must record frank's redemption"
 
         # host-owner evicts frank -> his container is destroyed
-        MX.delete(f"{agent_url}/v1/guest/{frank.stonechat_id}",
+        MX.delete(f"{mh_url}/v1/guest/{frank.stonechat_id}",
                   headers=admin_hdr).raise_for_status()
         httpx.delete(f"{HUB}/v1/mailbox", headers=frank.auth)  # tidy the directory
     finally:
-        agent_proc.terminate()
+        mh_proc.terminate()
         try:
-            agent_proc.wait(timeout=5)
+            mh_proc.wait(timeout=5)
         except Exception:
-            agent_proc.kill()
+            mh_proc.kill()
         leftover = subprocess.run(
             ["docker", "ps", "-aq", "--filter", "label=stonechat.hosted=1"],
             capture_output=True, text=True).stdout.split()
@@ -1414,7 +1414,7 @@ def main():
     hit = next(s for s in r.json()["mailboxes"] if s["stonechat_id"] == mallory.stonechat_id)
     assert hit["provider"] == "local" and hit["prior_destroys"] == 0
     assert hit["banned_at"] is None
-    assert "mailbox_token" not in r.text and "host_agent_token" not in r.text, \
+    assert "mailbox_token" not in r.text and "machine_host_token" not in r.text, \
         "triage output must not hand back credentials"
 
     # exact host match, not a substring: 27.0.0.1 must not resolve to 127.0.0.1's

@@ -2,8 +2,8 @@
 
 ⚠️ KNOWN-BROKEN for dedicated-VM provisioning (see TODO.md "AWS provider is
 dead code"): EC2 caps user-data at 16 KB and the dedicated startup script
-(host agent included) is ~30 KB even with gzipped payloads, so run_instances
-rejects it. EC2's 1:1 NAT also breaks the host agent's from-inside guest
+(machine host included) is ~30 KB even with gzipped payloads, so run_instances
+rejects it. EC2's 1:1 NAT also breaks the machine host's from-inside guest
 health checks (no hairpin to the instance's own public IP). Needs a
 fetch-stub user-data + the localhost health-check fix before it can work.
 
@@ -19,7 +19,7 @@ import time
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
 from .bootstrap import (
     GUEST_PORT_RANGE,
-    HOST_AGENT_PORT,
+    MACHINE_HOST_PORT,
     SERVER_PORT,
     TURN_PORT,
     TURN_RELAY_PORTS,
@@ -57,7 +57,7 @@ class AWSProvider(CloudProvider):
             MaxCount=1,
             SecurityGroupIds=[sg_id],
             UserData=build_startup_script(
-                req.owner_id, req.owner_token, req.host_agent_token
+                req.owner_id, req.owner_token, req.machine_host_token
             ),
             BlockDeviceMappings=[
                 {
@@ -144,8 +144,8 @@ class AWSProvider(CloudProvider):
             },
             {
                 "IpProtocol": "tcp",
-                "FromPort": HOST_AGENT_PORT,
-                "ToPort": HOST_AGENT_PORT,
+                "FromPort": MACHINE_HOST_PORT,
+                "ToPort": MACHINE_HOST_PORT,
                 "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
             },
             {

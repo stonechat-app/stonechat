@@ -24,12 +24,12 @@ Where the binary comes from (hub env):
                            https://hub.stonechat.app) — needed only to build
                            the default URL above.
 
-Dedicated (Machine plan) VMs additionally get the **host agent** pre-installed
-(PROTOCOL.md "Host agent"): the hub mints an admin token, bakes it into the
+Dedicated (Machine plan) VMs additionally get the **machine host** pre-installed
+(PROTOCOL.md "Machine host"): the hub mints an admin token, bakes it into the
 startup script, and the owner's app connects to `https://<vm>:8200` to mint
-invites — no SSH required. The agent is still Python, so its section installs
+invites — no SSH required. It is still Python, so its section installs
 a venv; its guest-mailbox build context is the fetched relay binary plus a
-two-line Dockerfile. Agent install is best-effort: a VM where Docker or pip
+two-line Dockerfile. That install is best-effort: a VM where Docker or pip
 fails still routes its owner's mail.
 """
 
@@ -43,7 +43,7 @@ from pathlib import Path
 from ..pushkey import mint_push_key
 from .base import ProviderError
 
-_HOST_AGENT_SOURCE = Path(__file__).resolve().parents[3] / "host_agent" / "main.py"
+_MACHINE_HOST_SOURCE = Path(__file__).resolve().parents[3] / "machine_host" / "main.py"
 
 # Runtime image for a relay container built from a prebuilt binary — the same
 # stage relay/Dockerfile ends in. Shared with the local/fleet providers.
@@ -73,7 +73,7 @@ echo "{binary_sha256}  /opt/stonechat/stonechat-relay" | sha256sum -c -
 chmod +x /opt/stonechat/stonechat-relay
 
 # Cloud VMs sit behind 1:1 NAT — services must advertise the public address
-# (coturn below, and the host agent's invite URLs).
+# (coturn below, and the machine host's invite URLs).
 PUBLIC_IP=$(curl -s --max-time 3 -H "Metadata-Flavor: Google" \\
   "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \\
   2>/dev/null || true)
@@ -141,12 +141,12 @@ UNIT_EOF
 
 systemctl daemon-reload
 systemctl enable --now stonechat
-{host_agent_section}"""
+{machine_host_section}"""
 
 # Appended after the mailbox is up so the hub's health poll never waits on
-# Docker/pip installs. The agent itself is still Python.
-_HOST_AGENT_TEMPLATE = """
-# ---- host agent ("host your circle") ----------------------------------------
+# Docker/pip installs. The machine host itself is still Python.
+_MACHINE_HOST_TEMPLATE = """
+# ---- machine host ("host your circle") --------------------------------------
 # Best-effort from here on: the owner's mailbox is already serving.
 set +e
 
@@ -156,10 +156,10 @@ cp /opt/stonechat/stonechat-relay /opt/stonechat/relay/stonechat-relay
 cat > /opt/stonechat/relay/Dockerfile <<'DOCKER_EOF'
 {runtime_dockerfile}DOCKER_EOF
 
-cat > /opt/stonechat/host_agent.py.gz.b64 <<'STONECHAT_EOF'
-{host_agent_b64}
+cat > /opt/stonechat/machine_host.py.gz.b64 <<'STONECHAT_EOF'
+{machine_host_b64}
 STONECHAT_EOF
-base64 -d /opt/stonechat/host_agent.py.gz.b64 | gunzip > /opt/stonechat/host_agent.py
+base64 -d /opt/stonechat/machine_host.py.gz.b64 | gunzip > /opt/stonechat/machine_host.py
 
 if command -v apt-get >/dev/null; then
   apt-get install -y docker.io python3-venv
@@ -171,21 +171,21 @@ systemctl enable --now docker
 python3 -m venv /opt/stonechat/venv
 /opt/stonechat/venv/bin/pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.32" "httpx>=0.27"
 
-cat > /etc/systemd/system/stonechat-host-agent.service <<UNIT_EOF
+cat > /etc/systemd/system/stonechat-machine-host.service <<UNIT_EOF
 [Unit]
-Description=Stonechat host agent
+Description=Stonechat machine host
 After=network-online.target docker.service
 Requires=docker.service
 
 [Service]
-Environment=STONECHAT_HOST_AGENT_ADMIN_TOKEN={host_agent_token}
-Environment=STONECHAT_HOST_AGENT_ADVERTISE_HOST=$PUBLIC_IP
-Environment=STONECHAT_HOST_AGENT_PORT={host_agent_port}
-Environment=STONECHAT_HOST_AGENT_DB=/var/lib/stonechat/host_agent.db
-Environment=STONECHAT_HOST_AGENT_TLS_DIR=/var/lib/stonechat
-Environment=STONECHAT_HOST_AGENT_RELAY_DIR=/opt/stonechat/relay
+Environment=STONECHAT_MACHINE_HOST_ADMIN_TOKEN={machine_host_token}
+Environment=STONECHAT_MACHINE_HOST_ADVERTISE_HOST=$PUBLIC_IP
+Environment=STONECHAT_MACHINE_HOST_PORT={machine_host_port}
+Environment=STONECHAT_MACHINE_HOST_DB=/var/lib/stonechat/machine_host.db
+Environment=STONECHAT_MACHINE_HOST_TLS_DIR=/var/lib/stonechat
+Environment=STONECHAT_MACHINE_HOST_RELAY_DIR=/opt/stonechat/relay
 Environment=STONECHAT_PUSH_GATEWAY={push_gateway}
-ExecStart=/opt/stonechat/venv/bin/python /opt/stonechat/host_agent.py
+ExecStart=/opt/stonechat/venv/bin/python /opt/stonechat/machine_host.py
 Restart=always
 RestartSec=2
 
@@ -194,7 +194,7 @@ WantedBy=multi-user.target
 UNIT_EOF
 
 systemctl daemon-reload
-systemctl enable --now stonechat-host-agent
+systemctl enable --now stonechat-machine-host
 """
 
 SERVER_PORT = 8080
@@ -245,11 +245,11 @@ def replace_ports(args: list[str], tcp: int, udp: int) -> list[str]:
 
 TURN_PORT = 3478
 TURN_RELAY_PORTS = (49152, 65535)  # coturn's default ephemeral relay range
-HOST_AGENT_PORT = 8200
-# The host agent publishes guest mailboxes on fixed ports from
-# STONECHAT_HOST_AGENT_PORT_BASE (default 42000..42000+capacity-1, inside this
+MACHINE_HOST_PORT = 8200
+# The machine host publishes guest mailboxes on fixed ports from
+# STONECHAT_MACHINE_HOST_PORT_BASE (default 42000..42000+capacity-1, inside this
 # range). The firewall rule stays the historical Docker-ephemeral range —
-# it covers the agent's range and matches what deployed VMs already have open.
+# it covers the machine host's range and matches what deployed VMs already have open.
 GUEST_PORT_RANGE = (32768, 60999)
 
 
@@ -293,16 +293,16 @@ def _gz_b64(data: bytes) -> str:
 
 
 def build_startup_script(
-    owner_id: str, owner_token: str, host_agent_token: str | None = None
+    owner_id: str, owner_token: str, machine_host_token: str | None = None
 ) -> str:
     push_gateway = os.environ.get("STONECHAT_PUSH_GATEWAY", "")
-    host_agent_section = ""
-    if host_agent_token:
-        host_agent_section = _HOST_AGENT_TEMPLATE.format(
+    machine_host_section = ""
+    if machine_host_token:
+        machine_host_section = _MACHINE_HOST_TEMPLATE.format(
             runtime_dockerfile=RELAY_RUNTIME_DOCKERFILE,
-            host_agent_b64=_gz_b64(_HOST_AGENT_SOURCE.read_bytes()),
-            host_agent_token=host_agent_token,
-            host_agent_port=HOST_AGENT_PORT,
+            machine_host_b64=_gz_b64(_MACHINE_HOST_SOURCE.read_bytes()),
+            machine_host_token=machine_host_token,
+            machine_host_port=MACHINE_HOST_PORT,
             push_gateway=push_gateway,
         )
     # Hub-served downloads authenticate with the mailbox_token this script
@@ -323,5 +323,5 @@ def build_startup_script(
         turn_port=TURN_PORT,
         turn_min_port=TURN_RELAY_PORTS[0],
         turn_max_port=TURN_RELAY_PORTS[1],
-        host_agent_section=host_agent_section,
+        machine_host_section=machine_host_section,
     )

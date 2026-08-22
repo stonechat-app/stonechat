@@ -30,7 +30,7 @@ See PROTOCOL.md (notes/docs/PROTOCOL.md, internal) for the full wire protocol an
 | `relay/` | The mailbox program ("relay" = the software, "mailbox" = one running instance). Rust + SQLite; a static binary that runs on the user's VM. Stores ciphertext only, deletes on ack. |
 | `hub/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Stonechat IDs → pubkeys + current relay address. Never sees message content. |
 | `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
-|  `host_agent/` | Host agent ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
+|  `machine_host/` | Machine host ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
 | `agent_client/` | Agent client. A headless **device** on a user's identity — links like a phone or a browser tab, holds no identity secret, runs unattended on a server. Rust, links `core` directly. |
 
 Marketing site lives in its own private repo: `stonechat-app/landing`.
@@ -78,23 +78,23 @@ if the mailbox at that address reports *your* Stonechat ID as its owner.
 ### Host your circle (one box, invited friends)
 
 Want to self-host for yourself **and a few friends** without each of them
-running a machine? Run the **host agent** (`host_agent/`) on one box you own.
+running a machine? Run the **machine host** (`machine_host/`) on one box you own.
 It hosts your mailbox plus a container-per-friend — each with its own port,
 token, TLS cert, and resource caps — and it's the only thing on the box with
 Docker access; the hub never touches this machine.
 
 ```bash
-cd host_agent
+cd machine_host
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-STONECHAT_HOST_AGENT_ADMIN_TOKEN=$(openssl rand -hex 24) \
-STONECHAT_HOST_AGENT_ADVERTISE_HOST=<your-public-ip> \
+STONECHAT_MACHINE_HOST_ADMIN_TOKEN=$(openssl rand -hex 24) \
+STONECHAT_MACHINE_HOST_ADVERTISE_HOST=<your-public-ip> \
   .venv/bin/python main.py            # pinned TLS on :8200
 ```
 
-Open ports **8200** (the agent) and **42000–42024** (guest mailboxes) in your
+Open ports **8200** (the machine host) and **42000–42024** (guest mailboxes) in your
 firewall or home router. In the app: Mailbox → **Host friends on your machine** →
-enter the agent's address + admin token → **Create an invite** → share the
+enter its address + admin token → **Create an invite** → share the
 `stonechat-host:…` string. Friends install the app, forge an identity, and paste it
 under **Join a friend's host** — their mailbox appears in the directory as an
 ordinary self-hosted relay, and its token stays on their phone. Exchange Stonechat
@@ -103,7 +103,7 @@ IDs and chat.
 Message content stays end-to-end encrypted — unreadable even to the
 host-owner — but the host-owner can see that a friend hosts there and their
 traffic metadata, like any relay operator. Details, API, and the full trust
-model: [host_agent/README.md](host_agent/README.md).
+model: [machine_host/README.md](machine_host/README.md).
 
 ### Running your own hub (a private network)
 

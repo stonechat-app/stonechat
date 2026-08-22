@@ -325,11 +325,11 @@ works.
 
 ## Host friends on your box ("host your circle")
 
-Want your VM to also host a few friends' mailboxes? Run the **host agent**
-(`host_agent/README.md`) alongside the hub — it mints invites and spins up
+Want your VM to also host a few friends' mailboxes? Run the **machine host**
+(`machine_host/README.md`) alongside the hub — it mints invites and spins up
 a container per invited friend on the same box, each end-to-end encrypted and
-unreadable to you. Open port 8200 (host agent) plus the guest mailbox ports
-(42000–42024 by default; `STONECHAT_HOST_AGENT_PORT_BASE`), and share
+unreadable to you. Open port 8200 (machine host) plus the guest mailbox ports
+(42000–42024 by default; `STONECHAT_MACHINE_HOST_PORT_BASE`), and share
 invites from the app ("Host friends on your machine"). Friends redeem with
 "Join a friend's host."
 

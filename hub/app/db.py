@@ -57,7 +57,7 @@ class Store:
                 resource_id  TEXT,
                 address      TEXT,
                 mailbox_token TEXT,
-                host_agent_token TEXT,             -- dedicated VMs: agent admin secret
+                machine_host_token TEXT,           -- dedicated VMs: admin secret
                 tls_fp       TEXT,                 -- relay cert fingerprint (observed)
                 tls_sig      TEXT,                 -- owner's signature over it
                 wt_address   TEXT,                 -- host:port of the browser transport (UDP)
@@ -323,6 +323,15 @@ class Store:
         ):
             if column not in have:
                 self._db.execute(ddl)
+        # host_agent → machine_host (2026-08 component rename). RENAME, not the
+        # ADD COLUMN the block above uses: adding an empty machine_host_token
+        # would strand every dedicated VM's agent admin secret in the old
+        # column, and the owner's app could no longer mint or evict guests.
+        if "host_agent_token" in have and "machine_host_token" not in have:
+            self._db.execute(
+                "ALTER TABLE mailboxes"
+                " RENAME COLUMN host_agent_token TO machine_host_token"
+            )
         # Plan rename (2026-08): private → mailbox, sovereign → machine. The
         # ids are a clean break — billing.PLANS no longer accepts the old
         # spellings — so rows written before the rename have to be rewritten
@@ -411,15 +420,15 @@ class Store:
     # -- mailboxes -------------------------------------------------------------
 
     def create_mailbox(self, stonechat_id: str, provider: str, machine: dict, mailbox_token: str,
-                      host_agent_token: str | None = None) -> bool:
+                      machine_host_token: str | None = None) -> bool:
         """Atomically claim the one-mailbox-per-user slot. False if occupied."""
         try:
             self._db.execute(
                 "INSERT INTO mailboxes (stonechat_id, provider, status, machine, mailbox_token,"
-                " host_agent_token, created_at)"
+                " machine_host_token, created_at)"
                 " VALUES (?, ?, 'provisioning', ?, ?, ?, ?)",
                 (stonechat_id, provider, json.dumps(machine), mailbox_token,
-                 host_agent_token, _now()),
+                 machine_host_token, _now()),
             )
             return True
         except sqlite3.IntegrityError:
