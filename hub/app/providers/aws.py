@@ -1,11 +1,14 @@
 """AWS EC2 provider.
 
 ⚠️ KNOWN-BROKEN for dedicated-VM provisioning (see TODO.md "AWS provider is
-dead code"): EC2 caps user-data at 16 KB and the dedicated startup script
-(machine host included) is ~30 KB even with gzipped payloads, so run_instances
-rejects it. EC2's 1:1 NAT also breaks the machine host's from-inside guest
-health checks (no hairpin to the instance's own public IP). Needs a
-fetch-stub user-data + the localhost health-check fix before it can work.
+dead code"): EC2's 1:1 NAT breaks the machine host's from-inside guest health
+checks (no hairpin to the instance's own public IP), so every invite
+redemption times out. Needs the localhost health-check fix before it can work.
+
+The *size* blocker is gone: EC2 caps user-data at 16 KiB and the dedicated
+script was ~30 KB when it embedded the relay, but the fetch-stub rewrite
+brought it to ~15 KB. Under the cap by 1.4 KB, which is thin enough that this
+provider wants the same explicit check DigitalOcean and Hetzner make.
 
 Auth: standard boto3 credential chain (env vars, ~/.aws/credentials, IAM role).
 

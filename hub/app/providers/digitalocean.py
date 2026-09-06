@@ -16,9 +16,9 @@ Networking notes, and why DO is a good fit (BUSINESS.md):
   agent (8200) and the guest port range without the rule ceremony the GCP/AWS
   providers need. The bootstrap
   script does not enable ufw, so nothing on the box blocks them either.
-- user_data is capped at 64 KiB; the bootstrap script is ~30 KB (gzipped
-  payloads). Checked at provision time so growth fails loudly here, not as a
-  cryptic droplet-create error.
+- user_data is capped at 64 KiB; the dedicated script measures ~15 KB since
+  the relay became a fetch-stub. Checked at provision time so growth fails
+  loudly here, not as a cryptic droplet-create error.
 """
 
 import os

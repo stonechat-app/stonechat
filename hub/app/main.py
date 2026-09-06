@@ -159,10 +159,12 @@ GATED_PROVIDERS = {
     "gcp": "machine",
     "aws": "machine",
     "digitalocean": "machine",
+    "hetzner": "machine",
+    "vultr": "machine",
 } if BILLING else {}
 PLAN_RANK = {"mailbox": 1, "machine": 2}
 # Dedicated-VM providers get the machine host baked into the VM.
-DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean"}
+DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean", "hetzner", "vultr"}
 
 
 # -- schemas --------------------------------------------------------------------

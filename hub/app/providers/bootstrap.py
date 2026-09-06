@@ -72,13 +72,45 @@ curl -fsSL --retry 5 --retry-delay 3 {binary_auth}"{binary_url}" -o /opt/stonech
 echo "{binary_sha256}  /opt/stonechat/stonechat-relay" | sha256sum -c -
 chmod +x /opt/stonechat/stonechat-relay
 
-# Cloud VMs sit behind 1:1 NAT — services must advertise the public address
-# (coturn below, and the machine host's invite URLs).
-PUBLIC_IP=$(curl -s --max-time 3 -H "Metadata-Flavor: Google" \\
-  "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip" \\
-  2>/dev/null || true)
+# Cloud VMs behind 1:1 NAT (GCP, EC2) must advertise the *public* address —
+# coturn's external-ip and the machine host's invite URLs — and the only thing
+# that knows it is the cloud's own metadata service. Every cloud puts it
+# somewhere different, so ask them in turn, then fall back to the interface's
+# own global address, which IS the public one on every provider that does not
+# NAT (Hetzner, DigitalOcean, Vultr).
+#
+# -f on each probe is load-bearing. Several clouds serve a *different* metadata
+# tree at 169.254.169.254, and without it curl prints the 404 body and that
+# body becomes the "address" — a subjectAltName and a coturn external-ip built
+# out of an error page, on a box where every other check passes.
+PUBLIC_IP=""
+public_ip_ok() {{
+  case "$1" in
+    ""|*[!0-9.]*) return 1 ;;
+    # RFC1918, loopback, link-local and CGNAT: reachable from nowhere, so
+    # advertising one is strictly worse than advertising nothing.
+    10.*|127.*|169.254.*|192.168.*) return 1 ;;
+    172.1[6-9].*|172.2[0-9].*|172.3[01].*) return 1 ;;
+    100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) return 1 ;;
+  esac
+  echo "$1" | grep -q '^[0-9][0-9]*[.][0-9][0-9]*[.][0-9][0-9]*[.][0-9][0-9]*$'
+}}
+probe_ip() {{
+  if [ -n "$PUBLIC_IP" ]; then return 0; fi
+  candidate=$(curl -fsS --max-time 3 "$@" 2>/dev/null || true)
+  if public_ip_ok "$candidate"; then PUBLIC_IP="$candidate"; fi
+  return 0
+}}
+probe_ip -H "Metadata-Flavor: Google" \\
+  "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip"
+probe_ip "http://169.254.169.254/latest/meta-data/public-ipv4"                  # EC2
+probe_ip "http://169.254.169.254/hetzner/v1/metadata/public-ipv4"               # Hetzner
+probe_ip "http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address"  # DigitalOcean
+probe_ip "http://169.254.169.254/v1/interfaces/0/ipv4/address"                  # Vultr
 if [ -z "$PUBLIC_IP" ]; then
-  PUBLIC_IP=$(curl -s --max-time 3 http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || true)
+  candidate=$(ip -4 -o addr show scope global 2>/dev/null \\
+    | tr -s ' ' | cut -d' ' -f4 | cut -d/ -f1 | head -n 1)
+  if public_ip_ok "$candidate"; then PUBLIC_IP="$candidate"; fi
 fi
 
 # TURN relay for calls (PROTOCOL.md "Calls"). Best-effort: a mailbox without

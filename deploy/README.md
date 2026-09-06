@@ -78,6 +78,9 @@ Knobs (env vars):
 | `STONECHAT_RELAY_BINARY` | — | Static x86_64-musl `stonechat-relay` on this box (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for dedicated VMs (authenticated with the per-mailbox token in their startup script). Unset → fleet hosts compile the crate on first ignite; dedicated-VM provisioning refused. |
 | `STONECHAT_HUB_URL` | — | Public base URL of the hub (`https://hub.example.com`) — how dedicated-VM startup scripts reach `/v1/relay-binary` |
 | `STONECHAT_RELAY_BINARY_URL` | — | Override: fetch the relay from an external artifact URL (GCS/GitHub release) instead of the hub |
+| `STONECHAT_HETZNER_TOKEN` | — | Hetzner Cloud project API token (read+write) → enables the `hetzner` provider. Locations `fsn1`/`nbg1` (DE), `hel1` (FI), `sin` (SG); x86 server types only (`cx22`, `cpx11`) — the relay binary is x86_64-musl. |
+| `STONECHAT_VULTR_TOKEN` | — | Vultr API key → enables the `vultr` provider (São Paulo, Santiago, Mexico City, Tokyo, Osaka, Seoul, Singapore). Vultr **also** gates the API on an IP allow-list (Account → API → Access Control): the hub's egress address must be listed there or every call answers 403. |
+| `STONECHAT_DO_TOKEN` | — | DigitalOcean personal access token (write scope) → enables the `digitalocean` provider |
 | `STONECHAT_CORS_EXTRA` | — | Comma-separated extra browser origins allowed to call the hub. **The web client needs this**: it is a browser, so every call is cross-origin. Serving it from `http://localhost:3000` during a test means setting `STONECHAT_CORS_EXTRA=http://localhost:3000`. Without it the client fails with a bare "Failed to fetch" and the symptom appears on the *phone* as "that code has expired" |
 
 ## 5. Open the CLOUD firewall too
@@ -412,7 +415,7 @@ You're already on the production topology (hub + fleet hosts).
 When you outgrow one fleet host, the moves — all already scaffolded in the
 codebase — are: add hosts to `STONECHAT_FLEET_HOSTS` (placement is least-loaded *within the requested country*),
 harden containers with `STONECHAT_FLEET_RUNTIME=runsc` (gVisor), offer per-user
-VMs as the premium tier (`gcp` provider today; `DigitalOceanProvider`/
-`HetznerProvider` adapters to come), pin the mailbox port range, add the
+VMs as the premium tier (`gcp`, `hetzner`, `vultr` and `digitalocean`
+adapters all exist; only `gcp` has been provisioned against for real), pin the mailbox port range, add the
 reconciler and push gateway, and front the hub with TLS. See
 the "Before charging money" checklist in notes/BUSINESS.md (internal).

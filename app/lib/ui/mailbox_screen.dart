@@ -16,6 +16,8 @@ const _providerDefaults = {
   'gcp': (machineType: 'e2-micro', region: 'us-central1-a'),
   'aws': (machineType: 't3.micro', region: 'us-east-1'),
   'digitalocean': (machineType: 's-1vcpu-1gb', region: 'fra1'),
+  'hetzner': (machineType: 'cx22', region: 'fsn1'),
+  'vultr': (machineType: 'vc2-1c-1gb', region: 'sao'),
   'fleet': (machineType: 'container', region: 'shared'),
   'local': (machineType: 'container', region: 'localhost'),
 };
@@ -23,6 +25,9 @@ const _providerDefaults = {
 const _providerLabels = {
   'gcp': 'Stonechat Cloud · dedicated',
   'aws': 'Stonechat Cloud · dedicated',
+  'digitalocean': 'Stonechat Cloud · dedicated',
+  'hetzner': 'Stonechat Cloud · dedicated',
+  'vultr': 'Stonechat Cloud · dedicated',
   'fleet': 'Stonechat Cloud',
   'local': 'This computer',
   'external': 'Self-hosted',

@@ -46,6 +46,16 @@ STONECHAT_PUSH_SOURCE_CIDR="${STONECHAT_PUSH_SOURCE_CIDR:-10.128.0.0/9}"
 # VMs on Compute Engine). Needs credentials via ADC — on GCE, attach a service
 # account with compute.instanceAdmin.v1 + compute.securityAdmin to this VM.
 STONECHAT_GCP_PROJECT="${STONECHAT_GCP_PROJECT:-}"
+# Optional: API tokens for the other dedicated-VM clouds. Each one set enables
+# that provider; unset means the adapter raises at construction and the hub
+# simply never offers it. None of them needs an extra pip dependency — they are
+# plain REST over the httpx the hub already carries.
+#   hetzner  DE/FI/SG, cheapest RAM, no NAT   (notes/docs/providers.md)
+#   vultr    LatAm + Asia in one adapter, no NAT
+#   do       fra1/sgp/blr1, no NAT
+STONECHAT_HETZNER_TOKEN="${STONECHAT_HETZNER_TOKEN:-}"
+STONECHAT_VULTR_TOKEN="${STONECHAT_VULTR_TOKEN:-}"
+STONECHAT_DO_TOKEN="${STONECHAT_DO_TOKEN:-}"
 # Set to "off" to run without the billing plane entirely: no /v1/billing/*
 # endpoints, every provider ungated, no reaper, and the stripe package is not
 # installed. The right choice for a private hub (docs/SELF_HOSTED_HUB.md).
@@ -133,6 +143,9 @@ Environment=STONECHAT_LOCAL_HOST=$STONECHAT_PUBLIC_IP
 Environment=STONECHAT_PUSH_GATEWAY=$STONECHAT_PUSH_GATEWAY
 Environment=STONECHAT_PUSH_MINT_SECRET=$STONECHAT_PUSH_MINT_SECRET
 Environment=STONECHAT_GCP_PROJECT=$STONECHAT_GCP_PROJECT
+Environment=STONECHAT_HETZNER_TOKEN=$STONECHAT_HETZNER_TOKEN
+Environment=STONECHAT_VULTR_TOKEN=$STONECHAT_VULTR_TOKEN
+Environment=STONECHAT_DO_TOKEN=$STONECHAT_DO_TOKEN
 Environment="STONECHAT_FLEET_HOSTS=$STONECHAT_FLEET_HOSTS"
 Environment=STONECHAT_RELAY_BINARY=$STONECHAT_RELAY_BINARY
 Environment=STONECHAT_HUB_URL=$STONECHAT_HUB_URL

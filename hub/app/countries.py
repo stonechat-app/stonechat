@@ -22,9 +22,13 @@ the flattering half is marketing, and this product does not get to do that:
 Opening set is deliberately five (BUSINESS.md): each country is one idle fleet
 host until it fills, so coverage is added when demand proves it, not upfront.
 
-All five currently resolve to **GCP**, the one adapter that is live-tested
-(`digitalocean` is mock-tested only, `aws` is dead code on hairpin NAT). Adding
-Hetzner later is a cost optimisation for DE/FI, not a coverage prerequisite.
+All five currently resolve to **GCP**, the one adapter that has ever
+provisioned for real. `hetzner`, `vultr` and `digitalocean` all exist and are
+mock-tested only (`hub/scripts/check_providers.py`); `aws` is dead code on
+hairpin NAT. Each `Hosting(...)` below therefore names the cheaper home it
+should move to and what that move is still waiting on — one live provision per
+provider, per TODO.md §20 — because a country picker that places a mailbox
+somewhere untested is the one failure this file exists to prevent.
 """
 
 from __future__ import annotations
@@ -69,8 +73,9 @@ CATALOG: tuple[Country, ...] = (
                      "down blanket data retention in 2022.",
         caveat="Germany takes part in the 'Fourteen Eyes' intelligence-sharing "
                "arrangement.",
-        # Swap to Hetzner (Falkenstein/Nuremberg) when that adapter lands —
-        # same country, roughly a fifth of the cost.
+        # Roughly a fifth of the cost on Hetzner Falkenstein, same country:
+        #   hosting=Hosting("hetzner", "fsn1", "cx22")
+        # is the whole change, once one live provision has proved the adapter.
         hosting=Hosting("gcp", "europe-west3-a", "e2-micro"),
     ),
     Country(
@@ -83,7 +88,8 @@ CATALOG: tuple[Country, ...] = (
         caveat="Finnish law has permitted state network surveillance since the "
                "2019 intelligence acts.",
         # Hetzner Helsinki is the cheapest RAM in the industry — this is the
-        # country where the Mailbox tier's margin is actually decided.
+        # country where the Mailbox tier's margin is actually decided:
+        #   hosting=Hosting("hetzner", "hel1", "cx22")
         hosting=Hosting("gcp", "europe-north1-a", "e2-micro"),
     ),
     Country(
@@ -107,6 +113,9 @@ CATALOG: tuple[Country, ...] = (
                      "on the GDPR.",
         caveat="Brazil's Marco Civil requires application providers to keep "
                "access logs for six months.",
+        # Vultr São Paulo (`Hosting("vultr", "sao", "vc2-1c-1gb")`) is the
+        # cheaper home; GCP already reaches São Paulo, so this one is price,
+        # not coverage.
         hosting=Hosting("gcp", "southamerica-east1-a", "e2-micro"),
     ),
     Country(
@@ -119,6 +128,8 @@ CATALOG: tuple[Country, ...] = (
         caveat="Singapore law grants broad state access powers, including "
                "compelling assistance with decryption. It is on this list for "
                "reach, not for privacy.",
+        # Two cheaper homes, both untested: Hetzner `sin` (cpx11 — the Intel
+        # CX line is EU-only) or Vultr `sgp`.
         hosting=Hosting("gcp", "asia-southeast1-a", "e2-micro"),
     ),
 )
