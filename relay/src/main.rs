@@ -53,7 +53,7 @@ pub const MAX_TOTAL_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 pub const BLOB_CHUNK_BYTES: usize = 64 * 1024;
 pub const BLOB_TTL: Duration = Duration::from_secs(14 * 24 * 3600);
 pub const MAX_OPKS: usize = 256;
-// ML-KEM-768 one-time prekeys are ~1.6 KB each as base64 (notes/notes/docs/POST_QUANTUM.md, internal);
+// ML-KEM-768 one-time prekeys are ~1.6 KB each as base64 (notes/docs/POST_QUANTUM.md, internal);
 // prekey uploads get their own body cap so a full restock fits one request.
 pub const MAX_KOPKS: usize = 64;
 pub const MAX_PREKEY_UPLOAD_BYTES: usize = 256 * 1024;

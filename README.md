@@ -20,7 +20,7 @@ Privacy-first messaging where **every user runs their own relay**.
   device; your **Stonechat ID** (`SC-XXXX-…`) is a hash commitment to the public key.
   Share it by QR or text — it reveals nothing about you.
 
-See PROTOCOL.md (notes/docs/PROTOCOL.md, internal) for the full wire protocol and threat notes.
+See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 
 ## Components
 
@@ -189,7 +189,7 @@ python3 scripts/bench_devices.py 127.0.0.1 <relay_port>   # multi-device: does
   still reveals *that* you contacted that person. Inherent to per-user mailboxes;
   hiding it (padding, onion routing) is a separate, larger project.
 - **The ratchet is young.** The protocol implements PQXDH + double ratchet to
-  spec (see notes/docs/PROTOCOL.md "Session crypto"), but it has not had an external
+  spec (see [PROTOCOL.md](PROTOCOL.md) "Session crypto"), but it has not had an external
   cryptographic review yet — get one before charging money for privacy.
 - **Groups are minimal**: client-side fan-out, creator-as-admin, ~25 members,
-  text-only (media in groups is planned — see notes/docs/PROTOCOL.md).
+  text-only (media in groups is planned — see [PROTOCOL.md](PROTOCOL.md)).

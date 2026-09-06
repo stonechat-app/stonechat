@@ -23,3 +23,20 @@ target/
 # Device staticlib installed by scripts/build_core.sh ios
 app/ios/Core/*.a
 app/ios/Core/sim/*.a
+# ...and the per-ABI shared objects scripts/build_core.sh android installs.
+app/android/app/src/main/jniLibs/
+
+# Firebase client config. Not secret — both files ship inside the distributed
+# APK/IPA and Google documents the API keys in them as public identifiers — but
+# they name a specific Firebase project, and a fork should point at its own.
+# Copy the .example next to each one and fill it in; the Gradle
+# google-services plugin and the Xcode Runner target both require the real
+# filename to build.
+app/android/app/google-services.json
+app/ios/Runner/GoogleService-Info.plist
+
+# Local Claude Code state, and the repo guide itself. CLAUDE.md points at the
+# local-only ../notes/ docs and carries workspace conventions, so it stays out
+# of the public repo.
+.claude/
+CLAUDE.md
