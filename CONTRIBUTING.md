@@ -16,12 +16,23 @@ already wrote.
 
 That line is the [Developer Certificate of Origin](https://developercertificate.org/)
 (DCO) 1.1, reproduced at the bottom of this file. Signing off means you have
-the right to submit the code under this repository's license. It is not a
-copyright assignment and it is not a CLA — you keep your copyright.
+the right to submit the code under the license that covers it. It is not a
+copyright assignment and it is not a CLA — **you keep your copyright**, and
+nobody, us included, can relicense your work without asking you.
 
-We require it so that Stonechat's licensing stays changeable by consent rather
-than by archaeology. Pull requests without sign-off can't be merged; this is
-checked, not just asked for.
+Pull requests without sign-off can't be merged; this is checked, not just
+asked for.
+
+## Which license your contribution falls under
+
+**AGPL-3.0-only**, the same as everything else here. Contributions to
+`PROTOCOL.md` are CC-BY-4.0, matching the spec.
+
+Because there's no CLA, we can't relicense your work later without asking you.
+That's the point — it's your copyright, and it stays that way. It does mean we
+can only accept code you're able to offer under the AGPL, so if you're porting
+something in from another project, check its license first and say so in the
+PR.
 
 ## Before you open a pull request
 

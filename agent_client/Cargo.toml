@@ -3,6 +3,8 @@ name = "stonechat-agent"
 version = "0.1.0"
 edition = "2024"
 description = "Stonechat agent client: a headless device on a user's identity. Links like any other device, holds no identity secret, speaks the protocol through stonechat-core."
+license = "AGPL-3.0-only"
+repository = "https://github.com/stonechat-app/stonechat"
 
 [[bin]]
 name = "stonechat-agent"

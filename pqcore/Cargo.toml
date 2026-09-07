@@ -3,6 +3,8 @@ name = "pqcore"
 version = "0.1.0"
 edition = "2024"
 description = "Stonechat post-quantum KEM core: ML-KEM-768 + X-Wing behind a C ABI (Flutter FFI) and a Rust API (wasm later)."
+license = "AGPL-3.0-only"
+repository = "https://github.com/stonechat-app/stonechat"
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]

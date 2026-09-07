@@ -3,6 +3,8 @@ name = "stonechat-core"
 version = "0.1.0"
 edition = "2024"
 description = "Stonechat protocol core: PQXDH + double ratchet + X-Wing envelope seal. Pure Rust, state-in/state-out, caller-supplied randomness — one implementation for app (FFI), iOS NSE (static lib), desktop, and wasm."
+license = "AGPL-3.0-only"
+repository = "https://github.com/stonechat-app/stonechat"
 
 [lib]
 crate-type = ["lib", "staticlib", "cdylib"]

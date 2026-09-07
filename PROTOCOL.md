@@ -956,3 +956,19 @@ mishandled.
   the recipient's mailbox. The protocol does not try to hide network origin
   — senders who consider their IP sensitive route the app through a VPN or
   Tor. Inherent to per-user mailboxes.
+
+---
+
+## License
+
+This specification is licensed under
+[Creative Commons Attribution 4.0 International](licenses/CC-BY-4.0.txt)
+(CC-BY-4.0), not under the AGPL-3.0 that covers the code in this repository.
+
+That is deliberate. An independent implementation of this protocol is a
+*good* outcome for Stonechat: every client that speaks it reaches the same
+directory and the same users, and a protocol nobody else can implement is a
+protocol nobody can check. Build one, and attribute the spec.
+
+Implementing this document grants no right to use the Stonechat name or
+marks — see the trademark note in the repository README.

@@ -1,0 +1,34 @@
+Stonechat
+Copyright 2026 GazelleLabs LLC
+
+Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-only).
+See LICENSE for the full text and LICENSING.md for what it means in practice.
+
+Two carve-outs, described in LICENSING.md: PROTOCOL.md is licensed CC-BY-4.0,
+and the Stonechat name, logo and bird mark are trademarks of GazelleLabs LLC,
+not covered by the AGPL.
+
+--------------------------------------------------------------------------
+
+Third-party components
+
+This repository's dependencies are permissively licensed throughout —
+predominantly MIT, BSD-3-Clause and Apache-2.0, with MPL-2.0 for the certifi
+CA bundle and two Linux-desktop transitive packages. No dependency in any
+component is licensed under the GPL, LGPL or AGPL.
+
+Those licenses carry attribution obligations that survive into distributed
+binaries: BSD-3-Clause requires reproducing its copyright notice and
+disclaimer, and Apache-2.0 section 4(d) requires propagating upstream NOTICE
+files. Complete generated listings with full license texts:
+
+  Rust    cargo about generate  (core/, pqcore/, relay/, agent_client/)
+  Dart    showLicensePage()     (in-app, aggregates registered licenses)
+  Python  pip-licenses          (hub/, gateway/, machine_host/)
+
+The shipped mobile applications additionally link native SDKs that are not
+open source, including Google ML Kit (barcode scanning) and Google Play
+Services. These are governed by their own terms, not by this repository's
+license. A redistributable fork of the client must strip or replace them:
+they are not AGPL-compatible, and only the copyright holder can ship them
+linked against this codebase.

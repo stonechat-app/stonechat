@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Stonechat web client \u2014 a tethered, ephemeral device.",
+  "description": "Stonechat web client — a tethered, ephemeral device.",
+  "license": "AGPL-3.0-only",
   "scripts": {
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",

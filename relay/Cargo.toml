@@ -3,6 +3,8 @@ name = "stonechat-relay"
 version = "0.1.0"
 edition = "2021"
 description = "Stonechat routing server — a single user's encrypted mailbox (Rust port of server/main.py)"
+license = "AGPL-3.0-only"
+repository = "https://github.com/stonechat-app/stonechat"
 
 [[bin]]
 name = "stonechat-relay"

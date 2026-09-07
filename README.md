@@ -193,3 +193,38 @@ python3 scripts/bench_devices.py 127.0.0.1 <relay_port>   # multi-device: does
   cryptographic review yet — get one before charging money for privacy.
 - **Groups are minimal**: client-side fan-out, creator-as-admin, ~25 members,
   text-only (media in groups is planned — see [PROTOCOL.md](PROTOCOL.md)).
+
+---
+
+## License
+
+**Stonechat is licensed under the GNU Affero General Public License v3.0**
+([LICENSE](LICENSE)) — all of it: the clients, the protocol core, the relay,
+the hub, the gateway.
+
+AGPL §13 is the part that matters: anyone who runs a modified version as a
+network service must offer its users the source of their modifications. You
+may compete with Stonechat and you may charge for it; you may not do it with a
+secret fork, and you may not sell a closed-source Stonechat to companies. Same
+license as Signal and SimpleX, for the same reason — a messenger that asks for
+your trust has no business being unreadable.
+
+Two carve-outs: **[PROTOCOL.md](PROTOCOL.md) is CC-BY-4.0**, because
+independent implementations reach the same directory and the same users; and
+the **name, logo and bird mark are trademarks of GazelleLabs LLC**, not
+covered by the AGPL. Say your project is based on or compatible with
+Stonechat; don't name it Stonechat, and use your own icon.
+
+Full detail, including what the AGPL asks of you if you self-host or fork:
+**[LICENSING.md](LICENSING.md)**.
+
+## Contributing
+
+Contributions are welcome to the server and the clients alike. There is no
+CLA — just a `Signed-off-by` line (`git commit -s`) certifying you have the
+right to submit the code. You keep your copyright. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) first, especially the invariants: breaking
+one is expensive and quiet.
+
+Security issues go to security@stonechat.app, not the issue tracker. See
+[SECURITY.md](SECURITY.md).
