@@ -51,9 +51,9 @@ build your own client from scratch. That imposes no obligation at all, and the
 spec is licensed to make it easy.
 
 **Contributing.** Contributions are accepted under the AGPL-3.0, certified
-with a `Signed-off-by` line. There is no CLA — you keep your copyright, and
-nobody can relicense your work without asking you. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+with a `Signed-off-by` line, and you keep your copyright. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md), which also covers whether a contributor
+licence agreement is required.
 
 ## Carve-out 1: the specification
 

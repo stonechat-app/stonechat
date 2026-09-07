@@ -220,11 +220,10 @@ Full detail, including what the AGPL asks of you if you self-host or fork:
 
 ## Contributing
 
-Contributions are welcome to the server and the clients alike. There is no
-CLA — just a `Signed-off-by` line (`git commit -s`) certifying you have the
-right to submit the code. You keep your copyright. Read
-[CONTRIBUTING.md](CONTRIBUTING.md) first, especially the invariants: breaking
-one is expensive and quiet.
+Contributions are welcome to the server and the clients alike. Sign your
+commits off (`git commit -s`) to certify you have the right to submit the
+code; you keep your copyright. Read [CONTRIBUTING.md](CONTRIBUTING.md) first,
+especially the invariants: breaking one is expensive and quiet.
 
 Security issues go to security@stonechat.app, not the issue tracker. See
 [SECURITY.md](SECURITY.md).

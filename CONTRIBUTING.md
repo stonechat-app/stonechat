@@ -17,8 +17,7 @@ already wrote.
 That line is the [Developer Certificate of Origin](https://developercertificate.org/)
 (DCO) 1.1, reproduced at the bottom of this file. Signing off means you have
 the right to submit the code under the license that covers it. It is not a
-copyright assignment and it is not a CLA — **you keep your copyright**, and
-nobody, us included, can relicense your work without asking you.
+copyright assignment — **you keep your copyright**.
 
 Pull requests without sign-off can't be merged; this is checked, not just
 asked for.
@@ -28,11 +27,15 @@ asked for.
 **AGPL-3.0-only**, the same as everything else here. Contributions to
 `PROTOCOL.md` are CC-BY-4.0, matching the spec.
 
-Because there's no CLA, we can't relicense your work later without asking you.
-That's the point — it's your copyright, and it stays that way. It does mean we
-can only accept code you're able to offer under the AGPL, so if you're porting
-something in from another project, check its license first and say so in the
-PR.
+We can only accept code you're able to offer under the AGPL, so if you're
+porting something in from another project, check its license first and say so
+in the PR.
+
+Sign-off is the whole requirement today. A contributor licence agreement may
+be introduced later — Stonechat ships through app stores, and that eventually
+needs rights the AGPL alone doesn't give us. If it happens it will be
+announced here before it applies to anyone, and it will not be applied
+retroactively to contributions already merged.
 
 ## Before you open a pull request
 
@@ -57,8 +60,9 @@ expensive and quiet.
   **caller-supplied randomness** — every operation needing entropy takes
   explicit CSPRNG bytes. This is what makes it corpus-testable and
   wasm-buildable. Keep dependencies' `getrandom` features off.
-- **The relay never depends on protocol code.** It links `pqcore` alone. It
-  routes ciphertext and knows nothing about sessions.
+- **The relay never depends on protocol code.** It depends on neither `core`
+  nor `pqcore` — check `relay/Cargo.toml` and keep it that way. It routes
+  ciphertext and knows nothing about sessions.
 - **The relay's behavioural contract is the recorded corpus in `relay/tests/`,
   not the source.** A change to relay HTTP/WS behaviour must either keep the
   goldens green or be re-recorded deliberately (`conformance.py --record`) with
