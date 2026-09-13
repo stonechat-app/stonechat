@@ -10,18 +10,12 @@ and the **brand assets**. Both are described below.
 
 ## Why AGPL
 
-The AGPL is the strongest guarantee available that Stonechat stays open.
-
 Section 13 is the part that matters for a hosted service: **anyone who runs a
 modified version of this software and lets people interact with it over a
-network must offer those users the source of their modifications.** An
-ordinary GPL lets a competitor take the code, improve it in secret, and sell
-the result as a service, because they never "distribute" a binary. The AGPL
-closes that.
+network must offer those users the source of their modifications.**
 
-So you can compete with Stonechat, and you can charge for it. What you cannot
-do is build a closed fork, and you cannot sell a proprietary Stonechat to
-companies. Improvements come back.
+You cannot build a closed fork, and you cannot sell a proprietary Stonechat to
+companies.
 
 This is the same license Signal and SimpleX use, chosen for the same reason: a
 messenger that asks you to trust it with your private conversations has no
@@ -29,9 +23,8 @@ business being unreadable.
 
 ## What this means for you
 
-**Running it, including commercially.** The AGPL permits commercial use
-without exception. Host it, sell hosting, run it inside your company — no
-permission needed. If you run a *modified* version as a network service, §13
+**Running it.** Host it, run it inside your company, host it for your family, for your friends: no
+permission needed. If you run a _modified_ version as a network service, §13
 requires you to offer your users the corresponding source of your version.
 
 **Self-hosting your own mailbox.** Nothing is triggered by running the
@@ -59,13 +52,6 @@ licence agreement is required.
 
 [`PROTOCOL.md`](PROTOCOL.md) is licensed **CC-BY-4.0**, not AGPL.
 
-A copyleft software license applied to a specification document is a category
-error — its terms are about source and object code — and more importantly, an
-independent implementation of this protocol is something we *want*. Every
-client that speaks it reaches the same directory and the same users, and a
-protocol nobody else can implement is a protocol nobody can check. Build one
-and attribute the spec.
-
 ## Carve-out 2: brand assets
 
 The **name "Stonechat", the logo, and the bird mark are trademarks of
@@ -85,11 +71,6 @@ compatible with Stonechat. You may not name your fork, service, or application
 "Stonechat", brand it with these marks, or present it as the official
 Stonechat client, service, or network. **Rename your fork and use your own
 icon.**
-
-This is the ordinary arrangement for an open source project with a hosted
-service behind it, and it is what makes the AGPL safe to grant: the code is
-yours to use, the name stays ours so users can tell which network they are
-joining.
 
 ## Third-party dependencies
 

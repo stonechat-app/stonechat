@@ -272,7 +272,7 @@ class _IdentityRestoreScreenState extends State<IdentityRestoreScreen> {
             controller: _code,
             maxLines: 4,
             style: Zn.mono(size: 12, color: Zn.text),
-            decoration: const InputDecoration(hintText: 'ZID1.…'),
+            decoration: const InputDecoration(hintText: 'SCID2.…'),
           ),
           const SizedBox(height: 16),
           const Text('Passphrase',
