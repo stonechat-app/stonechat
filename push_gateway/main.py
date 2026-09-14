@@ -6,8 +6,9 @@ Deliberately a separate service from the hub:
   identities but no tokens — keep that join impossible by design),
 - it is stateless: no database, safe to run N replicas.
 
-Mailboxes POST /v1/ping when an envelope arrives and the owner's socket is
-down. The push itself is content-free: a generic "you have new messages"
+Mailboxes POST /v1/ping when an envelope arrives for a device that is offline,
+or that has not acked it within a short grace window (PROTOCOL.md "Push
+gateway"). The push itself is content-free: a generic "you have new messages"
 alert; the phone connects to its own mailbox to fetch the actual (encrypted)
 envelopes.
 
@@ -15,13 +16,14 @@ Config (env) — with none set the gateway runs in dev mode and just logs:
     STONECHAT_APNS_KEY        path to the .p8 signing key        (iOS)
     STONECHAT_APNS_KEY_ID     key id
     STONECHAT_APNS_TEAM_ID    Apple team id
-    STONECHAT_APNS_TOPIC      app bundle id, e.g. com.stonechat.stonechat
+    STONECHAT_APNS_TOPIC      app bundle id, e.g. app.stonechat.mobile
     STONECHAT_APNS_SANDBOX    "1" for the APNs sandbox host
     STONECHAT_FCM_CREDENTIALS path to a Firebase service-account JSON (Android)
-    STONECHAT_GATEWAY_DEBUG   "1" → expose GET /v1/debug/pings (dev/e2e only)
+    STONECHAT_PUSH_DEBUG      "1" → expose GET /v1/debug/pings (dev/e2e only)
+    STONECHAT_PUSH_PORT       listen port for `python main.py` (default 8100)
     STONECHAT_PUSH_MINT_SECRET  shared with the hub; when set, /v1/ping requires a
                            hub-minted X-Stonechat-Push-Key (PROTOCOL.md "Push
-                           gateway"). Unset → open, as before.
+                           gateway"). Unset → open (dev/e2e only).
     STONECHAT_PUSH_BLOCKLIST  path to a file of revoked key ids (one per line,
                          # comments ok); reloaded on mtime change.
 """
@@ -38,7 +40,7 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-log = logging.getLogger("stonechat.gateway")
+log = logging.getLogger("stonechat.push_gateway")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 MIN_INTERVAL_S = 3.0  # per-token debounce; mailboxes also debounce their side
@@ -48,9 +50,12 @@ app = FastAPI(title="stonechat-push-gateway")
 _last_ping: dict[str, float] = {}  # token -> monotonic ts (bounded below)
 _debug_pings: deque = deque(maxlen=100)
 
-DEBUG = os.environ.get("STONECHAT_GATEWAY_DEBUG") == "1"
+DEBUG = os.environ.get("STONECHAT_PUSH_DEBUG") == "1"
 
 
+# Relays also send `ring: true` for call offers. It is ignored for now: there is
+# no VoIP/high-priority escalation yet, and ring pings share the per-token
+# debounce below like any other.
 class PingIn(BaseModel):
     device_token: str = Field(min_length=8, max_length=4096)
     platform: str = Field(pattern="^(ios|android)$")
@@ -188,9 +193,9 @@ async def _send_apns(device_token: str, key_id: str = "") -> None:
         if os.environ.get("STONECHAT_APNS_SANDBOX") == "1"
         else "https://api.push.apple.com"
     )
-    # Content-free by design: a generic visible alert. Planned follow-up: a
-    # Notification Service Extension that fetches + decrypts on-device and
-    # rewrites this.
+    # Content-free by design: a generic visible alert. `mutable-content` is what
+    # lets the iOS Notification Service Extension (app/ios/NotificationService)
+    # fetch + decrypt on-device and rewrite it into the actual message.
     payload = {
         "aps": {
             "alert": {"title": "Stonechat", "body": "You have new messages"},
@@ -268,4 +273,4 @@ async def _send_fcm(device_token: str, key_id: str = "") -> None:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("STONECHAT_GATEWAY_PORT", "8100")))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("STONECHAT_PUSH_PORT", "8100")))

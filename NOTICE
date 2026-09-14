@@ -24,7 +24,7 @@ files. Complete generated listings with full license texts:
 
   Rust    cargo about generate  (core/, pqcore/, relay/, agent_client/)
   Dart    showLicensePage()     (in-app, aggregates registered licenses)
-  Python  pip-licenses          (hub/, gateway/, machine_host/)
+  Python  pip-licenses          (hub/, push_gateway/, machine_host/)
 
 The shipped mobile applications additionally link native SDKs that are not
 open source, including Google ML Kit (barcode scanning) and Google Play

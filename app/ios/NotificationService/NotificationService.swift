@@ -1,5 +1,5 @@
 // Stonechat notification service extension: the push is content-free
-// ("You have new messages" — gateway/main.py), so this process drains the
+// ("You have new messages" — push_gateway/main.py), so this process drains the
 // user's own mailbox, decrypts what it safely can with the SAME compiled
 // protocol core the app uses (stonechat-core), stores the messages, and
 // rewrites the notification to "Maria: see you at 8".

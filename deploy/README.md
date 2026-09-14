@@ -55,27 +55,53 @@ ssh-keyscan <FLEET_ADDR> >> ~/.ssh/known_hosts   # internal IP if same VPC
 docker -H ssh://stonechat-fleet@<FLEET_ADDR> version
 ```
 
-## 4. Run the setup script
+## 4. Start the hub
+
+The hub ships as a container (`hub/Dockerfile`). The hosted service runs the
+same image self-hosters do, so there is one path to keep working rather than
+two.
 
 ```bash
-sudo STONECHAT_PUBLIC_IP=<HUB_IP> \
-     STONECHAT_FLEET_HOSTS="de1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>|DE" \
-     deploy/setup.sh
+cd deploy
+cp .env.example .env
+$EDITOR .env          # at minimum STONECHAT_FLEET_HOSTS
+docker compose up -d --build
 ```
 
-It installs Docker + Python, builds the hub venv, writes a
-**systemd** service (`stonechat-hub`), opens the host firewall with
-`ufw`, and health-checks itself. Re-run it any time after a `git pull` — it
-rebuilds and restarts idempotently.
+Check it came up — compose health-checks `/health` on its own, so `ps` is the
+answer:
 
-Knobs (env vars):
+```bash
+docker compose ps          # "healthy" once it is serving
+docker compose logs -f
+```
+
+Re-run `docker compose up -d --build` after a `git pull`; it rebuilds and
+restarts in place, and `hub.db` is a bind mount so it survives.
+
+> **`ufw` does not police published container ports.** Docker inserts its own
+> iptables rules ahead of ufw's, so `STONECHAT_BIND=0.0.0.0` means the hub port
+> is reachable from the internet whatever ufw says — the old `setup.sh` path
+> behaved differently here. Terminating TLS on this box? Set
+> `STONECHAT_BIND=127.0.0.1` so only Caddy can reach the hub.
+
+`deploy/setup.sh` is the previous bare-metal installer (venv + systemd + ufw).
+It is kept for reference and is no longer maintained; don't run it on a box
+already using compose, since the two fight over the hub port and
+`/var/lib/stonechat`.
+
+Knobs — all of them live in `deploy/.env`, which is gitignored because it
+holds the provider tokens:
 
 | Var | Default | Meaning |
 |---|---|---|
-| `STONECHAT_PUBLIC_IP` | — (required) | Address phones use for the hub |
 | `STONECHAT_FLEET_HOSTS` | — | Fleet host pool: `name=ssh://user@addr\|advertise_ip\|COUNTRY,…` (unset → fleet provider disabled). The ISO country code is required and is the single source of both placement and which countries the Mailbox plan offers. |
-| `STONECHAT_HUB_PORT` | `8000` | Hub listen port |
-| `STONECHAT_RELAY_BINARY` | — | Static x86_64-musl `stonechat-relay` on this box (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for dedicated VMs (authenticated with the per-mailbox token in their startup script). Unset → fleet hosts compile the crate on first ignite; dedicated-VM provisioning refused. |
+| `STONECHAT_HUB_PORT` | `8000` | Host port the hub is published on |
+| `STONECHAT_BIND` | `0.0.0.0` | Host address to publish on. `127.0.0.1` when Caddy fronts the hub — see the ufw note above |
+| `STONECHAT_STATE_DIR` | `/var/lib/stonechat` | Host directory holding `hub.db`. The same path the systemd unit used, so an existing box keeps its data |
+| `STONECHAT_SSH_DIR` | `/root/.ssh` | Host directory with the key the hub drives fleet hosts with, plus a `known_hosts` that already contains them. Mounted read-only, so `ssh` cannot add an unknown host itself — hence the `ssh-keyscan` in step 3 |
+| `STONECHAT_RELAY_DIR` | `/var/lib/stonechat` | Host directory holding the prebuilt static `stonechat-relay` — defaults to the state dir, which is where the deployed hub already keeps it, so the same path is mounted twice (rw for the DB, ro for the relay) (see `relay/README.md`). Fleet hosts then build their mailbox image instantly from it (no Rust compile on the host), and the hub serves it at `/v1/relay-binary` for dedicated VMs (authenticated with the per-mailbox token in their startup script). Absent → fleet hosts compile the crate on first ignite; dedicated-VM provisioning refused. It is a *directory*, not the file: bind-mounting a file that does not exist yet creates a directory in its place, which reads as a corrupt relay rather than a missing one |
+| `WITH_BILLING` / `WITH_GCP` | `1` / `0` | Build args, not runtime config: whether `stripe` and `google-cloud-compute` are installed in the image. Change either and rebuild (`up -d --build`) |
 | `STONECHAT_HUB_URL` | — | Public base URL of the hub (`https://hub.example.com`) — how dedicated-VM startup scripts reach `/v1/relay-binary` |
 | `STONECHAT_RELAY_BINARY_URL` | — | Override: fetch the relay from an external artifact URL (GCS/GitHub release) instead of the hub |
 | `STONECHAT_HETZNER_TOKEN` | — | Hetzner Cloud project API token (read+write) → enables the `hetzner` provider. Locations `fsn1`/`nbg1` (DE), `hel1` (FI), `sin` (SG); x86 server types only (`cx22`, `cpx11`) — the relay binary is x86_64-musl. |
@@ -89,6 +115,9 @@ Knobs (env vars):
 you must also open. Add inbound TCP rules for:
 
 - **`8000`** (or your `STONECHAT_HUB_PORT`) — to the **hub** VM only
+- **`8100`** — to the **hub** VM, from the fleet hosts' *internal* addresses
+  only, and only if you enable push (GCP's `default-allow-internal` already
+  covers this)
 - **`32768–60999` TCP** — to the **fleet host(s)** only (Docker's published-port
   range for mailbox containers)
 - **`32768–60999` UDP** — same hosts. The browser transport is QUIC, and
@@ -143,20 +172,19 @@ happens over the live WebSocket while the app is open or on resume.
 ## Operating it
 
 ```bash
-# on the hub box:
-systemctl status stonechat-hub          # is it up?
-journalctl -u stonechat-hub -f          # live logs
+# on the hub box, from deploy/:
+docker compose ps                       # is it up? "healthy" = serving /health
+docker compose logs -f                  # live logs
+docker compose up -d                    # after editing .env (restart does NOT re-read it)
 docker -H ssh://stonechat-fleet@<FLEET_ADDR> ps   # running mailboxes (on the fleet host)
-systemctl restart stonechat-hub         # after config changes
 
 # update to the latest code:
-cd ~/stonechat && git pull && \
-  sudo STONECHAT_PUBLIC_IP=<HUB_IP> STONECHAT_FLEET_HOSTS="de1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>|DE" deploy/setup.sh
+cd ~/stonechat && git pull && cd deploy && docker compose up -d --build
 ```
 
 ### Upgrading the relay without destroying mailboxes
 
-`git pull && deploy/setup.sh` updates the **hub**. It does not touch mailboxes:
+`git pull && docker compose up -d --build` updates the **hub**. It does not touch mailboxes:
 they are running containers, and a mailbox's queue, prekeys, TLS key and
 WebTransport certificates live in its container — not in a volume — so that
 destroying it destroys the data with it. Recreating a container to pick up new
@@ -167,17 +195,28 @@ entrypoint and the container restarted. The data layer survives a restart, and
 the published ports are pinned at create time, so the address the hub already
 handed out stays valid.
 
+The roll runs *inside* the hub container: the image already carries
+`scripts/roll_relay.py`, the Docker CLI and the fleet SSH key, which is the
+whole set of things the roll needs.
+
 ```bash
 # 1. build the artifact (see relay/README.md "Producing the production artifact")
 docker build --platform linux/amd64 -t stonechat-relay-build relay/
 id=$(docker create --platform linux/amd64 stonechat-relay-build) && \
   docker cp "$id":/stonechat-relay ./stonechat-relay && docker rm "$id"
 
-# 2. see what would change, without changing it
-hub/.venv/bin/python scripts/roll_relay.py --binary ./stonechat-relay --dry-run
+# 2. put it where the hub already looks — STONECHAT_RELAY_DIR, mounted at
+#    /opt/stonechat inside the container
+install -m 755 ./stonechat-relay /opt/stonechat/stonechat-relay
 
-# 3. roll it
-hub/.venv/bin/python scripts/roll_relay.py --binary ./stonechat-relay
+# 3. see what would change, without changing it
+cd deploy
+docker compose exec hub python /srv/scripts/roll_relay.py \
+  --binary /opt/stonechat/stonechat-relay --dry-run
+
+# 4. roll it
+docker compose exec hub python /srv/scripts/roll_relay.py \
+  --binary /opt/stonechat/stonechat-relay
 ```
 
 Each relay reports the hash of the binary it is running on `/status`, so the
@@ -185,9 +224,10 @@ script verifies the swap took rather than assuming it did. It goes one mailbox
 at a time, and on the first failure it rolls that mailbox back to its previous
 binary and stops — leaving the rest of the fleet up on the old release.
 
-New mailboxes are built from `STONECHAT_RELAY_BINARY`, so point that at the
-same artifact and restart the hub, or the next user provisioned lands on the
-old code.
+New mailboxes are built from `STONECHAT_RELAY_BINARY`, which is that same
+mounted path — so step 2 already pointed it at the new artifact. Restart the
+hub (`docker compose restart hub`) to pick up the new content hash, or the next
+user provisioned lands on the old code.
 
 State that survives restarts: the hub DB at
 `/var/lib/stonechat/hub.db` (WAL mode — recent writes live in the `-wal`/`-shm`
@@ -246,42 +286,44 @@ the app just runs push-disabled — no crash.
 > gateway pushes APNs-direct. Firebase here is only the token-acquisition /
 > notification-lifecycle plumbing.
 
-**3. Run the gateway** on the hub VM:
+**3. Run it** on the hub box, as the `push_gateway` compose profile:
 
 ```bash
-cd ~/stonechat/gateway
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 sudo mkdir -p /etc/stonechat && sudo cp /path/to/AuthKey_XXXX.p8 /etc/stonechat/apns.p8
-sudo cp deploy/stonechat-push-gateway.service /etc/systemd/system/
-sudo nano /etc/systemd/system/stonechat-push-gateway.service   # fill in key id / team id / topic
-sudo systemctl daemon-reload && sudo systemctl enable --now stonechat-push-gateway
-curl -s localhost:8100/health     # -> {"apns": true, ...}
+cd ~/stonechat/deploy
+$EDITOR .env          # the push block: APNs ids + topic, STONECHAT_PUSH_BIND
+docker compose --profile push_gateway up -d --build
+docker compose --profile push_gateway ps  # push_gateway: "healthy"
+curl -s http://<STONECHAT_PUSH_BIND>:8100/health  # -> {"apns": true, ...}
 ```
 
-Open port 8100 **only host-to-host** (internal VPC / private-network rule from
-the fleet host to the hub box) — never to the public internet. The mailbox
-containers on the fleet host reach it at the hub box's internal address.
-`setup.sh` adds the matching **ufw** rule when `STONECHAT_PUSH_GATEWAY` is set
-(source range: `STONECHAT_PUSH_SOURCE_CIDR`, default GCP-internal `10.128.0.0/9`).
-Both firewalls (cloud + ufw) must pass or relay pings time out *silently* —
-the relay logs a warning, nothing else breaks, push just never arrives.
+Put `COMPOSE_PROFILES=push_gateway` in `.env` so every later plain `docker compose`
+command includes it. The container gets only the push variables from `.env`,
+never the hub's tokens, and `/etc/stonechat` is mounted read-only.
 
-**4. Point the hub at it** and recreate mailboxes so they inherit
-the setting. `STONECHAT_PUSH_MINT_SECRET` (same value in the gateway unit) turns on
-per-relay push keys — recommended; see PROTOCOL.md "Push gateway":
+It must be reachable **from mailboxes, never from the internet**. Mailboxes
+run on the fleet hosts, so publish it on this box's *private* address
+(`STONECHAT_PUSH_BIND`) and allow 8100 from the internal network only in the
+cloud firewall. `ufw` cannot do this part: as with the hub port, Docker's
+rules bypass it. If the fleet host cannot reach it, pings fail quietly — the
+relay logs `gateway ping failed`, nothing else breaks, push just never arrives.
+Check from the fleet host with `curl http://<HUB_INTERNAL_IP>:8100/health`.
+
+**4. Point the hub at it** in the same `.env`, then `docker compose up -d`:
 
 ```bash
-cd ~/stonechat
-sudo STONECHAT_PUBLIC_IP=<HUB_IP> \
-     STONECHAT_FLEET_HOSTS="de1=ssh://stonechat-fleet@<FLEET_ADDR>|<FLEET_IP>|DE" \
-     STONECHAT_PUSH_GATEWAY=http://<CP_INTERNAL_IP>:8100 \
-     STONECHAT_PUSH_MINT_SECRET=<openssl rand -hex 32, same as gateway> deploy/setup.sh
+STONECHAT_PUSH_GATEWAY=http://<HUB_INTERNAL_IP>:8100
+STONECHAT_PUSH_MINT_SECRET=<openssl rand -hex 32>
 ```
 
-Mailboxes pick this up when they are provisioned, so set it before the first
-Ignite. Verify with a message to a user whose app is fully closed.
-To cut off one abusive relay: its `pk_…` id from the gateway logs → the
-`STONECHAT_PUSH_BLOCKLIST` file (no restart needed).
+The mint secret turns on per-relay push keys (recommended; see PROTOCOL.md
+"Push gateway"): the hub mints one into each mailbox and the push service
+refuses pings without it. Mailboxes pick all of this up when they are
+provisioned, so set it before the first Ignite, or re-ignite existing ones.
+Verify with a message to a user whose app is fully closed.
+To cut off one abusive relay: its `pk_…` id from `docker compose logs push_gateway` →
+`/etc/stonechat/push-blocklist` (no restart needed).
+
 
 ## Running on Google Cloud
 
@@ -342,9 +384,9 @@ invites from the app ("Host friends on your machine"). Friends redeem with
   list in notes/BUSINESS.md (internal). Not needed for a test.
 - **A domain + HTTPS on the hub** — the app talks to it over plain HTTP
   unless you set one. (Mailbox traffic is already pinned TLS regardless.) For
-  anything public, point a name at the box and pass
-  `STONECHAT_HUB_DOMAIN=hub.example.com` to `deploy/setup.sh`: it installs Caddy,
-  which fetches and renews the certificate on its own. Then build the app with
+  anything public, point a name at the box, set
+  `STONECHAT_HUB_DOMAIN=hub.example.com` in `.env` and start with
+  `--profile tls`: Caddy fetches and renews the certificate on its own. Then build the app with
   `--dart-define=STONECHAT_HUB=https://hub.example.com`. Set the DNS record *first* —
   Caddy proves ownership over port 80 at startup.
 
@@ -381,17 +423,14 @@ gcloud compute ssh <hub> --command \
   'sudo sh -c "ssh-keyscan -H <FLEET_INTERNAL_IP> >> /root/.ssh/known_hosts"'
 ```
 
-Then add it to the pool and restart the hub. A systemd **drop-in** is the safe
-way to change this — re-running `setup.sh` rewrites the whole unit from its
-environment and blanks anything you forget to re-export:
+Then add it to the pool in `deploy/.env` (comma-separated, next to any hosts
+already there):
 
 ```bash
-# /etc/systemd/system/stonechat-hub.service.d/fleet-hosts.conf
-[Service]
-Environment="STONECHAT_FLEET_HOSTS=de1=ssh://stonechat-fleet@<INTERNAL_IP>|<STATIC_EXTERNAL_IP>|DE"
+STONECHAT_FLEET_HOSTS=de1=ssh://stonechat-fleet@<INTERNAL_IP>|<STATIC_EXTERNAL_IP>|DE
 ```
 
-`systemctl daemon-reload && systemctl restart stonechat-hub`, then verify the
+`docker compose up -d` to recreate the hub with it, then verify the
 country actually became purchasable — this reads the host list, so it is a
 real check, not a restatement of what you configured:
 
@@ -416,6 +455,6 @@ When you outgrow one fleet host, the moves — all already scaffolded in the
 codebase — are: add hosts to `STONECHAT_FLEET_HOSTS` (placement is least-loaded *within the requested country*),
 harden containers with `STONECHAT_FLEET_RUNTIME=runsc` (gVisor), offer per-user
 VMs as the premium tier (`gcp`, `hetzner`, `vultr` and `digitalocean`
-adapters all exist; only `gcp` has been provisioned against for real), pin the mailbox port range, add the
-reconciler and push gateway, and front the hub with TLS. See
+adapters all exist; only `gcp` has been provisioned against for real), pin the mailbox port range, and add the
+reconciler. See
 the "Before charging money" checklist in notes/BUSINESS.md (internal).

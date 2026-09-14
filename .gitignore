@@ -18,6 +18,11 @@ __pycache__/
 .env.appstore
 credentials/
 
+# Hub deploy config (deploy/.env): provider API tokens, the Stripe webhook
+# secret, the admin token, the push mint secret. deploy/.env.example is the
+# tracked template and holds none of them.
+.env
+
 # Rust build artifacts (relay/, pqcore/, core/)
 target/
 # Device staticlib installed by scripts/build_core.sh ios

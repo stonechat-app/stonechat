@@ -24,16 +24,14 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 
 ## Components
 
-| Directory | What it is |
-|---|---|
-| `app/` | Flutter app (iOS/Android). Keys, history, encryption — all client-side. |
-| `relay/` | The mailbox program ("relay" = the software, "mailbox" = one running instance). Rust + SQLite; a static binary that runs on the user's VM. Stores ciphertext only, deletes on ack. |
-| `hub/` | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Stonechat IDs → pubkeys + current relay address. Never sees message content. |
-| `gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
-|  `machine_host/` | Machine host ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host. |
-| `agent_client/` | Agent client. A headless **device** on a user's identity — links like a phone or a browser tab, holds no identity secret, runs unattended on a server. Rust, links `core` directly. |
-
-Marketing site lives in its own private repo: `stonechat-app/landing`.
+| Directory       | What it is                                                                                                                                                                                     |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `app/`          | Flutter app (iOS/Android). Keys, history, encryption — all client-side.                                                                                                                        |
+| `relay/`        | The mailbox program ("relay" = the software, "mailbox" = one running instance). Rust + SQLite; a static binary that runs on the user's VM. Stores ciphertext only, deletes on ack.             |
+| `hub/`          | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Stonechat IDs → pubkeys + current relay address. Never sees message content.                            |
+| `push_gateway/` | Push gateway. Stateless; the only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities. |
+| `machine_host/` | Machine host ("host your circle"). Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. The only thing with Docker access to the host.  |
+| `agent_client/` | Agent client. A headless **device** on a user's identity — links like a phone or a browser tab, holds no identity secret, runs unattended on a server. Rust, links `core` directly.            |
 
 ## Quick start (all local, no cloud account)
 
@@ -73,7 +71,7 @@ docker run -d --restart unless-stopped -p 8080:8080 \
 
 In the app: Mailbox → **I already run a mailbox** → enter
 `http://<your-host>:8080` + your token → Connect. Registration only succeeds
-if the mailbox at that address reports *your* Stonechat ID as its owner.
+if the mailbox at that address reports _your_ Stonechat ID as its owner.
 
 ### Host your circle (one box, invited friends)
 
@@ -115,7 +113,7 @@ family, an experiment — you can run the hub itself:
 Know the trade before you start: **there is no federation.** Hubs never talk to
 each other — no server-to-server protocol, no shared namespace, no replicated
 state — so people on your hub can message each other and nobody else.
-Self-host your *mailbox* if what you want is your own infrastructure without
+Self-host your _mailbox_ if what you want is your own infrastructure without
 giving up the network.
 
 ## Cloud providers
@@ -125,12 +123,12 @@ every provider boots the **same** startup script, a small fetch-stub that
 downloads the static relay binary (`relay/`) and verifies its pinned
 SHA-256, so an adapter is only "create VM, pass script, return IP".
 
-| Provider | Setup |
-|---|---|
-| `gcp` | `pip install google-cloud-compute`, set `STONECHAT_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier). |
-| `aws` | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`. |
-| `local` | Docker only. For development. |
-| `fleet` | Container-per-user across a pool of shared Docker hosts (`STONECHAT_FLEET_HOSTS="name=ssh://user@addr\|advertise_host\|COUNTRY,…"` — required; the country is where that host places and what the picker offers; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `STONECHAT_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Mailbox-plan workhorse — see notes/BUSINESS.md (internal). |
+| Provider | Setup                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gcp`    | `pip install google-cloud-compute`, set `STONECHAT_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier).                                                                                                                                                                                                                                          |
+| `aws`    | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`.                                                                                                                                                                                                                                                                                                                                       |
+| `local`  | Docker only. For development.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `fleet`  | Container-per-user across a pool of shared Docker hosts (`STONECHAT_FLEET_HOSTS="name=ssh://user@addr\|advertise_host\|COUNTRY,…"` — required; the country is where that host places and what the picker offers; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `STONECHAT_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Mailbox-plan workhorse — see notes/BUSINESS.md (internal). |
 
 Adding one: subclass `CloudProvider` (two methods: `provision`, `destroy`) and
 register it in `providers/__init__.py`.
@@ -185,8 +183,8 @@ python3 scripts/bench_devices.py 127.0.0.1 <relay_port>   # multi-device: does
 - **Metadata: the destination IP is unavoidable.** Transport is pinned TLS
   (relays self-sign; clients pin an owner-signed fingerprint through the
   directory — no CAs), so on-path observers no longer read envelope metadata
-  or the owner token. But one mailbox = one user, so *which IP you connect to*
-  still reveals *that* you contacted that person. Inherent to per-user mailboxes;
+  or the owner token. But one mailbox = one user, so _which IP you connect to_
+  still reveals _that_ you contacted that person. Inherent to per-user mailboxes;
   hiding it (padding, onion routing) is a separate, larger project.
 - **The ratchet is young.** The protocol implements PQXDH + double ratchet to
   spec (see [PROTOCOL.md](PROTOCOL.md) "Session crypto"), but it has not had an external
@@ -200,7 +198,7 @@ python3 scripts/bench_devices.py 127.0.0.1 <relay_port>   # multi-device: does
 
 **Stonechat is licensed under the GNU Affero General Public License v3.0**
 ([LICENSE](LICENSE)) — all of it: the clients, the protocol core, the relay,
-the hub, the gateway.
+the hub, the push gateway.
 
 AGPL §13 is the part that matters: anyone who runs a modified version as a
 network service must offer its users the source of their modifications. You

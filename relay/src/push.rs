@@ -27,8 +27,9 @@ pub async fn ping_gateway_if_unacked(
 /// no token simply drains on next launch, and a sibling phone is not lit up
 /// for mail it was never sent (MULTIDEVICE.md "Relay changes").
 ///
-/// ring=true marks a call offer: never debounced, and flagged to the gateway
-/// so it can escalate to a VoIP/high-priority push.
+/// ring=true marks a call offer: never debounced here, and flagged to the
+/// gateway so it can escalate to a VoIP/high-priority push. push_gateway/main.py does
+/// not escalate yet, and still applies its own per-token debounce.
 pub async fn ping_gateway(state: Arc<AppState>, device: i64, ring: bool) {
     if state.cfg.push_gateway.is_empty() {
         return;

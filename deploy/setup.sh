@@ -1,5 +1,18 @@
 #!/usr/bin/env bash
 #
+# SUPERSEDED by deploy/docker-compose.yml — kept for reference, not maintained.
+#
+# The hub now ships as a container (hub/Dockerfile) and the hosted service runs
+# that same image, so there is one deployment path instead of one for us and
+# one for self-hosters. This script is the bare-metal ancestor: it is the
+# record of what the box actually needs, and it is worth reading before
+# changing the compose setup. Prefer:
+#
+#     cd deploy && cp .env.example .env && $EDITOR .env && docker compose up -d --build
+#
+# Running this on a box already using compose will fight it for the hub port
+# and /var/lib/stonechat.
+#
 # Stonechat single-box deploy: hub + local Docker provider on one VM.
 # Good for a first live test (you + a friend). Run as root on a fresh
 # Debian/Ubuntu box, from inside a checkout of this repo:
@@ -32,8 +45,9 @@ STONECHAT_HUB_DOMAIN="${STONECHAT_HUB_DOMAIN:-}"
 # lands and which countries the picker offers on the Mailbox plan. There is no
 # separate country list any more (there was, and the two drifted).
 STONECHAT_FLEET_HOSTS="${STONECHAT_FLEET_HOSTS:-}"
-# Optional: address of the push gateway, reachable from mailbox CONTAINERS.
-# On Linux that's the Docker bridge host address (172.17.0.1), not 127.0.0.1.
+# Optional: address of the push gateway as mailboxes see it. They run on other
+# machines, so this box's private address (http://<internal-ip>:8100) — never
+# 127.0.0.1 or the Docker bridge.
 # Leave empty to run without push (see deploy/README.md "Enable push").
 STONECHAT_PUSH_GATEWAY="${STONECHAT_PUSH_GATEWAY:-}"
 # Optional: shared secret for hub-minted push keys (PROTOCOL.md "Push

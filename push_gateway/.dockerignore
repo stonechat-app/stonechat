@@ -1,0 +1,8 @@
+# The build context is push_gateway/ itself. Credentials are bind-mounted at runtime
+# and must never end up in the image.
+.venv/
+__pycache__/
+*.pyc
+*.p8
+*.json
+.env

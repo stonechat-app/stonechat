@@ -1,0 +1,40 @@
+# Build context for hub/Dockerfile, which builds from the REPO ROOT (it needs
+# hub/ and scripts/roll_relay.py). Everything else is noise or secret.
+#
+# relay/ and push_gateway/ build from their own directories and are unaffected.
+
+# Secrets — never ship these to a daemon, local or remote. `**/` because a
+# bare `*.pem` matches only the context root, not nested copies.
+credentials/
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p8
+**/*.p12
+**/*.mobileprovision
+
+# Local state
+**/*.db
+**/*.db-wal
+**/*.db-shm
+hub/.venv/
+**/__pycache__/
+**/*.pyc
+
+# Not needed to run the hub
+.git/
+.github/
+.claude/
+app/
+core/
+pqcore/
+relay/
+machine_host/
+agent_client/
+push_gateway/
+licenses/
+deploy/
+notes/
+*.md
+.DS_Store

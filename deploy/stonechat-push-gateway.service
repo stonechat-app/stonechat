@@ -1,9 +1,13 @@
+# SUPERSEDED by the `push_gateway` profile of deploy/docker-compose.yml — kept for
+# reference alongside setup.sh, not maintained.
+#
 # Stonechat push gateway — the ONLY place APNs/FCM credentials live.
 # Copy to /etc/systemd/system/, fill in the credential paths, then:
 #   systemctl daemon-reload && systemctl enable --now stonechat-push-gateway
 #
-# It binds 0.0.0.0:8100 but you should NOT open 8100 in the cloud firewall:
-# only the mailbox containers (same host, via the Docker bridge) talk to it.
+# It binds 0.0.0.0:8100 but you should NOT open 8100 to the internet: only
+# mailboxes talk to it, and they run on the fleet hosts, so allow it from the
+# internal network only.
 # Point the hub at it with STONECHAT_PUSH_GATEWAY (see deploy/README.md).
 
 [Unit]
@@ -12,7 +16,7 @@ After=network-online.target
 
 [Service]
 User=root
-WorkingDirectory=/root/stonechat/gateway
+WorkingDirectory=/root/stonechat/push_gateway
 # --- iOS (APNs), from your Apple Developer account ---
 Environment=STONECHAT_APNS_KEY=/etc/stonechat/apns.p8
 Environment=STONECHAT_APNS_KEY_ID=XXXXXXXXXX
@@ -27,7 +31,7 @@ Environment=STONECHAT_APNS_TOPIC=app.stonechat.mobile
 # mailbox at provision time. Unset → open endpoint (dev/e2e).
 # Environment=STONECHAT_PUSH_MINT_SECRET=ZZZZZZZZ
 # Environment=STONECHAT_PUSH_BLOCKLIST=/etc/stonechat/push-blocklist   # revoked key ids, one per line
-ExecStart=/root/stonechat/gateway/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8100
+ExecStart=/root/stonechat/push_gateway/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8100
 Restart=always
 RestartSec=2
 

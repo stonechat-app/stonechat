@@ -2,7 +2,7 @@
 
 **Stonechat is licensed under the GNU Affero General Public License v3.0**
 (AGPL-3.0-only). Every component — the clients, the protocol core, the relay,
-the hub, the gateway — is under that one license. The full text is in
+the hub, the push gateway — is under that one license. The full text is in
 [`LICENSE`](LICENSE).
 
 Two things are carved out, and they are the only two: the **specification**

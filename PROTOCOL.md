@@ -739,7 +739,7 @@ Stonechat ID, so neither lets a stranger scanning mailbox addresses learn or
 enumerate a mailbox's owner. Owner-visible state (queue depth, prekey counts)
 lives behind the owner token on `/status`.
 
-## Push gateway (`gateway/`)
+## Push gateway (`push_gateway/`)
 
 A separate stateless service — the only place APNs/FCM credentials live. When
 an envelope arrives and the owner's WebSocket is down — or the device fails
