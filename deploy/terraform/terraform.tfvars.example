@@ -1,0 +1,22 @@
+# Copy to terraform.tfvars (gitignored) and edit.
+
+project = "my-gcp-project"
+region  = "us-central1"
+zone    = "us-central1-a"
+
+hub = {
+  # Adopt a static IP you already reserved in `region` instead of creating one.
+  # existing_address = "my-hub-ip"
+}
+
+# One entry per fleet host. The key is its name in STONECHAT_FLEET_HOSTS; the
+# country is what it sells. Leave the map empty for a hub whose users bring
+# their own mailboxes.
+fleet_hosts = {
+  de1 = {
+    region  = "europe-west3"
+    zone    = "europe-west3-a"
+    country = "DE"
+    # existing_address = "my-fleet-de1-ip"
+  }
+}

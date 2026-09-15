@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#
+# Fleet host startup script. GCE runs it as root on EVERY boot, so each step is
+# idempotent. Swap, then deploy/fleet-host.sh verbatim (Docker, the
+# stonechat-fleet user, ufw) — without a hub key: the hub's key only exists
+# once the hub has booted, so deploy.sh authorizes it afterwards.
+#
+# Rendered by Terraform's templatefile: write shell braces as $${var}.
+set -euo pipefail
+
+if [ "${swap_gb}" -gt 0 ]; then
+  if [ ! -f /swapfile ]; then
+    fallocate -l "${swap_gb}G" /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    echo "/swapfile none swap sw 0 0" >> /etc/fstab
+  fi
+  swapon --show=NAME --noheadings | grep -qx /swapfile || swapon /swapfile
+fi
+
+cat > /usr/local/sbin/stonechat-fleet-host.sh <<'FLEET_HOST_SH'
+${fleet_host_sh}
+FLEET_HOST_SH
+chmod 755 /usr/local/sbin/stonechat-fleet-host.sh
+/usr/local/sbin/stonechat-fleet-host.sh
+
+# deploy.sh waits for this.
+touch /var/local/stonechat-bootstrapped

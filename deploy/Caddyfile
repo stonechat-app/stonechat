@@ -1,6 +1,0 @@
-# Used by the `tls` compose profile. Caddy fetches and renews the certificate
-# itself — there is no certbot timer to babysit. The name must already resolve
-# to this box: issuance is proved over port 80 as Caddy starts.
-{$STONECHAT_HUB_DOMAIN} {
-	reverse_proxy hub:8000
-}

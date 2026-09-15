@@ -1,0 +1,40 @@
+# The agent, on a machine its owner controls. Not the hub box, and not a box
+# hosting other people's mailboxes: whatever holds this state reads its owner's
+# mail (README.md, "Read this before you deploy one").
+#
+# Link first, interactively — it prints a code someone holding the phone has
+# to authorise, so it cannot be part of starting the service:
+#
+#     docker compose run --rm agent link
+#
+# then:
+#
+#     docker compose up -d
+#     docker compose run --rm agent status    # when the certificate lapses
+name: stonechat-agent
+
+services:
+  agent:
+    build:
+      context: ..
+      dockerfile: agent_client/Dockerfile
+    image: stonechat-agent:local
+    restart: always
+    environment:
+      # Only `link` reads it; `run` uses the hub recorded in the state file.
+      STONECHAT_HUB: ${STONECHAT_HUB:-https://hub.stonechat.app}
+    volumes:
+      # A named volume, not a host directory: it takes the image's ownership
+      # (the unprivileged user), which a bind-mounted root-owned directory
+      # would not. `docker compose down` keeps it; `down -v` is `forget`
+      # without the warning — revoke on the phone either way.
+      - state:/state
+    # It reads one file, writes one file, and opens outbound sockets. This is
+    # a process whose whole job is acting on messages from the network, so it
+    # gets nothing else: no inbound ports, no writable image, no capabilities.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+
+volumes:
+  state:

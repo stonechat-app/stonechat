@@ -374,12 +374,14 @@ class HubApi {
   }
 
   /// Free tier: list a self-provisioned relay in the directory. The relay's
-  /// token never goes to the hub — only the address does.
-  Future<void> registerExternalMailbox(String address) async {
+  /// token never goes to the hub — only the address does, plus the browser
+  /// transport's `host:port` when the relay has one.
+  Future<void> registerExternalMailbox(String address,
+      {String? wtAddress}) async {
     final r = await http.post(
       Uri.parse('$baseUrl/v1/mailbox/external'),
       headers: _auth,
-      body: jsonEncode({'address': address}),
+      body: jsonEncode({'address': address, 'wt_address': ?wtAddress}),
     );
     await _check(r, (_) => null);
   }

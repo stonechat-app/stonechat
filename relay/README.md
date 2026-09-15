@@ -147,7 +147,11 @@ All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
 - **Machine host** guest mailboxes build from the same binary; the dedicated-VM
   startup script writes `/opt/stonechat/relay/` (binary + Dockerfile) for it.
 
-Producing the production artifact (on/for x86_64 Linux):
+Producing the production artifact: run the **Build relay** workflow
+(`.github/workflows/relay-build.yml`) manually. It builds the static musl
+binary natively on Linux, runs the unit tests and the golden corpus against
+it, checks it needs no loader, and uploads it as the
+`stonechat-relay-x86_64-<commit>` artifact. Without CI (on/for x86_64 Linux):
 
 ```bash
 docker build --platform linux/amd64 -t stonechat-relay-build relay/
@@ -169,6 +173,26 @@ constant compiled into the source would report the new number whether or not
 the file on disk had changed. It is on `/status` (owner token) rather than
 `/health` (open) so an exact build fingerprint is not handed to anyone who
 asks the day a relay bug is published.
+
+### Releases (what self-hosters run)
+
+Push a tag `relay-v<version>`, where the version is the one in `Cargo.toml`
+(e.g. `relay-v0.1.0`; the workflow refuses a mismatch). The same workflow
+builds and tests, then publishes:
+
+- a GitHub Release with `stonechat-relay-x86_64-linux-musl`,
+  `stonechat-relay-aarch64-linux-musl` and `SHA256SUMS`
+- `ghcr.io/stonechat-app/relay` for amd64 and arm64, tagged `0.1.0`, `0.1`,
+  `0` and `latest`. The image is `Dockerfile.release`: the tested binary on
+  `scratch` and nothing else.
+
+A manual run with **image** ticked pushes `:edge` and `:sha-<commit>`
+instead, to try an image before tagging it.
+
+While the repository is private, only x86_64 is built, because GitHub's arm64
+runners are free for public repositories only. A package's first push to
+ghcr.io is private as well: make it public once, in the organization's
+Packages → relay → Package settings.
 
 ## Tests
 

@@ -294,7 +294,17 @@ class MailboxState extends ChangeNotifier {
       if (!probe.ownerMatches) {
         throw ApiException('That mailbox belongs to a different Stonechat ID');
       }
-      await app.api.registerExternalMailbox(address);
+      // Check the token before anything is registered. The hub never sees
+      // it, so a typo would otherwise list the mailbox and then fail at the
+      // socket, with nothing on screen to say why.
+      if (await mailboxStatus(address, probe.tlsFp, token.trim()) == null) {
+        throw ApiException("That token doesn't open this mailbox");
+      }
+      // A friend's host runs guest relays without a published UDP port, so
+      // there is no browser address to register for them.
+      final wtAddress =
+          friendHosted ? null : await _externalWtAddress(address, probe.tlsFp);
+      await app.api.registerExternalMailbox(address, wtAddress: wtAddress);
       await app.setExternalMailbox(token.trim(), probe.tlsFp,
           friendHosted: friendHosted);
       await _clearOutage(); // different mailbox — the old clock is meaningless
@@ -303,6 +313,21 @@ class MailboxState extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+  }
+
+  /// Where browsers reach a self-hosted relay (`host:port`), or null when it
+  /// has no browser transport. The relay cannot report its own public UDP
+  /// port — behind `docker run -p` it only knows the container's — so this
+  /// assumes the default 8443 on the same host (README "Self-hosting your
+  /// mailbox" says to publish it that way).
+  Future<String?> _externalWtAddress(String address, String tlsFp) async {
+    try {
+      if (await fetchWtCerts(address, tlsFp) == null) return null;
+    } on Exception {
+      return null; // best-effort, like vouching for the schedule itself
+    }
+    final host = Uri.parse(address).host;
+    return host.contains(':') ? '[$host]:8443' : '$host:8443';
   }
 
   /// Guest side of "host your circle": redeem a friend's invite to get a

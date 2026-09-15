@@ -23,6 +23,14 @@ credentials/
 # tracked template and holds none of them.
 .env
 
+# OpenTofu/Terraform (deploy/terraform/): the state records every resource it
+# manages, and terraform.tfvars names your project and addresses.
+# .terraform.lock.hcl is tracked, so everyone resolves the same provider build.
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+
 # Rust build artifacts (relay/, pqcore/, core/)
 target/
 # Device staticlib installed by scripts/build_core.sh ios

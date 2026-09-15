@@ -1,0 +1,14 @@
+# Build context for machine_host/Dockerfile, which builds from the REPO ROOT.
+# Docker reads this file instead of the root .dockerignore for that build only,
+# so the hub's exclusions (which drop relay/ and machine_host/) do not apply.
+*
+!machine_host/main.py
+!machine_host/requirements.txt
+!relay/
+**/target/
+**/__pycache__/
+**/*.db
+**/.env
+# TLS keypairs, except the relay's public test certificates (see .gitignore).
+**/*.pem
+!relay/tests/fixtures/*.pem

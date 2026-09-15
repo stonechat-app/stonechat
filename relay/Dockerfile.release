@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+#
+# The published relay image, ghcr.io/stonechat-app/relay: the static binary
+# the release workflow already built and tested, and nothing else. No compiler
+# runs here, which is also why assembling several platforms needs no
+# emulation. relay/Dockerfile is the build-from-source variant for development.
+#
+# Build context: a directory with one binary per Docker architecture,
+#   <context>/amd64/stonechat-relay
+#   <context>/arm64/stonechat-relay
+FROM scratch
+ARG TARGETARCH
+COPY --chmod=755 ${TARGETARCH}/stonechat-relay /stonechat-relay
+
+# Everything the relay keeps — queued mail, blobs, the TLS key contacts pin —
+# lives under /data, so run it with a named volume there. Deliberately not a
+# VOLUME instruction: that creates an anonymous volume, which recreating the
+# container silently replaces with an empty one.
+ENV STONECHAT_DB=/data/mailbox.db \
+    STONECHAT_BLOBS=/data/blobs \
+    STONECHAT_TLS_DIR=/data
+
+EXPOSE 8080
+# The browser transport is QUIC, so UDP.
+EXPOSE 8443/udp
+ENTRYPOINT ["/stonechat-relay"]

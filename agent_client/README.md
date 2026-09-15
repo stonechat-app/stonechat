@@ -103,22 +103,35 @@ primary can revoke them. Revoke on the phone.
 
 ## Deploying
 
-`deploy/stonechat-agent.service` is a systemd unit. Link interactively first
-(`link` needs someone holding the phone), then start the service.
+As a container. `Dockerfile` builds the static binary into an otherwise empty
+image (it builds from the repo root, because it links `../core`), and
+`docker-compose.yml` runs it. Link interactively first — `link` needs someone
+holding the phone — then start it:
 
-Run it as its own unprivileged user. It needs **no inbound ports** — it dials
-the hub and its own mailbox — so it adds nothing to the host's exposure.
+```bash
+cd agent_client
+docker compose run --rm agent link     # QR + code; exits once linked
+docker compose up -d
+docker compose logs -f                 # the log is the whole interface
+docker compose run --rm agent status   # when the certificate lapses
+```
 
-Where: **not the hub box.** The hub holds the directory and provisioning
-credentials and its whole security story is one port with no extra tenants
-(`deploy/README.md`, "Topology rule"). The fleet host already runs Docker
-workloads and is the better home.
+It runs as an unprivileged user with a read-only filesystem, no capabilities
+and **no inbound ports** — it dials the hub and its own mailbox — so it adds
+nothing to the host's exposure. The state file lives in the `state` named
+volume: `docker compose down` keeps it; `down -v` deletes it, which is `forget`
+and, like `forget`, revokes nothing.
+
+Where: a machine you control. **Not the hub box** — the hub holds the directory
+and provisioning credentials and its whole security story is one port with no
+extra tenants (`deploy/README.md`, "Topology rule"). And not a box that hosts
+other people's mailboxes: whatever holds this state file reads your mail.
 
 ## What it holds, and how well
 
 | | |
 |---|---|
-| `~/.stonechat/agent.json` (or `$STONECHAT_AGENT_STATE`) | device keys, certificate, device token, ratchet sessions, cached peer certificates |
+| `~/.stonechat/agent.json` (or `$STONECHAT_AGENT_STATE`; `/state/agent.json` in the container) | device keys, certificate, device token, ratchet sessions, cached peer certificates |
 | mode | `0600`, written atomically via temp-and-rename |
 
 A phone keeps this in a keystore; here it is a file. That is a real downgrade

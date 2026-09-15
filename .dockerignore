@@ -2,6 +2,8 @@
 # hub/ and scripts/roll_relay.py). Everything else is noise or secret.
 #
 # relay/ and push_gateway/ build from their own directories and are unaffected.
+# agent_client/ also builds from the root, but with its own
+# agent_client/Dockerfile.dockerignore, which Docker uses instead of this file.
 
 # Secrets — never ship these to a daemon, local or remote. `**/` because a
 # bare `*.pem` matches only the context root, not nested copies.

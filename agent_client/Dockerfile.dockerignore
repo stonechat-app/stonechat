@@ -1,0 +1,11 @@
+# Build context for agent_client/Dockerfile, which builds from the REPO ROOT.
+# Docker reads this file instead of the root .dockerignore for that build only,
+# so the hub's exclusions (which drop core/ and pqcore/) do not apply here.
+*
+!pqcore/
+!core/
+!agent_client/
+**/target/
+**/__pycache__/
+agent_client/tests/
+core/tests/

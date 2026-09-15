@@ -110,23 +110,36 @@ services:
     profiles: [tls]
     restart: always
     depends_on: [hub]
-    environment:
-      # Plain default, not `:?`: compose interpolates the whole file before it
-      # filters profiles, so a required-variable check here would fail every
-      # run that does not use tls at all. Empty is caught by Caddy instead.
-      STONECHAT_HUB_DOMAIN: ${STONECHAT_HUB_DOMAIN:-}
     ports:
       # :80 is not optional — it is where the ACME challenge is answered, so
       # closing it breaks renewal in 60 days rather than today.
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # The issued certificates. A named volume, because losing them means
       # re-issuing into Let's Encrypt's rate limit.
       - caddy-data:/data
       - caddy-config:/config
+
+configs:
+  # Caddy fetches and renews the certificate itself — there is no certbot timer
+  # to babysit. The name must already resolve to this box: issuance is proved
+  # over port 80 as Caddy starts. Inline `content:` needs compose >= 2.23.1.
+  #
+  # The domain is filled in by compose, not Caddy: compose interpolates `$`
+  # inside `content:` too, so Caddy's own `{$VAR}` form would arrive as
+  # `{hub.example.com}`. Plain default, not `:?`: compose interpolates the whole
+  # file before it filters profiles, so a required-variable check here would
+  # fail every run that does not use tls at all. Empty is caught by Caddy.
+  caddyfile:
+    content: |
+      ${STONECHAT_HUB_DOMAIN:-} {
+        reverse_proxy hub:8000
+      }
 
 volumes:
   caddy-data:

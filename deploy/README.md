@@ -59,7 +59,8 @@ docker -H ssh://stonechat-fleet@<FLEET_ADDR> version
 
 The hub ships as a container (`hub/Dockerfile`). The hosted service runs the
 same image self-hosters do, so there is one path to keep working rather than
-two.
+two. It needs Docker Compose **2.23.1 or newer** (`docker compose version`):
+the Caddyfile for the `tls` profile is written inline in `docker-compose.yml`.
 
 ```bash
 cd deploy

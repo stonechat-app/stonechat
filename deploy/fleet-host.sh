@@ -18,7 +18,10 @@
 #
 set -euo pipefail
 
-: "${STONECHAT_HUB_PUBKEY:?set STONECHAT_HUB_PUBKEY to the hub SSH public key}"
+# Optional: without it the user is created with no authorized key, and the hub
+# key is added later (deploy/terraform runs this at first boot, before the hub
+# has a key, and deploy.sh authorizes it once it does).
+STONECHAT_HUB_PUBKEY="${STONECHAT_HUB_PUBKEY:-}"
 # Host ports Docker publishes mailboxes on (the kernel ephemeral range).
 MAILBOX_PORT_RANGE="${MAILBOX_PORT_RANGE:-32768:60999}"
 FLEET_USER="${FLEET_USER:-stonechat-fleet}"
@@ -51,8 +54,12 @@ id "$FLEET_USER" >/dev/null 2>&1 || useradd -m -s /bin/bash "$FLEET_USER"
 usermod -aG docker "$FLEET_USER"
 install -d -m 700 -o "$FLEET_USER" -g "$FLEET_USER" "/home/$FLEET_USER/.ssh"
 touch "/home/$FLEET_USER/.ssh/authorized_keys"
-grep -qF "$STONECHAT_HUB_PUBKEY" "/home/$FLEET_USER/.ssh/authorized_keys" ||
-  echo "$STONECHAT_HUB_PUBKEY" >> "/home/$FLEET_USER/.ssh/authorized_keys"
+if [[ -n "$STONECHAT_HUB_PUBKEY" ]]; then
+  grep -qF "$STONECHAT_HUB_PUBKEY" "/home/$FLEET_USER/.ssh/authorized_keys" ||
+    echo "$STONECHAT_HUB_PUBKEY" >> "/home/$FLEET_USER/.ssh/authorized_keys"
+else
+  echo "    (no STONECHAT_HUB_PUBKEY: add the hub key to authorized_keys later)"
+fi
 chmod 600 "/home/$FLEET_USER/.ssh/authorized_keys"
 chown "$FLEET_USER:$FLEET_USER" "/home/$FLEET_USER/.ssh/authorized_keys"
 

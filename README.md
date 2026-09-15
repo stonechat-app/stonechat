@@ -59,19 +59,42 @@ Testing from a real phone: start the hub with
 
 ## Self-hosting your mailbox (free tier)
 
-Run the relay on any box you control — the directory lists your address so
+Run the relay on any box with a public address — the directory lists it so
 you can message everyone, and the mailbox token never leaves your phone:
 
 ```bash
-docker run -d --restart unless-stopped -p 8080:8080 \
+docker run -d --name stonechat-mailbox --restart unless-stopped \
+  -p 8080:8080 -p 8443:8443/udp \
+  -v stonechat-mailbox:/data \
   -e STONECHAT_OWNER_ID=<your SC- id> \
-  -e STONECHAT_OWNER_TOKEN=<any long random secret you keep> \
-  stonechat-relay    # image built from relay/ (see relay/README.md)
+  -e STONECHAT_OWNER_TOKEN=<a long random secret: openssl rand -hex 32> \
+  -e STONECHAT_WT_ADVERTISE=<this box's public IP or hostname> \
+  ghcr.io/stonechat-app/relay:latest
 ```
 
-In the app: Mailbox → **I already run a mailbox** → enter
-`http://<your-host>:8080` + your token → Connect. Registration only succeeds
-if the mailbox at that address reports _your_ Stonechat ID as its owner.
+- **The image** is published for amd64 and arm64 with every relay release
+  (`relay/README.md` "Releases"). Pin a version such as `:0.1` instead of
+  `latest` if you would rather upgrade on purpose. To upgrade, `docker pull`
+  the image and recreate the container; the volume keeps your mail and
+  certificate. Prefer building it yourself? `docker build -t stonechat-relay relay/`
+  and run `stonechat-relay` instead.
+
+- **Keep the `/data` volume.** It holds your undelivered mail and the TLS key
+  your contacts pin. Without it, recreating the container empties the mailbox
+  and changes its certificate.
+- **Open TCP 8080 and UDP 8443** in your cloud firewall as well. 8080 is for
+  phones. 8443 is the browser transport, which the app registers as
+  `<host>:8443`, so publish it on that same port.
+  `STONECHAT_WT_ADVERTISE` must name the address browsers dial: the
+  certificates they pin are issued for it.
+- **No proxy in front.** The relay terminates TLS itself with a self-signed
+  certificate. No domain or CA is needed, and a TLS-terminating proxy would
+  present a different certificate than the one your contacts pin.
+
+In the app: Mailbox → **Self-host** → enter `https://<your-host>:8080` and
+your token → **Connect my mailbox**. The app checks the token against the
+relay first, and registration only succeeds if the mailbox reports _your_
+Stonechat ID as its owner and the hub can reach it from the internet.
 
 ### Host your circle (one box, invited friends)
 

@@ -1,18 +1,27 @@
-# Build the relay binary that production actually ships.
+# Build the relay binary that production actually ships, and publish it.
 #
-# The relay runs in a `FROM scratch` mailbox container — no libc, no shell —
-# so the artifact has to be a *statically linked x86_64 musl* ELF, and the
-# build has to happen on x86_64 Linux. Building it from an Apple Silicon
-# laptop means either QEMU emulation (a Rust release build under emulation
-# takes hours) or a C cross-toolchain, because rusqlite's bundled SQLite and
-# ring's assembly are real C compiled for the target. A Linux x86_64 runner
-# has neither problem: it is the native platform, and musl is one apt install.
+# The relay runs in a `FROM scratch` container — no libc, no shell — so the
+# artifact has to be a *statically linked musl* ELF, built natively on Linux
+# for each architecture. Building it from an Apple Silicon laptop means either
+# QEMU emulation (a Rust release build under emulation takes hours) or a C
+# cross-toolchain, because rusqlite's bundled SQLite and ring's assembly are
+# real C compiled for the target. A native Linux runner has neither problem,
+# and musl is one apt install.
 #
-# Manual on purpose. Relay changes reach production by a deliberate act —
-# `roll_relay.py` swaps the binary and verifies the reported build hash
-# changed — so an automatic build on every push would produce artifacts
-# nobody asked for. Add a `push:` trigger here when CI-on-every-commit lands
-# (notes TODO §9); nothing below assumes the trigger.
+# Nothing here runs on an ordinary push. Relay changes reach production by a
+# deliberate act, so there are two deliberate triggers:
+#
+# - Run manually: build, test, and upload the binaries as run artifacts — what
+#   a fleet deploy downloads (`roll_relay.py` swaps the binary and verifies the
+#   reported build hash changed). Tick `image` to also push
+#   ghcr.io/stonechat-app/relay:edge and :sha-<commit>, to try the image before
+#   releasing it.
+# - Push a `relay-v<major>.<minor>.<patch>` tag: the same build, then a GitHub
+#   Release carrying the binaries and a multi-arch image tagged <version>,
+#   <major>.<minor>, <major> and latest — what self-hosters `docker run`.
+#   Tagging an older version later moves those floating tags back to it.
+#
+# Add a `push:` branch trigger when CI-on-every-commit lands (notes TODO §9).
 name: Build relay
 
 on:
@@ -22,6 +31,12 @@ on:
         description: "Replay the golden corpus against the built binary"
         type: boolean
         default: true
+      image:
+        description: "Also push the image as :edge and :sha-<commit> (requires the corpus)"
+        type: boolean
+        default: false
+  push:
+    tags: ["relay-v*"]
 
 permissions:
   contents: read
@@ -32,17 +47,38 @@ env:
   # re-pin every developer's local build, which is a separate decision
   # (notes TODO §15 "pin the toolchains").
   RUST_VERSION: "1.93.0"
-  TARGET: x86_64-unknown-linux-musl
+  IMAGE: ghcr.io/stonechat-app/relay
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: build (${{ matrix.arch }})
+    strategy:
+      matrix:
+        # aarch64 builds natively on GitHub's arm64 runners, which are free for
+        # public repositories only. While the repository is private that leg is
+        # left out rather than left queued, and the image is amd64-only.
+        arch: ${{ fromJSON(github.event.repository.private && '["x86_64"]' || '["x86_64", "aarch64"]') }}
+    runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    env:
+      TARGET: ${{ matrix.arch }}-unknown-linux-musl
     defaults:
       run:
         working-directory: relay
 
     steps:
       - uses: actions/checkout@v4
+
+      # Before the long build, not after it: a release tag must name the
+      # version the crate says it is.
+      - name: Tag matches Cargo.toml
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          tag="${GITHUB_REF_NAME#relay-v}"
+          crate="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::tag $GITHUB_REF_NAME says $tag but relay/Cargo.toml says $crate"
+            exit 1
+          fi
 
       # musl-gcc links the C that rusqlite (bundled SQLite) and ring compile.
       - name: Install musl toolchain
@@ -100,8 +136,9 @@ jobs:
       # The relay's behavioural contract is the recorded corpus, not the code
       # (CLAUDE.md). The corpus is stateful and order-dependent, so this needs
       # a fresh relay with an empty data dir and the fixed test identity.
+      # A release tag always replays it: `inputs` is empty on a tag push.
       - name: Golden corpus and WebSocket suite
-        if: ${{ inputs.conformance }}
+        if: ${{ github.event_name == 'push' || inputs.conformance }}
         run: |
           set -euo pipefail
           DATA="$(mktemp -d)"
@@ -131,13 +168,12 @@ jobs:
       # Publishing it is also the first half of notes TODO §21's "same bytes
       # we run" claim for self-hosters.
       - name: Record the build hash
-        id: hash
         run: |
           BIN="target/$TARGET/release/stonechat-relay"
           SUM="$(sha256sum "$BIN" | cut -d' ' -f1)"
           sha256sum "$BIN" > stonechat-relay.sha256
           {
-            echo "### Relay build"
+            echo "### Relay build ($TARGET)"
             echo
             echo "| | |"
             echo "|---|---|"
@@ -150,9 +186,135 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: stonechat-relay-${{ github.sha }}
+          name: stonechat-relay-${{ matrix.arch }}-${{ github.sha }}
           path: |
-            relay/target/x86_64-unknown-linux-musl/release/stonechat-relay
+            relay/target/${{ env.TARGET }}/release/stonechat-relay
             relay/stonechat-relay.sha256
           if-no-files-found: error
           retention-days: 30
+
+  publish:
+    needs: build
+    # A release tag always publishes. A manual run only when asked, and never
+    # with the corpus skipped: the image is what strangers run.
+    if: ${{ github.event_name == 'push' || (inputs.image && inputs.conformance) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the GitHub Release
+      packages: write # ghcr.io
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: relay/Dockerfile.release
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: stonechat-relay-*-${{ github.sha }}
+          path: artifacts
+
+      # dist/ holds one binary per Docker architecture, the layout
+      # Dockerfile.release reads; release/ holds the same binaries under names
+      # that say what they are, for the GitHub Release.
+      - name: Lay out binaries
+        id: dist
+        run: |
+          set -euo pipefail
+          platforms=()
+          for arch in x86_64 aarch64; do
+            src="artifacts/stonechat-relay-$arch-$GITHUB_SHA/target/$arch-unknown-linux-musl/release/stonechat-relay"
+            [ -f "$src" ] || continue
+            case "$arch" in
+              x86_64) docker_arch=amd64 ;;
+              aarch64) docker_arch=arm64 ;;
+            esac
+            install -D -m 755 "$src" "dist/$docker_arch/stonechat-relay"
+            install -D -m 755 "$src" "release/stonechat-relay-$arch-linux-musl"
+            platforms+=("linux/$docker_arch")
+          done
+          (cd release && sha256sum stonechat-relay-* > SHA256SUMS && cat SHA256SUMS)
+          echo "platforms=$(IFS=,; echo "${platforms[*]}")" >> "$GITHUB_OUTPUT"
+
+      - name: Image tags
+        id: tags
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            version="${GITHUB_REF_NAME#relay-v}"
+            if ! [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "::error::release tags look like relay-v1.2.3, got $GITHUB_REF_NAME"
+              exit 1
+            fi
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            tags="$IMAGE:$version,$IMAGE:$minor,$IMAGE:$major,$IMAGE:latest"
+          else
+            version="sha-${GITHUB_SHA::12}"
+            tags="$IMAGE:edge,$IMAGE:$version"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Run the image before anyone else can. It has no shell, so a wrong path
+      # or a missing ENV shows up only as a relay that never answers.
+      - name: Smoke-test the amd64 image
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --load -t relay-smoke \
+            -f relay/Dockerfile.release dist
+          docker run -d --name relay-smoke -p 18080:8080 \
+            -e STONECHAT_OWNER_ID=SC-TEST-OWNER -e STONECHAT_OWNER_TOKEN=tok-secret \
+            relay-smoke
+          for _ in $(seq 1 40); do
+            if curl -sfk https://127.0.0.1:18080/health; then exit 0; fi
+            sleep 0.5
+          done
+          docker logs relay-smoke
+          exit 1
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The source label is what links the package to this repository on
+      # GitHub.
+      - name: Push ${{ steps.dist.outputs.platforms }}
+        uses: docker/build-push-action@v6
+        with:
+          context: dist
+          file: relay/Dockerfile.release
+          platforms: ${{ steps.dist.outputs.platforms }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.version }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
+            org.opencontainers.image.title=stonechat-relay
+            org.opencontainers.image.description=Stonechat mailbox relay
+
+      - name: GitHub Release
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.tags.outputs.version }}
+          PLATFORMS: ${{ steps.dist.outputs.platforms }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Image: \`$IMAGE:$VERSION\` ($PLATFORMS)"
+            echo
+            echo '```'
+            cat release/SHA256SUMS
+            echo '```'
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Relay $VERSION" \
+            --notes-file notes.md

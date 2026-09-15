@@ -1,0 +1,47 @@
+# The machine host on a box you own (README.md "Host your own Stonechat").
+#
+#     cp .env.example .env && $EDITOR .env
+#     docker compose up -d --build
+#
+# Guest mailboxes are not services in this file: the machine host starts them
+# on demand through the Docker socket, each with `--restart unless-stopped`,
+# so they outlive `compose down` and come back on their own after a reboot.
+name: stonechat-machine-host
+
+services:
+  machine_host:
+    build:
+      context: ..
+      dockerfile: machine_host/Dockerfile
+    image: stonechat-machine-host:local
+    restart: always
+    env_file: .env
+    environment:
+      # Container-internal paths. Deliberately not tunable from .env — what
+      # you move is the host side, via STONECHAT_STATE_DIR.
+      STONECHAT_MACHINE_HOST_DB: /var/lib/stonechat/machine_host.db
+      STONECHAT_MACHINE_HOST_TLS_DIR: /var/lib/stonechat
+    # Host networking, so this behaves exactly like the systemd install: it
+    # listens on :8200 of the box itself, and after launching a guest it
+    # checks the mailbox came up by calling https://<ADVERTISE_HOST>:<port>
+    # the same way from here as from the host. No `ports:` — nothing to map.
+    network_mode: host
+    volumes:
+      # Full control of the host's Docker, which is to say root on this box.
+      # That is the point of the service: it is the only thing here that
+      # starts and destroys mailboxes.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # machine_host.db (invites, guests) and the TLS keypair whose
+      # fingerprint every invite carries. Back this up; lose it and every
+      # outstanding invite and the app's pinned connection stop working.
+      - ${STONECHAT_STATE_DIR:-/var/lib/stonechat}:/var/lib/stonechat
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import os, ssl, urllib.request; urllib.request.urlopen("https://127.0.0.1:%s/health" % os.environ.get("STONECHAT_MACHINE_HOST_PORT", "8200"), context=ssl._create_unverified_context()).read()
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
