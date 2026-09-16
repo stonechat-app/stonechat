@@ -80,12 +80,12 @@ class AppState extends ChangeNotifier {
       case 'app_lock':
         appLockEnabled = value;
     }
-    await _storage.write(key: 'zn_pref_$key', value: value ? '1' : '0');
+    await _storage.write(key: 'sc_pref_$key', value: value ? '1' : '0');
     notifyListeners();
   }
 
   Future<bool> _readPreference(String key, bool fallback) async =>
-      switch (await _storage.read(key: 'zn_pref_$key')) {
+      switch (await _storage.read(key: 'sc_pref_$key')) {
         '1' => true,
         '0' => false,
         _ => fallback,
@@ -120,13 +120,13 @@ class AppState extends ChangeNotifier {
     sendTypingIndicators = await _readPreference('typing_indicators', true);
     appLockEnabled = await _readPreference('app_lock', false);
 
-    final secret = await _storage.read(key: 'zn_secret');
-    final public = await _storage.read(key: 'zn_public');
-    final storedUrl = await _storage.read(key: 'zn_hub_url');
+    final secret = await _storage.read(key: 'sc_secret');
+    final public = await _storage.read(key: 'sc_public');
+    final storedUrl = await _storage.read(key: 'sc_hub_url');
 
     api = HubApi(
       baseUrl: storedUrl ?? defaultHubUrl,
-      accountToken: await _storage.read(key: 'zn_token'),
+      accountToken: await _storage.read(key: 'sc_token'),
     );
 
     if (public != null) {
@@ -136,16 +136,16 @@ class AppState extends ChangeNotifier {
       _crypto = secret != null
           ? CryptoService.fromKeys(secretKey: base64Decode(secret))
           : CryptoService.publicOnly(publicKey: base64Decode(public));
-      stonechatId = await _storage.read(key: 'zn_id');
-      displayName = await _storage.read(key: 'zn_name');
-      pushPrompted = (await _storage.read(key: 'zn_push_prompted')) == '1';
-      externalMailboxToken = await _storage.read(key: 'zn_ext_token');
-      externalMailboxTlsFp = await _storage.read(key: 'zn_ext_tls_fp');
+      stonechatId = await _storage.read(key: 'sc_id');
+      displayName = await _storage.read(key: 'sc_name');
+      pushPrompted = (await _storage.read(key: 'sc_push_prompted')) == '1';
+      externalMailboxToken = await _storage.read(key: 'sc_ext_token');
+      externalMailboxTlsFp = await _storage.read(key: 'sc_ext_tls_fp');
       externalMailboxFriendHosted =
-          await _storage.read(key: 'zn_ext_friend') == '1';
-      machineHostAddress = await _storage.read(key: 'zn_machine_host_addr');
-      machineHostAdminToken = await _storage.read(key: 'zn_machine_host_token');
-      machineHostTlsFp = await _storage.read(key: 'zn_machine_host_tls_fp');
+          await _storage.read(key: 'sc_ext_friend') == '1';
+      machineHostAddress = await _storage.read(key: 'sc_machine_host_addr');
+      machineHostAdminToken = await _storage.read(key: 'sc_machine_host_token');
+      machineHostTlsFp = await _storage.read(key: 'sc_machine_host_tls_fp');
       avatar = await db.kvGet('own_avatar');
       await _loadOrCreateDeviceKeys();
     }
@@ -189,9 +189,9 @@ class AppState extends ChangeNotifier {
     } catch (_) {}
     // Keep the DB's SQLCipher key: db.wipe() empties the tables but keeps the
     // file, so a new key here would leave it unopenable next launch.
-    final dbKey = await _storage.read(key: 'zn_db_key');
+    final dbKey = await _storage.read(key: 'sc_db_key');
     await _storage.deleteAll();
-    if (dbKey != null) await _storage.write(key: 'zn_db_key', value: dbKey);
+    if (dbKey != null) await _storage.write(key: 'sc_db_key', value: dbKey);
     await db.wipe();
     _crypto = null;
     stonechatId = null;
@@ -211,7 +211,7 @@ class AppState extends ChangeNotifier {
   /// Remember that we've shown the notification soft-ask, so it fires only once.
   Future<void> markPushPrompted() async {
     pushPrompted = true;
-    await _storage.write(key: 'zn_push_prompted', value: '1');
+    await _storage.write(key: 'sc_push_prompted', value: '1');
   }
 
   /// SQLCipher key for the local history DB: 32 random bytes, minted once,
@@ -219,13 +219,13 @@ class AppState extends ChangeNotifier {
   /// from anything — losing the keystore loses the history, same deal as
   /// the identity itself.
   Future<String> _databaseKey() async {
-    final existing = await _storage.read(key: 'zn_db_key');
+    final existing = await _storage.read(key: 'sc_db_key');
     if (existing != null) return existing;
     final rng = Random.secure();
     final key = base64UrlEncode(
       List<int>.generate(32, (_) => rng.nextInt(256)),
     );
-    await _storage.write(key: 'zn_db_key', value: key);
+    await _storage.write(key: 'sc_db_key', value: key);
     return key;
   }
 
@@ -246,13 +246,13 @@ class AppState extends ChangeNotifier {
     machineHostAdminToken = adminToken;
     machineHostTlsFp = tlsFp;
     if (address == null) {
-      await _storage.delete(key: 'zn_machine_host_addr');
-      await _storage.delete(key: 'zn_machine_host_token');
-      await _storage.delete(key: 'zn_machine_host_tls_fp');
+      await _storage.delete(key: 'sc_machine_host_addr');
+      await _storage.delete(key: 'sc_machine_host_token');
+      await _storage.delete(key: 'sc_machine_host_tls_fp');
     } else {
-      await _storage.write(key: 'zn_machine_host_addr', value: address);
-      await _storage.write(key: 'zn_machine_host_token', value: adminToken);
-      await _storage.write(key: 'zn_machine_host_tls_fp', value: tlsFp);
+      await _storage.write(key: 'sc_machine_host_addr', value: address);
+      await _storage.write(key: 'sc_machine_host_token', value: adminToken);
+      await _storage.write(key: 'sc_machine_host_tls_fp', value: tlsFp);
     }
     notifyListeners();
   }
@@ -266,14 +266,14 @@ class AppState extends ChangeNotifier {
     externalMailboxTlsFp = tlsFp;
     externalMailboxFriendHosted = token != null && friendHosted;
     if (token == null) {
-      await _storage.delete(key: 'zn_ext_token');
-      await _storage.delete(key: 'zn_ext_tls_fp');
-      await _storage.delete(key: 'zn_ext_friend');
+      await _storage.delete(key: 'sc_ext_token');
+      await _storage.delete(key: 'sc_ext_tls_fp');
+      await _storage.delete(key: 'sc_ext_friend');
     } else {
-      await _storage.write(key: 'zn_ext_token', value: token);
-      await _storage.write(key: 'zn_ext_tls_fp', value: tlsFp);
+      await _storage.write(key: 'sc_ext_token', value: token);
+      await _storage.write(key: 'sc_ext_tls_fp', value: tlsFp);
       await _storage.write(
-        key: 'zn_ext_friend',
+        key: 'sc_ext_friend',
         value: friendHosted ? '1' : '0',
       );
     }
@@ -285,6 +285,13 @@ class AppState extends ChangeNotifier {
     required String hubUrl,
   }) async {
     final crypto = CryptoService.generate();
+    // Ours to compute, not the hub's to assign: the ID is BLAKE2b-160 of the
+    // identity key (PROTOCOL.md "Stonechat ID"), and /v1/register only
+    // recomputes it. So derive it here and treat the response as a carrier for
+    // the account token. A hub that answers with a different ID is wrong about
+    // us, and storing its answer would leave this device advertising an ID that
+    // no peer's commitment check can accept.
+    final id = crypto.stonechatId;
     api.baseUrl = hubUrl;
 
     final result = await api.register(
@@ -292,20 +299,26 @@ class AppState extends ChangeNotifier {
       crypto.pqPublicKeyB64,
       crypto.signPqPk(),
     );
+    if (result.stonechatId != id) {
+      throw ApiException.refusing(
+        'This hub answered with a different Stonechat ID than your key '
+        'derives — refusing to use it.',
+      );
+    }
     api.accountToken = result.accountToken;
 
     await _storage.write(
-      key: 'zn_secret',
+      key: 'sc_secret',
       value: base64Encode(crypto.exportSecretKey()),
     );
-    await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
-    await _storage.write(key: 'zn_id', value: result.stonechatId);
-    await _storage.write(key: 'zn_token', value: result.accountToken);
-    await _storage.write(key: 'zn_name', value: name);
-    await _storage.write(key: 'zn_hub_url', value: hubUrl);
+    await _storage.write(key: 'sc_public', value: crypto.publicKeyB64);
+    await _storage.write(key: 'sc_id', value: id);
+    await _storage.write(key: 'sc_token', value: result.accountToken);
+    await _storage.write(key: 'sc_name', value: name);
+    await _storage.write(key: 'sc_hub_url', value: hubUrl);
 
     _crypto = crypto;
-    stonechatId = result.stonechatId;
+    stonechatId = id;
     displayName = name;
     // This device needs its own keys before it can certify itself, and load()
     // only makes them when an identity is already in storage — which it was
@@ -340,6 +353,9 @@ class AppState extends ChangeNotifier {
   }) async {
     final decoded = await const IdentityCodec().decode(export, passphrase);
     final crypto = CryptoService.fromKeys(secretKey: decoded.secretKey);
+    // Same as createIdentity: the restored key determines the ID, so neither
+    // /v1/recover nor the /v1/register fallback gets to name us.
+    final id = crypto.stonechatId;
     api.baseUrl = hubUrl;
 
     ({String stonechatId, String accountToken}) result;
@@ -360,21 +376,27 @@ class AppState extends ChangeNotifier {
         crypto.signPqPk(),
       );
     }
+    if (result.stonechatId != id) {
+      throw ApiException.refusing(
+        'This hub answered with a different Stonechat ID than your key '
+        'derives — refusing to use it.',
+      );
+    }
     api.accountToken = result.accountToken;
 
     final name = decoded.name ?? 'Me';
     await _storage.write(
-      key: 'zn_secret',
+      key: 'sc_secret',
       value: base64Encode(crypto.exportSecretKey()),
     );
-    await _storage.write(key: 'zn_public', value: crypto.publicKeyB64);
-    await _storage.write(key: 'zn_id', value: result.stonechatId);
-    await _storage.write(key: 'zn_token', value: result.accountToken);
-    await _storage.write(key: 'zn_name', value: name);
-    await _storage.write(key: 'zn_hub_url', value: hubUrl);
+    await _storage.write(key: 'sc_public', value: crypto.publicKeyB64);
+    await _storage.write(key: 'sc_id', value: id);
+    await _storage.write(key: 'sc_token', value: result.accountToken);
+    await _storage.write(key: 'sc_name', value: name);
+    await _storage.write(key: 'sc_hub_url', value: hubUrl);
 
     _crypto = crypto;
-    stonechatId = result.stonechatId;
+    stonechatId = id;
     displayName = name;
     // This device needs its own keys before it can certify itself, and load()
     // only makes them when an identity is already in storage — which it was
@@ -399,16 +421,16 @@ class AppState extends ChangeNotifier {
   Map<String, dynamic>? deviceCert;
 
   Future<void> _loadOrCreateDeviceKeys() async {
-    final stored = await _storage.read(key: 'zn_device_keys');
+    final stored = await _storage.read(key: 'sc_device_keys');
     if (stored != null) {
       deviceKeys = DeviceKeys.decode(stored);
     } else {
       // First run on this device — including an upgrade from before
       // certificates existed, which is a wipe rather than a migration.
       deviceKeys = DeviceKeys.generate();
-      await _storage.write(key: 'zn_device_keys', value: deviceKeys!.encode());
+      await _storage.write(key: 'sc_device_keys', value: deviceKeys!.encode());
     }
-    final storedCert = await _storage.read(key: 'zn_device_cert');
+    final storedCert = await _storage.read(key: 'sc_device_cert');
     if (storedCert != null) {
       deviceCert = jsonDecode(storedCert) as Map<String, dynamic>;
     }
@@ -440,7 +462,7 @@ class AppState extends ChangeNotifier {
       crypto.identitySeed,
     );
     deviceCert = signed;
-    await _storage.write(key: 'zn_device_cert', value: jsonEncode(signed));
+    await _storage.write(key: 'sc_device_cert', value: jsonEncode(signed));
   }
 
   // -- device linking (MULTIDEVICE.md "Linking a device") ---------------------
@@ -564,16 +586,16 @@ class AppState extends ChangeNotifier {
     // the primary device (MULTIDEVICE.md "Decided").
     api.accountToken = null;
 
-    // No `zn_secret`: this device never holds the identity root. Its absence
+    // No `sc_secret`: this device never holds the identity root. Its absence
     // at startup is what makes it a linked device.
-    await _storage.write(key: 'zn_public', value: grant.identityPubB64);
+    await _storage.write(key: 'sc_public', value: grant.identityPubB64);
     deviceCert = grant.cert;
-    await _storage.write(key: 'zn_device_cert', value: jsonEncode(grant.cert));
-    await _storage.write(key: 'zn_id', value: grant.stonechatId);
-    await _storage.write(key: 'zn_name', value: grant.displayName);
-    await _storage.write(key: 'zn_hub_url', value: grant.hubUrl);
-    await _storage.write(key: 'zn_device_id', value: '${grant.deviceId}');
-    await _storage.write(key: 'zn_device_token', value: grant.deviceToken);
+    await _storage.write(key: 'sc_device_cert', value: jsonEncode(grant.cert));
+    await _storage.write(key: 'sc_id', value: grant.stonechatId);
+    await _storage.write(key: 'sc_name', value: grant.displayName);
+    await _storage.write(key: 'sc_hub_url', value: grant.hubUrl);
+    await _storage.write(key: 'sc_device_id', value: '${grant.deviceId}');
+    await _storage.write(key: 'sc_device_token', value: grant.deviceToken);
 
     _crypto = crypto;
     stonechatId = grant.stonechatId;

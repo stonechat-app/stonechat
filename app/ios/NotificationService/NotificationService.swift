@@ -89,9 +89,9 @@ final class Drainer {
     // Identity + DB key from the shared keychain (first_unlock: readable
     // here as long as the phone has been unlocked once since boot).
     guard
-      let dbKey = Keychain.read("zn_db_key"),
-      let ownId = Keychain.read("zn_id"),
-      let secretB64 = Keychain.read("zn_secret"),
+      let dbKey = Keychain.read("sc_db_key"),
+      let ownId = Keychain.read("sc_id"),
+      let secretB64 = Keychain.read("sc_secret"),
       let secret = Data(base64Encoded: secretB64), secret.count == 64
     else {
       nseLog.error("no identity in the shared keychain — nothing to drain")
