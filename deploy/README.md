@@ -116,9 +116,9 @@ holds the provider tokens:
 you must also open. Add inbound TCP rules for:
 
 - **`8000`** (or your `STONECHAT_HUB_PORT`) — to the **hub** VM only
-- **`8100`** — to the **hub** VM, from the fleet hosts' *internal* addresses
-  only, and only if you enable push (GCP's `default-allow-internal` already
-  covers this)
+- **`8100`** — only if you run the push gateway: to the box running it, from
+  the fleet hosts' *internal* addresses only (GCP's `default-allow-internal`
+  already covers this)
 - **`32768–60999` TCP** — to the **fleet host(s)** only (Docker's published-port
   range for mailbox containers)
 - **`32768–60999` UDP** — same hosts. The browser transport is QUIC, and
@@ -267,64 +267,18 @@ drop-in on the box.
 
 ## Enable push (optional)
 
-Without this, messages arrive only while the app is foregrounded or on resume —
-fine for a quick test. To get real background wake-ups, stand up the push
-gateway. It's the only component that holds APNs/FCM credentials, and it never
-learns identities (the relay pings it with just a device token). The app→relay→
-gateway wiring is already built; you only need credentials + the service.
+Without push, messages arrive only while the app is open or on resume. The push
+gateway is its own compose project, deployed separately from the hub — see
+[`push_gateway/README.md`](../push_gateway/README.md). Read its "Before you run
+this" first: it only wakes phones running an app build signed with your own
+Apple/Firebase credentials.
 
-**1. Apple push key.** In your Apple Developer account: Certificates, IDs &
-Profiles → Keys → create an **APNs Auth Key** (`.p8`). Note the Key ID and your
-Team ID. Enable the **Push Notifications** capability on your app id.
-
-**2. App build.** In Xcode add the Push Notifications capability to the Runner
-target (creates `Runner.entitlements` with `aps-environment`), drop in the
-Firebase config the app uses to obtain the token (`GoogleService-Info.plist`
-for iOS, `google-services.json` for Android), and rebuild the IPA. Without these
-the app just runs push-disabled — no crash.
-
-> The app fetches the raw APNs token on iOS and sends it to your mailbox; our
-> gateway pushes APNs-direct. Firebase here is only the token-acquisition /
-> notification-lifecycle plumbing.
-
-**3. Run it** on the hub box, as the `push_gateway` compose profile:
+On the hub side it takes two lines in `deploy/.env`, then `docker compose up -d`:
 
 ```bash
-sudo mkdir -p /etc/stonechat && sudo cp /path/to/AuthKey_XXXX.p8 /etc/stonechat/apns.p8
-cd ~/stonechat/deploy
-$EDITOR .env          # the push block: APNs ids + topic, STONECHAT_PUSH_BIND
-docker compose --profile push_gateway up -d --build
-docker compose --profile push_gateway ps  # push_gateway: "healthy"
-curl -s http://<STONECHAT_PUSH_BIND>:8100/health  # -> {"apns": true, ...}
+STONECHAT_PUSH_GATEWAY=http://<GATEWAY_PRIVATE_IP>:8100
+STONECHAT_PUSH_MINT_SECRET=<same value as in push_gateway/.env>
 ```
-
-Put `COMPOSE_PROFILES=push_gateway` in `.env` so every later plain `docker compose`
-command includes it. The container gets only the push variables from `.env`,
-never the hub's tokens, and `/etc/stonechat` is mounted read-only.
-
-It must be reachable **from mailboxes, never from the internet**. Mailboxes
-run on the fleet hosts, so publish it on this box's *private* address
-(`STONECHAT_PUSH_BIND`) and allow 8100 from the internal network only in the
-cloud firewall. `ufw` cannot do this part: as with the hub port, Docker's
-rules bypass it. If the fleet host cannot reach it, pings fail quietly — the
-relay logs `gateway ping failed`, nothing else breaks, push just never arrives.
-Check from the fleet host with `curl http://<HUB_INTERNAL_IP>:8100/health`.
-
-**4. Point the hub at it** in the same `.env`, then `docker compose up -d`:
-
-```bash
-STONECHAT_PUSH_GATEWAY=http://<HUB_INTERNAL_IP>:8100
-STONECHAT_PUSH_MINT_SECRET=<openssl rand -hex 32>
-```
-
-The mint secret turns on per-relay push keys (recommended; see PROTOCOL.md
-"Push gateway"): the hub mints one into each mailbox and the push service
-refuses pings without it. Mailboxes pick all of this up when they are
-provisioned, so set it before the first Ignite, or re-ignite existing ones.
-Verify with a message to a user whose app is fully closed.
-To cut off one abusive relay: its `pk_…` id from `docker compose logs push_gateway` →
-`/etc/stonechat/push-blocklist` (no restart needed).
-
 
 ## Running on Google Cloud
 

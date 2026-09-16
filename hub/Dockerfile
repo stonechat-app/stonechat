@@ -3,7 +3,7 @@
 #
 # Built from the REPO ROOT, not hub/: the image also carries
 # scripts/roll_relay.py so relay releases can be rolled with `compose exec`
-# instead of a host venv. See deploy/docker-compose.yml.
+# instead of a host venv. See docker-compose.yml next to this file.
 FROM python:3.13-slim
 
 # The fleet provider drives remote Docker daemons by shelling out to

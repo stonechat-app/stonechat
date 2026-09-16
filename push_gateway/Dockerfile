@@ -1,6 +1,6 @@
 # The push gateway: the only holder of APNs/FCM credentials (main.py). Stateless
-# — no database, no volume beyond the read-only credentials directory. Run it as
-# the `push_gateway` profile of deploy/docker-compose.yml.
+# — no database, no volume beyond the read-only credentials directory. Run it
+# with docker-compose.yml next to this file (README.md).
 FROM python:3.13-slim
 
 WORKDIR /srv

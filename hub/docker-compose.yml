@@ -1,0 +1,95 @@
+# A self-hosted hub, and nothing else: the directory users register with, and
+# the address their own mailboxes are listed under.
+#
+#     cp .env.example .env && $EDITOR .env
+#     docker compose up -d --build                  # plain HTTP
+#     docker compose --profile tls up -d --build    # HTTPS, via Caddy
+#
+# This hub provisions no mailboxes: there are no fleet hosts or cloud providers
+# here, so users bring their own mailbox and register its address
+# (POST /v1/mailbox/external). Push is a separate, optional project
+# (../push_gateway/).
+name: stonechat-hub
+
+services:
+  hub:
+    build:
+      # The repo root, not hub/: the Dockerfile copies hub/ and scripts/ by
+      # their repo paths.
+      context: ..
+      dockerfile: hub/Dockerfile
+      args:
+        # Stripe is the hosted service's billing plane; see STONECHAT_BILLING.
+        WITH_BILLING: "0"
+    image: stonechat-hub:local
+    restart: always
+    env_file: .env
+    environment:
+      # Container-internal path. What you move is the host side, via
+      # STONECHAT_STATE_DIR.
+      STONECHAT_HUB_DB: /var/lib/stonechat/hub.db
+      # Billing off removes /v1/billing/*, ungates every provider and disables
+      # the reaper. A self-hosted hub has no plans to sell.
+      STONECHAT_BILLING: "off"
+      # Only read when the hub provisions a mailbox, which this one never does.
+      STONECHAT_RELAY_BINARY: ""
+    ports:
+      # Behind Caddy (tls profile) set STONECHAT_BIND=127.0.0.1: Caddy reaches
+      # the hub over the compose network, so it need not be exposed at all.
+      - "${STONECHAT_BIND:-0.0.0.0}:${STONECHAT_HUB_PORT:-8000}:8000"
+    volumes:
+      # hub.db, the directory. WAL mode: back up a running hub with
+      # `sqlite3 hub.db ".backup out.db"`, not a bare cp.
+      - ${STONECHAT_STATE_DIR:-/var/lib/stonechat}:/var/lib/stonechat
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health").read()
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # HTTPS, for anyone with a domain: `docker compose --profile tls up -d`.
+  # Phones need a certificate, so a hub that real devices use wants this.
+  caddy:
+    image: caddy:2-alpine
+    profiles: [tls]
+    restart: always
+    depends_on: [hub]
+    ports:
+      # :80 is not optional — it is where the ACME challenge is answered, so
+      # closing it breaks renewal in 60 days rather than today.
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      # The issued certificates. A named volume, because losing them means
+      # re-issuing into Let's Encrypt's rate limit.
+      - caddy-data:/data
+      - caddy-config:/config
+
+configs:
+  # Caddy fetches and renews the certificate itself. The name must already
+  # resolve to this box: issuance is proved over port 80 as Caddy starts.
+  # Inline `content:` needs compose >= 2.23.1.
+  #
+  # The domain is filled in by compose, not Caddy: compose interpolates `$`
+  # inside `content:` too, so Caddy's own `{$VAR}` form would arrive as
+  # `{hub.example.com}`. Plain default, not `:?`: compose interpolates the whole
+  # file before it filters profiles, so a required-variable check here would
+  # fail every run that does not use tls at all. Empty is caught by Caddy.
+  caddyfile:
+    content: |
+      ${STONECHAT_HUB_DOMAIN:-} {
+        reverse_proxy hub:8000
+      }
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -18,14 +18,14 @@ __pycache__/
 .env.appstore
 credentials/
 
-# Hub deploy config (deploy/.env): provider API tokens, the Stripe webhook
-# secret, the admin token, the push mint secret. deploy/.env.example is the
-# tracked template and holds none of them.
+# Deploy config (hub/.env, push_gateway/.env): the admin token, the push mint
+# secret, APNs/FCM settings. The .env.example next to each is the tracked
+# template and holds none of them.
 .env
 
-# OpenTofu/Terraform (deploy/terraform/): the state records every resource it
-# manages, and terraform.tfvars names your project and addresses.
-# .terraform.lock.hcl is tracked, so everyone resolves the same provider build.
+# OpenTofu/Terraform, should anyone keep infrastructure code in a checkout: the
+# state records every resource it manages, and terraform.tfvars names your
+# project and addresses.
 .terraform/
 *.tfstate
 *.tfstate.*

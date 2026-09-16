@@ -1,0 +1,52 @@
+# The push gateway, on its own: optional, and independent of the hub's compose
+# project (../hub/docker-compose.yml). See README.md here before running it —
+# it only helps if you ship your own build of the app.
+#
+#     cp .env.example .env && $EDITOR .env
+#     docker compose up -d --build
+#
+# The hub never calls this service. Mailboxes do, so it can run on the hub box,
+# a fleet host, or anywhere they can reach.
+name: stonechat-push
+
+services:
+  push_gateway:
+    build:
+      context: .
+    image: stonechat-push-gateway:local
+    restart: always
+    # Named one by one rather than `env_file: .env`, so the container gets only
+    # what main.py reads and none of the host-side paths below.
+    environment:
+      STONECHAT_APNS_KEY: ${STONECHAT_APNS_KEY:-}
+      STONECHAT_APNS_KEY_ID: ${STONECHAT_APNS_KEY_ID:-}
+      STONECHAT_APNS_TEAM_ID: ${STONECHAT_APNS_TEAM_ID:-}
+      STONECHAT_APNS_TOPIC: ${STONECHAT_APNS_TOPIC:-}
+      STONECHAT_APNS_SANDBOX: ${STONECHAT_APNS_SANDBOX:-}
+      STONECHAT_FCM_CREDENTIALS: ${STONECHAT_FCM_CREDENTIALS:-}
+      STONECHAT_PUSH_MINT_SECRET: ${STONECHAT_PUSH_MINT_SECRET:-}
+      STONECHAT_PUSH_BLOCKLIST: ${STONECHAT_PUSH_BLOCKLIST:-}
+      STONECHAT_PUSH_DEBUG: ${STONECHAT_PUSH_DEBUG:-}
+    ports:
+      # Mailboxes run on OTHER machines and must reach this; the internet must
+      # not, and ufw cannot enforce that for a published port. So publish on
+      # this box's private address and let the cloud firewall keep it
+      # network-internal. The loopback default reaches nothing off this box:
+      # push stays silent until STONECHAT_PUSH_BIND is set, rather than open.
+      - "${STONECHAT_PUSH_BIND:-127.0.0.1}:${STONECHAT_PUSH_PORT:-8100}:8100"
+    volumes:
+      # APNs key, FCM service account, blocklist. A directory rather than
+      # single files: the blocklist is re-read when it changes, and an editor
+      # that saves by writing a new file and renaming it would be invisible
+      # through a single-file mount, which pins the old inode.
+      - ${STONECHAT_PUSH_SECRETS_DIR:-/etc/stonechat}:/etc/stonechat:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8100/health").read()
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
