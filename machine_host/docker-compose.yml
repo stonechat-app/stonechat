@@ -10,9 +10,7 @@ name: stonechat-machine-host
 
 services:
   machine_host:
-    build:
-      context: ..
-      dockerfile: machine_host/Dockerfile
+    build: .
     image: stonechat-machine-host:local
     restart: always
     env_file: .env

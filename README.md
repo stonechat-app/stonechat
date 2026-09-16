@@ -106,20 +106,19 @@ Docker access; the hub never touches this machine.
 
 ```bash
 cd machine_host
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-
-STONECHAT_MACHINE_HOST_ADMIN_TOKEN=$(openssl rand -hex 24) \
-STONECHAT_MACHINE_HOST_ADVERTISE_HOST=<your-public-ip> \
-  .venv/bin/python main.py            # pinned TLS on :8200
+cp .env.example .env      # admin token (openssl rand -hex 24) + your public IP
+docker compose up -d --build        # pinned TLS on :8200
 ```
 
-Open ports **8200** (the machine host) and **42000–42024** (guest mailboxes) in your
-firewall or home router. In the app: Mailbox → **Host friends on your machine** →
-enter its address + admin token → **Create an invite** → share the
-`stonechat-host:…` string. Friends install the app, forge an identity, and paste it
-under **Join a friend's host** — their mailbox appears in the directory as an
-ordinary self-hosted relay, and its token stays on their phone. Exchange Stonechat
-IDs and chat.
+Nothing is compiled: guest mailboxes run the published relay image, pulled on
+first use. Open ports **8200** (the machine host) and **42000–42024** (guest
+mailboxes) in your firewall or home router. Create your own mailbox on it
+(`POST /v1/guest`, see the machine host README) and connect it in the app under
+Mailbox → **Self-host**; then **Invites** → its address + admin token →
+**New invite** → share the `stonechat-host:…` string. Friends install the app,
+forge an identity, and paste it under **A friend's machine** → **Join with
+invite** — their mailbox appears in the directory as an ordinary self-hosted
+relay, and its token stays on their phone. Exchange Stonechat IDs and chat.
 
 Message content stays end-to-end encrypted — unreadable even to the
 host-owner — but the host-owner can see that a friend hosts there and their

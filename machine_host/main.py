@@ -27,8 +27,8 @@ Config (env):
     STONECHAT_MACHINE_HOST_CAPACITY        max guest mailboxes (default 25)
     STONECHAT_MACHINE_HOST_PORT_BASE       first guest mailbox port; guests are published
                                            on base..base+capacity-1 (default 42000)
-    STONECHAT_MACHINE_HOST_IMAGE           mailbox image (default stonechat-relay:dev)
-    STONECHAT_MACHINE_HOST_RELAY_DIR       build context if the image is missing (default ../relay)
+    STONECHAT_MACHINE_HOST_IMAGE           mailbox image, pulled if not present locally
+                                           (default ghcr.io/stonechat-app/relay:latest)
     STONECHAT_MACHINE_HOST_RUNTIME         container runtime, e.g. runsc for gVisor (optional)
     STONECHAT_MACHINE_HOST_PORT            listen port (default 8200)
     STONECHAT_PUSH_GATEWAY                 passed through to guest mailboxes (optional)
@@ -57,9 +57,7 @@ DB_PATH = os.environ.get("STONECHAT_MACHINE_HOST_DB", "machine_host.db")
 TLS_DIR = Path(os.environ.get("STONECHAT_MACHINE_HOST_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
 CAPACITY = int(os.environ.get("STONECHAT_MACHINE_HOST_CAPACITY", "25"))
 PORT_BASE = int(os.environ.get("STONECHAT_MACHINE_HOST_PORT_BASE", "42000"))
-IMAGE = os.environ.get("STONECHAT_MACHINE_HOST_IMAGE", "stonechat-relay:dev")
-RELAY_DIR = Path(os.environ.get("STONECHAT_MACHINE_HOST_RELAY_DIR",
-                                 str(Path(__file__).resolve().parents[1] / "relay")))
+IMAGE = os.environ.get("STONECHAT_MACHINE_HOST_IMAGE", "ghcr.io/stonechat-app/relay:latest")
 RUNTIME = os.environ.get("STONECHAT_MACHINE_HOST_RUNTIME", "")
 PUSH_GATEWAY = os.environ.get("STONECHAT_PUSH_GATEWAY", "")
 SERVER_PORT = 8080
@@ -224,11 +222,12 @@ def _docker(*args: str) -> str:
 
 
 def _ensure_image() -> None:
+    """Pull the mailbox image on first use; never build it here. Whatever is
+    already tagged IMAGE locally is used as-is — which is how a Machine-tier VM
+    runs the image its startup script built from the pinned relay binary."""
     if subprocess.run(["docker", "image", "inspect", IMAGE],
                       capture_output=True).returncode != 0:
-        if not RELAY_DIR.is_dir():
-            raise HTTPException(500, f"image {IMAGE} missing and no build dir at {RELAY_DIR}")
-        _docker("build", "-t", IMAGE, str(RELAY_DIR))
+        _docker("pull", IMAGE)
 
 
 def _launch_container(owner_id: str, owner_token: str, port: int) -> str:

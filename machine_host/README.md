@@ -80,10 +80,12 @@ the compose file sets up, and why:
   `machine_host.db` plus the TLS keypair. **Back it up** — every invite you've
   sent carries that certificate's fingerprint, and the app pins it.
 
-The first mailbox provision builds the `stonechat-relay` image from the
-`relay/` source baked into the machine host image, so it takes a few extra
-minutes; later ones are seconds. To update: `git pull` then
-`sudo docker compose up -d --build` — running guests are untouched.
+Nothing gets compiled on your box. The first mailbox provision pulls the
+published relay image (`ghcr.io/stonechat-app/relay:latest`, ~10 MB); later
+ones reuse it and start in seconds. To update the machine host: `git pull`
+then `sudo docker compose up -d --build` — running guests are untouched. New
+guests keep using the relay image already on the box until you
+`sudo docker pull ghcr.io/stonechat-app/relay:latest`.
 
 All the knobs (in `.env`):
 
@@ -93,7 +95,7 @@ All the knobs (in `.env`):
 | `STONECHAT_MACHINE_HOST_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
 | `STONECHAT_MACHINE_HOST_CAPACITY` | `25` | Max guest mailboxes on this host |
 | `STONECHAT_MACHINE_HOST_PORT_BASE` | `42000` | First guest mailbox port; guests get `base…base+capacity−1` |
-| `STONECHAT_MACHINE_HOST_IMAGE` | `stonechat-relay:dev` | Mailbox image (built from `../relay` if missing) |
+| `STONECHAT_MACHINE_HOST_IMAGE` | `ghcr.io/stonechat-app/relay:latest` | Mailbox image; pulled if not already on the box, never built |
 | `STONECHAT_MACHINE_HOST_RUNTIME` | — | Set to `runsc` for gVisor hardening |
 | `STONECHAT_PUSH_GATEWAY` | — | Passed through to guest mailboxes |
 | `STONECHAT_MACHINE_HOST_PORT` | `8200` | Listen port |
@@ -125,7 +127,6 @@ Environment=STONECHAT_MACHINE_HOST_ADMIN_TOKEN=<your admin token>
 Environment=STONECHAT_MACHINE_HOST_ADVERTISE_HOST=<your static public IP>
 Environment=STONECHAT_MACHINE_HOST_DB=/var/lib/stonechat/machine_host.db
 Environment=STONECHAT_MACHINE_HOST_TLS_DIR=/var/lib/stonechat
-Environment=STONECHAT_MACHINE_HOST_RELAY_DIR=/opt/stonechat/relay
 ExecStart=/opt/stonechat/machine_host/.venv/bin/python /opt/stonechat/machine_host/main.py
 Restart=always
 RestartSec=2

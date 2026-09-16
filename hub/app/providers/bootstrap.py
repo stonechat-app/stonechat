@@ -182,7 +182,10 @@ _MACHINE_HOST_TEMPLATE = """
 # Best-effort from here on: the owner's mailbox is already serving.
 set +e
 
-# Guest-mailbox build context: the relay binary + its runtime Dockerfile.
+# Guest-mailbox image: the pinned relay binary + its runtime Dockerfile, built
+# below (a copy, not a compile). The machine host uses a local image as-is and
+# only pulls from the registry when it is missing, so this VM's guests run the
+# same verified binary as its owner's mailbox.
 mkdir -p /opt/stonechat/relay
 cp /opt/stonechat/stonechat-relay /opt/stonechat/relay/stonechat-relay
 cat > /opt/stonechat/relay/Dockerfile <<'DOCKER_EOF'
@@ -199,6 +202,7 @@ elif command -v dnf >/dev/null; then
   dnf install -y docker python3 python3-pip
 fi
 systemctl enable --now docker
+docker build -t stonechat-relay:dev /opt/stonechat/relay
 
 python3 -m venv /opt/stonechat/venv
 /opt/stonechat/venv/bin/pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.32" "httpx>=0.27"
@@ -215,7 +219,7 @@ Environment=STONECHAT_MACHINE_HOST_ADVERTISE_HOST=$PUBLIC_IP
 Environment=STONECHAT_MACHINE_HOST_PORT={machine_host_port}
 Environment=STONECHAT_MACHINE_HOST_DB=/var/lib/stonechat/machine_host.db
 Environment=STONECHAT_MACHINE_HOST_TLS_DIR=/var/lib/stonechat
-Environment=STONECHAT_MACHINE_HOST_RELAY_DIR=/opt/stonechat/relay
+Environment=STONECHAT_MACHINE_HOST_IMAGE=stonechat-relay:dev
 Environment=STONECHAT_PUSH_GATEWAY={push_gateway}
 ExecStart=/opt/stonechat/venv/bin/python /opt/stonechat/machine_host.py
 Restart=always
