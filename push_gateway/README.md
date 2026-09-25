@@ -34,7 +34,7 @@ The hub never calls the gateway and the gateway never calls the hub.
   into each mailbox.
 
 Because only mailboxes talk to it, the gateway can run on the hub box, on a
-fleet host, or on its own machine.
+machine host, or on its own machine.
 
 ## Run it
 
@@ -59,7 +59,7 @@ provisions them, together with the same `STONECHAT_PUSH_MINT_SECRET`.
 ## Network
 
 Reachable **from mailboxes, never from the internet**. Publish it on the box's
-private address (`STONECHAT_PUSH_BIND`) and allow port 8100 from the fleet
+private address (`STONECHAT_PUSH_BIND`) and allow port 8100 from the machine
 hosts' internal addresses only, in the cloud firewall — `ufw` cannot do this,
 because Docker's published-port rules bypass it.
 
@@ -69,7 +69,7 @@ an open relay.
 
 If a mailbox cannot reach the gateway, pings fail quietly: the relay logs
 `gateway ping failed`, nothing else breaks, and push never arrives. Check from
-a fleet host with `curl http://<GATEWAY_PRIVATE_IP>:8100/health`.
+a machine host with `curl http://<GATEWAY_PRIVATE_IP>:8100/health`.
 
 ## Operating it
 

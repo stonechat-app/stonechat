@@ -12,10 +12,10 @@
 # deliberate act, so there are two deliberate triggers:
 #
 # - Run manually: build, test, and upload the binaries as run artifacts — what
-#   a fleet deploy downloads (`roll_relay.py` swaps the binary and verifies the
-#   reported build hash changed). Tick `image` to also push
-#   ghcr.io/stonechat-app/relay:edge and :sha-<commit>, to try the image before
-#   releasing it.
+#   a machine-host deploy downloads (`roll_relay.py` uploads the binary to each
+#   host, which swaps it in and verifies the reported build hash changed). Tick
+#   `image` to also push ghcr.io/stonechat-app/relay:edge and :sha-<commit>, to
+#   try the image before releasing it.
 # - Push a `relay-v<major>.<minor>.<patch>` tag: the same build, then a GitHub
 #   Release carrying the binaries and a multi-arch image tagged <version>,
 #   <major>.<minor>, <major> and latest — what self-hosters `docker run`.

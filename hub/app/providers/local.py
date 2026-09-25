@@ -66,8 +66,8 @@ def image_tag() -> str:
 @contextlib.contextmanager
 def image_context():
     """Docker build context for the relay image: a prebuilt-binary context
-    when STONECHAT_RELAY_BINARY is set (instant build, what fleet hosts should
-    get), else the self-building relay/ crate."""
+    when STONECHAT_RELAY_BINARY is set (instant build), else the self-building
+    relay/ crate."""
     binary = relay_binary_path()
     if binary is None:
         yield str(RELAY_DIR)
@@ -132,7 +132,7 @@ class LocalDockerProvider(CloudProvider):
                 "docker", "run", "-d",
                 "--name", name,
                 "--restart", "unless-stopped",
-                # Pinned rather than `0:` — see fleet.py. Docker re-picks a
+                # Pinned rather than `0:`. Docker re-picks a
                 # `0:` port on every restart, which would make the stored
                 # address wrong the moment a container bounced.
                 "-p", f"{tcp_port}:{SERVER_PORT}",

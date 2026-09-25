@@ -1,6 +1,6 @@
 """Echo bot: a headless Stonechat identity for testing the app against production.
 
-Registers a real identity on the hub, ignites a fleet mailbox, then sits on
+Registers a real identity on the hub, ignites a shared-tier mailbox, then sits on
 its websocket forever: auto-accepts contact requests and replies to every
 message with a random canned sentence. Add its SC- ID from the phone's
 "Add contact" screen and you have someone to chat with.
@@ -16,7 +16,7 @@ Usage (first run provisions; later runs reuse the saved identity):
     python3 scripts/echo_bot.py --destroy      # tear down mailbox + state
 
 Env: STONECHAT_HUB (default https://hub.stonechat.app), STONECHAT_TEST_CODE (required on
-first run — fleet is plan-gated), STONECHAT_BOT_NAME (default: a random
+first run — the shared tier is plan-gated), STONECHAT_BOT_NAME (default: a random
 "<word> (echo bot)", chosen once and kept with the identity),
 STONECHAT_BOT_STATE (default ~/.stonechat_echo_bot.pkl).
 
@@ -269,7 +269,7 @@ def load() -> Phone | None:
 
 def redeem(bot: Phone) -> None:
     code = os.environ.get("STONECHAT_TEST_CODE") or sys.exit(
-        "fleet is plan-gated — set STONECHAT_TEST_CODE (the current tester codes "
+        "the shared tier is plan-gated — set STONECHAT_TEST_CODE (the current tester "
         "live in the hub's systemd drop-in, STONECHAT_TEST_CODES)")
     r = httpx.post(f"{HUB}/v1/billing/redeem", headers=bot.auth,
                    json={"code": code}, timeout=30)
@@ -291,9 +291,9 @@ def ensure_provisioned(bot: Phone) -> None:
                  "--destroy and start over")
     if srv["status"] == "none":
         body = {
-            "provider": "fleet",
+            "provider": "machine_host",
             "machine": {"machine_type": "container",
-                        "region": e2e.fleet_country(HUB), "disk_gb": 10},
+                        "region": e2e.shared_country(HUB), "disk_gb": 10},
         }
         r = httpx.post(f"{HUB}/v1/mailbox", headers=bot.auth, json=body, timeout=30)
         if r.status_code == 402:
@@ -303,7 +303,7 @@ def ensure_provisioned(bot: Phone) -> None:
         if r.status_code != 202:
             sys.exit(f"could not ignite a mailbox ({r.status_code}): "
                      f"{r.text[:300]}")
-        print("igniting fleet mailbox…")
+        print("igniting shared-tier mailbox…")
     if srv["status"] == "running":
         bot.mailbox = srv
     else:

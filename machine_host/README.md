@@ -1,7 +1,20 @@
-# Stonechat machine host — "host your circle"
+# Stonechat machine host — the program that runs mailboxes
 
 Run this on a VM **you own** to host your own mailbox *plus* invited friends'
 mailboxes on the same box. A shared host, but only with people you choose.
+
+It is also what every box holding mailboxes runs, including the hosted
+service's. Two ways in, one program:
+
+| | Who decides who lands here | How |
+|---|---|---|
+| **Invite mode** (default) | you, the owner | you mint invites and friends redeem them |
+| **Managed mode** (`STONECHAT_MACHINE_HOST_MANAGED=1`) | a hub you also run | the hub places mailboxes over this API ("Hosting for a hub" below) |
+
+Managed mode refuses invites outright, so a box has exactly one authority. It
+replaced the `fleet` provider, where the hub reached mailbox hosts by SSH as a
+member of the `docker` group — root there in all but name. The containers are
+the same; what the hub holds is now a token for a four-endpoint API.
 
 > Machine-tier VMs provisioned by the hub come with this service
 > **pre-installed** (see `hub/app/providers/bootstrap.py`) — the app picks up
@@ -42,10 +55,14 @@ App Store / Google Play on your phone and each friend's.
 - Create the VM (Debian/Ubuntu is the easy path) with a **static public IP** —
   providers call it reserved, floating, or elastic. The IP is baked into every
   mailbox address on this host, so it must not change across restarts.
-- Open inbound TCP in the provider's firewall (and `ufw`, if you run it):
-  **8200** (the machine host) and **42000–42024** (guest mailboxes:
-  `STONECHAT_MACHINE_HOST_PORT_BASE` through base + capacity − 1 — fixed ports, not
-  Docker-ephemeral, so the rule survives reboots).
+- Open inbound in the provider's firewall (and `ufw`, if you run it):
+  **8200/tcp** (the machine host) and **42000–42024 TCP _and UDP_** (guest
+  mailboxes: `STONECHAT_MACHINE_HOST_PORT_BASE` through base + capacity − 1 —
+  fixed ports, not Docker-ephemeral, so the rule survives reboots). Each guest
+  uses the same number for both protocols, so there is one range to open, not
+  two. The UDP half carries the browser transport (QUIC): without it phones work
+  perfectly and no browser can reach any mailbox on this box, which reads like a
+  client bug and is not.
 - Hosting at home instead? Forward those same ports on your router to the box,
   and use your connection's public IP (or a dynamic-DNS name if it rotates).
 
@@ -87,6 +104,14 @@ then `sudo docker compose up -d --build` — running guests are untouched. New
 guests keep using the relay image already on the box until you
 `sudo docker pull ghcr.io/stonechat-app/relay:latest`.
 
+Upgrading a relay is a **binary swap, never a container recreate**: a mailbox
+keeps its queue, prekeys and TLS key in the container's own writable layer with
+no volume behind it, so `docker run` on a new image would hand every guest an
+empty mailbox. `POST /v1/relay` uploads a binary (it becomes what new guests are
+built from) and `POST /v1/relay/roll` swaps it into the running ones, one at a
+time, checking each relay reports the new build on `/status` and rolling that one
+back if it does not. `scripts/roll_relay.py` drives both.
+
 All the knobs (in `.env`):
 
 | Env | Default | Meaning |
@@ -95,7 +120,10 @@ All the knobs (in `.env`):
 | `STONECHAT_MACHINE_HOST_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
 | `STONECHAT_MACHINE_HOST_CAPACITY` | `25` | Max guest mailboxes on this host |
 | `STONECHAT_MACHINE_HOST_PORT_BASE` | `42000` | First guest mailbox port; guests get `base…base+capacity−1` |
-| `STONECHAT_MACHINE_HOST_IMAGE` | `ghcr.io/stonechat-app/relay:latest` | Mailbox image; pulled if not already on the box, never built |
+| `STONECHAT_MACHINE_HOST_IMAGE` | `ghcr.io/stonechat-app/relay:latest` | Mailbox image; pulled if not already on the box. Ignored once a binary is uploaded through `POST /v1/relay`. Managed mode refuses this floating default — pin a digest or upload a binary, or the hub cannot say which relay its users run |
+| `STONECHAT_MACHINE_HOST_MANAGED` | — | `1` → a hub places mailboxes here; invites are refused |
+| `STONECHAT_MACHINE_HOST_RELAY_DIR` | the DB's directory | Where uploaded relay binaries are kept |
+| `STONECHAT_PUSH_MINT_SECRET` | — | Mints a push key into each guest. Only useful with your own gateway, which must hold the same secret. In managed mode the hub mints it instead |
 | `STONECHAT_MACHINE_HOST_RUNTIME` | — | Set to `runsc` for gVisor hardening |
 | `STONECHAT_PUSH_GATEWAY` | — | Passed through to guest mailboxes |
 | `STONECHAT_MACHINE_HOST_PORT` | `8200` | Listen port |
@@ -213,16 +241,67 @@ Guests never call the admin endpoints; the app does the redeem for them.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/health` | none | Liveness + pinning: `{status, v, tls_fp}`. Guest count/capacity are admin-only (see `/v1/guests`). |
-| POST | `/v1/invite` | admin | `{uses, ttl_hours}` → `{invite}` — the string you share |
-| GET | `/v1/invites` | admin | every minted invite with status: `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by}]}` |
-| POST | `/v1/redeem` | none | `{invite: <token>, owner_id}` → `{address, mailbox_token, tls_fp}` |
-| POST | `/v1/guest` | admin | `{owner_id}` — provision directly, no invite (e.g. your own mailbox) |
-| GET | `/v1/guests` | admin | list current guests |
-| DELETE | `/v1/guest/{owner_id}` | admin | evict — destroys that guest's container |
+| POST | `/v1/invite` | admin | `{uses, ttl_hours}` → `{invite}` — the string you share. 403 in managed mode |
+| GET | `/v1/invites` | admin | every minted invite with status: `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by}]}`. 403 in managed mode |
+| POST | `/v1/redeem` | none | `{invite: <token>, owner_id}` → `{address, mailbox_token, tls_fp, wt_address}`. 403 in managed mode |
+| POST | `/v1/guest` | admin | `{owner_id}` — provision directly, no invite (e.g. your own mailbox). A hub also sends `owner_token` (the token it has already recorded for that mailbox) and `push_key` |
+| GET | `/v1/guests` | admin | `{guests, count, capacity, managed}` — occupancy, which is how a hub picks the emptiest host in a country |
+| DELETE | `/v1/guest/{owner_id}` | admin | evict — destroys that guest's container. Idempotent: an unknown guest answers `{"status": "gone"}` |
+| GET | `/v1/relay` | admin | which binary new guests get, and what each running relay reports on its own `/status` — so a half-finished roll shows as one |
+| POST | `/v1/relay` | admin | upload a relay binary (raw `application/octet-stream`); it becomes what new guests are built from. Refuses anything that is not an ELF |
+| POST | `/v1/relay/roll` | admin | `{only?, dry_run?, force?}` — swap the uploaded binary into running mailboxes, one at a time, stopping and rolling back at the first failure |
 
 The `invite` string is `stonechat-host:` + base64url(`{u: host-url, f: tls-fp, t:
 token}`). The guest's app pins the connection to `f`, so the redeem can't
 be MITM'd — same trust chain as everything else in Stonechat.
+
+## Hosting for a hub (managed mode)
+
+For someone running **both** a hub and the boxes its shared tier sells. The hub
+never reads mail here — it holds the directory and places containers; the
+ciphertext and the TLS keys live on this box and nowhere else.
+
+On the machine host, set two extra values in `.env` and restart:
+
+```bash
+STONECHAT_MACHINE_HOST_MANAGED=1
+STONECHAT_MACHINE_HOST_CAPACITY=200        # how many mailboxes this box sells
+```
+
+Then read its certificate fingerprint, which is what the hub pins:
+
+```bash
+curl -sk https://127.0.0.1:8200/health     # → {"status":"ok","v":1,"tls_fp":"…"}
+```
+
+On the hub, add the box to the pool (`hub/.env`) and restart it:
+
+```bash
+STONECHAT_MACHINE_HOSTS=de1=https://10.0.0.5:8200|DE|<admin token>|<tls fp>
+```
+
+Four fields, all required: address, ISO country code, that host's admin token,
+and the fingerprint. The country is both where mailboxes land and what the
+Mailbox plan offers — `GET /v1/countries` on the hub is derived from this list,
+so a country is purchasable exactly when a host here declares it. The
+fingerprint is the whole trust anchor, because the machine host self-signs:
+without it, anything on the path can collect an admin token that provisions
+mailboxes. Verify the hub agrees:
+
+```bash
+curl -s https://<hub>/v1/countries | jq '.countries[] | {code, plans}'
+```
+
+Then ship it a relay, which is also what pins the version its mailboxes run:
+
+```bash
+hub/.venv/bin/python scripts/roll_relay.py --binary ./stonechat-relay
+```
+
+Keep this box's **public IP static**. It is baked into every mailbox address the
+hub hands out and nothing re-resolves it: an ephemeral address works right up
+until the first stop/start, and then every mailbox here is unreachable with
+nothing in any log to say why.
 
 ## Resilience
 

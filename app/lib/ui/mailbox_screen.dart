@@ -18,7 +18,7 @@ const _providerDefaults = {
   'digitalocean': (machineType: 's-1vcpu-1gb', region: 'fra1'),
   'hetzner': (machineType: 'cx22', region: 'fsn1'),
   'vultr': (machineType: 'vc2-1c-1gb', region: 'sao'),
-  'fleet': (machineType: 'container', region: 'shared'),
+  'machine_host': (machineType: 'container', region: 'shared'),
   'local': (machineType: 'container', region: 'localhost'),
 };
 
@@ -28,7 +28,7 @@ const _providerLabels = {
   'digitalocean': 'Stonechat Cloud · dedicated',
   'hetzner': 'Stonechat Cloud · dedicated',
   'vultr': 'Stonechat Cloud · dedicated',
-  'fleet': 'Stonechat Cloud',
+  'machine_host': 'Stonechat Cloud',
   'local': 'This computer',
   'external': 'Self-hosted',
 };
@@ -336,7 +336,7 @@ class _MailboxScreenState extends State<MailboxScreen> {
 
   // In debug builds default to a local Docker mailbox so development never
   // needs a cloud account; release builds pick the provider the account's
-  // plan entitles it to (PROTOCOL.md "Billing"): mailbox → fleet,
+  // plan entitles it to (PROTOCOL.md "Billing"): mailbox → machine_host,
   // machine → gcp. --dart-define=STONECHAT_PROVIDER overrides everything.
   static const _envProvider = String.fromEnvironment('STONECHAT_PROVIDER');
 
@@ -346,7 +346,7 @@ class _MailboxScreenState extends State<MailboxScreen> {
     if (kDebugMode) return 'local';
     final entitlement = await context.read<AppState>().api.getEntitlement();
     if (entitlement == null) return null;
-    return entitlement.plan == 'machine' ? 'gcp' : 'fleet';
+    return entitlement.plan == 'machine' ? 'gcp' : 'machine_host';
   }
 
   /// The picker, plus the framing that must travel with it.

@@ -23,6 +23,7 @@ import copy
 import hashlib
 import json
 import pathlib
+import shutil
 import socket
 import ssl
 import subprocess
@@ -50,6 +51,17 @@ HUB = os.environ.get("STONECHAT_HUB", "http://127.0.0.1:8477")
 ADMIN_TOKEN = os.environ.get("STONECHAT_ADMIN_TOKEN", "test-admin")
 TEST_CODE = os.environ.get("STONECHAT_TEST_CODE", "STONECHAT-TEST-TEST")
 
+# The shared tier under test is a real machine host, started by this script (see
+# MachineHostUnderTest). The hub must already be pointed at it, which means these
+# three values have to agree with the hub's STONECHAT_MACHINE_HOSTS — see the
+# command in CLAUDE.md. `insecure` there skips the certificate pin, which is
+# exactly what laptop dev is for: the host mints a fresh self-signed cert in a
+# temp directory on every run, so there is no stable fingerprint to pin.
+MACHINE_HOST_PORT = int(os.environ.get("STONECHAT_TEST_MACHINE_HOST_PORT", "8201"))
+MACHINE_HOST_TOKEN = os.environ.get(
+    "STONECHAT_TEST_MACHINE_HOST_TOKEN", "e2e-machine-host-admin")
+MACHINE_HOST_URL = f"https://127.0.0.1:{MACHINE_HOST_PORT}"
+
 # Mailbox client: no CA validation (self-signed by design); see module docstring.
 MX = httpx.Client(verify=False, timeout=10)
 WS_SSL = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -58,25 +70,30 @@ WS_SSL.verify_mode = ssl.CERT_NONE
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "hub"))
 from app.identity import stonechat_id_from_pubkey  # noqa: E402
+from app.providers.local import image_tag  # noqa: E402
+
+MACHINE_HOST_MAIN = (
+    __import__("pathlib").Path(__file__).resolve().parents[1] / "machine_host" / "main.py"
+)
 
 TLS_SIG_CONTEXT = b"stonechat-v1-tls"
 WTCERTS_SIG_CONTEXT = b"stonechat-v1-wtcerts"
 
 
-def fleet_country(hub_url: str) -> str:
+def shared_country(hub_url: str) -> str:
     """A country the hub can actually place a Mailbox-plan container in.
 
-    The fleet places by country now, so `region` is no longer a placeholder —
-    it must name a country STONECHAT_FLEET_HOSTS configures a host for. Read
-    it from the catalog instead of hardcoding, so this follows whatever the
-    hub under test is configured with.
+    Machine hosts place by country, so `region` is not a placeholder — it must
+    name a country STONECHAT_MACHINE_HOSTS configures a host for. Read it from
+    the catalog instead of hardcoding, so this follows whatever the hub under
+    test is configured with.
     """
     for c in httpx.get(f"{hub_url}/v1/countries").json()["countries"]:
         if "mailbox" in c["plans"]:
             return c["code"]
     raise SystemExit(
-        "no country offers the mailbox plan — give STONECHAT_FLEET_HOSTS a "
-        'host with a country, e.g. "local=|127.0.0.1|DE"'
+        "no country offers the mailbox plan — give STONECHAT_MACHINE_HOSTS a host "
+        f'with a country, e.g. "local={MACHINE_HOST_URL}|DE|{MACHINE_HOST_TOKEN}|insecure"'
     )
 
 
@@ -264,17 +281,18 @@ def session_decrypt(state: dict, envelope: dict) -> bytes:
 
 
 # Every mailbox this run ignites, so a failed assertion cannot leak a
-# container. The local/fleet providers run `docker run --restart
+# container. The local and machine-host providers run `docker run --restart
 # unless-stopped`, so a leaked mailbox is not merely a stray container: it
 # comes back on every Docker restart and holds its published ports forever.
 _PROVISIONED: list["Phone"] = []
 
 
 def _container_name(stonechat_id):
-    """The container the local/fleet provider names for this owner.
+    """The container the local provider names for this owner.
 
     Mirrors hub/app/providers/local.py — the sweep needs it because the
-    fallback path runs when the hub is the thing that died.
+    fallback path runs when the hub is the thing that died. Machine-host guests
+    are named differently and are swept by label; see sweep_mailboxes().
     """
     return f"stonechat-{stonechat_id[3:11].lower().replace('-', '')}"
 
@@ -294,6 +312,91 @@ def sweep_mailboxes():
         subprocess.run(["docker", "rm", "-f", _container_name(phone.stonechat_id)],
                        capture_output=True)
         _PROVISIONED.remove(phone)
+    # Machine-host guests are named differently (machine_host/main.py) and are
+    # not always in _PROVISIONED — a redeem or a direct provision leaves no hub
+    # row at all — so sweep them by their label instead of by owner.
+    hosted = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", "label=stonechat.hosted=1"],
+        capture_output=True, text=True).stdout.split()
+    if hosted:
+        subprocess.run(["docker", "rm", "-f", *hosted], capture_output=True)
+    MachineHostUnderTest.stop()
+
+
+class MachineHostUnderTest:
+    """The shared tier, run for real: machine_host/main.py in managed mode.
+
+    Started by this script rather than assumed to be running, because the shared
+    tier *is* this program now (hub/app/providers/machine_host.py drives it), and
+    standing in a fake for it would test the fake. It gets a temp state directory
+    — fresh TLS keypair and DB every run — and a guest port range of its own.
+
+    The hub under test must already list it in STONECHAT_MACHINE_HOSTS; only the
+    hub's own env can do that, so the values here are fixed rather than
+    negotiated (see the command in CLAUDE.md).
+    """
+
+    proc: subprocess.Popen | None = None
+    state: str | None = None
+
+    @classmethod
+    def start(cls) -> None:
+        if cls.proc is not None:
+            return
+        cls.state = tempfile.mkdtemp(prefix="stonechat-e2e-machine-host-")
+        env = {
+            **os.environ,
+            "STONECHAT_MACHINE_HOST_ADMIN_TOKEN": MACHINE_HOST_TOKEN,
+            "STONECHAT_MACHINE_HOST_ADVERTISE_HOST": "127.0.0.1",
+            "STONECHAT_MACHINE_HOST_MANAGED": "1",
+            "STONECHAT_MACHINE_HOST_PORT": str(MACHINE_HOST_PORT),
+            "STONECHAT_MACHINE_HOST_DB": f"{cls.state}/machine_host.db",
+            "STONECHAT_MACHINE_HOST_TLS_DIR": cls.state,
+            "STONECHAT_MACHINE_HOST_RELAY_DIR": cls.state,
+            # Clear of the ephemeral ports the local provider picks.
+            "STONECHAT_MACHINE_HOST_PORT_BASE": "42200",
+            "STONECHAT_MACHINE_HOST_CAPACITY": "4",
+            # Managed mode refuses a floating tag (it cannot say which relay its
+            # customers run), so name the image the local provider already built
+            # from this checkout.
+            "STONECHAT_MACHINE_HOST_IMAGE": image_tag(),
+        }
+        cls.proc = subprocess.Popen(
+            [sys.executable, str(MACHINE_HOST_MAIN)], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if cls.proc.poll() is not None:
+                err = (cls.proc.stderr.read() or b"").decode()[-800:]
+                raise SystemExit(f"machine host exited at startup:\n{err}")
+            try:
+                if MX.get(f"{MACHINE_HOST_URL}/health").status_code == 200:
+                    print(f"  machine host up on {MACHINE_HOST_URL} (managed mode)")
+                    return
+            except httpx.HTTPError:
+                pass
+            time.sleep(0.5)
+        raise SystemExit(f"machine host never answered on {MACHINE_HOST_URL}")
+
+    @classmethod
+    def admin(cls, method: str, path: str, **kw):
+        return MX.request(
+            method, f"{MACHINE_HOST_URL}{path}",
+            headers={"Authorization": f"Bearer {MACHINE_HOST_TOKEN}"}, **kw,
+        )
+
+    @classmethod
+    def stop(cls) -> None:
+        if cls.proc is None:
+            return
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill()
+        cls.proc = None
+        shutil.rmtree(cls.state or "", ignore_errors=True)
 
 
 class Phone:
@@ -413,8 +516,8 @@ class Phone:
         With `country`, sends the app's own request shape and lets the hub
         resolve it against the catalog and this account's plan — that is the
         path a real device takes, so smoke_prod exercises it rather than a
-        test-only one. With `body`, sends that request verbatim (the fleet
-        case). Without either, the local Docker provider the e2e run wants.
+        test-only one. With `body`, sends that request verbatim (the
+        shared-tier case). Without either, the local Docker provider the e2e run wants.
 
         Every success is recorded for sweep_mailboxes(), so a later assertion
         failure cannot leave the container running.
@@ -924,16 +1027,22 @@ def main():
     assert opks_before == 8
     assert health["prekeys"]["kopks"] == 8
 
-    print("3b) fleet provider: plan-gated, container-per-user on a shared host")
+    print("3b) machine-host provider: plan-gated, container-per-user on a shared host")
+    MachineHostUnderTest.start()
+    # Managed hosts answer to the hub alone. An invite door left open there would
+    # put mailboxes on ports the hub believes are free.
+    r = MachineHostUnderTest.admin("POST", "/v1/invite", json={"uses": 1})
+    assert r.status_code == 403, f"managed host must refuse invites, got {r.status_code}"
+
     carol = Phone("carol")
     carol.register()
-    fleet_req = {"provider": "fleet",
-                 "machine": {"machine_type": "container",
-                             "region": fleet_country(HUB)}}
+    shared_req = {"provider": "machine_host",
+                  "machine": {"machine_type": "container",
+                              "region": shared_country(HUB)}}
 
     # paid providers 402 without an entitlement (PROTOCOL.md "Billing")
-    r = httpx.post(f"{HUB}/v1/mailbox", headers=carol.auth, json=fleet_req)
-    assert r.status_code == 402, f"unpaid fleet: expected 402, got {r.status_code}"
+    r = httpx.post(f"{HUB}/v1/mailbox", headers=carol.auth, json=shared_req)
+    assert r.status_code == 402, f"unpaid shared tier: expected 402, got {r.status_code}"
     assert r.json()["detail"]["code"] == "subscription_required"
     assert r.json()["detail"]["plan_required"] == "mailbox"
 
@@ -968,7 +1077,7 @@ def main():
                         headers=tess.auth).json()
         assert ent["plan"] == "mailbox" and ent["source"] == "test"
 
-    carol.provision(body=fleet_req)
+    carol.provision(body=shared_req)
     carol.wait_running()
     assert MX.get(f"{carol.mailbox['address']}/owner",
                   params={"stonechat_id": carol.stonechat_id}).status_code == 200, \
@@ -976,8 +1085,57 @@ def main():
     assert MX.get(f"{carol.mailbox['address']}/owner",
                   params={"stonechat_id": "SC-NOT-THE-OWNER"}).status_code == 404, \
         "mailbox must not confirm a stranger's ID (no address→identity leak)"
+
+    # The hub's token is the mailbox's token: the host must have used the one it
+    # was handed, not minted its own, or the app holds a token nobody accepts.
+    assert MX.get(f"{carol.mailbox['address']}/status",
+                  params={"token": carol.mailbox["mailbox_token"]}).status_code == 200, \
+        "the mailbox must accept the token the hub stored for it"
+
+    hosted = MachineHostUnderTest.admin("GET", "/v1/guests").json()
+    assert [g["owner_id"] for g in hosted["guests"]] == [carol.stonechat_id], hosted
+    assert hosted["managed"] is True and hosted["capacity"] == 4
+
+    # A relay release: upload, then roll. The binary here is the one the mailbox
+    # is ALREADY running, pulled back out of its own container — a laptop has no
+    # musl artifact, and the assertion that matters does not need one. It is that
+    # the build id the host computes from the bytes equals the build the relay
+    # reports for itself on /status, which is the whole basis of the roll's
+    # verify-rather-than-assume check (machine_host/main.py _roll_guest).
+    container = subprocess.run(
+        ["docker", "ps", "--filter", "label=stonechat.hosted=1", "--format", "{{.Names}}"],
+        capture_output=True, text=True, check=True).stdout.split()[0]
+    with tempfile.TemporaryDirectory() as td:
+        local = f"{td}/stonechat-relay"
+        subprocess.run(["docker", "cp", f"{container}:/stonechat-relay", local],
+                       capture_output=True, check=True)
+        payload = pathlib.Path(local).read_bytes()
+    want_build = hashlib.blake2b(payload, digest_size=32).hexdigest()[:16]
+    r = MachineHostUnderTest.admin("POST", "/v1/relay", content=payload, timeout=180)
+    r.raise_for_status()
+    assert r.json()["build"] == want_build, r.json()
+    state = MachineHostUnderTest.admin("GET", "/v1/relay").json()
+    assert state["installed_build"] == want_build, state
+    assert state["guests"] == [{"owner_id": carol.stonechat_id, "build": want_build}], \
+        f"the relay's own /status build must match the uploaded artifact: {state}"
+    # Rolling onto the build it already runs is a no-op the host recognises,
+    # which exercises the probe without bouncing the mailbox.
+    rolled = MachineHostUnderTest.admin(
+        "POST", "/v1/relay/roll", json={"dry_run": False}, timeout=180).json()
+    assert rolled["stopped"] is False and rolled["build"] == want_build, rolled
+    assert all(item["ok"] for item in rolled["rolled"]), rolled
+    # A managed host with no relay installed refuses to guess; one WITH a pinned
+    # binary launches new guests from it. Only the second half is asserted here —
+    # the first would need a second host.
+    assert MachineHostUnderTest.admin("GET", "/v1/relay").json()["image"] == \
+        f"stonechat-relay:{want_build}"
+
     carol.destroy()
     assert httpx.get(f"{HUB}/v1/mailbox", headers=carol.auth).json()["status"] == "none"
+    # Destroying through the hub must actually evict on the host, or the next
+    # placement reads a stale occupancy and the container lingers holding a port.
+    assert MachineHostUnderTest.admin("GET", "/v1/guests").json()["guests"] == [], \
+        "the hub's destroy must evict the guest on the machine host"
 
     print("3c) external relay: bring-your-own mailbox, token stays client-side")
     dave = Phone("dave")
@@ -987,7 +1145,10 @@ def main():
         ["docker", "run", "-d", "-p", "0:8080",
          "-e", f"STONECHAT_OWNER_ID={dave.stonechat_id}",
          "-e", f"STONECHAT_OWNER_TOKEN={dave_token}",
-         "stonechat-mailbox:dev"],
+         # The tag the local provider builds. Named through image_tag() rather
+         # than spelled out, so it follows STONECHAT_RELAY_BINARY the way every
+         # provider does — a hardcoded tag here went stale once already.
+         image_tag()],
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     try:
@@ -1051,7 +1212,12 @@ def main():
              "STONECHAT_MACHINE_HOST_ADVERTISE_HOST": "127.0.0.1",
              "STONECHAT_MACHINE_HOST_PORT": mh_port,
              "STONECHAT_MACHINE_HOST_DB": os.path.join(mh_data, "machine_host.db"),
-             "STONECHAT_MACHINE_HOST_TLS_DIR": mh_data},
+             "STONECHAT_MACHINE_HOST_TLS_DIR": mh_data,
+             # The image the local provider built from this checkout. Without
+             # this the host falls back to pulling ghcr.io/stonechat-app/relay,
+             # so the test depends on a published artifact and fails with a
+             # `docker pull` denial on any machine that cannot fetch it.
+             "STONECHAT_MACHINE_HOST_IMAGE": image_tag()},
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     admin_hdr = {"Authorization": f"Bearer {mh_admin}"}
@@ -1404,7 +1570,7 @@ def main():
     mallory.wait_running()
     host = urlsplit(mallory.mailbox["address"]).hostname
 
-    # admin surface is closed without the token — no anonymous fleet enumeration
+    # admin surface is closed without the token — no anonymous mailbox enumeration
     assert httpx.get(f"{HUB}/v1/admin/whois", params={"host": host}).status_code == 403
     assert httpx.get(f"{HUB}/v1/admin/whois", params={"host": host},
                      headers={"X-Admin-Token": "wrong"}).status_code == 403

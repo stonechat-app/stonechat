@@ -46,7 +46,8 @@ from .base import ProviderError
 _MACHINE_HOST_SOURCE = Path(__file__).resolve().parents[3] / "machine_host" / "main.py"
 
 # Runtime image for a relay container built from a prebuilt binary — the same
-# stage relay/Dockerfile ends in. Shared with the local/fleet providers.
+# stage relay/Dockerfile ends in. Shared with the local provider and, in the
+# same text, with machine_host/main.py.
 RELAY_RUNTIME_DOCKERFILE = """\
 FROM scratch
 COPY stonechat-relay /stonechat-relay
@@ -241,7 +242,7 @@ SERVER_PORT = 8080
 WT_PORT = 8443
 
 # Docker's default ephemeral range, and the range the firewall rules already
-# open on fleet hosts (deploy/fleet-host.sh, and the cloud rules). Allocating
+# open on mailbox hosts (the cloud firewall rules). Allocating
 # inside it means pinning ports needs no firewall change.
 EPHEMERAL_RANGE = (32768, 61000)
 PORT_ATTEMPTS = 20

@@ -150,7 +150,7 @@ SHA-256, so an adapter is only "create VM, pass script, return IP".
 | `gcp`    | `pip install google-cloud-compute`, set `STONECHAT_GCP_PROJECT`, auth via ADC (`gcloud auth application-default login`). `region` = zone, e.g. `us-central1-a`; `machine_type` e.g. `e2-micro` (free tier).                                                                                                                                                                                                                                          |
 | `aws`    | `pip install boto3`, standard AWS credential chain. `region` e.g. `us-east-1`; `machine_type` e.g. `t3.micro`.                                                                                                                                                                                                                                                                                                                                       |
 | `local`  | Docker only. For development.                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `fleet`  | Container-per-user across a pool of shared Docker hosts (`STONECHAT_FLEET_HOSTS="name=ssh://user@addr\|advertise_host\|COUNTRY,…"` — required; the country is where that host places and what the picker offers; hosts prepared with `deploy/fleet-host.sh`), with cgroup/pids limits and optional gVisor via `STONECHAT_FLEET_RUNTIME=runsc`. Mailboxes never share the hub machine. The Mailbox-plan workhorse — see notes/BUSINESS.md (internal). |
+| `machine_host` | Container-per-user across a pool of boxes that each run `machine_host/main.py` in managed mode, placed over its HTTPS API (`STONECHAT_MACHINE_HOSTS="name=https://host:8200\|COUNTRY\|admin_token\|tls_fp,…"` — required; the country is where that host places and what the picker offers; `tls_fp` pins the host's self-signed certificate, the literal `insecure` skips the pin and is laptop dev only; hosts set up per `machine_host/README.md`), with cgroup/pids limits and optional gVisor via `STONECHAT_MACHINE_HOST_RUNTIME=runsc` on the host. Mailboxes never share the hub machine. The Mailbox-plan workhorse — see notes/BUSINESS.md (internal). |
 
 Adding one: subclass `CloudProvider` (two methods: `provision`, `destroy`) and
 register it in `providers/__init__.py`.
@@ -163,12 +163,13 @@ register it in `providers/__init__.py`.
 ./scripts/build_core.sh host
 
 # end-to-end: register → provision (docker) → handshake → message → ack → destroy
-# (STONECHAT_FLEET_HOSTS opts the fleet provider into the local daemon — laptop only;
-#  STONECHAT_ADMIN_TOKEN lets the test mint the comp entitlement the fleet gate needs)
+# (STONECHAT_MACHINE_HOSTS points the hub at the machine host e2e.py starts itself;
+#  `insecure` skips the certificate pin — laptop only. STONECHAT_ADMIN_TOKEN lets
+#  the test mint the comp entitlement the shared tier needs)
 cd hub && .venv/bin/pip install pynacl websockets
 #  STONECHAT_REGISTER_LIMIT and STONECHAT_REPORT_LIMIT lift the per-IP signup
 #  and abuse-report walls, which a full run exceeds and a rerun exceeds again)
-STONECHAT_FLEET_HOSTS="local=|127.0.0.1|DE" STONECHAT_ADMIN_TOKEN=test-admin STONECHAT_TEST_CODE=STONECHAT-TEST-TEST STONECHAT_REGISTER_LIMIT=1000 STONECHAT_REPORT_LIMIT=1000 .venv/bin/uvicorn app.main:app --port 8477 &
+STONECHAT_MACHINE_HOSTS="local=https://127.0.0.1:8201|DE|e2e-machine-host-admin|insecure" STONECHAT_ADMIN_TOKEN=test-admin STONECHAT_TEST_CODE=STONECHAT-TEST-TEST STONECHAT_REGISTER_LIMIT=1000 STONECHAT_REPORT_LIMIT=1000 .venv/bin/uvicorn app.main:app --port 8477 &
 .venv/bin/python ../scripts/e2e.py
 
 # multi-device end to end — no Docker: it runs relays directly and lists them

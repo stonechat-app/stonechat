@@ -1,9 +1,9 @@
-"""Production smoke test for the deployed hub + fleet.
+"""Production smoke test for the deployed hub + its machine hosts.
 
 Registers a throwaway identity, redeems the tester activation code, ignites a
-fleet mailbox in a country the hub actually offers (the first ignite on a
-fresh host also proves the relay image builds there), verifies the mailbox end
-to end, destroys it.
+shared-tier mailbox in a country the hub actually offers (which also proves the
+hub can reach that machine host, pass its certificate pin and place a guest on
+it), verifies the mailbox end to end, destroys it.
 
 **Drives e2e.Phone rather than its own protocol client.** This script used to
 carry a second, private implementation of registration and delivery, and it
@@ -39,19 +39,19 @@ TEST_CODE = os.environ.get("STONECHAT_TEST_CODE") or sys.exit(
     "set STONECHAT_TEST_CODE (the tester activation code from the hub's drop-in)")
 
 
-def fleet_country() -> str:
+def shared_country() -> str:
     """A country the hub can actually place a Mailbox-plan container in.
 
     Read from the catalog rather than hardcoded, because the catalog is
-    derived from the configured fleet hosts — so this follows whatever the hub
+    derived from the configured machine hosts — so this follows whatever the hub
     under test is wired to, and asserts that derivation on the way past.
     """
     for c in httpx.get(f"{HUB}/v1/countries").json()["countries"]:
         if "mailbox" in c["plans"]:
             return c["code"]
     raise SystemExit(
-        "no country offers the mailbox plan — give STONECHAT_FLEET_HOSTS a "
-        'host with a country, e.g. "local=|127.0.0.1|DE"'
+        "no country offers the mailbox plan — the hub's STONECHAT_MACHINE_HOSTS "
+        "lists no host with a country"
     )
 
 
@@ -66,10 +66,10 @@ r.raise_for_status()
 plan = r.json()["plan"]
 print("entitlement:", plan, r.json()["status"])
 # Also a deployment-staleness check: a hub still on the pre-rename plan ids
-# would answer "private" here and the fleet gate below would behave oddly.
+# would answer "private" here and the plan gate below would behave oddly.
 assert plan == "mailbox", f"expected the mailbox plan, got {plan!r}"
 
-country = fleet_country()
+country = shared_country()
 print(f"igniting in {country} (the app's country form — the hub resolves it)")
 phone.provision(country=country)
 phone.wait_running()
@@ -77,8 +77,8 @@ phone.wait_running()
 srv = phone.mailbox
 addr, tls_fp = srv["address"], srv["tls_fp"]
 # The hub resolved country -> provider+region. Placement itself is asserted by
-# the address: a fleet host only ever advertises its own public IP.
-assert srv["provider"] == "fleet", srv["provider"]
+# the address: a machine host only ever advertises its own public IP.
+assert srv["provider"] == "machine_host", srv["provider"]
 assert srv["machine"]["region"] == country, srv["machine"]
 print(f"placed: provider={srv['provider']} region={srv['machine']['region']}")
 

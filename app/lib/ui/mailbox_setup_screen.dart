@@ -63,7 +63,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
     'digitalocean': (machineType: 's-1vcpu-1gb', region: 'fra1'),
     'hetzner': (machineType: 'cx22', region: 'fsn1'),
     'vultr': (machineType: 'vc2-1c-1gb', region: 'sao'),
-    'fleet': (machineType: 'container', region: 'shared'),
+    'machine_host': (machineType: 'container', region: 'shared'),
     'local': (machineType: 'container', region: 'localhost'),
   };
 
@@ -157,7 +157,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         // Hub unreachable or older than the catalog: fall back to the plan →
         // provider mapping this screen used before the picker existed, so a
         // stale hub degrades to "no country choice" instead of "no mailbox".
-        final provider = _plan == 'machine' ? 'gcp' : 'fleet';
+        final provider = _plan == 'machine' ? 'gcp' : 'machine_host';
         final d = _defaults[provider]!;
         await mailbox.create(
           provider: provider,

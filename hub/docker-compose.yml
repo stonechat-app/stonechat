@@ -5,10 +5,11 @@
 #     docker compose up -d --build                  # plain HTTP
 #     docker compose --profile tls up -d --build    # HTTPS, via Caddy
 #
-# This hub provisions no mailboxes: there are no fleet hosts or cloud providers
-# here, so users bring their own mailbox and register its address
-# (POST /v1/mailbox/external). Push is a separate, optional project
-# (../push_gateway/).
+# Out of the box this hub provisions nothing: users bring their own mailbox and
+# register its address (POST /v1/mailbox/external), which is the cheapest way to
+# run a network. To also hand out mailboxes yourself, add machine hosts to
+# STONECHAT_MACHINE_HOSTS in .env (../machine_host/README.md "Hosting for a
+# hub"). Push is a separate, optional project (../push_gateway/).
 name: stonechat-hub
 
 services:
@@ -31,8 +32,12 @@ services:
       # Billing off removes /v1/billing/*, ungates every provider and disables
       # the reaper. A self-hosted hub has no plans to sell.
       STONECHAT_BILLING: "off"
-      # Only read when the hub provisions a mailbox, which this one never does.
-      STONECHAT_RELAY_BINARY: ""
+      # Where the relay binary is INSIDE the container; the host side is
+      # STONECHAT_RELAY_DIR below. Only read when this hub provisions mailboxes
+      # of its own — it is the artifact it ships to its machine hosts and serves
+      # to dedicated VMs. Absent, mailbox provisioning is refused and
+      # bring-your-own mailboxes still work.
+      STONECHAT_RELAY_BINARY: /opt/stonechat/stonechat-relay
     ports:
       # Behind Caddy (tls profile) set STONECHAT_BIND=127.0.0.1: Caddy reaches
       # the hub over the compose network, so it need not be exposed at all.
@@ -41,6 +46,12 @@ services:
       # hub.db, the directory. WAL mode: back up a running hub with
       # `sqlite3 hub.db ".backup out.db"`, not a bare cp.
       - ${STONECHAT_STATE_DIR:-/var/lib/stonechat}:/var/lib/stonechat
+      # A DIRECTORY holding the relay binary, not the binary itself:
+      # bind-mounting a file that does not exist yet silently creates a
+      # directory in its place, which reads as a corrupt relay rather than a
+      # missing one. Defaults to the state dir, so the same host path is mounted
+      # twice — rw for the DB, ro for the relay.
+      - ${STONECHAT_RELAY_DIR:-/var/lib/stonechat}:/opt/stonechat:ro
     healthcheck:
       test:
         - CMD

@@ -19,7 +19,7 @@ line, and the UI is required to show both. A country picker that prints only
 the flattering half is marketing, and this product does not get to do that:
 `SG` is on the list for reach and says so.
 
-Opening set is deliberately five (BUSINESS.md): each country is one idle fleet
+Opening set is deliberately five (BUSINESS.md): each country is one idle machine
 host until it fills, so coverage is added when demand proves it, not upfront.
 
 All five currently resolve to **GCP**, the one adapter that has ever
@@ -138,38 +138,39 @@ _BY_CODE = {c.code: c for c in CATALOG}
 
 
 # Which countries the Mailbox tier can actually place a container in — read
-# straight off the configured fleet hosts, intersected with this catalog.
+# straight off the configured machine hosts, intersected with this catalog.
 #
 # Derived on purpose. This used to be its own env var (STONECHAT_FLEET_COUNTRIES)
 # maintained beside the host list, and the two drifted: the hub advertised five
 # countries while every container landed on the single host it had. A fact about
 # deployed infrastructure has exactly one home, and it is the host list.
-def fleet_countries() -> set[str]:
+def shared_host_countries() -> set[str]:
     from .providers import ProviderError
-    from .providers.fleet import configured_countries  # local: keeps hub start cheap
+    from .providers.machine_host import configured_countries  # local: keeps hub start cheap
 
     try:
         return configured_countries() & set(_BY_CODE)
     except ProviderError:
-        # Malformed STONECHAT_FLEET_HOSTS. This feeds the public picker, so it
+        # Malformed STONECHAT_MACHINE_HOSTS. This feeds the public picker, so it
         # fails *closed* — offer no Mailbox country — rather than 500ing
-        # onboarding. Provisioning still raises loudly (FleetProvider), and the
-        # only unsafe direction is over-claiming, which an empty set cannot do.
-        log.exception("STONECHAT_FLEET_HOSTS is unparseable — Mailbox plan offered nowhere")
+        # onboarding. Provisioning still raises loudly (MachineHostProvider), and
+        # the only unsafe direction is over-claiming, which an empty set cannot do.
+        log.exception(
+            "STONECHAT_MACHINE_HOSTS is unparseable — Mailbox plan offered nowhere")
         return set()
 
 
-def plans_for(country: Country, fleet: set[str]) -> list[str]:
+def plans_for(country: Country, shared: set[str]) -> list[str]:
     """Which plans can place a mailbox in this country right now."""
     plans = ["machine"]
-    if country.code in fleet:
+    if country.code in shared:
         plans.append("mailbox")
     return plans
 
 
 def catalog() -> list[dict]:
     """The picker's payload. Ordered; `plans` is what the client gates on."""
-    fleet = fleet_countries()
+    shared = shared_host_countries()
     return [
         {
             "code": c.code,
@@ -178,7 +179,7 @@ def catalog() -> list[dict]:
             "flag": c.flag,
             "jurisdiction": c.jurisdiction,
             "caveat": c.caveat,
-            "plans": plans_for(c, fleet),
+            "plans": plans_for(c, shared),
         }
         for c in CATALOG
     ]
@@ -202,12 +203,13 @@ def resolve(code: str, plan: str) -> tuple[str, dict]:
             f"{', '.join(c.code for c in CATALOG)}"
         )
     if plan == "mailbox":
-        if country.code not in fleet_countries():
+        if country.code not in shared_host_countries():
             raise UnavailableCountry(
                 f"{country.name} is not available on the Mailbox plan yet"
             )
-        # The fleet provider places by pool name, not by cloud region.
-        return "fleet", {"machine_type": "container", "region": country.code}
+        # The machine-host provider places by country, not by cloud region: it
+        # picks the emptiest host declaring this one.
+        return "machine_host", {"machine_type": "container", "region": country.code}
     h = country.hosting
     return h.provider, {
         "machine_type": h.machine_type,

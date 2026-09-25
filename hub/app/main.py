@@ -151,11 +151,11 @@ app.add_middleware(
 HEALTH_TIMEOUT_S = 240  # cloud VMs need to apt-get + pip install on first boot
 
 # Paid providers and the plan each requires. Machine outranks mailbox, so a
-# Machine subscriber may also run on the shared fleet. `local` and
+# Machine subscriber may also run on a shared machine host. `local` and
 # `external` (self-hosted free tier) stay ungated. With billing off nothing
 # is gated (and the reap query, which sweeps these providers, matches nothing).
 GATED_PROVIDERS = {
-    "fleet": "mailbox",
+    "machine_host": "mailbox",
     "gcp": "machine",
     "aws": "machine",
     "digitalocean": "machine",

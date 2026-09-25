@@ -9,7 +9,7 @@ unchanged pinned TLS fingerprint.
 
 Why it exists: one relay process runs per hosted user, so idle RSS is the
 Mailbox plan's unit cost. Measured at port time: **Python 57 MB → Rust
-10 MB idle** (macOS dev build of the fleet's dominant cost; lower still in
+10 MB idle** (macOS dev build of a mailbox host's dominant cost; lower still in
 the `scratch` container). Full economics: notes/docs/COSTS.md.
 
 ## Run
@@ -89,9 +89,10 @@ only in the one place that matters. That is how it shipped.
 
 The relay cannot discover the name itself: inside a container it sees a private
 address, and the address clients dial belongs to the host. Whoever creates the
-container knows it and passes it — the fleet and local providers set it from
-`host.advertise`, and VM startup scripts from the metadata service. Loopback is
-always appended, so running the binary directly needs no configuration.
+container knows it and passes it — the machine host and local provider set it
+from the address they publish the mailbox at, and VM startup scripts from the
+metadata service. Loopback is always appended, so running the binary directly
+needs no configuration.
 
 Changing it regenerates the whole schedule: the names are baked into every
 certificate, and a relay that moved would otherwise keep serving certificates
@@ -130,12 +131,14 @@ production ships a prebuilt binary — RUST_PORT.md "Packaging").
 
 All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
 
-- **local / fleet providers** build the image tagged `stonechat-relay:dev` from
+- **The local provider** builds the image tagged `stonechat-relay:dev` from
   this directory. With `STONECHAT_RELAY_BINARY` set on the hub (path to a static
   **x86_64-musl** `stonechat-relay`), the build context becomes binary + two-line
-  Dockerfile — instant, no compile on the host. Unset, hosts compile the
+  Dockerfile — instant, no compile on the host. Unset, it compiles the
   crate via this Dockerfile (dev fallback; also what produces the right
-  architecture on ARM laptops).
+  architecture on ARM laptops). A machine host the hub manages compiles nothing:
+  it wraps a binary uploaded with `POST /v1/relay` in an image tagged by that
+  binary's build id, and builds every later mailbox from it.
 - **Dedicated-VM startup scripts** are fetch-stubs (~3 KB — fits every
   cloud's cap, including AWS's 16 KB): they download the binary and verify a
   SHA-256 pinned in the script. The hub serves the artifact at

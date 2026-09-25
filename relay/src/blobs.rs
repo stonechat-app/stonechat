@@ -13,8 +13,8 @@
 //! buffering one would put peak RSS at the mercy of how many transfers happen
 //! to overlap — a few concurrent group-media fetches of one video would OOM the
 //! mailbox. Both directions move in 64 KiB chunks instead, which keeps relay
-//! memory flat in blob size and is what lets the fleet cap be set from steady
-//! state rather than from the worst case.
+//! memory flat in blob size and is what lets the per-mailbox memory cap be set
+//! from steady state rather than from the worst case.
 //!
 //! Uploads land in `incoming/` and are renamed into place only once complete,
 //! so a truncated upload can never be served as a blob: `valid_blob_id` shapes
