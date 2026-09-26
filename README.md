@@ -10,7 +10,7 @@ Privacy-first messaging where **every user runs their own relay**.
   instead of a central server. Every message gets a fresh key; stealing keys
   today can't decrypt traffic recorded yesterday, and recording traffic
   today doesn't let a future quantum computer decrypt it
-  (notes/docs/POST_QUANTUM.md, internal).
+  (docs/POST_QUANTUM.md).
 - **Pinned TLS, no CAs**: relays self-sign their certificates; clients pin a
   fingerprint the owner signs with their identity key and publishes in the
   directory. Trust chains to the Stonechat ID, not to any authority — same as

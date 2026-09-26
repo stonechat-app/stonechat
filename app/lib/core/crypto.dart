@@ -10,7 +10,7 @@
 /// ID is "SC-" + base32(blake2b20(pubkey) || checksum2). Messages are
 /// encrypted with per-message keys from a PQXDH + double-ratchet session
 /// (session.dart). The post-quantum halves — ML-KEM-768 prekeys and the
-/// X-Wing envelope seal (notes/docs/POST_QUANTUM.md) — come from pqcore;
+/// X-Wing envelope seal (docs/POST_QUANTUM.md) — come from pqcore;
 /// both KEMs are always hybrid alongside the classical DHs, never a
 /// replacement for them.
 library;

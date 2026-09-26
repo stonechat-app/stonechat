@@ -6,7 +6,7 @@ the stonechat-core cutover the symbols ship inside libstonechat_core (repo
 host`; point STONECHAT_CORE_LIB at the library to override discovery.
 
 ML-KEM-768 secrets are 64-byte seeds, X-Wing secrets 32-byte seeds
-(notes/docs/POST_QUANTUM.md, internal). Randomness is drawn here (secrets module) and passed
+(docs/POST_QUANTUM.md). Randomness is drawn here (secrets module) and passed
 in explicitly — the Rust core never touches an RNG.
 """
 

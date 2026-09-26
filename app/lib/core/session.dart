@@ -23,7 +23,7 @@ import 'crypto.dart';
 /// A peer's prekey bundle as served by their mailbox. Parsed fields are
 /// for the host's signature checks (chat_state.dart); [raw] is what the
 /// core consumes verbatim. `kspk`/`kopk` are the ML-KEM-768 halves of
-/// PQXDH (notes/docs/POST_QUANTUM.md): a signed KEM prekey that is always
+/// PQXDH (docs/POST_QUANTUM.md): a signed KEM prekey that is always
 /// present, plus a one-time KEM prekey when the pool isn't dry.
 class PrekeyBundle {
   final Map<String, dynamic> raw;

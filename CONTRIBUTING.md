@@ -14,8 +14,7 @@ That line is the [Developer Certificate of Origin](https://developercertificate.
 the right to submit the code under the license that covers it. It is not a
 copyright assignment — **you keep your copyright**.
 
-Pull requests without sign-off can't be merged; this is checked, not just
-asked for.
+Pull requests without sign-off can't be merged.
 
 ## Which license your contribution falls under
 

@@ -93,7 +93,7 @@ CORPUS = [
     ("bundle-empty", "GET", "/prekeys/bundle", None, None),
     ("prekeys-noauth", "POST", "/prekeys", {"spk": {"id": 1, "pub": "p", "sig": "s"}}, None),
     ("prekeys-badshape", "POST", f"/prekeys?token={TOKEN}", {"spk": {"id": "x"}}, None),
-    # both signed halves are required (PQXDH — notes/docs/POST_QUANTUM.md)
+    # both signed halves are required (PQXDH — docs/POST_QUANTUM.md)
     ("prekeys-missing-kspk", "POST", f"/prekeys?token={TOKEN}",
      {"spk": {"id": 1, "pub": "p", "sig": "s"}}, None),
     ("prekeys-toomany-opks", "POST", f"/prekeys?token={TOKEN}",

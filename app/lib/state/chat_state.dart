@@ -1560,7 +1560,7 @@ class ChatState extends ChangeNotifier {
     }
 
     // The ML-KEM signed prekey rotates on the same cadence as the SPK
-    // (PQXDH's last-resort KEM key; notes/docs/POST_QUANTUM.md).
+    // (PQXDH's last-resort KEM key; docs/POST_QUANTUM.md).
     var kspkRow = await app.db.currentKspk();
     if (kspkRow == null ||
         now - (kspkRow['created_at'] as int) > _spkRotateMs) {

@@ -1,5 +1,5 @@
 /// Bindings to the pqcore Rust crate (repo /pqcore) — ML-KEM-768 and X-Wing,
-/// the post-quantum half of the protocol (notes/docs/POST_QUANTUM.md, internal). Pure
+/// the post-quantum half of the protocol (docs/POST_QUANTUM.md). Pure
 /// byte-in/byte-out: pqcore never draws entropy, so every random input is
 /// passed in explicitly by the caller (crypto.dart uses libsodium's
 /// randombytes — the same CSPRNG as the rest of the app).
