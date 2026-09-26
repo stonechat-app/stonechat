@@ -119,10 +119,26 @@ must also open. Inbound rules:
 On DigitalOcean/Hetzner that's the "Cloud Firewall" UI; on AWS/GCP the security
 group / VPC firewall. Without this, the app reaches nothing.
 
-## 5. Ship the relay
+## 5. Pin the relay
 
-New mailboxes are built from the relay binary the hub sends its hosts, and that
-upload is what pins the version — so do it before the first ignite:
+A machine host must know which relay to run before the first ignite. The
+published image is the normal answer — read its digest and put that in the
+host's `.env`:
+
+```bash
+docker buildx imagetools inspect ghcr.io/stonechat-app/relay:0.1.0   # → Digest: sha256:…
+# then, in machine_host/.env on the MAILBOX VM, and restart it:
+STONECHAT_MACHINE_HOST_IMAGE=ghcr.io/stonechat-app/relay@sha256:<digest>
+```
+
+A digest rather than `:0.1.0`, and never `:latest`: a managed host refuses the
+floating tag outright, because a mailbox whose build nobody can name is one
+nobody can reason about the day a relay bug is published. Upgrades stay a binary
+swap — the host takes the binary out of the image it is pinned to, so
+`roll_relay.py` needs no upload (machine_host/README.md).
+
+Building it yourself instead — for an unpublished commit, an arm64 host, or an
+air-gapped box:
 
 ```bash
 # build the artifact (relay/README.md "Producing the production artifact")
@@ -136,15 +152,10 @@ cd hub && docker compose exec hub python /srv/scripts/roll_relay.py \
   --binary /opt/stonechat/stonechat-relay
 ```
 
-Skip this and a managed host refuses to provision rather than falling back to
-`ghcr.io/stonechat-app/relay:latest`, because a floating tag means the hub cannot
-say which relay its users are running.
-
-Or skip the binary entirely and pull a published release instead: set
-`STONECHAT_MACHINE_HOST_IMAGE` on each host to a digest-pinned image, and
-`STONECHAT_RELAY_BINARY_URL` + `STONECHAT_RELAY_SHA256` on the hub for dedicated
-VMs (relay/README.md "Releases"). Rolls still work — the host takes the binary
-out of the image it is pinned to.
+Dedicated VMs (the Machine plan) are the exception to all of this: they run the
+binary directly, and a release asset follows the *repository's* visibility, so
+the hub keeps serving it at `/v1/relay-binary` unless you mirror it somewhere
+public and set `STONECHAT_RELAY_BINARY_URL` + `STONECHAT_RELAY_SHA256`.
 
 ## 6. Build the app and send it to your friend
 

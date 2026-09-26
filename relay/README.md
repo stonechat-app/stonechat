@@ -186,11 +186,22 @@ Push a tag `relay-v<version>`, where the version is the one in `Cargo.toml`
 (e.g. `relay-v0.1.0`; the workflow refuses a mismatch). The same workflow
 builds and tests, then publishes:
 
-- a GitHub Release with `stonechat-relay-x86_64-linux-musl`,
-  `stonechat-relay-aarch64-linux-musl` and `SHA256SUMS`
-- `ghcr.io/stonechat-app/relay` for amd64 and arm64, tagged `0.1.0`, `0.1`,
-  `0` and `latest`. The image is `Dockerfile.release`: the tested binary on
-  `scratch` and nothing else.
+- a GitHub Release with `stonechat-relay-x86_64-linux-musl` and `SHA256SUMS`
+- `ghcr.io/stonechat-app/relay`, tagged `0.1.0`, `0.1`, `0` and `latest`. The
+  image is `Dockerfile.release`: the tested binary on `scratch` and nothing else.
+
+**amd64 only while this repository is private.** The arm64 leg needs GitHub's
+arm64 runners, which are free for public repositories, so the matrix drops it
+rather than leave it queued (the workflow reads `github.event.repository.private`).
+An arm64 machine host therefore cannot run the published image and has to build
+its own; everything on x86_64 is unaffected.
+
+The **package** visibility is separate from the repository's, and the package is
+public: `docker pull ghcr.io/stonechat-app/relay:0.1.0` needs no credentials.
+Release **assets** are not — they follow the repository, so a URL under
+`/releases/download/…` answers 404 to anyone who cannot see the repo. That is why
+a dedicated VM still fetches its binary from the hub's `/v1/relay-binary` (or a
+bucket you control) rather than from the release.
 
 A manual run with **image** ticked pushes `:edge` and `:sha-<commit>`
 instead, to try an image before tagging it.
