@@ -195,6 +195,23 @@ builds and tests, then publishes:
 A manual run with **image** ticked pushes `:edge` and `:sha-<commit>`
 instead, to try an image before tagging it.
 
+Who consumes which of the two, and why there are two:
+
+| Consumer | Artifact | How it is pinned |
+|---|---|---|
+| Machine hosts (shared tier and friend-hosted alike) | the image | `STONECHAT_MACHINE_HOST_IMAGE` at a digest. A roll extracts the binary from that image, so no separate download |
+| Dedicated VMs | the release asset | `STONECHAT_RELAY_BINARY_URL` + `STONECHAT_RELAY_SHA256`, the latter baked into the startup script that fetches it |
+
+A VM gets the binary rather than the image because its startup script runs the
+relay directly, and because the cloud metadata channel that carries the script
+caps its size — the script is a fetch-stub with a hash in it
+(hub/app/providers/bootstrap.py). Same bytes either way: the image is that
+binary on `scratch`.
+
+Pin digests, never `:latest`. A mailbox whose build nobody can name is one
+nobody can reason about the day a relay bug is published, which is why a
+hub-managed machine host refuses to launch from the floating tag at all.
+
 While the repository is private, only x86_64 is built, because GitHub's arm64
 runners are free for public repositories only. A package's first push to
 ghcr.io is private as well: make it public once, in the organization's

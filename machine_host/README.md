@@ -107,10 +107,20 @@ guests keep using the relay image already on the box until you
 Upgrading a relay is a **binary swap, never a container recreate**: a mailbox
 keeps its queue, prekeys and TLS key in the container's own writable layer with
 no volume behind it, so `docker run` on a new image would hand every guest an
-empty mailbox. `POST /v1/relay` uploads a binary (it becomes what new guests are
-built from) and `POST /v1/relay/roll` swaps it into the running ones, one at a
-time, checking each relay reports the new build on `/status` and rolling that one
-back if it does not. `scripts/roll_relay.py` drives both.
+empty mailbox. `POST /v1/relay/roll` does the swap, one mailbox at a time,
+checking each relay reports the new build on `/status` and rolling that one back
+if it does not.
+
+Where the new binary comes from depends on how the host is configured, and both
+ways end at the same artifact:
+
+- **Pinned to an image** (`STONECHAT_MACHINE_HOST_IMAGE=…@sha256:…`) — the usual
+  case. Nothing to upload: the host takes the binary out of that image, so what
+  a fresh mailbox runs and what a rolled one runs cannot drift apart. Point the
+  host at a new digest, restart it, then roll.
+- **Given a binary** (`POST /v1/relay`) — for an air-gapped box or a build that
+  is not published yet. It also becomes what new mailboxes are built from.
+  `scripts/roll_relay.py` drives this end of it.
 
 All the knobs (in `.env`):
 

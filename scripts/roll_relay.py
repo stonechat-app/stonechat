@@ -39,6 +39,10 @@ Usage::
     hub/.venv/bin/python scripts/roll_relay.py --binary <path> --dry-run
     hub/.venv/bin/python scripts/roll_relay.py --binary <path> --host de1 --only SC-…
 
+A host pinned to a published image does not need this script to upgrade: point
+it at the new digest, restart it, and `POST /v1/relay/roll` takes the binary out
+of that image. This is for shipping a binary you built yourself.
+
 Needs STONECHAT_MACHINE_HOSTS set the same way the hub has it. The binary must be
 the musl static build the image ships (`FROM scratch` has no loader) — the same
 artifact `relay/README.md` "Producing the production artifact" builds. Rolling a

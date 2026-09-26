@@ -353,6 +353,49 @@ def _installed_relay() -> tuple[str, str] | None:
     return (build, str(path)) if path.is_file() else None
 
 
+def _extract_relay_from_image(image: str) -> tuple[str, str]:
+    """Pull the relay binary back out of a mailbox image: (build id, path).
+
+    This is what lets a registry be the single source of truth. A mailbox's data
+    lives in its container's writable layer with no volume behind it, so an
+    upgrade can never be `docker run` on a new image — it has to be a binary
+    swap, and a swap needs a file. Rather than make the operator upload the same
+    bytes a second time, take them from the image the host is already pinned to.
+
+    Cached under RELAY_DIR by build id, so a second roll copies nothing.
+    """
+    _ensure_image_present(image)
+    RELAY_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = RELAY_DIR / f".extract-{os.getpid()}"
+    cid = _docker("create", image).strip()
+    try:
+        _docker("cp", f"{cid}:{RELAY_TARGET}", str(tmp))
+    finally:
+        subprocess.run(["docker", "rm", "-f", cid], capture_output=True)
+    try:
+        build = _build_id(tmp.read_bytes())
+        path = RELAY_DIR / f"stonechat-relay-{build}"
+        if not path.is_file():
+            tmp.chmod(0o755)
+            tmp.replace(path)
+        return build, str(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _roll_source() -> tuple[str, str]:
+    """(build id, path) of the binary a roll should swap in.
+
+    An uploaded binary wins; otherwise the image this host launches new mailboxes
+    from, which keeps "what new guests get" and "what running guests are rolled
+    to" the same artifact by construction.
+    """
+    installed = _installed_relay()
+    if installed is not None:
+        return installed
+    return _extract_relay_from_image(_relay_image())
+
+
 def _build_relay_image(binary: Path, build: str) -> str:
     """Wrap a relay binary in a `FROM scratch` image, tagged by its build id.
 
@@ -395,10 +438,15 @@ def _relay_image() -> str:
             "POST /v1/relay (scripts/roll_relay.py), or set "
             "STONECHAT_MACHINE_HOST_IMAGE to a digest-pinned image",
         )
-    if subprocess.run(["docker", "image", "inspect", IMAGE],
-                      capture_output=True).returncode != 0:
-        _docker("pull", IMAGE)
+    _ensure_image_present(IMAGE)
     return IMAGE
+
+
+def _ensure_image_present(image: str) -> None:
+    """Pull the image unless this daemon already has it."""
+    if subprocess.run(["docker", "image", "inspect", image],
+                      capture_output=True).returncode != 0:
+        _docker("pull", image)
 
 
 def _launch_container(owner_id: str, owner_token: str, port: int,
@@ -894,16 +942,15 @@ async def install_relay(request: Request):
 
 @app.post("/v1/relay/roll", dependencies=[Depends(require_admin)])
 def roll_relay(body: RollIn):
-    """Swap running mailboxes onto the installed relay binary.
+    """Swap running mailboxes onto the relay this host is pinned to.
 
     One guest at a time, stopping at the first failure with the rest untouched
     and still serving: a bad build should cost one mailbox of downtime, not all
     of them. The mailbox that failed is rolled back to the binary it was running.
     """
-    installed = _installed_relay()
-    if installed is None:
-        raise HTTPException(409, "no relay binary installed — POST /v1/relay first")
-    want, path = installed
+    # No upload needed when the host is pinned to an image: the binary comes out
+    # of that image, so a roll and a fresh mailbox are the same artifact.
+    want, path = _roll_source()
     binary = Path(path)
 
     guests = store.guests()

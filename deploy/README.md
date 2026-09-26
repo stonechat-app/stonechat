@@ -140,6 +140,12 @@ Skip this and a managed host refuses to provision rather than falling back to
 `ghcr.io/stonechat-app/relay:latest`, because a floating tag means the hub cannot
 say which relay its users are running.
 
+Or skip the binary entirely and pull a published release instead: set
+`STONECHAT_MACHINE_HOST_IMAGE` on each host to a digest-pinned image, and
+`STONECHAT_RELAY_BINARY_URL` + `STONECHAT_RELAY_SHA256` on the hub for dedicated
+VMs (relay/README.md "Releases"). Rolls still work — the host takes the binary
+out of the image it is pinned to.
+
 ## 6. Build the app and send it to your friend
 
 You need the **Apple Developer Program** ($99/yr) — enroll first, approval can

@@ -296,11 +296,48 @@ def relay_binary_path() -> Path | None:
 
 
 def _relay_binary_sha256() -> str:
+    """The pin baked into every startup script.
+
+    STONECHAT_RELAY_SHA256 wins when set: with the binary published as a release
+    asset, the hub pins what a VM will fetch without keeping a copy of it, which
+    is what takes the hub out of the download path entirely (see
+    STONECHAT_RELAY_BINARY_URL). Read it from the release's SHA256SUMS.
+
+    Unset, the hub hashes its own copy, which is the only thing it can honestly
+    pin when it is also the one serving the file.
+    """
+    configured = os.environ.get("STONECHAT_RELAY_SHA256", "").strip().lower()
     path = relay_binary_path()
+    if configured:
+        if len(configured) != 64 or any(c not in "0123456789abcdef" for c in configured):
+            raise ProviderError(
+                "STONECHAT_RELAY_SHA256 must be 64 hex characters (the value from "
+                f"the release's SHA256SUMS); got {configured[:16]!r}"
+            )
+        # When the hub is ALSO the download source, a pin that disagrees with the
+        # file it will serve means every VM fails `sha256sum -c` after a
+        # perfectly successful download. Refuse now, with the reason, rather than
+        # after a VM has been created and billed.
+        if not os.environ.get("STONECHAT_RELAY_BINARY_URL", "").strip():
+            if path is None or not path.is_file():
+                raise ProviderError(
+                    "STONECHAT_RELAY_SHA256 is set but there is nothing to fetch: "
+                    "also set STONECHAT_RELAY_BINARY_URL (where VMs download the "
+                    "binary), or STONECHAT_RELAY_BINARY (the hub serves its own copy)"
+                )
+            local = hashlib.sha256(path.read_bytes()).hexdigest()
+            if local != configured:
+                raise ProviderError(
+                    f"STONECHAT_RELAY_SHA256 ({configured[:12]}…) does not match the "
+                    f"binary this hub serves at /v1/relay-binary ({local[:12]}…)"
+                )
+        return configured
     if path is None or not path.is_file():
         raise ProviderError(
-            "dedicated-VM provisioning needs STONECHAT_RELAY_BINARY: a static "
-            "x86_64-musl stonechat-relay build on the hub box (see relay/README.md)"
+            "dedicated-VM provisioning needs a relay to pin: either "
+            "STONECHAT_RELAY_BINARY (a static x86_64-musl build on the hub box) or "
+            "STONECHAT_RELAY_BINARY_URL plus STONECHAT_RELAY_SHA256 (a published "
+            "release asset — see relay/README.md)"
         )
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
