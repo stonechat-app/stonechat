@@ -184,7 +184,9 @@ Both of you, in the app:
 1. **Forge identity** (generates your Ed25519 key on-device).
 2. **Ignite**. The hub asks the machine host for a container, and the app pins the
    mailbox's TLS certificate.
-3. Exchange **handles** (the three words on your ID screen) — type or QR.
+3. Exchange **contact invites** — the QR code on your ID screen, or the link
+   beside it. There are no handles and no name lookup: the directory resolves
+   full `SC-` IDs only, so an invite is the only way to find someone.
 4. Send a message, a photo, a voice note.
 5. The finale: hit **Turn off** and watch the mailbox container get destroyed —
    "delete the only machine my messages ever touched."
