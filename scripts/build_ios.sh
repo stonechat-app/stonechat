@@ -46,7 +46,7 @@ echo ""
 STONECHAT_HUB="${STONECHAT_HUB:-https://hub.stonechat.app}"
 
 # No provider is baked by default: the app picks it from the account's plan
-# (mailbox → machine_host, machine → gcp). A baked STONECHAT_PROVIDER overrides
+# (mailbox → mailbox_host, machine → gcp). A baked STONECHAT_PROVIDER overrides
 # the plan mapping in every install of the build — set it only for test builds.
 DEFINES=(--dart-define=STONECHAT_HUB="$STONECHAT_HUB")
 if [ -n "${STONECHAT_PROVIDER:-}" ]; then

@@ -80,12 +80,12 @@ def raises(label, fn, needle):
         check(label, False, "did not raise")
 
 
-def req(machine_type, region, machine_host=True):
+def req(machine_type, region, mailbox_host=True):
     return ProvisionRequest(
         owner_id=OWNER,
         owner_token="owner-token",
         spec=MachineSpec(machine_type=machine_type, region=region),
-        machine_host_token="mh-token" if machine_host else None,
+        mailbox_host_token="mh-token" if mailbox_host else None,
     )
 
 
@@ -130,7 +130,7 @@ def check_hetzner():
     check("labelled for the abuse desk", body["labels"] == {"stonechat": "mailbox"})
     check("user_data is sent plain (not base64)",
           body["user_data"].startswith("#!/usr/bin/env bash"))
-    check("machine host is baked in", "stonechat-machine-host" in body["user_data"])
+    check("mailbox host is baked in", "stonechat-mailbox-host" in body["user_data"])
     check("user_data fits Hetzner's 32 KiB cap",
           len(body["user_data"]) <= 32 * 1024, f"{len(body['user_data'])} bytes")
     check("polls past a server that is not running yet", seen["polls"] == 2)
@@ -219,7 +219,7 @@ def check_vultr():
     decoded = base64.b64decode(body["user_data"]).decode()
     check("user_data is base64 (Vultr's one difference from the others)",
           decoded.startswith("#!/usr/bin/env bash"), decoded[:40])
-    check("machine host is baked in", "stonechat-machine-host" in decoded)
+    check("mailbox host is baked in", "stonechat-mailbox-host" in decoded)
     check("polls past main_ip 0.0.0.0", seen["polls"] == 2)
     check("address is the relay port over the public IP",
           result.address == "https://45.32.1.2:8080", result.address)

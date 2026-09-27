@@ -25,10 +25,10 @@ Machine tier — the only provider that wins both. DE, FI and SG in one adapter.
 
 Networking, and why it lands in the same shape as DigitalOcean:
 - The public IPv4 sits on the server's own interface — no 1:1 NAT, so the
-  machine host's from-inside health checks of guest mailboxes just work. This
+  mailbox host's from-inside health checks of guest mailboxes just work. This
   is the property EC2 lacks and that killed the AWS adapter.
 - A new server has NO firewall attached unless one is asked for, so the mailbox
-  (8080/tcp), the browser transport (8443/udp), TURN and the machine host's
+  (8080/tcp), the browser transport (8443/udp), TURN and the mailbox host's
   guest port range are reachable without the rule ceremony GCP and AWS need.
   The bootstrap script does not enable ufw, so nothing on the box blocks them
   either.
@@ -83,7 +83,7 @@ class HetznerProvider(CloudProvider):
             )
 
         user_data = build_startup_script(
-            req.owner_id, req.owner_token, req.machine_host_token
+            req.owner_id, req.owner_token, req.mailbox_host_token
         )
         if len(user_data) > USER_DATA_LIMIT:
             raise ProviderError(

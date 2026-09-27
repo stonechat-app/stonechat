@@ -1,7 +1,7 @@
 /// Host-owner's invites: mint invites for friends and see who accepted.
 ///
-/// Talks straight to the user's own machine host (PROTOCOL.md "Machine host") —
-/// the hub is never involved. The machine host address + admin token are asked for
+/// Talks straight to the user's own mailbox host (PROTOCOL.md "Mailbox host") —
+/// the hub is never involved. The mailbox host address + admin token are asked for
 /// once and kept in the keystore.
 library;
 
@@ -34,17 +34,17 @@ class _InvitesScreenState extends State<InvitesScreen> {
   void initState() {
     super.initState();
     final app = context.read<AppState>();
-    if (app.machineHostAddress != null) {
-      _address.text = app.machineHostAddress!;
+    if (app.mailboxHostAddress != null) {
+      _address.text = app.mailboxHostAddress!;
       _refresh();
     } else {
-      // Machine-plan VMs come with the machine host pre-installed — the hub gave
+      // Machine-plan VMs come with the mailbox host pre-installed — the hub gave
       // us its address + admin token, so connect without asking anything.
       final record = context.read<MailboxState>().record;
-      if (record.machineHostAddress != null &&
-          record.machineHostAdminToken != null) {
-        _address.text = record.machineHostAddress!;
-        _adminToken.text = record.machineHostAdminToken!;
+      if (record.mailboxHostAddress != null &&
+          record.mailboxHostAdminToken != null) {
+        _address.text = record.mailboxHostAddress!;
+        _adminToken.text = record.mailboxHostAdminToken!;
         _autoSetup = true;
         WidgetsBinding.instance
             .addPostFrameCallback((_) => _connect(auto: true));
@@ -52,13 +52,13 @@ class _InvitesScreenState extends State<InvitesScreen> {
     }
   }
 
-  bool get _connected => context.read<AppState>().machineHostAddress != null;
+  bool get _connected => context.read<AppState>().mailboxHostAddress != null;
 
   Future<void> _connect({bool auto = false}) async {
     final url = _address.text.trim().replaceAll(RegExp(r'/+$'), '');
     final token = _adminToken.text.trim();
     if (url.isEmpty || url == 'https:' || token.isEmpty) {
-      showZnSnack(context, 'Enter your machine host address and admin token',
+      showZnSnack(context, 'Enter your mailbox host address and admin token',
           error: true);
       return;
     }
@@ -68,13 +68,13 @@ class _InvitesScreenState extends State<InvitesScreen> {
       final fp = await observeCertFingerprint(url);
       if (fp == null) {
         throw ApiException(auto
-            ? "Your mailbox VM isn't answering on the machine host port yet — "
+            ? "Your mailbox VM isn't answering on the mailbox host port yet — "
                 "it can take a few minutes after setup. Pull down to retry."
-            : "Couldn't reach a Stonechat machine host at that address");
+            : "Couldn't reach a Stonechat mailbox host at that address");
       }
       // listing doubles as the admin-token check
       final invites = await listHostInvites(url, fp, token);
-      await app.setMachineHost(url, token, fp);
+      await app.setMailboxHost(url, token, fp);
       _adminToken.clear();
       if (mounted) setState(() => _invites = invites);
     } catch (e) {
@@ -86,10 +86,10 @@ class _InvitesScreenState extends State<InvitesScreen> {
 
   Future<void> _refresh() async {
     final app = context.read<AppState>();
-    if (app.machineHostAddress == null) return;
+    if (app.mailboxHostAddress == null) return;
     try {
-      final invites = await listHostInvites(app.machineHostAddress!,
-          app.machineHostTlsFp!, app.machineHostAdminToken!);
+      final invites = await listHostInvites(app.mailboxHostAddress!,
+          app.mailboxHostTlsFp!, app.mailboxHostAdminToken!);
       if (mounted) setState(() => _invites = invites);
     } catch (e) {
       if (mounted) showZnSnack(context, '$e', error: true);
@@ -100,8 +100,8 @@ class _InvitesScreenState extends State<InvitesScreen> {
     final app = context.read<AppState>();
     setState(() => _busy = true);
     try {
-      final invite = await createHostInvite(app.machineHostAddress!,
-          app.machineHostTlsFp!, app.machineHostAdminToken!);
+      final invite = await createHostInvite(app.mailboxHostAddress!,
+          app.mailboxHostTlsFp!, app.mailboxHostAdminToken!);
       await Clipboard.setData(ClipboardData(text: invite));
       if (mounted) {
         showZnSnack(context, 'Invite created and copied — send it to a friend');
@@ -115,7 +115,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
   }
 
   Future<void> _forgetAgent() async {
-    await context.read<AppState>().setMachineHost(null, null, null);
+    await context.read<AppState>().setMailboxHost(null, null, null);
     setState(() {
       _invites = null;
       _address.text = 'https://';
@@ -125,7 +125,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    context.watch<AppState>(); // rebuild when machine host creds change
+    context.watch<AppState>(); // rebuild when mailbox host creds change
     return Scaffold(
       appBar: AppBar(
         title: const Text('Invites',
@@ -135,10 +135,10 @@ class _InvitesScreenState extends State<InvitesScreen> {
     );
   }
 
-  // -- first run: point the app at your own machine host ----------------------
+  // -- first run: point the app at your own mailbox host ----------------------
 
   Widget _setupView() {
-    // Machine-plan VM: the machine host is already on the box and the hub gave us
+    // Machine-plan VM: the mailbox host is already on the box and the hub gave us
     // its credentials — no form, just a connect (with retry while the VM is
     // still finishing its first boot).
     if (_autoSetup) {
@@ -152,7 +152,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
           ),
           const SizedBox(height: 8),
           const Text(
-            'Your mailbox VM comes with the Stonechat machine host built in. Each '
+            'Your mailbox VM comes with the Stonechat mailbox host built in. Each '
             'friend who accepts an invite gets their own mailbox on your box '
             '— you can see that they host with you, never their messages.',
             style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
@@ -184,14 +184,14 @@ class _InvitesScreenState extends State<InvitesScreen> {
         ),
         const SizedBox(height: 8),
         const Text(
-          'Run the Stonechat machine host on your own server, then connect '
+          'Run the Stonechat mailbox host on your own server, then connect '
           'it here to create invites. Each friend who accepts gets their own '
           'mailbox on your box — you can see that they host with you, never '
           'their messages.',
           style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
         ),
         const SizedBox(height: 20),
-        _field('Machine host address', _address),
+        _field('Mailbox host address', _address),
         const SizedBox(height: 12),
         _field('Admin token', _adminToken),
         const SizedBox(height: 16),
@@ -228,7 +228,7 @@ class _InvitesScreenState extends State<InvitesScreen> {
             children: [
               Expanded(
                 child: Text(
-                  app.machineHostAddress!,
+                  app.mailboxHostAddress!,
                   style: Zn.mono(size: 11),
                   overflow: TextOverflow.ellipsis,
                 ),

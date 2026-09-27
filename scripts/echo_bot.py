@@ -291,7 +291,7 @@ def ensure_provisioned(bot: Phone) -> None:
                  "--destroy and start over")
     if srv["status"] == "none":
         body = {
-            "provider": "machine_host",
+            "provider": "mailbox_host",
             "machine": {"machine_type": "container",
                         "region": e2e.shared_country(HUB), "disk_gb": 10},
         }

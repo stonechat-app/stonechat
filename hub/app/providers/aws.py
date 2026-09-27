@@ -1,7 +1,7 @@
 """AWS EC2 provider.
 
 ⚠️ KNOWN-BROKEN for dedicated-VM provisioning (see TODO.md "AWS provider is
-dead code"): EC2's 1:1 NAT breaks the machine host's from-inside guest health
+dead code"): EC2's 1:1 NAT breaks the mailbox host's from-inside guest health
 checks (no hairpin to the instance's own public IP), so every invite
 redemption times out. Needs the localhost health-check fix before it can work.
 
@@ -22,7 +22,7 @@ import time
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
 from .bootstrap import (
     GUEST_PORT_RANGE,
-    MACHINE_HOST_PORT,
+    MAILBOX_HOST_PORT,
     SERVER_PORT,
     TURN_PORT,
     TURN_RELAY_PORTS,
@@ -60,7 +60,7 @@ class AWSProvider(CloudProvider):
             MaxCount=1,
             SecurityGroupIds=[sg_id],
             UserData=build_startup_script(
-                req.owner_id, req.owner_token, req.machine_host_token
+                req.owner_id, req.owner_token, req.mailbox_host_token
             ),
             BlockDeviceMappings=[
                 {
@@ -147,8 +147,8 @@ class AWSProvider(CloudProvider):
             },
             {
                 "IpProtocol": "tcp",
-                "FromPort": MACHINE_HOST_PORT,
-                "ToPort": MACHINE_HOST_PORT,
+                "FromPort": MAILBOX_HOST_PORT,
+                "ToPort": MAILBOX_HOST_PORT,
                 "IpRanges": [{"CidrIp": "0.0.0.0/0"}],
             },
             {

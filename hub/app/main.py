@@ -57,7 +57,7 @@ from .providers import (
     available_providers,
     get_provider,
 )
-from .providers.bootstrap import MACHINE_HOST_PORT, relay_binary_path
+from .providers.bootstrap import MAILBOX_HOST_PORT, relay_binary_path
 
 log = logging.getLogger("stonechat.hub")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -151,11 +151,11 @@ app.add_middleware(
 HEALTH_TIMEOUT_S = 240  # cloud VMs need to apt-get + pip install on first boot
 
 # Paid providers and the plan each requires. Machine outranks mailbox, so a
-# Machine subscriber may also run on a shared machine host. `local` and
+# Machine subscriber may also run on a shared mailbox host. `local` and
 # `external` (self-hosted free tier) stay ungated. With billing off nothing
 # is gated (and the reap query, which sweeps these providers, matches nothing).
 GATED_PROVIDERS = {
-    "machine_host": "mailbox",
+    "mailbox_host": "mailbox",
     "gcp": "machine",
     "aws": "machine",
     "digitalocean": "machine",
@@ -163,7 +163,7 @@ GATED_PROVIDERS = {
     "vultr": "machine",
 } if BILLING else {}
 PLAN_RANK = {"mailbox": 1, "machine": 2}
-# Dedicated-VM providers get the machine host baked into the VM.
+# Dedicated-VM providers get the mailbox host baked into the VM.
 DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean", "hetzner", "vultr"}
 
 
@@ -581,21 +581,21 @@ def create_mailbox(body: MailboxIn, user: UnbannedUser, background: BackgroundTa
                            f" {required} plan",
             })
     mailbox_token = secrets.token_urlsafe(32)
-    # Dedicated VMs ship with the machine host pre-installed (PROTOCOL.md "Host
+    # Dedicated VMs ship with the mailbox host pre-installed (PROTOCOL.md "Host
     # agent") — mint its admin token here so the app can pick it up from
     # GET /v1/mailbox and mint invites with zero manual setup.
-    machine_host_token = (
+    mailbox_host_token = (
         secrets.token_urlsafe(32) if provider in DEDICATED_PROVIDERS else None
     )
     if not store.create_mailbox(
         user["stonechat_id"], provider, machine.model_dump(), mailbox_token,
-        machine_host_token,
+        mailbox_host_token,
     ):
         raise HTTPException(409, "you already have a mailbox (one per user)")
 
     background.add_task(
         _provision, user["stonechat_id"], provider, machine, mailbox_token,
-        machine_host_token,
+        mailbox_host_token,
     )
     return {"status": "provisioning"}
 
@@ -728,11 +728,11 @@ def _wtcerts_signing_bytes(certs: list[dict]) -> bytes:
     return bytes(out)
 
 
-def _machine_host_address(mailbox_address: str) -> str:
-    """The machine host lives on the same VM as the mailbox, on its own port:
+def _mailbox_host_address(mailbox_address: str) -> str:
+    """The mailbox host lives on the same VM as the mailbox, on its own port:
     https://<ip>:8080 → https://<ip>:8200."""
     host = mailbox_address.rsplit(":", 1)[0]
-    return f"{host}:{MACHINE_HOST_PORT}"
+    return f"{host}:{MAILBOX_HOST_PORT}"
 
 
 @app.get("/v1/mailbox")
@@ -748,14 +748,14 @@ def get_mailbox(user: User):
         "mailbox_token": mailbox["mailbox_token"],
         "tls_fp": mailbox["tls_fp"],
         "error": mailbox["error"],
-        # Dedicated VMs come with the machine host pre-installed; hand the app
+        # Dedicated VMs come with the mailbox host pre-installed; hand the app
         # its address + admin token so the Invites screen connects itself.
-        "machine_host": (
+        "mailbox_host": (
             {
-                "address": _machine_host_address(mailbox["address"]),
-                "admin_token": mailbox["machine_host_token"],
+                "address": _mailbox_host_address(mailbox["address"]),
+                "admin_token": mailbox["mailbox_host_token"],
             }
-            if mailbox["machine_host_token"] and mailbox["status"] == "running"
+            if mailbox["mailbox_host_token"] and mailbox["status"] == "running"
             and mailbox["address"]
             else None
         ),
@@ -780,7 +780,7 @@ def delete_mailbox(user: User):
 # -- provisioning (background) ---------------------------------------------------
 
 def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, mailbox_token: str,
-               machine_host_token: str | None = None):
+               mailbox_host_token: str | None = None):
     """Runs in a worker thread (sync BackgroundTask). Updates the row when done."""
     try:
         provider = get_provider(provider_name)
@@ -789,7 +789,7 @@ def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, mailbo
                 owner_id=stonechat_id,
                 owner_token=mailbox_token,
                 spec=MachineSpec(**machine.model_dump()),
-                machine_host_token=machine_host_token,
+                mailbox_host_token=mailbox_host_token,
             )
         )
         tls_fp = _wait_healthy(result.address)

@@ -7,8 +7,8 @@
 #
 # Out of the box this hub provisions nothing: users bring their own mailbox and
 # register its address (POST /v1/mailbox/external), which is the cheapest way to
-# run a network. To also hand out mailboxes yourself, add machine hosts to
-# STONECHAT_MACHINE_HOSTS in .env (../machine_host/README.md "Hosting for a
+# run a network. To also hand out mailboxes yourself, add mailbox hosts to
+# STONECHAT_MAILBOX_HOSTS in .env (../mailbox_host/README.md "Hosting for a
 # hub"). Push is a separate, optional project (../push_gateway/).
 name: stonechat-hub
 
@@ -34,7 +34,7 @@ services:
       STONECHAT_BILLING: "off"
       # Where the relay binary is INSIDE the container; the host side is
       # STONECHAT_RELAY_DIR below. Only read when this hub provisions mailboxes
-      # of its own — it is the artifact it ships to its machine hosts and serves
+      # of its own — it is the artifact it ships to its mailbox hosts and serves
       # to dedicated VMs. Absent, mailbox provisioning is refused and
       # bring-your-own mailboxes still work.
       STONECHAT_RELAY_BINARY: /opt/stonechat/stonechat-relay

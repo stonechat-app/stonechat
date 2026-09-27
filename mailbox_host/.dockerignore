@@ -1,5 +1,5 @@
 # Build context for Dockerfile: the two files it copies, nothing else (no
-# .env, .venv, machine_host.db or TLS keypair).
+# .env, .venv, mailbox_host.db or TLS keypair).
 *
 !main.py
 !requirements.txt

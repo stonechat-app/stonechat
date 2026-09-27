@@ -138,7 +138,7 @@ _BY_CODE = {c.code: c for c in CATALOG}
 
 
 # Which countries the Mailbox tier can actually place a container in — read
-# straight off the configured machine hosts, intersected with this catalog.
+# straight off the configured mailbox hosts, intersected with this catalog.
 #
 # Derived on purpose. This used to be its own env var (STONECHAT_FLEET_COUNTRIES)
 # maintained beside the host list, and the two drifted: the hub advertised five
@@ -146,17 +146,17 @@ _BY_CODE = {c.code: c for c in CATALOG}
 # deployed infrastructure has exactly one home, and it is the host list.
 def shared_host_countries() -> set[str]:
     from .providers import ProviderError
-    from .providers.machine_host import configured_countries  # local: keeps hub start cheap
+    from .providers.mailbox_host import configured_countries  # local: keeps hub start cheap
 
     try:
         return configured_countries() & set(_BY_CODE)
     except ProviderError:
-        # Malformed STONECHAT_MACHINE_HOSTS. This feeds the public picker, so it
+        # Malformed STONECHAT_MAILBOX_HOSTS. This feeds the public picker, so it
         # fails *closed* — offer no Mailbox country — rather than 500ing
-        # onboarding. Provisioning still raises loudly (MachineHostProvider), and
+        # onboarding. Provisioning still raises loudly (MailboxHostProvider), and
         # the only unsafe direction is over-claiming, which an empty set cannot do.
         log.exception(
-            "STONECHAT_MACHINE_HOSTS is unparseable — Mailbox plan offered nowhere")
+            "STONECHAT_MAILBOX_HOSTS is unparseable — Mailbox plan offered nowhere")
         return set()
 
 
@@ -207,9 +207,9 @@ def resolve(code: str, plan: str) -> tuple[str, dict]:
             raise UnavailableCountry(
                 f"{country.name} is not available on the Mailbox plan yet"
             )
-        # The machine-host provider places by country, not by cloud region: it
+        # The mailbox-host provider places by country, not by cloud region: it
         # picks the emptiest host declaring this one.
-        return "machine_host", {"machine_type": "container", "region": country.code}
+        return "mailbox_host", {"machine_type": "container", "region": country.code}
     h = country.hosting
     return h.provider, {
         "machine_type": h.machine_type,

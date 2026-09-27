@@ -54,12 +54,12 @@ class AppState extends ChangeNotifier {
   // user's own mailbox. Pure UI distinction (both are `external` records on
   // the hub) — kept locally so the mailbox screen can say which one it is.
   bool externalMailboxFriendHosted = false;
-  // The user's own machine host ("host your circle"), if they run one. The
+  // The user's own mailbox host ("host your circle"), if they run one. The
   // admin token is as sensitive as the mailbox token: keystore only, never
   // the hub. The fingerprint is trust-on-first-use, observed at connect.
-  String? machineHostAddress;
-  String? machineHostAdminToken;
-  String? machineHostTlsFp;
+  String? mailboxHostAddress;
+  String? mailboxHostAdminToken;
+  String? mailboxHostTlsFp;
 
   bool get hasIdentity => _crypto != null && stonechatId != null;
   CryptoService get crypto => _crypto!;
@@ -143,9 +143,9 @@ class AppState extends ChangeNotifier {
       externalMailboxTlsFp = await _storage.read(key: 'sc_ext_tls_fp');
       externalMailboxFriendHosted =
           await _storage.read(key: 'sc_ext_friend') == '1';
-      machineHostAddress = await _storage.read(key: 'sc_machine_host_addr');
-      machineHostAdminToken = await _storage.read(key: 'sc_machine_host_token');
-      machineHostTlsFp = await _storage.read(key: 'sc_machine_host_tls_fp');
+      mailboxHostAddress = await _storage.read(key: 'sc_mailbox_host_addr');
+      mailboxHostAdminToken = await _storage.read(key: 'sc_mailbox_host_token');
+      mailboxHostTlsFp = await _storage.read(key: 'sc_mailbox_host_tls_fp');
       avatar = await db.kvGet('own_avatar');
       await _loadOrCreateDeviceKeys();
     }
@@ -201,9 +201,9 @@ class AppState extends ChangeNotifier {
     externalMailboxToken = null;
     externalMailboxTlsFp = null;
     externalMailboxFriendHosted = false;
-    machineHostAddress = null;
-    machineHostAdminToken = null;
-    machineHostTlsFp = null;
+    mailboxHostAddress = null;
+    mailboxHostAdminToken = null;
+    mailboxHostTlsFp = null;
     api.accountToken = null;
     notifyListeners();
   }
@@ -237,22 +237,22 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setMachineHost(
+  Future<void> setMailboxHost(
     String? address,
     String? adminToken,
     String? tlsFp,
   ) async {
-    machineHostAddress = address;
-    machineHostAdminToken = adminToken;
-    machineHostTlsFp = tlsFp;
+    mailboxHostAddress = address;
+    mailboxHostAdminToken = adminToken;
+    mailboxHostTlsFp = tlsFp;
     if (address == null) {
-      await _storage.delete(key: 'sc_machine_host_addr');
-      await _storage.delete(key: 'sc_machine_host_token');
-      await _storage.delete(key: 'sc_machine_host_tls_fp');
+      await _storage.delete(key: 'sc_mailbox_host_addr');
+      await _storage.delete(key: 'sc_mailbox_host_token');
+      await _storage.delete(key: 'sc_mailbox_host_tls_fp');
     } else {
-      await _storage.write(key: 'sc_machine_host_addr', value: address);
-      await _storage.write(key: 'sc_machine_host_token', value: adminToken);
-      await _storage.write(key: 'sc_machine_host_tls_fp', value: tlsFp);
+      await _storage.write(key: 'sc_mailbox_host_addr', value: address);
+      await _storage.write(key: 'sc_mailbox_host_token', value: adminToken);
+      await _storage.write(key: 'sc_mailbox_host_tls_fp', value: tlsFp);
     }
     notifyListeners();
   }

@@ -1,4 +1,4 @@
-"""Stonechat machine host — the one thing that runs mailboxes.
+"""Stonechat mailbox host — the one thing that runs mailboxes.
 
 Every box that holds mailboxes runs this, and nothing else does. Two ways in,
 and they are the same machinery with different authority:
@@ -8,9 +8,9 @@ and they are the same machinery with different authority:
   host, but only with people they choose (PROTOCOL.md "Invite-hosted
   mailboxes"). From the directory's point of view a guest's mailbox is an
   ordinary self-hosted ("external") relay that happens to live on a friend's box.
-* **Managed mode** (``STONECHAT_MACHINE_HOST_MANAGED=1``): the box belongs to a
+* **Managed mode** (``STONECHAT_MAILBOX_HOST_MANAGED=1``): the box belongs to a
   hub operator, and a hub places mailboxes on it over this same API — the
-  shared tier the Mailbox plan sells (hub/app/providers/machine_host.py).
+  shared tier the Mailbox plan sells (hub/app/providers/mailbox_host.py).
   Invites are refused outright: a managed host has exactly one authority, and a
   box that answered to both the hub and whoever held an invite token would be a
   box nobody is accountable for.
@@ -30,26 +30,26 @@ unreadable, but the host-owner — who has root here — can see *that* a guest 
 a mailbox and its traffic metadata. Same exposure as any relay operator; the
 difference is the guest chose a friend as their operator, not a company.
 
-The machine host serves pinned TLS just like a mailbox: the invite carries its
+The mailbox host serves pinned TLS just like a mailbox: the invite carries its
 certificate fingerprint, so the guest's redeem call can't be MITM'd.
 
 Config (env):
-    STONECHAT_MACHINE_HOST_ADMIN_TOKEN     admin secret the host-owner holds (required)
-    STONECHAT_MACHINE_HOST_ADVERTISE_HOST  public host/IP guests connect to (required)
-    STONECHAT_MACHINE_HOST_MANAGED         1 → managed by a hub; invites refused
-    STONECHAT_MACHINE_HOST_DB              sqlite path (default machine_host.db)
-    STONECHAT_MACHINE_HOST_TLS_DIR         cert/key dir (default: the DB's directory)
-    STONECHAT_MACHINE_HOST_RELAY_DIR       where uploaded relay binaries are kept
+    STONECHAT_MAILBOX_HOST_ADMIN_TOKEN     admin secret the host-owner holds (required)
+    STONECHAT_MAILBOX_HOST_ADVERTISE_HOST  public host/IP guests connect to (required)
+    STONECHAT_MAILBOX_HOST_MANAGED         1 → managed by a hub; invites refused
+    STONECHAT_MAILBOX_HOST_DB              sqlite path (default mailbox_host.db)
+    STONECHAT_MAILBOX_HOST_TLS_DIR         cert/key dir (default: the DB's directory)
+    STONECHAT_MAILBOX_HOST_RELAY_DIR       where uploaded relay binaries are kept
                                            (default: the DB's directory)
-    STONECHAT_MACHINE_HOST_CAPACITY        max guest mailboxes (default 25)
-    STONECHAT_MACHINE_HOST_PORT_BASE       first guest mailbox port; guests are published
+    STONECHAT_MAILBOX_HOST_CAPACITY        max guest mailboxes (default 25)
+    STONECHAT_MAILBOX_HOST_PORT_BASE       first guest mailbox port; guests are published
                                            on base..base+capacity-1 (default 42000)
-    STONECHAT_MACHINE_HOST_IMAGE           mailbox image, pulled if not present locally
+    STONECHAT_MAILBOX_HOST_IMAGE           mailbox image, pulled if not present locally
                                            (default ghcr.io/stonechat-app/relay:latest).
                                            Managed mode refuses the floating default —
                                            see _relay_image().
-    STONECHAT_MACHINE_HOST_RUNTIME         container runtime, e.g. runsc for gVisor (optional)
-    STONECHAT_MACHINE_HOST_PORT            listen port (default 8200)
+    STONECHAT_MAILBOX_HOST_RUNTIME         container runtime, e.g. runsc for gVisor (optional)
+    STONECHAT_MAILBOX_HOST_PORT            listen port (default 8200)
     STONECHAT_PUSH_GATEWAY                 passed through to guest mailboxes (optional)
     STONECHAT_PUSH_MINT_SECRET             mints a per-mailbox push key when the
                                            caller supplies none (optional)
@@ -75,18 +75,18 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-ADMIN_TOKEN = os.environ["STONECHAT_MACHINE_HOST_ADMIN_TOKEN"]
-ADVERTISE_HOST = os.environ["STONECHAT_MACHINE_HOST_ADVERTISE_HOST"]
-MANAGED = os.environ.get("STONECHAT_MACHINE_HOST_MANAGED", "").strip() not in ("", "0")
-DB_PATH = os.environ.get("STONECHAT_MACHINE_HOST_DB", "machine_host.db")
-TLS_DIR = Path(os.environ.get("STONECHAT_MACHINE_HOST_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
+ADMIN_TOKEN = os.environ["STONECHAT_MAILBOX_HOST_ADMIN_TOKEN"]
+ADVERTISE_HOST = os.environ["STONECHAT_MAILBOX_HOST_ADVERTISE_HOST"]
+MANAGED = os.environ.get("STONECHAT_MAILBOX_HOST_MANAGED", "").strip() not in ("", "0")
+DB_PATH = os.environ.get("STONECHAT_MAILBOX_HOST_DB", "mailbox_host.db")
+TLS_DIR = Path(os.environ.get("STONECHAT_MAILBOX_HOST_TLS_DIR", str(Path(DB_PATH).resolve().parent)))
 RELAY_DIR = Path(os.environ.get(
-    "STONECHAT_MACHINE_HOST_RELAY_DIR", str(Path(DB_PATH).resolve().parent)))
-CAPACITY = int(os.environ.get("STONECHAT_MACHINE_HOST_CAPACITY", "25"))
-PORT_BASE = int(os.environ.get("STONECHAT_MACHINE_HOST_PORT_BASE", "42000"))
+    "STONECHAT_MAILBOX_HOST_RELAY_DIR", str(Path(DB_PATH).resolve().parent)))
+CAPACITY = int(os.environ.get("STONECHAT_MAILBOX_HOST_CAPACITY", "25"))
+PORT_BASE = int(os.environ.get("STONECHAT_MAILBOX_HOST_PORT_BASE", "42000"))
 DEFAULT_IMAGE = "ghcr.io/stonechat-app/relay:latest"
-IMAGE = os.environ.get("STONECHAT_MACHINE_HOST_IMAGE", DEFAULT_IMAGE)
-RUNTIME = os.environ.get("STONECHAT_MACHINE_HOST_RUNTIME", "")
+IMAGE = os.environ.get("STONECHAT_MAILBOX_HOST_IMAGE", DEFAULT_IMAGE)
+RUNTIME = os.environ.get("STONECHAT_MAILBOX_HOST_RUNTIME", "")
 PUSH_GATEWAY = os.environ.get("STONECHAT_PUSH_GATEWAY", "")
 PUSH_MINT_SECRET = os.environ.get("STONECHAT_PUSH_MINT_SECRET", "")
 SERVER_PORT = 8080
@@ -96,7 +96,7 @@ SERVER_PORT = 8080
 # range to forget. TCP and UDP bindings of one number do not collide.
 WT_PORT = 8443
 # Wire protocol version (PROTOCOL.md "Versioning"), reported in /health so a
-# prober can see what this machine host speaks.
+# prober can see what this mailbox host speaks.
 WIRE_VERSION = 1
 
 HOSTED_LABEL = "stonechat.hosted=1"
@@ -146,14 +146,14 @@ STONECHAT_ID_RE = __import__("re").compile(r"^SC-[A-Z2-7-]{36,}$")
 class Tls:
     def __init__(self, directory: Path):
         directory.mkdir(parents=True, exist_ok=True)
-        self.key_file = directory / "machine_host_tls_key.pem"
-        self.cert_file = directory / "machine_host_tls_cert.pem"
+        self.key_file = directory / "mailbox_host_tls_key.pem"
+        self.cert_file = directory / "mailbox_host_tls_cert.pem"
         if not (self.key_file.is_file() and self.cert_file.is_file()):
             subprocess.run(
                 ["openssl", "req", "-x509", "-newkey", "ec",
                  "-pkeyopt", "ec_paramgen_curve:prime256v1",
                  "-keyout", str(self.key_file), "-out", str(self.cert_file),
-                 "-days", "36500", "-nodes", "-subj", "/CN=stonechat-machine-host"],
+                 "-days", "36500", "-nodes", "-subj", "/CN=stonechat-mailbox-host"],
                 check=True, capture_output=True,
             )
             self.key_file.chmod(0o600)
@@ -331,7 +331,7 @@ def _mint_push_key() -> str:
 
     Mirrors hub/app/pushkey.py — `pk_<random>:HMAC-SHA256(secret, key_id)`,
     which the gateway verifies offline. Duplicated rather than imported: the
-    machine host is its own deployable and does not ship the hub package. In
+    mailbox host is its own deployable and does not ship the hub package. In
     managed mode the hub mints the key and passes it, so this only fires for a
     host-owner running their own gateway."""
     if not PUSH_MINT_SECRET:
@@ -436,7 +436,7 @@ def _relay_image() -> str:
             503,
             "this host is managed but has no pinned relay: upload one with "
             "POST /v1/relay (scripts/roll_relay.py), or set "
-            "STONECHAT_MACHINE_HOST_IMAGE to a digest-pinned image",
+            "STONECHAT_MAILBOX_HOST_IMAGE to a digest-pinned image",
         )
     _ensure_image_present(IMAGE)
     return IMAGE
@@ -631,7 +631,7 @@ def _roll_guest(guest: dict, binary: Path, want: str, force: bool) -> dict:
 
 store = Store(DB_PATH)
 tls = Tls(TLS_DIR)
-app = FastAPI(title="stonechat-machine-host")
+app = FastAPI(title="stonechat-mailbox-host")
 
 # Guests get fixed host ports from [PORT_BASE, PORT_BASE + CAPACITY) rather
 # than Docker-ephemeral ones: the range is known before any guest exists (so
@@ -718,7 +718,7 @@ async def health():
     """Unauthenticated liveness + pinning info only. Guest count and capacity
     are occupancy metadata a stranger shouldn't be able to poll — the
     host-owner reads them through the admin-authed /v1/guests instead
-    (PROTOCOL.md "Machine host"). tls_fp stays: it's the certificate hash,
+    (PROTOCOL.md "Mailbox host"). tls_fp stays: it's the certificate hash,
     already observable from the TLS handshake."""
     return {"status": "ok", "v": WIRE_VERSION, "tls_fp": tls.fingerprint_b64}
 
@@ -726,7 +726,7 @@ async def health():
 def _encode_invite(token: str) -> str:
     """The shareable string: this host's address + pinned fingerprint + token."""
     blob = {
-        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('STONECHAT_MACHINE_HOST_PORT', '8200')}",
+        "u": f"https://{ADVERTISE_HOST}:{os.environ.get('STONECHAT_MAILBOX_HOST_PORT', '8200')}",
         "f": tls.fingerprint_b64,
         "t": token,
     }
@@ -849,7 +849,7 @@ def _provision_guest(owner_id: str, owner_token: str | None = None,
 async def list_guests():
     """Occupancy, which is also how a hub places: it reads `count` and
     `capacity` across its hosts and picks the emptiest one in the country the
-    user asked for (hub/app/providers/machine_host.py)."""
+    user asked for (hub/app/providers/mailbox_host.py)."""
     guests = store.guests()
     return {"guests": guests, "count": len(guests), "capacity": CAPACITY,
             "managed": MANAGED}
@@ -981,6 +981,6 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        app, host="0.0.0.0", port=int(os.environ.get("STONECHAT_MACHINE_HOST_PORT", "8200")),
+        app, host="0.0.0.0", port=int(os.environ.get("STONECHAT_MAILBOX_HOST_PORT", "8200")),
         ssl_certfile=str(tls.cert_file), ssl_keyfile=str(tls.key_file),
     )

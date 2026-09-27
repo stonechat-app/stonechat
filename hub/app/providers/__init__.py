@@ -26,9 +26,9 @@ _REGISTRY: dict[str, tuple[str, str]] = {
     "hetzner": ("app.providers.hetzner", "HetznerProvider"),
     "vultr": ("app.providers.vultr", "VultrProvider"),
     "local": ("app.providers.local", "LocalDockerProvider"),
-    # The shared tier: a pool of boxes running machine_host/ in managed mode.
-    # Replaced the `fleet` provider's docker-over-SSH (see machine_host.py).
-    "machine_host": ("app.providers.machine_host", "MachineHostProvider"),
+    # The shared tier: a pool of boxes running mailbox_host/ in managed mode.
+    # Replaced the `fleet` provider's docker-over-SSH (see mailbox_host.py).
+    "mailbox_host": ("app.providers.mailbox_host", "MailboxHostProvider"),
     # To add another cloud: create <name>.py implementing CloudProvider and
     # register it here; gate it in main.py if the plan requires it.
 }

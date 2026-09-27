@@ -10,7 +10,7 @@ is fixed by the size slug.
 
 Networking notes, and why DO is a good fit (BUSINESS.md):
 - The public IPv4 sits directly on the droplet's interface — no 1:1 NAT, so
-  the machine host's from-inside health checks of guest mailboxes just work.
+  the mailbox host's from-inside health checks of guest mailboxes just work.
 - New droplets have NO default cloud firewall: every port is reachable, which
   covers the mailbox (8080), the browser transport (8443/udp), TURN, the host
   agent (8200) and the guest port range without the rule ceremony the GCP/AWS
@@ -52,7 +52,7 @@ class DOProvider(CloudProvider):
 
     def provision(self, req: ProvisionRequest) -> ProvisionResult:
         user_data = build_startup_script(
-            req.owner_id, req.owner_token, req.machine_host_token
+            req.owner_id, req.owner_token, req.mailbox_host_token
         )
         if len(user_data) > USER_DATA_LIMIT:
             raise ProviderError(

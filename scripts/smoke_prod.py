@@ -1,8 +1,8 @@
-"""Production smoke test for the deployed hub + its machine hosts.
+"""Production smoke test for the deployed hub + its mailbox hosts.
 
 Registers a throwaway identity, redeems the tester activation code, ignites a
 shared-tier mailbox in a country the hub actually offers (which also proves the
-hub can reach that machine host, pass its certificate pin and place a guest on
+hub can reach that mailbox host, pass its certificate pin and place a guest on
 it), verifies the mailbox end to end, destroys it.
 
 **Drives e2e.Phone rather than its own protocol client.** This script used to
@@ -43,14 +43,14 @@ def shared_country() -> str:
     """A country the hub can actually place a Mailbox-plan container in.
 
     Read from the catalog rather than hardcoded, because the catalog is
-    derived from the configured machine hosts — so this follows whatever the hub
+    derived from the configured mailbox hosts — so this follows whatever the hub
     under test is wired to, and asserts that derivation on the way past.
     """
     for c in httpx.get(f"{HUB}/v1/countries").json()["countries"]:
         if "mailbox" in c["plans"]:
             return c["code"]
     raise SystemExit(
-        "no country offers the mailbox plan — the hub's STONECHAT_MACHINE_HOSTS "
+        "no country offers the mailbox plan — the hub's STONECHAT_MAILBOX_HOSTS "
         "lists no host with a country"
     )
 
@@ -77,8 +77,8 @@ phone.wait_running()
 srv = phone.mailbox
 addr, tls_fp = srv["address"], srv["tls_fp"]
 # The hub resolved country -> provider+region. Placement itself is asserted by
-# the address: a machine host only ever advertises its own public IP.
-assert srv["provider"] == "machine_host", srv["provider"]
+# the address: a mailbox host only ever advertises its own public IP.
+assert srv["provider"] == "mailbox_host", srv["provider"]
 assert srv["machine"]["region"] == country, srv["machine"]
 print(f"placed: provider={srv['provider']} region={srv['machine']['region']}")
 

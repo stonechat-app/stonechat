@@ -1,4 +1,4 @@
-"""Ship a relay release to every machine host, and swap it into running mailboxes.
+"""Ship a relay release to every mailbox host, and swap it into running mailboxes.
 
 A mailbox keeps everything it has — the message queue, the prekeys, the TLS key,
 the WebTransport certificate schedule — in the container's own writable layer,
@@ -13,8 +13,8 @@ mailbox comes back up on the new code with its queue intact. The published ports
 survive too — they are pinned at create time — so the address the hub handed out
 stays correct.
 
-This script is now a thin driver. The swap itself happens *on* each machine host
-(machine_host/main.py, `POST /v1/relay/roll`), because that is where Docker
+This script is now a thin driver. The swap itself happens *on* each mailbox host
+(mailbox_host/main.py, `POST /v1/relay/roll`), because that is where Docker
 access lives: the hub holds an admin token for a four-endpoint API, not a key
 into the `docker` group on every mailbox host the way the retired fleet provider
 did. What the host does per mailbox:
@@ -43,7 +43,7 @@ A host pinned to a published image does not need this script to upgrade: point
 it at the new digest, restart it, and `POST /v1/relay/roll` takes the binary out
 of that image. This is for shipping a binary you built yourself.
 
-Needs STONECHAT_MACHINE_HOSTS set the same way the hub has it. The binary must be
+Needs STONECHAT_MAILBOX_HOSTS set the same way the hub has it. The binary must be
 the musl static build the image ships (`FROM scratch` has no loader) — the same
 artifact `relay/README.md` "Producing the production artifact" builds. Rolling a
 dynamically-linked host build produces a container that cannot exec, which the
@@ -60,9 +60,9 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hub"))
 
 from app.providers.base import ProviderError  # noqa: E402
-from app.providers.machine_host import (  # noqa: E402
+from app.providers.mailbox_host import (  # noqa: E402
     INSECURE,
-    MachineHost,
+    MailboxHost,
     _observed_fingerprint,
     _parse_hosts,
 )
@@ -82,9 +82,9 @@ def build_id(path: Path) -> str:
     return hashlib.blake2b(path.read_bytes(), digest_size=32).hexdigest()[:16]
 
 
-def call(host: MachineHost, method: str, path: str, *, timeout: float,
+def call(host: MailboxHost, method: str, path: str, *, timeout: float,
          json_body: dict | None = None, content: bytes | None = None) -> dict:
-    """One authenticated request to a machine host, certificate pinned first.
+    """One authenticated request to a mailbox host, certificate pinned first.
 
     The pin is the whole trust anchor — these hosts self-sign — and this request
     carries an admin token that can provision mailboxes, so an unpinned
@@ -122,7 +122,7 @@ def show(result: dict) -> None:
             print(f"{label} rolled back to {result['rolled_back_to']}")
 
 
-def roll_host(host: MachineHost, binary: Path, want: str, args) -> bool:
+def roll_host(host: MailboxHost, binary: Path, want: str, args) -> bool:
     """Returns True when this host ended up wholly on `want`."""
     if args.dry_run:
         state = call(host, "GET", "/v1/relay", timeout=UPLOAD_TIMEOUT)
@@ -167,7 +167,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", required=True, type=Path,
                     help="the new relay binary (musl static)")
-    ap.add_argument("--host", help="roll just this machine host (pool name)")
+    ap.add_argument("--host", help="roll just this mailbox host (pool name)")
     ap.add_argument("--only", help="roll just this mailbox (Stonechat ID)")
     ap.add_argument("--dry-run", action="store_true",
                     help="say what would change, change nothing (uploads nothing)")
@@ -189,13 +189,13 @@ def main() -> int:
         hosts = _parse_hosts()
     except ProviderError as e:
         print(f"cannot read the host pool: {e}", file=sys.stderr)
-        print("set STONECHAT_MACHINE_HOSTS the same way the hub has it",
+        print("set STONECHAT_MAILBOX_HOSTS the same way the hub has it",
               file=sys.stderr)
         return 2
     if args.host:
         hosts = [h for h in hosts if h.name == args.host]
         if not hosts:
-            print(f"no machine host named {args.host!r}", file=sys.stderr)
+            print(f"no mailbox host named {args.host!r}", file=sys.stderr)
             return 2
 
     for host in hosts:

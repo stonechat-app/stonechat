@@ -1,4 +1,4 @@
-# The machine host (README.md): hosts your own mailbox plus invited friends'
+# The mailbox host (README.md): hosts your own mailbox plus invited friends'
 # on one box, one relay container each. Run it with docker-compose.yml.
 #
 # Nothing is compiled, here or on the host. Guest mailboxes run either the
@@ -20,7 +20,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl \
  && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /srv/machine_host
+WORKDIR /srv/mailbox_host
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py ./
@@ -28,9 +28,9 @@ COPY main.py ./
 # The DB and the TLS keypair live together on a volume. The keypair matters
 # most: its fingerprint is inside every invite you have sent, so losing it
 # strands them all. Same host path the systemd unit uses.
-ENV STONECHAT_MACHINE_HOST_DB=/var/lib/stonechat/machine_host.db \
-    STONECHAT_MACHINE_HOST_TLS_DIR=/var/lib/stonechat \
-    STONECHAT_MACHINE_HOST_RELAY_DIR=/var/lib/stonechat
+ENV STONECHAT_MAILBOX_HOST_DB=/var/lib/stonechat/mailbox_host.db \
+    STONECHAT_MAILBOX_HOST_TLS_DIR=/var/lib/stonechat \
+    STONECHAT_MAILBOX_HOST_RELAY_DIR=/var/lib/stonechat
 
 # Runs as root: whoever holds the Docker socket is root on the host anyway, and
 # the socket's group id differs from box to box.

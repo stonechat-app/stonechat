@@ -768,7 +768,7 @@ appears in gateway logs, and a revoked id in the gateway's blocklist file
 (`STONECHAT_PUSH_BLOCKLIST`) cuts that one relay off. With the secret unset the
 endpoint is open, as before (dev/e2e).
 
-## Machine host (`machine_host/`) — the program that runs mailboxes
+## Mailbox host (`mailbox_host/`) — the program that runs mailboxes
 
 Every box that holds mailbox containers runs this, and it is the only thing with
 Docker access to that box. A container per mailbox: own port, own token, own TLS
@@ -776,19 +776,19 @@ certificate, cgroup/pids caps.
 
 Three ways to get one, one program:
 
-* **Invite-hosted** ("host your circle"): a user runs `machine_host/main.py` on a
+* **Invite-hosted** ("host your circle"): a user runs `mailbox_host/main.py` on a
   box they own, hosting their own mailbox plus friends they invite. A guest's
   mailbox is registered in the directory as an ordinary self-hosted (`external`)
   relay, so no new hub concepts are needed.
-* **Managed** (`STONECHAT_MACHINE_HOST_MANAGED=1`): the box belongs to a hub
+* **Managed** (`STONECHAT_MAILBOX_HOST_MANAGED=1`): the box belongs to a hub
   operator, and the hub places mailboxes on it through this same API — the shared
-  tier the Mailbox plan sells, provider `machine_host`. Invites are refused in
+  tier the Mailbox plan sells, provider `mailbox_host`. Invites are refused in
   this mode, so a box has exactly one authority; a mailbox the hub did not place
   would sit on a port it believes is free, unknown to its directory and reaper.
 * **Dedicated VMs** the hub provisions (`gcp`/`aws`/`digitalocean`) come with the
-  machine host pre-installed on port 8200 — the hub mints the admin token at
+  mailbox host pre-installed on port 8200 — the hub mints the admin token at
   provision time, bakes it into the VM's startup script, and returns it in
-  `GET /v1/mailbox` (`machine_host` field) so the app connects with zero setup.
+  `GET /v1/mailbox` (`mailbox_host` field) so the app connects with zero setup.
 
 Where the hub holds an admin token (managed hosts and dedicated VMs) that adds
 nothing to the trust model: it provisioned the box and already holds
@@ -801,15 +801,15 @@ Docker access there — the retired `fleet` provider drove each host's daemon ov
 SSH as a member of the `docker` group, which is root on that box in all but name.
 
 Served over pinned TLS (self-signed, same scheme as a mailbox). The **invite**
-a host-owner shares is `stonechat-host:` + base64url(`{u: machine host URL, f: machine host TLS
-fingerprint, t: token}`); the guest's app pins the machine host connection to `f`, so
+a host-owner shares is `stonechat-host:` + base64url(`{u: mailbox host URL, f: mailbox host TLS
+fingerprint, t: token}`); the guest's app pins the mailbox host connection to `f`, so
 the redeem can't be MITM'd.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET  | `/health` | none | Liveness + pinning only: `{status, v, tls_fp}`. Guest count and capacity are occupancy metadata, served admin-only via `/v1/guests`. |
 | POST | `/v1/invite` | admin | `{uses, ttl_hours}` → `{invite}`. 403 in managed mode |
-| GET  | `/v1/invites` | admin | sent invites with status: `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by: [owner_id]}]}` — the machine host records each redemption so the owner's app can show accepted/waiting/expired |
+| GET  | `/v1/invites` | admin | sent invites with status: `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by: [owner_id]}]}` — the mailbox host records each redemption so the owner's app can show accepted/waiting/expired |
 | POST | `/v1/redeem` | none | `{invite, owner_id}` → `{address, mailbox_token, tls_fp, wt_address}`; launches a `stonechat-relay` container for `owner_id`, single-use, capacity-capped. 403 in managed mode |
 | POST | `/v1/guest` | admin | `{owner_id}` — provision directly (the host-owner's own mailbox, or a hub placing one). A hub also sends `owner_token` (the token it has already recorded for that mailbox, so the app's token is the one the relay accepts) and `push_key` (only the hub holds the mint secret) |
 | GET  | `/v1/guests` | admin | `{guests, count, capacity, managed}` — occupancy, which is how a hub picks the emptiest host in a country |
@@ -834,10 +834,10 @@ User auth: `Authorization: Bearer <account_token>` (issued at registration).
 | POST   | `/v1/register`            | none   | `{"pubkey": "<base64 Ed25519>", "pq_pk": "<base64 X-Wing, 1216 bytes>", "pq_sig": "<base64>"}` → `{"stonechat_id", "account_token"}`. `pq_sig` is Ed25519 over `"stonechat-v1-pqpk" \|\| pq_pk`; the hub verifies it (and clients re-verify on every resolve — the directory stays untrusted). |
 | POST   | `/v1/recover`             | none   | `{"pubkey", "timestamp", "signature"}` → `{"stonechat_id", "account_token"}` — identity restore. `signature` is Ed25519 over `"stonechat-v1-recover" \|\| str(timestamp)` (unix seconds, ±5 min). Rotates the account token: the recovering device becomes the account, any previous token dies. 404 if the key was never registered (client falls back to `/v1/register`). |
 | GET    | `/v1/directory/{stonechat_id}` | none | Lookup by full SC- ID only (no handles; the 160-bit ID is not enumerable). → `{"stonechat_id", "pubkey", "pq_pk", "pq_sig", "mailbox": {"address", "status", "tls_fp", "tls_sig"} \| null}`. 400 on a non-ID string, 404 if unknown. |
-| POST   | `/v1/mailbox`              | bearer | `{"country": "DE"}` (the app's form — the hub resolves it against the catalog and the caller's plan) **or** `{"provider": "gcp"\|"aws"\|"digitalocean"\|"local"\|"machine_host", "machine": {"machine_type", "region", "disk_gb"}}`. For `machine_host`, `region` is the ISO country code: placement is least-loaded *within* that country and fails rather than falling back to another. → 202, provisioning starts. One mailbox per user. Paid providers require an entitlement (see Billing): missing/insufficient plan → 402 `{"code": "subscription_required", "plan_required", "message"}`. |
+| POST   | `/v1/mailbox`              | bearer | `{"country": "DE"}` (the app's form — the hub resolves it against the catalog and the caller's plan) **or** `{"provider": "gcp"\|"aws"\|"digitalocean"\|"local"\|"mailbox_host", "machine": {"machine_type", "region", "disk_gb"}}`. For `mailbox_host`, `region` is the ISO country code: placement is least-loaded *within* that country and fails rather than falling back to another. → 202, provisioning starts. One mailbox per user. Paid providers require an entitlement (see Billing): missing/insufficient plan → 402 `{"code": "subscription_required", "plan_required", "message"}`. |
 | POST   | `/v1/mailbox/external`     | bearer | `{"address"}` — list a self-provisioned relay. The hub confirms ownership via `GET {address}/owner?stonechat_id=<caller>` — the mailbox confirms the supplied ID rather than exposing its owner (ownership is proven, not claimed). The relay's token never reaches the hub. |
 | POST   | `/v1/mailbox/tls`          | bearer | `{"tls_fp", "tls_sig"}` — owner publishes the signature over their mailbox's TLS fingerprint. The hub verifies the Ed25519 signature against the registered pubkey and that `tls_fp` matches the fingerprint it observed. |
-| GET    | `/v1/mailbox`              | bearer | `{"status": "none"\|"provisioning"\|"running"\|"error", "address", "mailbox_token", "provider", "tls_fp", "error", "machine_host"}`. `machine_host` is `{"address", "admin_token"}` on running dedicated VMs (pre-installed machine host, see "Machine host"), else `null`. |
+| GET    | `/v1/mailbox`              | bearer | `{"status": "none"\|"provisioning"\|"running"\|"error", "address", "mailbox_token", "provider", "tls_fp", "error", "mailbox_host"}`. `mailbox_host` is `{"address", "admin_token"}` on running dedicated VMs (pre-installed mailbox host, see "Mailbox host"), else `null`. |
 | DELETE | `/v1/mailbox`              | bearer | Destroys the VM and forgets it. |
 | POST   | `/v1/billing/webhook`     | Stripe signature | Stripe events: `checkout.session.completed` mints a subscription + activation code; `invoice.paid` / `invoice.payment_failed` / `customer.subscription.deleted` drive the status lifecycle. Idempotent per event id. |
 | GET    | `/v1/billing/activation/{session_id}` | none (the `cs_…` checkout session id is the secret; rate-limited) | → `{"plan", "code"\|null, "claimed", "status"}`. 404 until the webhook lands — the landing success page polls. |
@@ -888,7 +888,7 @@ report.dart`. Hub side, including retention: `hub/app/report.py`.
 
 ### Billing
 
-Paid plans map to providers: **mailbox** → `machine_host` (container on a shared
+Paid plans map to providers: **mailbox** → `mailbox_host` (container on a shared
 host), **machine** → `gcp`/`aws`/`digitalocean` (dedicated VM). Machine
 outranks mailbox
 (a Machine subscriber may run on a shared host); `local` and `external` are
@@ -942,7 +942,7 @@ mishandled.
   keys advance with every round trip (post-compromise healing on the next
   fresh DH). Recorded ciphertext + later key theft ≠ plaintext.
 - **Sealed sender**: the wire envelope names only the recipient. A mailbox —
-  including one hosted by a friend via the machine host — learns *that* its
+  including one hosted by a friend via the mailbox host — learns *that* its
   owner received mail, when, how big, and whether it was media (`blob_id`),
   but never from whom or of what type. The exception is the seal's own
   layer: it rides on the recipient's long-term identity key, so a recorded

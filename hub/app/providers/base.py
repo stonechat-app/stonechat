@@ -32,9 +32,9 @@ class ProvisionRequest:
     owner_id: str          # Stonechat ID of the user this mailbox belongs to
     owner_token: str       # secret the owner's device presents on /ws
     spec: MachineSpec
-    # Dedicated VMs only: pre-install the machine host with this admin token
+    # Dedicated VMs only: pre-install the mailbox host with this admin token
     # so the owner can mint invites from the app (None → no agent).
-    machine_host_token: str | None = None
+    mailbox_host_token: str | None = None
 
 
 @dataclass

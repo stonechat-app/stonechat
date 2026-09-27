@@ -22,7 +22,7 @@ down rather than enforced by what we happen to have integrated.
 
 Networking, and why it lands in the same shape as DigitalOcean:
 - The public IPv4 sits on the instance's own interface — no 1:1 NAT, so the
-  machine host's from-inside health checks of guest mailboxes just work.
+  mailbox host's from-inside health checks of guest mailboxes just work.
 - A new instance belongs to no firewall group unless one is named, so the
   mailbox (8080/tcp), the browser transport (8443/udp), TURN and the machine
   host's guest port range are reachable with no rule ceremony. The bootstrap
@@ -68,7 +68,7 @@ class VultrProvider(CloudProvider):
 
     def provision(self, req: ProvisionRequest) -> ProvisionResult:
         user_data = build_startup_script(
-            req.owner_id, req.owner_token, req.machine_host_token
+            req.owner_id, req.owner_token, req.mailbox_host_token
         )
         label = f"stonechat-{req.owner_id[3:11].lower().replace('-', '')}"
         with self._client() as client:

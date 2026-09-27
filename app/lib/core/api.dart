@@ -124,11 +124,11 @@ class MailboxRecord {
   final String? mailboxToken;
   final String? tlsFp; // observed by the hub at provision time
   final String? error;
-  // Dedicated (Machine plan) VMs ship with the machine host pre-installed; the hub
+  // Dedicated (Machine plan) VMs ship with the mailbox host pre-installed; the hub
   // hands back where it lives and the admin token it was minted with, so the
   // Invites screen connects without any manual setup.
-  final String? machineHostAddress;
-  final String? machineHostAdminToken;
+  final String? mailboxHostAddress;
+  final String? mailboxHostAdminToken;
 
   MailboxRecord({
     required this.status,
@@ -137,8 +137,8 @@ class MailboxRecord {
     this.mailboxToken,
     this.tlsFp,
     this.error,
-    this.machineHostAddress,
-    this.machineHostAdminToken,
+    this.mailboxHostAddress,
+    this.mailboxHostAdminToken,
   });
 }
 
@@ -322,7 +322,7 @@ class HubApi {
   Future<MailboxRecord> getMailbox() async {
     final r = await http.get(Uri.parse('$baseUrl/v1/mailbox'), headers: _auth);
     return _check(r, (j) {
-      final machineHost = j['machine_host'] as Map<String, dynamic>?;
+      final mailboxHost = j['mailbox_host'] as Map<String, dynamic>?;
       return MailboxRecord(
         status: j['status'] as String,
         provider: j['provider'] as String?,
@@ -330,8 +330,8 @@ class HubApi {
         mailboxToken: j['mailbox_token'] as String?,
         tlsFp: j['tls_fp'] as String?,
         error: j['error'] as String?,
-        machineHostAddress: machineHost?['address'] as String?,
-        machineHostAdminToken: machineHost?['admin_token'] as String?,
+        mailboxHostAddress: mailboxHost?['address'] as String?,
+        mailboxHostAdminToken: mailboxHost?['admin_token'] as String?,
       );
     });
   }
@@ -864,11 +864,11 @@ class MailboxStatus {
 
 // -- invite-hosted mailboxes ("host your circle") -----------------------------
 
-/// A parsed host invite: where the machine host is, its pinned fingerprint, and the
+/// A parsed host invite: where the mailbox host is, its pinned fingerprint, and the
 /// one-time token. Encoded as "stonechat-host:" + urlsafe-base64(JSON{u,f,t}).
 class HostInvite {
-  final String url; // machine host base URL (https)
-  final String fp; // machine host TLS fingerprint to pin
+  final String url; // mailbox host base URL (https)
+  final String fp; // mailbox host TLS fingerprint to pin
   final String token; // invite token
 
   HostInvite(this.url, this.fp, this.token);
@@ -896,7 +896,7 @@ String _detail(http.Response r) {
 }
 
 /// Redeem a host invite → a mailbox for [ownerId] on that host. Pinned to the
-/// machine host fingerprint carried in the invite (no CA, no MITM).
+/// mailbox host fingerprint carried in the invite (no CA, no MITM).
 Future<({String address, String mailboxToken, String tlsFp})> redeemHostInvite(
   HostInvite invite,
   String ownerId,
@@ -922,8 +922,8 @@ Future<({String address, String mailboxToken, String tlsFp})> redeemHostInvite(
   }
 }
 
-/// Observe a machine host's TLS fingerprint (trust-on-first-use). Used by the
-/// host-owner contacting their OWN machine host to mint invites.
+/// Observe a mailbox host's TLS fingerprint (trust-on-first-use). Used by the
+/// host-owner contacting their OWN mailbox host to mint invites.
 Future<String?> observeCertFingerprint(String url) async {
   String? seen;
   final client = HttpClient()
@@ -943,7 +943,7 @@ Future<String?> observeCertFingerprint(String url) async {
   }
 }
 
-/// Host-owner mints an invite through their machine host's admin API (pinned).
+/// Host-owner mints an invite through their mailbox host's admin API (pinned).
 Future<String> createHostInvite(
   String agentUrl,
   String agentFp,
@@ -970,7 +970,7 @@ Future<String> createHostInvite(
   }
 }
 
-/// One minted invite as the machine host reports it: the shareable string plus
+/// One minted invite as the mailbox host reports it: the shareable string plus
 /// enough to show status (waiting / accepted / expired) in the app.
 class HostInviteStatus {
   final String invite; // full "stonechat-host:..." string, re-shareable

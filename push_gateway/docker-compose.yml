@@ -6,7 +6,7 @@
 #     docker compose up -d --build
 #
 # The hub never calls this service. Mailboxes do, so it can run on the hub box,
-# a machine host, or anywhere they can reach.
+# a mailbox host, or anywhere they can reach.
 name: stonechat-push
 
 services:

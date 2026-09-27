@@ -89,7 +89,7 @@ only in the one place that matters. That is how it shipped.
 
 The relay cannot discover the name itself: inside a container it sees a private
 address, and the address clients dial belongs to the host. Whoever creates the
-container knows it and passes it — the machine host and local provider set it
+container knows it and passes it — the mailbox host and local provider set it
 from the address they publish the mailbox at, and VM startup scripts from the
 metadata service. Loopback is always appended, so running the binary directly
 needs no configuration.
@@ -136,7 +136,7 @@ All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
   **x86_64-musl** `stonechat-relay`), the build context becomes binary + two-line
   Dockerfile — instant, no compile on the host. Unset, it compiles the
   crate via this Dockerfile (dev fallback; also what produces the right
-  architecture on ARM laptops). A machine host the hub manages compiles nothing:
+  architecture on ARM laptops). A mailbox host the hub manages compiles nothing:
   it wraps a binary uploaded with `POST /v1/relay` in an image tagged by that
   binary's build id, and builds every later mailbox from it.
 - **Dedicated-VM startup scripts** are fetch-stubs (~3 KB — fits every
@@ -147,11 +147,11 @@ All provisioning paths use the Rust relay (hub integration landed 2026-07-19):
   (that's the pin). Set `STONECHAT_HUB_URL` for the default URL, or
   `STONECHAT_RELAY_BINARY_URL` to host it on GCS/GitHub instead (fetched
   anonymously).
-- **Machine host** guest mailboxes run the published image
+- **Mailbox host** guest mailboxes run the published image
   `ghcr.io/stonechat-app/relay`, pulled on first use and never built. On
   dedicated VMs the startup script instead builds `stonechat-relay:dev` from the
   same pinned binary (`/opt/stonechat/relay/`: binary + Dockerfile) and points
-  the machine host at it, so those guests never touch the registry.
+  the mailbox host at it, so those guests never touch the registry.
 
 Producing the production artifact: run the **Build relay** workflow
 (`.github/workflows/relay-build.yml`) manually. It builds the static musl
@@ -193,7 +193,7 @@ builds and tests, then publishes:
 **amd64 only while this repository is private.** The arm64 leg needs GitHub's
 arm64 runners, which are free for public repositories, so the matrix drops it
 rather than leave it queued (the workflow reads `github.event.repository.private`).
-An arm64 machine host therefore cannot run the published image and has to build
+An arm64 mailbox host therefore cannot run the published image and has to build
 its own; everything on x86_64 is unaffected.
 
 The **package** visibility is separate from the repository's, and the package is
@@ -210,7 +210,7 @@ Who consumes which of the two, and why there are two:
 
 | Consumer | Artifact | How it is pinned |
 |---|---|---|
-| Machine hosts (shared tier and friend-hosted alike) | the image | `STONECHAT_MACHINE_HOST_IMAGE` at a digest. A roll extracts the binary from that image, so no separate download |
+| Mailbox hosts (shared tier and friend-hosted alike) | the image | `STONECHAT_MAILBOX_HOST_IMAGE` at a digest. A roll extracts the binary from that image, so no separate download |
 | Dedicated VMs | the release asset | `STONECHAT_RELAY_BINARY_URL` + `STONECHAT_RELAY_SHA256`, the latter baked into the startup script that fetches it |
 
 A VM gets the binary rather than the image because its startup script runs the
@@ -221,7 +221,7 @@ binary on `scratch`.
 
 Pin digests, never `:latest`. A mailbox whose build nobody can name is one
 nobody can reason about the day a relay bug is published, which is why a
-hub-managed machine host refuses to launch from the floating tag at all.
+hub-managed mailbox host refuses to launch from the floating tag at all.
 
 While the repository is private, only x86_64 is built, because GitHub's arm64
 runners are free for public repositories only. A package's first push to

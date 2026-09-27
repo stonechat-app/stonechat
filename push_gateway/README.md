@@ -34,7 +34,7 @@ The hub never calls the gateway and the gateway never calls the hub.
   into each mailbox.
 
 Because only mailboxes talk to it, the gateway can run on the hub box, on a
-machine host, or on its own machine.
+mailbox host, or on its own machine.
 
 ## Run it
 
@@ -69,7 +69,7 @@ an open relay.
 
 If a mailbox cannot reach the gateway, pings fail quietly: the relay logs
 `gateway ping failed`, nothing else breaks, and push never arrives. Check from
-a machine host with `curl http://<GATEWAY_PRIVATE_IP>:8100/health`.
+a mailbox host with `curl http://<GATEWAY_PRIVATE_IP>:8100/health`.
 
 ## Operating it
 

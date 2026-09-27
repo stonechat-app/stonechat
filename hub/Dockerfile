@@ -7,7 +7,7 @@
 FROM python:3.13-slim
 
 # No Docker CLI and no ssh client, deliberately. The hub reaches the boxes that
-# hold mailboxes over one HTTPS API (app/providers/machine_host.py) instead of
+# hold mailboxes over one HTTPS API (app/providers/mailbox_host.py) instead of
 # driving their daemons as it used to, so the image that holds the directory and
 # every provider credential no longer carries the tools to run containers
 # anywhere.

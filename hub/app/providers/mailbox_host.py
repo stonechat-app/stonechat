@@ -1,7 +1,7 @@
-"""Machine-host provider — the shared-host tier.
+"""Mailbox-host provider — the shared-host tier.
 
 One mailbox container per customer, packed onto a pool of boxes the hub
-operator runs. Each box runs the **machine host** (machine_host/main.py) in
+operator runs. Each box runs the **mailbox host** (mailbox_host/main.py) in
 managed mode, and this provider places mailboxes on it over that HTTPS API:
 ``POST /v1/guest`` to create, ``DELETE /v1/guest/{owner_id}`` to destroy,
 ``GET /v1/guests`` to see how full it is. Placement is least-loaded **within
@@ -16,16 +16,16 @@ four things, none of them "run this container".
 
 Host pool config (env, REQUIRED)::
 
-    STONECHAT_MACHINE_HOSTS="berlin=https://10.0.0.5:8200|DE|<admin token>|<tls fp>"
+    STONECHAT_MAILBOX_HOSTS="berlin=https://10.0.0.5:8200|DE|<admin token>|<tls fp>"
 
 Comma-separated ``name=url|COUNTRY|admin_token|tls_fp``, where:
 
 * **COUNTRY** is an ISO 3166-1 alpha-2 code, required and never defaulted. It
   is both where mailboxes land and the country list the Mailbox plan offers
   (countries.py reads it from here).
-* **admin_token** is that host's ``STONECHAT_MACHINE_HOST_ADMIN_TOKEN``.
+* **admin_token** is that host's ``STONECHAT_MAILBOX_HOST_ADMIN_TOKEN``.
 * **tls_fp** is the host's certificate fingerprint, as ``GET /health`` reports
-  it — ``curl -sk https://<host>:8200/health`` on first boot. The machine host
+  it — ``curl -sk https://<host>:8200/health`` on first boot. The mailbox host
   self-signs (it is not a public web server), so there is no CA to check it
   against and the fingerprint is the whole trust anchor: without it, anything
   on the path between hub and host can collect an admin token that provisions
@@ -57,7 +57,7 @@ INSECURE = "insecure"
 
 
 @dataclass
-class MachineHost:
+class MailboxHost:
     name: str
     url: str  # https://host:8200, no trailing slash
     country: str  # ISO 3166-1 alpha-2 — the jurisdiction this host sells
@@ -65,7 +65,7 @@ class MachineHost:
     tls_fp: str  # BLAKE2b-256 of the DER cert, base64; or INSECURE
 
 
-def parse_machine_hosts(raw: str) -> list[MachineHost]:
+def parse_mailbox_hosts(raw: str) -> list[MailboxHost]:
     """`name=url|COUNTRY|admin_token|tls_fp, …` → hosts.
 
     Every field is required. A defaulted country places a mailbox in the wrong
@@ -83,47 +83,47 @@ def parse_machine_hosts(raw: str) -> list[MachineHost]:
             url, country, admin_token, tls_fp = rest.split("|", 3)
         except ValueError:
             raise ProviderError(
-                f"bad STONECHAT_MACHINE_HOSTS entry {part!r}; expected "
+                f"bad STONECHAT_MAILBOX_HOSTS entry {part!r}; expected "
                 "name=url|COUNTRY|admin_token|tls_fp"
             )
         country = country.strip().upper()
         if len(country) != 2 or not country.isalpha():
             raise ProviderError(
-                f"bad country {country!r} in STONECHAT_MACHINE_HOSTS entry {part!r}; "
+                f"bad country {country!r} in STONECHAT_MAILBOX_HOSTS entry {part!r}; "
                 "expected an ISO 3166-1 alpha-2 code such as DE"
             )
         url = url.strip().rstrip("/")
         if not url.startswith("https://"):
             raise ProviderError(
-                f"machine host {name.strip()!r} must be https:// — the admin token "
+                f"mailbox host {name.strip()!r} must be https:// — the admin token "
                 "travels on this connection"
             )
         if not admin_token.strip():
-            raise ProviderError(f"machine host {name.strip()!r} has no admin token")
+            raise ProviderError(f"mailbox host {name.strip()!r} has no admin token")
         if not tls_fp.strip():
             raise ProviderError(
-                f"machine host {name.strip()!r} has no tls_fp; read it from "
+                f"mailbox host {name.strip()!r} has no tls_fp; read it from "
                 f"`curl -sk {url}/health`, or use the literal {INSECURE!r} for "
                 "laptop dev"
             )
-        hosts.append(MachineHost(name=name.strip(), url=url, country=country,
+        hosts.append(MailboxHost(name=name.strip(), url=url, country=country,
                                  admin_token=admin_token.strip(),
                                  tls_fp=tls_fp.strip()))
     return hosts
 
 
-def _parse_hosts() -> list[MachineHost]:
-    raw = os.environ.get("STONECHAT_MACHINE_HOSTS", "").strip()
+def _parse_hosts() -> list[MailboxHost]:
+    raw = os.environ.get("STONECHAT_MAILBOX_HOSTS", "").strip()
     if not raw:
         # No silent local fallback: mailboxes must never land on the hub box
         # (the hub holds the directory and every provider credential). Dev opts
         # into localhost explicitly.
         raise ProviderError(
-            "STONECHAT_MACHINE_HOSTS is not set; the machine-host provider never "
+            "STONECHAT_MAILBOX_HOSTS is not set; the mailbox-host provider never "
             "provisions on the hub box itself. For laptop dev use "
             f'"local=https://127.0.0.1:8201|DE|<token>|{INSECURE}".'
         )
-    return parse_machine_hosts(raw)
+    return parse_mailbox_hosts(raw)
 
 
 def configured_countries() -> set[str]:
@@ -131,15 +131,15 @@ def configured_countries() -> set[str]:
 
     Derived, never configured alongside: a second copy of this fact is what once
     let the hub advertise five countries while every container landed on the one
-    host it had. If it isn't in STONECHAT_MACHINE_HOSTS, it isn't sold.
+    host it had. If it isn't in STONECHAT_MAILBOX_HOSTS, it isn't sold.
     """
-    raw = os.environ.get("STONECHAT_MACHINE_HOSTS", "").strip()
-    return {h.country for h in parse_machine_hosts(raw)} if raw else set()
+    raw = os.environ.get("STONECHAT_MAILBOX_HOSTS", "").strip()
+    return {h.country for h in parse_mailbox_hosts(raw)} if raw else set()
 
 
 def _observed_fingerprint(url: str) -> str:
     """BLAKE2b-256 of the host's DER certificate, base64 — the same function the
-    machine host reports on /health and the app pins a mailbox with.
+    mailbox host reports on /health and the app pins a mailbox with.
 
     Taken from a bare TLS handshake rather than from the HTTP response, because
     a fingerprint the peer *tells* us is not a pin. httpx offers no hook onto
@@ -156,32 +156,32 @@ def _observed_fingerprint(url: str) -> str:
             with ctx.wrap_socket(sock, server_hostname=host) as tls:
                 der = tls.getpeercert(binary_form=True)
     except OSError as e:
-        raise ProviderError(f"machine host {url} unreachable: {e}") from e
+        raise ProviderError(f"mailbox host {url} unreachable: {e}") from e
     if not der:
-        raise ProviderError(f"machine host {url} presented no certificate")
+        raise ProviderError(f"mailbox host {url} presented no certificate")
     return base64.b64encode(hashlib.blake2b(der, digest_size=32).digest()).decode()
 
 
-class MachineHostProvider(CloudProvider):
-    name = "machine_host"
+class MailboxHostProvider(CloudProvider):
+    name = "mailbox_host"
 
     def __init__(self):
         self.hosts = _parse_hosts()
 
     # -- talking to a host --------------------------------------------------------
 
-    def _check_pin(self, host: MachineHost) -> None:
+    def _check_pin(self, host: MailboxHost) -> None:
         if host.tls_fp == INSECURE:
             return
         observed = _observed_fingerprint(host.url)
         if observed != host.tls_fp:
             raise ProviderError(
-                f"machine host {host.name} certificate does not match its pin "
+                f"mailbox host {host.name} certificate does not match its pin "
                 f"(expected {host.tls_fp[:12]}…, got {observed[:12]}…); refusing to "
                 "send it an admin token"
             )
 
-    def _request(self, host: MachineHost, method: str, path: str,
+    def _request(self, host: MailboxHost, method: str, path: str,
                  json_body: dict | None = None, timeout: float = CONTROL_TIMEOUT_S):
         """One authenticated call, pin checked first.
 
@@ -199,28 +199,28 @@ class MachineHostProvider(CloudProvider):
                 json=json_body, timeout=timeout, verify=False,
             )
         except httpx.HTTPError as e:
-            raise ProviderError(f"machine host {host.name} unreachable: {e}") from e
+            raise ProviderError(f"mailbox host {host.name} unreachable: {e}") from e
         if resp.status_code == 401:
             raise ProviderError(
-                f"machine host {host.name} rejected the admin token in "
-                "STONECHAT_MACHINE_HOSTS"
+                f"mailbox host {host.name} rejected the admin token in "
+                "STONECHAT_MAILBOX_HOSTS"
             )
         if resp.status_code >= 400:
             raise ProviderError(
-                f"machine host {host.name} said {resp.status_code}: {resp.text[:300]}"
+                f"mailbox host {host.name} said {resp.status_code}: {resp.text[:300]}"
             )
         return resp
 
-    def _host_by_name(self, name: str) -> MachineHost | None:
+    def _host_by_name(self, name: str) -> MailboxHost | None:
         return next((h for h in self.hosts if h.name == name), None)
 
-    def _occupancy(self, host: MachineHost) -> tuple[int, int]:
+    def _occupancy(self, host: MailboxHost) -> tuple[int, int]:
         body = self._request(host, "GET", "/v1/guests").json()
         return int(body.get("count", 0)), int(body.get("capacity", 0))
 
     # -- provider interface -------------------------------------------------------
 
-    def _pick_host(self, country: str) -> MachineHost:
+    def _pick_host(self, country: str) -> MailboxHost:
         """Emptiest host **in the requested country**, skipping full ones.
 
         Never falls back to another country. `countries.resolve()` already
@@ -234,11 +234,11 @@ class MachineHostProvider(CloudProvider):
         if not candidates:
             have = ", ".join(sorted({h.country for h in self.hosts})) or "none"
             raise ProviderError(
-                f"no machine host in {want!r}; configured countries: {have}"
+                f"no mailbox host in {want!r}; configured countries: {have}"
             )
         # Occupancy is read per host, so an unreachable one must not take the
         # whole placement down with it while its neighbours have room.
-        best: tuple[int, MachineHost] | None = None
+        best: tuple[int, MailboxHost] | None = None
         errors = []
         for host in candidates:
             try:
@@ -253,7 +253,7 @@ class MachineHostProvider(CloudProvider):
                 best = (count, host)
         if best is None:
             raise ProviderError(
-                f"no machine host in {want} can take a mailbox: " + "; ".join(errors)
+                f"no mailbox host in {want} can take a mailbox: " + "; ".join(errors)
             )
         return best[1]
 
@@ -280,7 +280,7 @@ class MachineHostProvider(CloudProvider):
         address = body.get("address")
         if not address:
             raise ProviderError(
-                f"machine host {host.name} returned no address for the mailbox")
+                f"mailbox host {host.name} returned no address for the mailbox")
         return ProvisionResult(
             resource_id=req.owner_id,  # how this host addresses the guest
             address=address,
@@ -302,5 +302,5 @@ class MachineHostProvider(CloudProvider):
             except ProviderError as e:
                 errors.append(str(e))
         raise ProviderError(
-            "could not destroy the mailbox on any machine host: " + "; ".join(errors)
+            "could not destroy the mailbox on any mailbox host: " + "; ".join(errors)
         )
