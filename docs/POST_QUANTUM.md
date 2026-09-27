@@ -1,128 +1,183 @@
-# Post-quantum (design + rollout)
+# Post-quantum cryptography in Stonechat
 
-Status: **steps 1–2 implemented (pre-launch, 2026-07).** With no users
-yet, hybrid PQ key agreement is not "v2 of the protocol" — it simply IS
-the protocol. No negotiation, no fallback, no downgrade surface, no
-migration. PROTOCOL.md "Identity", "Prekeys", "PQXDH" and "Envelope"
-are the wire spec; this document keeps the rationale and the later
-steps (3–4).
+This document describes what Stonechat's post-quantum protection actually
+consists of today: which parts of the protocol use a post-quantum KEM, which
+parts are still classical, and where the code lives. The wire format is
+specified in PROTOCOL.md ("Identity", "Prekeys", "PQXDH", "Envelope"); this
+document explains why it looks the way it does.
 
-## Threat model → work order
+## Summary
 
-The quantum threat splits in two, and the split dictates priorities:
+| Layer | Construction | Quantum status |
+|---|---|---|
+| Session establishment | **PQXDH**: X3DH + ML-KEM-768 (FIPS 203) | Hybrid, resists harvest-now-decrypt-later |
+| Message keys | Double ratchet (X25519 + BLAKE2b) rooted in the PQXDH key | Inherits PQ secrecy from the root |
+| Envelope seal (sealed sender) | **X-Wing** (X25519 + ML-KEM-768) to the recipient's identity or device key | Hybrid, resists harvest-now-decrypt-later |
+| Symmetric crypto | XChaCha20-Poly1305, BLAKE2b, Argon2id | Already PQ-adequate (256-bit keys) |
+| Signatures | Ed25519 (identity, prekeys, device certs, TLS pins) | **Classical**, forgeable by a future quantum computer |
+| Ratchet healing (PCS) | X25519 DH ratchet | **Classical** |
+| Transport | rustls with the `ring` provider; WebTransport | **Classical** key exchange |
 
-- **Harvest-now-decrypt-later (HNDL):** an adversary records
-  ciphertext today and decrypts when a CRQC exists. Threatens every
-  X25519 key agreement *retroactively*. Urgent — it attacks messages
-  sent this year.
-- **Forgery:** breaking Ed25519 to impersonate identities. Only works
-  once the CRQC exists; no retroactive harm. Can wait years.
+Post-quantum protection is not an optional mode. Every session is hybrid, and
+so is every sealed envelope. There's no classical fallback, no negotiation and
+no version to downgrade to. A mailbox won't serve a prekey bundle until both
+the X25519 and the ML-KEM signed prekeys exist. Every KEM use is hybrid,
+never ML-KEM alone, so if ML-KEM is broken the protocol is exactly as strong
+as classical X3DH/X25519.
 
-So: key agreement first, signatures later — the same order Signal
-shipped (PQXDH 2023, ratchet/signatures later).
+## Threat model
 
-## Already post-quantum — no work needed
+- **Harvest now, decrypt later.** An adversary records traffic today and
+  decrypts it once a cryptographically relevant quantum computer exists. This
+  attacks X25519 retroactively, so it is what the implementation defends
+  against: key agreement and the envelope seal are hybrid.
+- **Forgery.** Breaking Ed25519 would allow someone to impersonate an
+  identity. That requires a quantum computer at the time of the attack and
+  does no retroactive harm, so signatures are still classical (see "Not yet
+  post-quantum").
 
-XChaCha20-Poly1305, BLAKE2b KDFs, Argon2id,
-SQLCipher at rest. Grover halves effective strength; 256-bit keys have
-margin. Backups, identity export, media encryption: untouched.
+## What is implemented
 
-## The ladder
+### 1. PQXDH session establishment
 
-1. **Hybrid PQXDH** (now). ML-KEM-768 (FIPS 203) joins X3DH: bundle
-   gains a signed last-resort KEM prekey + one-time KEM prekeys;
-   initiator encapsulates; `SK = BLAKE2b(DH1‖DH2‖DH3[‖DH4]‖KEM_ss,
-   key="stonechat-v1-pqxdh-kdf")`. Initial message carries the ~1.1 KB KEM
-   ciphertext. Always hybrid, never KEM-only — if ML-KEM falls we are
-   exactly as secure as today. Key property: once the root key is
-   PQ-secure, the whole ratchet chain inherits HNDL resistance — a
-   recorder who later breaks every X25519 ratchet step still lacks the
-   root. Hybrid PQXDH alone defeats HNDL for all message content.
-   Follow Signal's public PQXDH spec; do not invent.
-2. **Hybrid sealed sender** (now). `crypto_box_seal` is pure X25519 to
-   the directory-published identity key — a quantum attacker opens
-   every *recorded outer envelope* and learns who talked to whom (the
-   sender identity is inside the seal), even though the inner ratchet
-   ciphertext stays safe after step 1. Fix: seal with **X-Wing**
-   (draft-connolly-cfrg-xwing: X25519 + ML-KEM-768 as one audited
-   hybrid KEM) to a KEM identity encryption key published in the
-   directory, signed by the Ed25519 identity. ~1.1 KB per envelope.
-3. **PQ ratchet** (later). Steps 1–2 leave quantum PCS: if device
-   state leaks, classical DH ratchet healing is quantum-breakable.
-   Adopt Signal's SPQR when its spec settles, or PQ3-style periodic
-   hybrid rekey as a stopgap. Incremental, versioned, on top of 1.
-4. **PQ signatures** (last, pre-CRQC). Dual-sign with ML-DSA-44
-   alongside Ed25519 (identity, prekey sigs, fingerprint signing,
-   recovery). ~1.3 KB pubkeys, ~2.4 KB sigs, directory growth,
-   cross-signed migration. Years of runway; requirement today is only
-   that every persisted/signed structure carries a version byte so
-   this lands additively.
+Signal's PQXDH shape: X3DH with an ML-KEM-768 encapsulation mixed into the
+root key.
 
-Nearly free, independent: **PQ TLS** on the relay — rustls ships
-X25519MLKEM768; browsers already speak it (composes with the relay's
-browser transport). Defense-in-depth for metadata.
+- Every user publishes to their own mailbox, alongside the classical SPK/OPKs:
+  - a **KEM signed prekey (KSPK)**: ML-KEM-768, signed with the identity key
+    under the context `stonechat-v1-kspk`, and rotated on the same schedule as
+    the SPK;
+  - a pool of **KEM one-time prekeys (KOPK)**: the client targets about 32,
+    and the mailbox caps the pool at 64 (`MAX_KOPKS` in `relay/src/main.rs`).
+- The initiator encapsulates to the KOPK when the bundle has one, and to the
+  KSPK otherwise:
 
-## Why now (the post-ship counterfactual)
+  ```
+  KCT, KSS = ML-KEM-768.Encaps(KOPK_B or KSPK_B)
+  SK = BLAKE2b(DH1 || DH2 || DH3 [|| DH4] || KSS, key="stonechat-v1-pqxdh-kdf", 32)
+  ```
 
-Doing 1–2 after shipping with a live fleet would add four work items,
-recorded here so the cost of *ever* being in that position is on the
-record:
+- The 1088-byte `kct`, along with `kem_id` and `kem_one_time`, travels in the
+  inner envelope's `x3dh` block until the session is confirmed. The responder
+  decapsulates with the seed named by `kem_id` and then deletes the one-time
+  private key.
+- The classical DH terms provide authentication; the KEM term provides
+  quantum-resistant secrecy. Every message key descends from `SK` through the
+  double ratchet, so an attacker who later breaks every X25519 ratchet step
+  still doesn't have the root. **For message content, harvest-now-decrypt-later
+  is defeated from the first message.**
 
-1. **Session re-handshake sweep.** PQ security flows from the X3DH
-   root; every pre-upgrade ratchet session stays quantum-vulnerable
-   forever until explicitly re-handshaked. Requires dual-session
-   receive windows, ordering care, idle-contact refresh policy.
-2. **Downgrade pinning.** Mixed fleet ⇒ classical fallback ⇒ "peer
-   has no KEM prekeys" becomes an attack (stripping, stale-but-signed
-   bundles from a malicious relay). Needs signed bundle version fields
-   + "once v2, never v1 again" pinning + X-Stonechat-Version/426 sunset.
-3. **Directory backfill.** Fleet-wide lazy generation + publication of
-   KEM identity keys; hub serves both schemas during transition.
-4. **Dual-format windows.** Every serialized crypto structure must
-   load old and new formats.
+Media is covered as well. Blobs are encrypted with one-off XChaCha20 keys, and
+those keys travel inside ratchet-encrypted payloads.
 
-Plus the uncorrectable one: everything sent before the upgrade is
-harvested-forever — mailboxes delete on ack so little rests at the
-relay, but a passive traffic recorder keeps it. The corpus of
-forever-decryptable traffic grows with every month of delay. Pre-launch
-it is zero.
+Code: `core/src/session.rs` (`SessionState::initiate` / `respond`),
+`core/src/primitives.rs` (`x3dh_shared_key`, KDF constants).
 
-## Implementation map (steps 1–2, as built)
+### 2. X-Wing envelope seal (hybrid sealed sender)
 
-**`pqcore/` Rust crate → one KEM implementation everywhere.** (Since
-2026-07-30 the same argument was carried to its conclusion: `stonechat-core`
-holds *all* client cryptography and libsodium is gone from the app.) libsodium
-has no ML-KEM, so a small Rust core (RustCrypto `ml-kem` + `x-wing`,
-C ABI) is the one architectural addition. Every client loads the same
-library: Flutter over dart:ffi (`app/lib/core/pqcore.dart`), the Python
-protocol clients over ctypes (`scripts/pqcore.py` — e2e.py and
-echo_bot.py exercise byte-identical code), and a future web client via
-the same crate compiled to wasm. Secrets are seeds (64 B ML-KEM, 32 B
-X-Wing); the core draws no entropy — callers pass CSPRNG bytes.
-`scripts/build_pqcore.sh` builds host/android/ios artifacts; the
-iOS/Android build wiring is the remaining ship blocker.
+The outer envelope a mailbox stores contains only `to` and an opaque `sealed`
+blob. A classical `crypto_box_seal` would let a future quantum attacker open
+every recorded envelope and learn **who wrote to whom**. It wouldn't expose
+the content, because PQXDH protects that. The seal is therefore X-Wing
+(draft-connolly-cfrg-xwing-kem):
 
-- `app/lib/core/crypto.dart` — PQXDH KDF (`stonechat-v1-pqxdh-kdf`);
-  sealed sender is the X-Wing seal (encaps → BLAKE2b KDF →
-  XChaCha20-Poly1305). **The X-Wing identity is derived from the
-  Ed25519 secret** (`stonechat-v1-pqidseed` KDF) rather than stored:
-  export/recovery/backups restore it for free, and Ed25519 custody
-  already equals total identity compromise.
-- `app/lib/core/session.dart` — initiator encapsulates to the KOPK
-  (else KSPK); `kct`/`kem_id`/`kem_one_time` ride the x3dh block;
-  responder decapsulates. **Double ratchet unchanged** (step 3).
-- `db.dart` / `chat_state.dart` — `prekeys` kinds `kspk`/`kopk`
-  (seeds in the encrypted table, same rotation cadence as spk/opk);
-  contacts and group members carry a sig-verified `pq_pk`.
-- `relay/` — `/prekeys` and `/prekeys/bundle`
-  carry the KEM twins (opaque strings; dedicated 256 KB upload cap);
-  no bundle until both signed halves exist. Parity corpus updated
-  (relay/tests/conformance.py).
-- `hub/` — `pq_pk`+`pq_sig` at registration (signature verified) and
-  in every directory record. SC-ID derivation stays Ed25519-only.
-- `PROTOCOL.md` (repo root) — Identity/Prekeys/PQXDH/Envelope sections are
-  the exact wire spec; scripts/e2e.py doubles as the reference
-  implementation, KEMs included.
+```
+kem_ct, kem_ss = XWing.Encaps(recipient_seal_pk)
+key    = BLAKE2b(kem_ss, key="stonechat-v1-hsealkdf", 32)
+sealed = kem_ct (1120 B) || nonce (24 B) || XChaCha20-Poly1305(inner, ad="stonechat-v1-hseal")
+```
+
+The seal target is one of two keys:
+
+- **The identity's X-Wing key (`pq_pk`, 1216 B).** Its seed is *derived* from
+  the Ed25519 identity secret rather than stored:
+  `pq_seed = BLAKE2b(identity_sk[64], key="stonechat-v1-pqidseed", 32)`.
+  Identity export, recovery and backups therefore restore it automatically,
+  and it adds no new custody risk because holding the Ed25519 key already
+  means total identity compromise. It is published at registration with
+  `pq_sig = Ed25519("stonechat-v1-pqpk" || pq_pk)`. The hub checks the length
+  and signature before storing it (`hub/app/main.py`), and every resolver
+  re-verifies it before sealing.
+- **A device's own X-Wing key (`seal_pub`).** Linked devices (a second phone,
+  a browser tab, `agent_client`) hold a device certificate signed by the
+  identity (`core/src/devcert.rs`), which carries their own X-Wing key. When a
+  certificate exists, senders seal to that device's key instead of the
+  identity key.
+
+By construction, the seal has **no forward secrecy**, because it is made to a
+long-term key. Recorded envelopes plus a later theft of the identity or device
+key reveal historical sender/type metadata, but never content.
+
+Code: `core/src/envelope.rs` (`seal_to` / `unseal`), `core/src/identity.rs`
+(`pq_public`, `sign_pq_pk`).
+
+### Where the code lives
+
+- **`pqcore/`**: the only KEM implementation. It is a thin wrapper around
+  RustCrypto's `ml-kem` (0.3) and `x-wing` (0.1), exposed as Rust and as a C
+  ABI (`stonechat_mlkem_*`, `stonechat_xwing_*`). Secret keys are carried as
+  seeds (64 B for ML-KEM, 32 B for X-Wing), and key expansion stays inside the
+  crate. It draws no entropy of its own: callers pass CSPRNG bytes, which
+  keeps every operation deterministic and testable.
+- **`core/` (`stonechat-core`)**: links `pqcore` and contains the whole
+  protocol (PQXDH, ratchet, X-Wing seal, device certificates). One artifact
+  exports both ABIs. It is consumed by:
+  - the Flutter app over dart:ffi (`app/lib/core/core_ffi.dart`,
+    `app/lib/core/pqcore.dart`). The app has no cryptography of its own;
+  - the iOS Notification Service Extension over the C ABI;
+  - `agent_client/` as a Rust crate (`agent_client/src/prekeys.rs` generates
+    ML-KEM prekeys);
+  - `webclient/` as wasm (`webclient/src/core.ts`).
+- **`scripts/pqcore.py`** loads the same library over ctypes, so the Python
+  reference client (`scripts/e2e.py`) and `echo_bot.py` exercise byte-identical
+  KEM code.
+- **`relay/`** links neither crate. It stores and serves KEM prekeys as opaque
+  strings, refuses to serve a bundle until both signed halves exist, and has
+  a dedicated 256 KB cap on prekey uploads (`MAX_PREKEY_UPLOAD_BYTES`). This
+  behavior is pinned by the conformance corpus (`relay/tests/conformance.py`).
+- **`hub/`** stores `pq_pk` + `pq_sig` per identity and returns them in every
+  directory record. Stonechat ID derivation still uses only the Ed25519 key.
+
+### Sizes on the wire
+
+| Item | Bytes |
+|---|---|
+| ML-KEM-768 public key (KSPK/KOPK) | 1184 |
+| ML-KEM-768 ciphertext (`kct`, initial messages only) | 1088 |
+| X-Wing public key (`pq_pk`, device `seal_pub`) | 1216 |
+| X-Wing ciphertext (every sealed envelope) | 1120 |
+
+## Not yet post-quantum
+
+These gaps are known and intentional for now, listed from most to least
+likely to be addressed next.
+
+1. **Ratchet healing.** The double ratchet still heals from compromise with
+   X25519 alone. If a device's state leaks, a quantum attacker can follow the
+   classical ratchet forward, so post-compromise security is classical.
+   Options are Signal's SPQR once its spec settles, or a PQ3-style periodic
+   hybrid rekey. Either would be layered on top of the existing sessions.
+2. **Transport.** The relay's TLS uses rustls' `ring` provider
+   (`relay/src/main.rs`), which doesn't offer X25519MLKEM768, and neither does
+   WebTransport. This only exposes metadata (the owner token, sealed
+   envelopes), because content is already protected by the layers above.
+   Switching to a provider with hybrid key exchange would be cheap
+   defense-in-depth.
+3. **Signatures.** Ed25519 still signs identities, prekeys, device
+   certificates, TLS/WebTransport pins and recovery. Moving to hybrid
+   Ed25519 + ML-DSA-44 would add roughly 1.3 KB per public key and 2.4 KB per
+   signature, and would require a cross-signed migration of the directory.
+   There's no retroactive risk, so this can wait until a quantum computer is
+   realistically close.
+
+## Why it was built pre-launch
+
+Adding PQ after launch would have meant re-handshaking every existing
+session, defending against downgrades in a mixed fleet (a stripped KEM prekey
+becomes an attack), backfilling KEM keys into the directory, and loading two
+formats for every crypto structure. Traffic sent before the switch would also
+have stayed harvestable forever. Building it before there were any users
+meant none of that was needed, and no classical-only traffic was ever sent.
 
 ## Further reading
 
