@@ -417,6 +417,41 @@ class Store:
         )
         return cur.rowcount > 0
 
+    def live_stripe_subscriptions(self, stonechat_id: str) -> list[dict]:
+        """Stripe subscriptions that would keep charging this account."""
+        rows = self._db.execute(
+            "SELECT * FROM subscriptions WHERE stonechat_id = ? AND source = 'stripe'"
+            " AND status IN ('active', 'grace') AND stripe_subscription_id IS NOT NULL",
+            (stonechat_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_account(self, stonechat_id: str) -> None:
+        """Erase an account. The caller has already destroyed its mailbox's
+        machine and cancelled any Stripe billing.
+
+        A hard delete, not a tombstone: an ID is a hash of its pubkey
+        (identity.py), so a freed ID can never be issued to anyone else, and
+        there are no handles to squat. Registering the same key again later
+        simply starts a new, empty account.
+
+        Order is the safety argument (each statement autocommits): the users
+        row goes last, because its token is what lets a half-finished deletion
+        be retried. Subscriptions are unlinked, not deleted: the payment record
+        stays for accounting, but nothing ties it to this ID any more, and a
+        lapsed row can never be redeemed again (claim_subscription). Kept on
+        purpose: abuse records (mailbox_tombstones, reports), which carry their
+        own retention (ABUSE.md)."""
+        now = _now()
+        self._db.execute("DELETE FROM mailboxes WHERE stonechat_id = ?", (stonechat_id,))
+        self._db.execute(
+            "UPDATE subscriptions SET stonechat_id = NULL,"
+            " status = 'lapsed', lapsed_at = COALESCE(lapsed_at, ?), updated_at = ?"
+            " WHERE stonechat_id = ?",
+            (now, now, stonechat_id),
+        )
+        self._db.execute("DELETE FROM users WHERE stonechat_id = ?", (stonechat_id,))
+
     # -- mailboxes -------------------------------------------------------------
 
     def create_mailbox(self, stonechat_id: str, provider: str, machine: dict, mailbox_token: str,

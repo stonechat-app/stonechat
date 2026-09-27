@@ -41,6 +41,7 @@ from pydantic import BaseModel, Field, model_validator
 import os
 
 from .admin import router as admin_router
+from .billing import BillingUnavailable, cancel_stripe_billing
 from .billing import router as billing_router
 from .countries import UnavailableCountry
 from .countries import catalog as country_catalog
@@ -182,6 +183,11 @@ class RecoverIn(BaseModel):
     pubkey: str = Field(max_length=64)  # base64 Ed25519 identity public key
     timestamp: int  # unix seconds, signed by the client
     signature: str = Field(max_length=128)  # sig over "stonechat-v1-recover"||str(timestamp)
+
+
+class DeleteAccountIn(BaseModel):
+    timestamp: int  # unix seconds, signed by the client
+    signature: str = Field(max_length=128)  # sig over "stonechat-v1-delete"||str(timestamp)
 
 
 class MachineIn(BaseModel):
@@ -762,18 +768,83 @@ def get_mailbox(user: User):
     }
 
 
-@app.delete("/v1/mailbox")
-def delete_mailbox(user: User):
-    mailbox = store.mailbox_for(user["stonechat_id"])
-    if not mailbox:
-        raise HTTPException(404, "no mailbox")
+def _destroy_machine(mailbox: dict) -> None:
+    """Tear down the cloud resource behind a mailbox, if it has one (a
+    self-hosted mailbox has none: it is only a directory entry). 502 on
+    failure, before anything is forgotten — a machine the hub no longer knows
+    about is unreachable and keeps costing money."""
     if mailbox["resource_id"]:
         try:
             provider = get_provider(mailbox["provider"])
             provider.destroy(mailbox["resource_id"], mailbox["meta"])
         except ProviderError as e:
             raise HTTPException(502, f"failed to destroy: {e}")
+
+
+@app.delete("/v1/mailbox")
+def delete_mailbox(user: User):
+    mailbox = store.mailbox_for(user["stonechat_id"])
+    if not mailbox:
+        raise HTTPException(404, "no mailbox")
+    _destroy_machine(mailbox)
     store.delete_mailbox(user["stonechat_id"])
+    return {"status": "deleted"}
+
+
+@app.post("/v1/account/delete")
+def delete_account(body: DeleteAccountIn, user: User):
+    """Delete the account: its mailbox, its billing, its directory entry.
+
+    Beyond the bearer token, this wants a fresh signature by the identity key
+    over "stonechat-v1-delete" || timestamp (±5 min, as /v1/recover). A leaked
+    token can already do a lot, but it should not be able to erase someone and
+    cancel what they pay for; and only the primary device holds the identity
+    key, so a linked device cannot delete the account it is linked to.
+
+    Ordering, each step before the next: the machine is destroyed while the
+    hub still knows it, Stripe billing is cancelled while the hub still knows
+    which subscription to cancel, and the account row — whose token lets a
+    failed attempt be retried — goes last (Store.delete_account). A live Stripe
+    subscription the hub cannot cancel refuses the whole deletion (409) rather
+    than leave someone charged for an account that no longer exists.
+
+    Peers are not told: the directory answers 404 afterwards, exactly as for an
+    ID it never saw, and clients treat absence as transient by design."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    if abs(now - body.timestamp) > 300:
+        raise HTTPException(400, "signature timestamp out of range — check the device clock")
+    try:
+        from nacl.signing import VerifyKey
+
+        VerifyKey(base64.b64decode(user["pubkey"])).verify(
+            b"stonechat-v1-delete" + str(body.timestamp).encode(),
+            base64.b64decode(body.signature),
+        )
+    except Exception:
+        raise HTTPException(401, "bad signature")
+
+    stonechat_id = user["stonechat_id"]
+    if store.live_stripe_subscriptions(stonechat_id) and not os.environ.get(
+            "STONECHAT_STRIPE_API_KEY"):
+        raise HTTPException(409, {
+            "code": "subscription_active",
+            "message": "This account has an active paid subscription, which "
+                       "can't be cancelled from here yet. Email "
+                       "support@stonechat.app to cancel it, then delete the account.",
+        })
+    mailbox = store.mailbox_for(stonechat_id)
+    if mailbox:
+        _destroy_machine(mailbox)
+        store.delete_mailbox(stonechat_id)
+    try:
+        cancel_stripe_billing(stonechat_id)
+    except BillingUnavailable:
+        raise HTTPException(503, "billing is not configured on this hub")
+    except Exception as e:
+        log.exception("Stripe cancellation failed for %s", stonechat_id[:12])
+        raise HTTPException(502, f"could not cancel the subscription: {e}")
+    store.delete_account(stonechat_id)
+    log.info("deleted account %s", stonechat_id[:12])
     return {"status": "deleted"}
 
 

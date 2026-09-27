@@ -1724,6 +1724,23 @@ def main():
     entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
     assert entry["mailbox"] is None
 
+    print("10) delete an account")
+    def deletion(phone, context=b"stonechat-v1-delete"):
+        timestamp = int(time.time())
+        sig = phone.identity.sign(context + str(timestamp).encode()).signature
+        return httpx.post(f"{HUB}/v1/account/delete", headers=phone.auth,
+                          json={"timestamp": timestamp, "signature": b64(sig)})
+    # the token alone is not enough, and a signature for another purpose
+    # must not stand in for this one
+    assert deletion(bob, b"stonechat-v1-recover").status_code == 401
+    assert httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").status_code == 200
+    r = deletion(bob)
+    assert r.status_code == 200, r.text
+    assert httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").status_code == 404, \
+        "a deleted account must leave the directory"
+    assert httpx.get(f"{HUB}/v1/mailbox", headers=bob.auth).status_code == 401, \
+        "a deleted account's token must stop working"
+
     print("\nALL E2E CHECKS PASSED")
 
 

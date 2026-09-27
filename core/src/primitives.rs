@@ -25,6 +25,8 @@ pub const KSPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-kspk";
 pub const PQPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-pqpk";
 pub const TLS_SIG_CONTEXT: &[u8] = b"stonechat-v1-tls";
 pub const RECOVER_SIG_CONTEXT: &[u8] = b"stonechat-v1-recover";
+/// Account deletion (hub `POST /v1/account/delete`); signed by the app.
+pub const DELETE_SIG_CONTEXT: &[u8] = b"stonechat-v1-delete";
 pub const REPORT_SIG_CONTEXT: &[u8] = b"stonechat-v1-report";
 /// The identity root vouching for one of its devices (devcert.rs). Its own
 /// context so a device certificate can never be mistaken for — or replayed

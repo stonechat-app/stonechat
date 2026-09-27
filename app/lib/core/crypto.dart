@@ -28,6 +28,7 @@ final spkSigContext = utf8.encode('stonechat-v1-spk');
 final kspkSigContext = utf8.encode('stonechat-v1-kspk');
 final tlsSigContext = utf8.encode('stonechat-v1-tls');
 final recoverSigContext = utf8.encode('stonechat-v1-recover');
+final deleteSigContext = utf8.encode('stonechat-v1-delete');
 
 /// The app's CSPRNG. `Random.secure()` is the platform generator
 /// (SecRandomCopyBytes / getrandom); the core deliberately draws no
@@ -226,6 +227,13 @@ class CryptoService {
   /// re-issue an account token without ever having stored one.
   String signRecovery(int unixSeconds) => base64Encode(
     core.sign(_root, recoverSigContext, utf8.encode('$unixSeconds')),
+  );
+
+  /// Proof of key possession for POST /v1/account/delete: the bearer token
+  /// alone must not be enough to erase an account, and only the primary holds
+  /// the key, so a linked device cannot delete the account it belongs to.
+  String signAccountDeletion(int unixSeconds) => base64Encode(
+    core.sign(_root, deleteSigContext, utf8.encode('$unixSeconds')),
   );
 
   /// Signs an abuse report (PROTOCOL.md "Reporting", hub/app/report.py).

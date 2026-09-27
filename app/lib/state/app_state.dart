@@ -187,6 +187,32 @@ class AppState extends ChangeNotifier {
     try {
       await api.deleteMailbox();
     } catch (_) {}
+    await _wipeLocal();
+  }
+
+  /// Delete the account for good: the hub destroys the mailbox, cancels any
+  /// Stripe billing and forgets the identity (POST /v1/account/delete), then
+  /// this phone wipes itself. Unlike [resetIdentity] this is not best-effort:
+  /// if the hub refuses or can't be reached, nothing local is touched, because
+  /// once the identity key is gone the account can never be deleted.
+  ///
+  /// Primary only — the hub wants a signature by the identity key.
+  Future<void> deleteAccount() async {
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    try {
+      await api.deleteAccount(
+        timestamp: now,
+        signatureB64: crypto.signAccountDeletion(now),
+      );
+    } on ApiException catch (e) {
+      // 401 on a token the hub doesn't know: the account is already gone
+      // (a directory reset, or an earlier attempt that finished server-side).
+      if (e.status != 401 || e.message != 'invalid token') rethrow;
+    }
+    await _wipeLocal();
+  }
+
+  Future<void> _wipeLocal() async {
     // Keep the DB's SQLCipher key: db.wipe() empties the tables but keeps the
     // file, so a new key here would leave it unopenable next launch.
     final dbKey = await _storage.read(key: 'sc_db_key');

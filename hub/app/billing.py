@@ -17,6 +17,10 @@ redemption all work without it.
 Config (env):
     STONECHAT_STRIPE_WEBHOOK_SECRET  webhook signing secret (whsec_…); unset →
                                 webhook endpoint answers 503
+    STONECHAT_STRIPE_API_KEY         secret or restricted key (subscriptions:
+                                write) so account deletion can cancel billing;
+                                unset → deleting an account that still has a
+                                live Stripe subscription is refused (409)
     STONECHAT_ADMIN_TOKEN            enables POST /v1/billing/comp (comp grants
                                 for testers); unset → endpoint disabled
     STONECHAT_TEST_CODES             reusable tester codes with per-code plans:
@@ -113,6 +117,43 @@ async def stripe_webhook(request: Request):
         case other:
             log.info("ignoring webhook event type %s", other)
     return {"status": "ok"}
+
+
+class BillingUnavailable(Exception):
+    """Stripe billing exists for this account but the hub cannot cancel it."""
+
+
+def cancel_stripe_billing(stonechat_id: str) -> int:
+    """Cancel, at Stripe, every live subscription billing this account; the
+    number cancelled. Used by account deletion, which must not leave someone
+    paying for an account that no longer exists.
+
+    Needs STONECHAT_STRIPE_API_KEY (a secret or restricted key allowed to
+    write subscriptions). Without it — or without the stripe package — raises
+    BillingUnavailable rather than pretending, so the caller can refuse the
+    deletion. The customer.subscription.deleted webhook that follows finds the
+    row already lapsed, which is a no-op."""
+    subs = store.live_stripe_subscriptions(stonechat_id)
+    if not subs:
+        return 0
+    api_key = os.environ.get("STONECHAT_STRIPE_API_KEY")
+    try:
+        import stripe
+    except ImportError:
+        stripe = None
+    if not api_key or stripe is None:
+        raise BillingUnavailable
+    for sub in subs:
+        try:
+            stripe.Subscription.cancel(sub["stripe_subscription_id"], api_key=api_key)
+        except stripe.InvalidRequestError as e:
+            # Already cancelled at Stripe (the webhook may not have landed yet):
+            # the goal is met, so it is not a failure.
+            if getattr(e, "code", None) != "resource_missing" and "canceled" not in str(e):
+                raise
+        log.info("cancelled Stripe subscription %s for account deletion",
+                 sub["stripe_subscription_id"])
+    return len(subs)
 
 
 def _handle_checkout_completed(session) -> None:

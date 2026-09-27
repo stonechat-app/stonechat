@@ -363,6 +363,23 @@ class HubApi {
     await _check(r, (_) => null);
   }
 
+  /// Delete the account on the hub: its mailbox, its billing and its
+  /// directory entry (PROTOCOL.md "Hub API"). [signatureB64] is
+  /// CryptoService.signAccountDeletion over [timestamp].
+  Future<void> deleteAccount({
+    required int timestamp,
+    required String signatureB64,
+  }) async {
+    final r = await http
+        .post(
+          Uri.parse('$baseUrl/v1/account/delete'),
+          headers: _auth,
+          body: jsonEncode({'timestamp': timestamp, 'signature': signatureB64}),
+        )
+        .timeout(const Duration(seconds: 60)); // destroying a VM takes a while
+    await _check(r, (_) => null);
+  }
+
   Future<void> deleteMailbox() async {
     final r = await http
         .delete(

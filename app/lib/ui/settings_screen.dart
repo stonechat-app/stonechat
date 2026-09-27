@@ -9,6 +9,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
+import '../core/api.dart';
 import '../core/push.dart';
 import '../state/app_state.dart';
 import '../state/call_state.dart';
@@ -104,20 +105,95 @@ class SettingsScreen extends StatelessWidget {
           const _SectionLabel('Subscription'),
           const _SubscriptionSection(),
           const _SectionLabel('Account'),
-          ListTile(
-            leading: const Icon(Icons.restart_alt, color: Zn.danger, size: 20),
-            title: const Text('Reset identity',
-                style: TextStyle(color: Zn.danger)),
-            subtitle: const Text(
-                'Delete this identity, its mailbox and all local history, and '
-                'start over. This cannot be undone.',
-                style: TextStyle(color: Zn.muted, fontSize: 12)),
-            onTap: () => _resetIdentity(context, app),
-          ),
+          // The primary deletes the account itself; a linked device holds no
+          // identity key, so all it can do is forget itself locally.
+          if (app.crypto.hasIdentitySecret)
+            ListTile(
+              leading:
+                  const Icon(Icons.delete_forever, color: Zn.danger, size: 20),
+              title: const Text('Delete account',
+                  style: TextStyle(color: Zn.danger)),
+              subtitle: const Text(
+                  'Permanently delete your Stonechat ID, your mailbox and any '
+                  'subscription, and erase everything on this phone.',
+                  style: TextStyle(color: Zn.muted, fontSize: 12)),
+              onTap: () => _deleteAccount(context, app),
+            )
+          else
+            ListTile(
+              leading:
+                  const Icon(Icons.restart_alt, color: Zn.danger, size: 20),
+              title: const Text('Reset identity',
+                  style: TextStyle(color: Zn.danger)),
+              subtitle: const Text(
+                  'Delete this identity, its mailbox and all local history, and '
+                  'start over. This cannot be undone.',
+                  style: TextStyle(color: Zn.muted, fontSize: 12)),
+              onTap: () => _resetIdentity(context, app),
+            ),
           const _VersionFooter(),
         ],
       ),
     );
+  }
+
+  Future<void> _deleteAccount(BuildContext context, AppState app) async {
+    // Grab the sibling states up front — the dialog await may outlive us.
+    final call = context.read<CallState>();
+    final mailbox = context.read<MailboxState>();
+    final chat = context.read<ChatState>();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Zn.surface,
+        title: const Text('Delete your account?'),
+        content: const Text(
+            'Your Stonechat ID is removed from the directory, your mailbox is '
+            'destroyed along with any messages waiting in it, and a paid '
+            'subscription is cancelled. Everything on this phone is erased, '
+            'including your message history.\n\n'
+            'Contacts keep only what they already received. This cannot be '
+            'undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Delete account',
+                style: TextStyle(color: Zn.danger)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final navigator = Navigator.of(context, rootNavigator: true);
+    unawaited(showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const _BusyDialog('Deleting your account…'),
+    ));
+    try {
+      await call.reset(); // release camera/mic before the identity dies
+      await app.deleteAccount();
+      mailbox.reset();
+      chat.reset();
+    } catch (e) {
+      navigator.pop(); // dismiss the spinner
+      // Nothing local was touched: the account is intact and can be retried.
+      if (context.mounted) {
+        final reason = e is ApiException
+            ? e.message
+            : "Couldn't reach Stonechat. Check your connection and try again.";
+        showZnSnack(context, "Your account wasn't deleted. $reason",
+            error: true);
+      }
+      return;
+    }
+    navigator.pop(); // dismiss the spinner
+    // The account is gone; drop every screen and land back on onboarding.
+    navigator.pushNamedAndRemoveUntil('/onboarding', (_) => false);
   }
 
   Future<void> _resetIdentity(BuildContext context, AppState app) async {
