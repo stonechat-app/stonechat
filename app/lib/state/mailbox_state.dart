@@ -283,7 +283,9 @@ class MailboxState extends ChangeNotifier {
   /// they provisioned it seconds ago — so the cert we observe now IS the pin.
   Future<void> connectExternal(String rawAddress, String token,
       {bool friendHosted = false}) async {
-    final address = rawAddress.trim().replaceAll(RegExp(r'/+$'), '');
+    var address = rawAddress.trim().replaceAll(RegExp(r'/+$'), '');
+    // A mailbox only speaks HTTPS, so a bare host:port means https.
+    if (!address.contains('://')) address = 'https://$address';
     busy = true;
     notifyListeners();
     try {
