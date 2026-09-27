@@ -52,7 +52,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
     });
     try {
       final result =
-          await context.read<AppState>().api.redeemCode(code);
+          await context.read<AppState>().api.claimCode(code);
       if (!mounted) return;
       Navigator.pop(context, true);
       final plan = result.plan == 'machine' ? 'Machine' : 'Mailbox';

@@ -19,9 +19,6 @@ services:
       # their repo paths.
       context: ..
       dockerfile: hub/Dockerfile
-      args:
-        # Stripe is the hosted service's billing plane; see STONECHAT_BILLING.
-        WITH_BILLING: "0"
     image: stonechat-hub:local
     restart: always
     env_file: .env
@@ -29,9 +26,6 @@ services:
       # Container-internal path. What you move is the host side, via
       # STONECHAT_STATE_DIR.
       STONECHAT_HUB_DB: /var/lib/stonechat/hub.db
-      # Billing off removes /v1/billing/*, ungates every provider and disables
-      # the reaper. A self-hosted hub has no plans to sell.
-      STONECHAT_BILLING: "off"
       # Where the relay binary is INSIDE the container; the host side is
       # STONECHAT_RELAY_DIR below. Only read when this hub provisions mailboxes
       # of its own — it is the artifact it ships to its mailbox hosts and serves

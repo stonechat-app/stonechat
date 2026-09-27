@@ -80,14 +80,12 @@ def whois(host: str, _: Admin):
 @router.post("/mailboxes/{stonechat_id}/destroy")
 def destroy(stonechat_id: str, body: ReasonIn, _: Admin):
     """Destroy one customer's machine. Does not touch their account, their
-    subscription or their identity — only the machine.
+    access or their identity — only the machine.
 
     Ordering is load-bearing: the tombstone is written first, so a provider
     call that fails halfway leaves us with a record of what existed rather
-    than an orphaned VM nobody can name. Subscription rows are deliberately
-    left alone — deleting them would make the machine invisible to
-    `reapable_mailboxes`, which skips owners with no subscription, and an
-    un-reapable VM bills forever."""
+    than an orphaned VM nobody can name. The owner's access at the gate is
+    deliberately left alone: this is not a refund, and not a ban either."""
     mailbox = store.mailbox_for(stonechat_id)
     if not mailbox:
         raise HTTPException(404, "no mailbox for that Stonechat ID")
@@ -123,9 +121,9 @@ def ban(stonechat_id: str, body: ReasonIn, _: Admin):
 
     Worth being honest about the ceiling. A Stonechat ID is a hash of a freshly
     generated keypair, so anyone can mint a new identity in seconds and this
-    is a speed bump, not a wall. It bites where re-entry has a cost: once
-    provisioning is entitlement-gated, coming back means a new payment
-    method."""
+    is a speed bump, not a wall. It bites where re-entry has a cost: on a
+    gated hub, coming back means getting access again (on the hosted
+    service, a new payment method)."""
     if not store.set_ban(stonechat_id, body.reason):
         raise HTTPException(404, "unknown Stonechat ID")
     log.warning("banned %s — %s", stonechat_id[:12], body.reason)

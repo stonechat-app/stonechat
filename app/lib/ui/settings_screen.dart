@@ -310,18 +310,18 @@ class _SubscriptionSection extends StatefulWidget {
 }
 
 class _SubscriptionSectionState extends State<_SubscriptionSection> {
-  late Future<({String plan, String status, String? currentPeriodEnd})?>
+  late Future<({String plan, String status, String? until, String? notice})?>
       _entitlement;
 
   @override
   void initState() {
     super.initState();
-    _entitlement = context.read<AppState>().api.getEntitlement();
+    _entitlement = context.read<AppState>().api.getAccess();
   }
 
   void _refresh() {
     setState(() {
-      _entitlement = context.read<AppState>().api.getEntitlement();
+      _entitlement = context.read<AppState>().api.getAccess();
     });
   }
 
@@ -346,9 +346,7 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
               AsyncSnapshot(data: final e?) => (
                   e.plan == 'machine' ? 'Machine' : 'Mailbox',
                   e.status == 'grace' ? Zn.danger : Zn.ok,
-                  e.status == 'grace'
-                      ? 'Payment issue — check your card with Stripe'
-                      : 'Active',
+                  e.notice ?? 'Active',
                 ),
               _ => (
                   'No plan',

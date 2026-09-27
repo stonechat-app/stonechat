@@ -190,8 +190,8 @@ class AppState extends ChangeNotifier {
     await _wipeLocal();
   }
 
-  /// Delete the account for good: the hub destroys the mailbox, cancels any
-  /// Stripe billing and forgets the identity (POST /v1/account/delete), then
+  /// Delete the account for good: the hub destroys the mailbox, releases
+  /// its plan and forgets the identity (POST /v1/account/delete), then
   /// this phone wipes itself. Unlike [resetIdentity] this is not best-effort:
   /// if the hub refuses or can't be reached, nothing local is touched, because
   /// once the identity key is gone the account can never be deleted.

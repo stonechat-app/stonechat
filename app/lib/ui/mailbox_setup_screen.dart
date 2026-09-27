@@ -97,7 +97,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
       if (mounted) setState(() => _countries = const []);
     }
     try {
-      final entitlement = await api.getEntitlement();
+      final entitlement = await api.getAccess();
       if (mounted) setState(() => _plan = entitlement?.plan);
     } catch (_) {/* plan stays null → nothing is greyed out */}
   }
@@ -122,7 +122,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
   /// the picker needs this before it can grey anything out.
   Future<bool> _ensurePlan() async {
     if (_plan != null) return true;
-    final entitlement = await context.read<AppState>().api.getEntitlement();
+    final entitlement = await context.read<AppState>().api.getAccess();
     if (!mounted) return false;
     setState(() => _plan = entitlement?.plan);
     return entitlement != null;
@@ -177,7 +177,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
       await mailbox.create(country: _country);
     } on ApiException catch (e) {
       if (!mounted) return;
-      if (e.code == 'subscription_required') {
+      if (e.code == 'access_required') {
         // Belt and braces: the mailbox re-checks the entitlement (it may have
         // lapsed since we looked). Offer the code path and retry.
         setState(() => _pending = null);

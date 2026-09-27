@@ -1,6 +1,6 @@
 """Production smoke test for the deployed hub + its mailbox hosts.
 
-Registers a throwaway identity, redeems the tester activation code, ignites a
+Registers a throwaway identity, claims access with the tester code, ignites a
 shared-tier mailbox in a country the hub actually offers (which also proves the
 hub can reach that mailbox host, pass its certificate pin and place a guest on
 it), verifies the mailbox end to end, destroys it.
@@ -13,7 +13,7 @@ envelopes after multidevice made `device` mandatory. Both were found by
 running it, not by reading it. e2e.Phone is exercised by the e2e suite on
 every change, so borrowing it means this script tracks the protocol for free.
 
-Usage (the code never lives in the repo — it's in the hub's systemd drop-in):
+Usage (the code never lives in the repo — it's GATE_TEST_CODES in the gate's env):
 
     STONECHAT_TEST_CODE=STONECHAT-XXXX-XXXX hub/.venv/bin/python scripts/smoke_prod.py
 
@@ -36,7 +36,7 @@ from e2e import MX, PRIMARY_DEVICE, Phone  # noqa: E402
 
 HUB = e2e.HUB
 TEST_CODE = os.environ.get("STONECHAT_TEST_CODE") or sys.exit(
-    "set STONECHAT_TEST_CODE (the tester activation code from the hub's drop-in)")
+    "set STONECHAT_TEST_CODE (a tester code from the gate's GATE_TEST_CODES)")
 
 
 def shared_country() -> str:
@@ -60,14 +60,12 @@ phone = Phone("smoke")
 phone.register()
 print("registered:", phone.stonechat_id)
 
-r = httpx.post(f"{HUB}/v1/billing/redeem", json={"code": TEST_CODE},
+r = httpx.post(f"{HUB}/v1/access/claim", json={"code": TEST_CODE},
                headers=phone.auth)
 r.raise_for_status()
-plan = r.json()["plan"]
-print("entitlement:", plan, r.json()["status"])
-# Also a deployment-staleness check: a hub still on the pre-rename plan ids
-# would answer "private" here and the plan gate below would behave oddly.
-assert plan == "mailbox", f"expected the mailbox plan, got {plan!r}"
+tier = r.json()["tier"]
+print("access:", tier, r.json()["status"])
+assert tier == "mailbox", f"expected the mailbox tier, got {tier!r}"
 
 country = shared_country()
 print(f"igniting in {country} (the app's country form — the hub resolves it)")

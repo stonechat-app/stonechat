@@ -29,6 +29,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -47,9 +48,14 @@ from nacl.utils import random as nacl_random
 
 import os
 HUB = os.environ.get("STONECHAT_HUB", "http://127.0.0.1:8477")
-# must match the STONECHAT_ADMIN_TOKEN / STONECHAT_TEST_CODE the hub was started with (README)
+# must match the STONECHAT_ADMIN_TOKEN the hub was started with (CLAUDE.md)
 ADMIN_TOKEN = os.environ.get("STONECHAT_ADMIN_TOKEN", "test-admin")
-TEST_CODE = os.environ.get("STONECHAT_TEST_CODE", "STONECHAT-TEST-TEST")
+# The gate the hub asks about tiers (hub/app/gate.py). This script runs a stub
+# one in-process (scripts/stub_gate.py); the hub must be started pointing at
+# it — STONECHAT_GATE_URL / STONECHAT_GATE_TOKEN, see the command in CLAUDE.md.
+GATE_PORT = int(os.environ.get("STONECHAT_TEST_GATE_PORT", "8478"))
+GATE_TOKEN = os.environ.get("STONECHAT_TEST_GATE_TOKEN", "e2e-gate")
+GATE_CODE = "E2E-MAILBOX"
 
 # The shared tier under test is a real mailbox host, started by this script (see
 # MailboxHostUnderTest). The hub must already be pointed at it, which means these
@@ -882,6 +888,11 @@ class Phone:
 
 
 def main():
+    from stub_gate import StubGate  # scripts/, next to this file
+
+    gate = StubGate(GATE_TOKEN, {GATE_CODE: "mailbox"}).serve(GATE_PORT)
+    threading.Thread(target=gate.serve_forever, daemon=True).start()
+
     alice, bob = Phone("alice"), Phone("bob")
 
     print("1) register")
@@ -1040,42 +1051,30 @@ def main():
                   "machine": {"machine_type": "container",
                               "region": shared_country(HUB)}}
 
-    # paid providers 402 without an entitlement (PROTOCOL.md "Billing")
+    # gated providers 402 until the gate grants the tier (PROTOCOL.md "Gate")
+    access = httpx.get(f"{HUB}/v1/access", headers=carol.auth).json()
+    assert access["gated"] is True, (
+        f"hub is not gated — start it with STONECHAT_GATE_URL="
+        f"http://127.0.0.1:{GATE_PORT} STONECHAT_GATE_TOKEN={GATE_TOKEN}")
+    assert access["tier"] is None
     r = httpx.post(f"{HUB}/v1/mailbox", headers=carol.auth, json=shared_req)
-    assert r.status_code == 402, f"unpaid shared tier: expected 402, got {r.status_code}"
-    assert r.json()["detail"]["code"] == "subscription_required"
-    assert r.json()["detail"]["plan_required"] == "mailbox"
+    assert r.status_code == 402, f"no tier: expected 402, got {r.status_code}"
+    assert r.json()["detail"]["code"] == "access_required"
+    assert r.json()["detail"]["tier_required"] == "mailbox"
 
-    # comp grant → redeem → entitlement live (same path a paid code takes)
-    r = httpx.post(f"{HUB}/v1/billing/comp",
-                   headers={"X-Admin-Token": ADMIN_TOKEN},
-                   json={"plan": "mailbox", "note": "e2e"})
-    assert r.status_code == 201, (
-        f"comp grant failed ({r.status_code}) — start the hub with "
-        f"STONECHAT_ADMIN_TOKEN={ADMIN_TOKEN}")
-    code = r.json()["code"]
-    httpx.post(f"{HUB}/v1/billing/redeem", headers=carol.auth,
-               json={"code": code}).raise_for_status()
-    ent = httpx.get(f"{HUB}/v1/billing/entitlement", headers=carol.auth).json()
-    assert ent["plan"] == "mailbox" and ent["status"] == "active"
-    # a code is single-use
-    r = httpx.post(f"{HUB}/v1/billing/redeem", headers=carol.auth,
-                   json={"code": code})
-    assert r.status_code == 409, f"re-redeem: expected 409, got {r.status_code}"
-
-    # ...except STONECHAT_TEST_CODE, which works for any number of fresh identities
-    # (the TestFlight reset-and-reactivate loop, PROTOCOL.md "Billing")
-    for name in ("tess1", "tess2"):
-        tess = Phone(name)
-        tess.register()
-        r = httpx.post(f"{HUB}/v1/billing/redeem", headers=tess.auth,
-                       json={"code": TEST_CODE})
-        assert r.status_code == 200, (
-            f"test code redeem failed ({r.status_code}) — start the hub with "
-            f"STONECHAT_TEST_CODE={TEST_CODE}")
-        ent = httpx.get(f"{HUB}/v1/billing/entitlement",
-                        headers=tess.auth).json()
-        assert ent["plan"] == "mailbox" and ent["source"] == "test"
+    # a claim is forwarded to the gate, and its refusals come back verbatim
+    r = httpx.post(f"{HUB}/v1/access/claim", headers=carol.auth,
+                   json={"code": "NOT-A-CODE"})
+    assert r.status_code == 404, f"bad code: expected 404, got {r.status_code}"
+    assert r.json()["detail"]["code"] == "invalid_code"
+    r = httpx.post(f"{HUB}/v1/access/claim", headers=carol.auth,
+                   json={"code": GATE_CODE})
+    assert r.status_code == 200, f"claim failed ({r.status_code}): {r.text}"
+    access = httpx.get(f"{HUB}/v1/access", headers=carol.auth).json()
+    assert access["tier"] == "mailbox" and access["status"] == "active"
+    r = httpx.post(f"{HUB}/v1/access/claim", headers=carol.auth,
+                   json={"code": GATE_CODE})
+    assert r.status_code == 409, f"re-claim: expected 409, got {r.status_code}"
 
     carol.provision(body=shared_req)
     carol.wait_running()

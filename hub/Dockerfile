@@ -17,14 +17,9 @@ FROM python:3.13-slim
 WORKDIR /srv
 
 COPY hub/requirements.txt ./hub/requirements.txt
-# The optional deps from requirements.txt. Layers are fixed at build time
-# while STONECHAT_BILLING is read at runtime, so a billing-off hub built with
-# the default simply carries an unused stripe — harmless, and it keeps one
-# image able to serve both.
-ARG WITH_BILLING=1
+# The optional deps from requirements.txt.
 ARG WITH_GCP=0
 RUN pip install --no-cache-dir -r hub/requirements.txt \
- && if [ "$WITH_BILLING" = "1" ]; then pip install --no-cache-dir "stripe>=11"; fi \
  && if [ "$WITH_GCP" = "1" ]; then pip install --no-cache-dir "google-cloud-compute>=1.19"; fi
 
 COPY hub/app ./hub/app

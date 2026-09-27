@@ -5,16 +5,14 @@ Config (env):
     STONECHAT_HUB_DB                  sqlite path (default hub.db)
     STONECHAT_GCP_PROJECT            required for provider=gcp
     STONECHAT_LOCAL_HOST             advertised host for provider=local (default 127.0.0.1)
-    STONECHAT_BILLING                "off" disables the billing plane entirely: no
-                                billing endpoints, no plan gates (every
-                                provider is free to use), no reaper (default on)
-    STONECHAT_STRIPE_WEBHOOK_SECRET  Stripe webhook signing secret (billing.py)
-    STONECHAT_ADMIN_TOKEN            enables comp grants (billing.py) and the
-                                abuse routes under /v1/admin (admin.py)
-    STONECHAT_TEST_CODE              reusable tester activation code (billing.py)
+    STONECHAT_GATE_URL               the gate that decides who may use the gated
+                                providers (gate.py); unset → open hub: no
+                                tiers required, no reaper
+    STONECHAT_GATE_TOKEN             shared secret presented to the gate
+    STONECHAT_ADMIN_TOKEN            enables the abuse routes under /v1/admin (admin.py)
     STONECHAT_CORS_EXTRA             comma-separated extra CORS origins (dev)
     STONECHAT_REAP_RETENTION_DAYS    destroy mailboxes this many days after their
-                                subscription lapses (default 14; -1 disables)
+                                access is revoked (default 14; -1 disables)
     STONECHAT_REAP_INTERVAL_S        seconds between reap passes (default 3600)
     STONECHAT_REPORT_RETENTION_DAYS  delete user-filed abuse reports this many days
                                 after they are filed (default 180; -1 disables
@@ -41,8 +39,7 @@ from pydantic import BaseModel, Field, model_validator
 import os
 
 from .admin import router as admin_router
-from .billing import BillingUnavailable, cancel_stripe_billing
-from .billing import router as billing_router
+from . import gate
 from .countries import UnavailableCountry
 from .countries import catalog as country_catalog
 from .countries import resolve as resolve_country
@@ -66,12 +63,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 REAP_RETENTION_DAYS = int(os.environ.get("STONECHAT_REAP_RETENTION_DAYS", "14"))
 REAP_INTERVAL_S = int(os.environ.get("STONECHAT_REAP_INTERVAL_S", "3600"))
 
-# Billing exists for the hosted service; a private hub doesn't need it.
-# STONECHAT_BILLING=off removes the whole plane: the /v1/billing/* endpoints are
-# not mounted, no provider requires a plan, and mailboxes are never reaped —
-# lifecycle is billing-driven, so without billing nothing lapses.
-BILLING = os.environ.get("STONECHAT_BILLING", "on").strip().lower() != "off"
-
 # Wire protocol version served by hub.stonechat.app (PROTOCOL.md "Versioning").
 # Clients send theirs in X-Stonechat-Version; anything below the minimum is told to
 # upgrade rather than served a contract it can't speak. An absent header is a
@@ -92,9 +83,9 @@ async def require_wire_version(x_stonechat_version: int | None = Header(default=
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     tasks = []
-    if BILLING and REAP_RETENTION_DAYS >= 0:
+    if gate.GATED and REAP_RETENTION_DAYS >= 0:
         tasks.append(asyncio.create_task(_reap_loop()))
-    # Deliberately not conditioned on BILLING: a hub with billing off still
+    # Deliberately not conditioned on the gate: an open hub still
     # accepts reports, and a retention promise that only holds on the paid
     # configuration is not a retention promise.
     if REPORT_RETENTION_DAYS >= 0:
@@ -106,12 +97,13 @@ async def _lifespan(app: FastAPI):
 
 app = FastAPI(title="stonechat-hub", lifespan=_lifespan,
               dependencies=[Depends(require_wire_version)])
-if BILLING:
-    app.include_router(billing_router)
-else:
-    log.info("billing disabled (STONECHAT_BILLING=off) — all providers ungated")
+# Mounted either way: on an open hub GET /v1/access answers `gated: false`,
+# which is how the app knows there is nothing to redeem.
+app.include_router(gate.router)
+if not gate.GATED:
+    log.info("no STONECHAT_GATE_URL — open hub, all providers ungated")
 
-# Abuse handling is not part of the billing plane — a hub with billing off
+# Abuse handling is not part of the gate — an open hub
 # still hosts machines someone can complain about. Every route inside is dead
 # unless STONECHAT_ADMIN_TOKEN is set.
 app.include_router(admin_router)
@@ -122,8 +114,7 @@ app.include_router(admin_router)
 # because nobody has configured a way to read it is the wrong failure.
 app.include_router(report_router)
 
-# Browser access used to be only the landing page's activation lookup, hence
-# GET-only. The **web client** is a browser too, and it needs POST: parking its
+# The browser that calls the hub is the **web client**, and it needs POST: parking its
 # link offer is a POST with a JSON content-type, which is not CORS-safelisted
 # and so also triggers a preflight. Without this the client fails with a bare
 # "Failed to fetch" — the browser tells the page nothing — and the symptom
@@ -136,8 +127,6 @@ app.include_router(report_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://stonechat.app",
-        "https://www.stonechat.app",
         # The web client. First-party, so it belongs in the allowlist rather
         # than in STONECHAT_CORS_EXTRA — that variable is for a developer's
         # localhost, and a production origin that only works when an env var
@@ -151,10 +140,10 @@ app.add_middleware(
 
 HEALTH_TIMEOUT_S = 240  # cloud VMs need to apt-get + pip install on first boot
 
-# Paid providers and the plan each requires. Machine outranks mailbox, so a
-# Machine subscriber may also run on a shared mailbox host. `local` and
-# `external` (self-hosted free tier) stay ungated. With billing off nothing
-# is gated (and the reap query, which sweeps these providers, matches nothing).
+# Gated providers and the tier each requires (gate.TIER_RANK: machine
+# outranks mailbox, so a Machine holder may also run on a shared mailbox host).
+# `local` and `external` (self-hosted free tier) stay ungated. On an open hub
+# nothing is gated, and the reaper, which sweeps these providers, never runs.
 GATED_PROVIDERS = {
     "mailbox_host": "mailbox",
     "gcp": "machine",
@@ -162,8 +151,7 @@ GATED_PROVIDERS = {
     "digitalocean": "machine",
     "hetzner": "machine",
     "vultr": "machine",
-} if BILLING else {}
-PLAN_RANK = {"mailbox": 1, "machine": 2}
+} if gate.GATED else {}
 # Dedicated-VM providers get the mailbox host baked into the VM.
 DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean", "hetzner", "vultr"}
 
@@ -292,9 +280,10 @@ def register(body: RegisterIn, request: Request):
     so there is nothing to squat or hijack — "registering as someone else"
     requires their pubkey and just yields the ID they'd get anyway (409 if
     taken). Returns the account_token that authenticates every account-scoped
-    endpoint; anything costly (provisioning) additionally sits behind plan
-    entitlements. Rate-limited per IP: mass signups are cheap junk rows to
-    us, but read as card-testing fraud to the payment stack.
+    endpoint; anything costly (provisioning) additionally sits behind the
+    gate. Rate-limited per IP: mass signups are cheap junk rows to us, and
+    whatever the gate sits on (a payment processor, say) may read them as
+    fraud.
     """
     _register_limiter.check(request.client.host if request.client else "unknown")
     try:
@@ -558,14 +547,24 @@ def list_countries():
 @app.post("/v1/mailbox", status_code=202)
 def create_mailbox(body: MailboxIn, user: UnbannedUser, background: BackgroundTasks):
     provider, machine = body.provider, body.machine
-    if body.country is not None:
-        # Country form: the plan decides the tier, the catalog decides the
-        # cloud. Resolve before the gate so an unplaced country fails with
-        # "not available there" rather than a misleading payment prompt.
-        entitlement = store.entitlement_for(user["stonechat_id"]) if BILLING else None
-        plan = entitlement["plan"] if entitlement else "machine"
+    # One question to the gate per request, answering both uses below.
+    tier = None
+    if gate.GATED:
         try:
-            provider, machine_dict = resolve_country(body.country, plan)
+            tier = gate.access(user["stonechat_id"])["tier"]
+        except gate.GateUnavailable as e:
+            log.error("gate unavailable: %s", e)
+            raise HTTPException(503, {
+                "code": "gate_unavailable",
+                "message": "Plans can't be checked right now — try again in a minute.",
+            })
+    if body.country is not None:
+        # Country form: the tier decides the kind of machine, the catalog
+        # decides the cloud. Resolve before the gate check so an unplaced
+        # country fails with "not available there" rather than a misleading
+        # prompt to get a plan.
+        try:
+            provider, machine_dict = resolve_country(body.country, tier or "machine")
         except UnavailableCountry as e:
             raise HTTPException(400, {"code": "country_unavailable", "message": str(e)})
         machine = MachineIn(**machine_dict)
@@ -575,17 +574,12 @@ def create_mailbox(body: MailboxIn, user: UnbannedUser, background: BackgroundTa
             400, f"unknown provider; available: {', '.join(available_providers())}"
         )
     required = GATED_PROVIDERS.get(provider)
-    if required is not None:
-        entitlement = store.entitlement_for(user["stonechat_id"])
-        if entitlement is None or (
-            PLAN_RANK.get(entitlement["plan"], 0) < PLAN_RANK[required]
-        ):
-            raise HTTPException(402, {
-                "code": "subscription_required",
-                "plan_required": required,
-                "message": f"the '{provider}' provider requires an active"
-                           f" {required} plan",
-            })
+    if required is not None and not gate.satisfies(tier, required):
+        raise HTTPException(402, {
+            "code": "access_required",
+            "tier_required": required,
+            "message": f"the '{provider}' provider requires the {required} tier",
+        })
     mailbox_token = secrets.token_urlsafe(32)
     # Dedicated VMs ship with the mailbox host pre-installed (PROTOCOL.md "Host
     # agent") — mint its admin token here so the app can pick it up from
@@ -793,7 +787,7 @@ def delete_mailbox(user: User):
 
 @app.post("/v1/account/delete")
 def delete_account(body: DeleteAccountIn, user: User):
-    """Delete the account: its mailbox, its billing, its directory entry.
+    """Delete the account: its mailbox, its access, its directory entry.
 
     Beyond the bearer token, this wants a fresh signature by the identity key
     over "stonechat-v1-delete" || timestamp (±5 min, as /v1/recover). A leaked
@@ -801,12 +795,14 @@ def delete_account(body: DeleteAccountIn, user: User):
     cancel what they pay for; and only the primary device holds the identity
     key, so a linked device cannot delete the account it is linked to.
 
-    Ordering, each step before the next: the machine is destroyed while the
-    hub still knows it, Stripe billing is cancelled while the hub still knows
-    which subscription to cancel, and the account row — whose token lets a
-    failed attempt be retried — goes last (Store.delete_account). A live Stripe
-    subscription the hub cannot cancel refuses the whole deletion (409) rather
-    than leave someone charged for an account that no longer exists.
+    Ordering, each step before the next: the gate releases the account first
+    (gate.release — it ends whatever it grants, and whatever the user pays
+    for), so a gate that cannot do that refuses the whole deletion (409)
+    before anything is destroyed, rather than leave someone charged for an
+    account that no longer exists. Then the machine is destroyed while the hub
+    still knows it, and the account row — whose token lets a failed attempt be
+    retried — goes last (Store.delete_account). Release is idempotent, so a
+    retry after a failed destroy simply releases nothing.
 
     Peers are not told: the directory answers 404 afterwards, exactly as for an
     ID it never saw, and clients treat absence as transient by design."""
@@ -824,25 +820,18 @@ def delete_account(body: DeleteAccountIn, user: User):
         raise HTTPException(401, "bad signature")
 
     stonechat_id = user["stonechat_id"]
-    if store.live_stripe_subscriptions(stonechat_id) and not os.environ.get(
-            "STONECHAT_STRIPE_API_KEY"):
-        raise HTTPException(409, {
-            "code": "subscription_active",
-            "message": "This account has an active paid subscription, which "
-                       "can't be cancelled from here yet. Email "
-                       "support@stonechat.app to cancel it, then delete the account.",
-        })
+    if gate.GATED:
+        try:
+            gate.release(stonechat_id)
+        except gate.GateRefused as e:
+            raise HTTPException(e.status, e.detail)
+        except gate.GateUnavailable as e:
+            log.error("gate release failed for %s: %s", stonechat_id[:12], e)
+            raise HTTPException(502, "could not release this account's plan — try again")
     mailbox = store.mailbox_for(stonechat_id)
     if mailbox:
         _destroy_machine(mailbox)
         store.delete_mailbox(stonechat_id)
-    try:
-        cancel_stripe_billing(stonechat_id)
-    except BillingUnavailable:
-        raise HTTPException(503, "billing is not configured on this hub")
-    except Exception as e:
-        log.exception("Stripe cancellation failed for %s", stonechat_id[:12])
-        raise HTTPException(502, f"could not cancel the subscription: {e}")
     store.delete_account(stonechat_id)
     log.info("deleted account %s", stonechat_id[:12])
     return {"status": "deleted"}
@@ -874,12 +863,12 @@ def _provision(stonechat_id: str, provider_name: str, machine: MachineIn, mailbo
 
 # -- reaping (background) ---------------------------------------------------------
 #
-# Mailbox lifecycle is billing-driven, never activity-driven: the hub must not
-# learn (or be able to leak) when a mailbox is used. A paid-up mailbox runs
-# forever, idle or not. When the owner's last subscription has been lapsed
-# longer than the retention window, the sweep destroys the machine. The Stripe
-# webhook only marks `lapsed`; this pass is the sole executor, so a missed
-# webhook retry or a mid-destroy crash just gets picked up next hour.
+# Mailbox lifecycle is gate-driven, never activity-driven: the hub must not
+# learn (or be able to leak) when a mailbox is used. A mailbox whose owner holds
+# its tier runs forever, idle or not. When the gate says the owner's access was
+# revoked longer ago than the retention window, the sweep destroys the machine.
+# The gate only reports; this pass is the sole executor, so a gate outage or a
+# mid-destroy crash just gets picked up next hour.
 
 async def _reap_loop():
     while True:
@@ -906,10 +895,35 @@ async def _purge_reports_loop():
             log.exception("report purge failed")
 
 
+def _reapable(stonechat_id: str, required: str, cutoff: datetime) -> bool:
+    """True when the owner no longer holds `required` and lost access before
+    the cutoff. An owner the gate never granted anything (revoked_at null) is
+    left alone — ambiguous state (manual placement, a gate that was swapped)
+    is not a kill signal. Raises gate.GateUnavailable."""
+    a = gate.access(stonechat_id)
+    if gate.satisfies(a["tier"], required) or not a["revoked_at"]:
+        return False
+    try:
+        revoked = datetime.fromisoformat(a["revoked_at"])
+    except (TypeError, ValueError):
+        log.warning("gate sent an unreadable revoked_at for %s: %r",
+                    stonechat_id[:12], a["revoked_at"])
+        return False
+    if revoked.tzinfo is None:
+        revoked = revoked.replace(tzinfo=timezone.utc)
+    return revoked <= cutoff
+
+
 def _reap_once() -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=REAP_RETENTION_DAYS)
-    for mailbox in store.reapable_mailboxes(tuple(GATED_PROVIDERS), cutoff.isoformat()):
+    for mailbox in store.mailboxes_on(tuple(GATED_PROVIDERS)):
         stonechat_id = mailbox["stonechat_id"]
+        try:
+            if not _reapable(stonechat_id, GATED_PROVIDERS[mailbox["provider"]], cutoff):
+                continue
+        except gate.GateUnavailable as e:
+            log.warning("gate unavailable, skipping this reap pass: %s", e)
+            return
         try:
             if mailbox["resource_id"]:
                 provider = get_provider(mailbox["provider"])
@@ -918,7 +932,7 @@ def _reap_once() -> None:
             # The one place user data dies without the user asking — keep an
             # audit trail for the support inbox.
             log.info(
-                "reaped %s mailbox %s of %s: subscription lapsed > %d days",
+                "reaped %s mailbox %s of %s: access revoked > %d days",
                 mailbox["provider"], mailbox["resource_id"], stonechat_id[:12],
                 REAP_RETENTION_DAYS,
             )

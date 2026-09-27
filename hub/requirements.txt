@@ -4,7 +4,5 @@ httpx==0.28.1
 pynacl==1.6.2                   # verify owner TLS signatures
 
 # optional:
-# stripe>=11                   # hosted-service billing webhooks (billing.py);
-#                              # deploy/setup.sh installs it unless STONECHAT_BILLING=off
 # google-cloud-compute>=1.19   # provider=gcp
 # boto3>=1.34                  # provider=aws

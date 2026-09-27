@@ -1,13 +1,8 @@
 """Storage. Deliberately minimal — this is the whole privacy budget of the
-hub: a pubkey, an ID derived from it, a hashed auth token, the
-current mailbox record, and (since billing) a subscription row. No names, no
-emails, no contact graph, no messages.
-
-Billing expands the budget deliberately: after a code is redeemed the hub
-links stonechat_id ↔ stripe_customer_id (Stripe knows who paid; we know which
-Stonechat ID they paid for). The activation code itself is stored in plaintext
-only until it's claimed — the success page must be able to re-display it —
-then nulled, leaving just the hash.
+hub: a pubkey, an ID derived from it, a hashed auth token, and the current
+mailbox record. No names, no emails, no contact graph, no messages — and no
+record of who may use which tier: that is the gate's (gate.py), which the hub
+asks and does not copy.
 """
 
 import hashlib
@@ -66,31 +61,6 @@ class Store:
                 meta         TEXT NOT NULL DEFAULT '{}',
                 error        TEXT,
                 created_at   TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                id                     TEXT PRIMARY KEY,  -- uuid4
-                source                 TEXT NOT NULL,     -- stripe | comp
-                plan                   TEXT NOT NULL,     -- mailbox | machine
-                status                 TEXT NOT NULL,     -- active | grace | lapsed
-                stripe_customer_id     TEXT,
-                stripe_subscription_id TEXT UNIQUE,
-                checkout_session_id    TEXT UNIQUE,
-                code_hash              TEXT NOT NULL UNIQUE,
-                code_plain             TEXT,              -- NULLed on redeem
-                stonechat_id                TEXT REFERENCES users(stonechat_id),
-                current_period_end     TEXT,
-                grace_since            TEXT,
-                lapsed_at              TEXT,
-                note                   TEXT,              -- comp grants
-                created_at             TEXT NOT NULL,
-                updated_at             TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_subscriptions_stonechat
-                ON subscriptions(stonechat_id);
-            CREATE TABLE IF NOT EXISTS stripe_events (    -- webhook idempotency
-                event_id    TEXT PRIMARY KEY,
-                type        TEXT NOT NULL,
-                received_at TEXT NOT NULL
             );
             -- Append-only record of machines we destroyed for abuse. Separate
             -- from `mailboxes` on purpose: `mailboxes` holds at most one *live*
@@ -332,16 +302,6 @@ class Store:
                 "ALTER TABLE mailboxes"
                 " RENAME COLUMN host_agent_token TO mailbox_host_token"
             )
-        # Plan rename (2026-08): private → mailbox, sovereign → machine. The
-        # ids are a clean break — billing.PLANS no longer accepts the old
-        # spellings — so rows written before the rename have to be rewritten
-        # or their owners lose entitlement. Matches nothing once it has run.
-        for old, new in (("private", "mailbox"), ("sovereign", "machine")):
-            self._db.execute(
-                "UPDATE subscriptions SET plan = ?, updated_at = updated_at"
-                " WHERE plan = ?",
-                (new, old),
-            )
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -417,18 +377,9 @@ class Store:
         )
         return cur.rowcount > 0
 
-    def live_stripe_subscriptions(self, stonechat_id: str) -> list[dict]:
-        """Stripe subscriptions that would keep charging this account."""
-        rows = self._db.execute(
-            "SELECT * FROM subscriptions WHERE stonechat_id = ? AND source = 'stripe'"
-            " AND status IN ('active', 'grace') AND stripe_subscription_id IS NOT NULL",
-            (stonechat_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
     def delete_account(self, stonechat_id: str) -> None:
-        """Erase an account. The caller has already destroyed its mailbox's
-        machine and cancelled any Stripe billing.
+        """Erase an account. The caller has already had the gate release it
+        and destroyed its mailbox's machine.
 
         A hard delete, not a tombstone: an ID is a hash of its pubkey
         (identity.py), so a freed ID can never be issued to anyone else, and
@@ -437,19 +388,9 @@ class Store:
 
         Order is the safety argument (each statement autocommits): the users
         row goes last, because its token is what lets a half-finished deletion
-        be retried. Subscriptions are unlinked, not deleted: the payment record
-        stays for accounting, but nothing ties it to this ID any more, and a
-        lapsed row can never be redeemed again (claim_subscription). Kept on
-        purpose: abuse records (mailbox_tombstones, reports), which carry their
+        be retried. Kept on purpose: abuse records (mailbox_tombstones, reports), which carry their
         own retention (ABUSE.md)."""
-        now = _now()
         self._db.execute("DELETE FROM mailboxes WHERE stonechat_id = ?", (stonechat_id,))
-        self._db.execute(
-            "UPDATE subscriptions SET stonechat_id = NULL,"
-            " status = 'lapsed', lapsed_at = COALESCE(lapsed_at, ?), updated_at = ?"
-            " WHERE stonechat_id = ?",
-            (now, now, stonechat_id),
-        )
         self._db.execute("DELETE FROM users WHERE stonechat_id = ?", (stonechat_id,))
 
     # -- mailboxes -------------------------------------------------------------
@@ -541,22 +482,14 @@ class Store:
             (error[:1000], stonechat_id),
         )
 
-    def reapable_mailboxes(self, providers: tuple[str, ...], lapsed_before: str) -> list[dict]:
-        """Mailboxes on paid providers whose owner has no live subscription and
-        whose most recent one lapsed before the cutoff. Owners with no
-        subscription rows at all are left alone — ambiguous state (pre-billing
-        data, manual grants) is not a kill signal."""
+    def mailboxes_on(self, providers: tuple[str, ...]) -> list[dict]:
+        """Every mailbox on the given providers — what the reaper asks the
+        gate about, one owner at a time."""
         if not providers:
             return []
         marks = ",".join("?" * len(providers))
         rows = self._db.execute(
-            f"SELECT s.* FROM mailboxes s"
-            f" WHERE s.provider IN ({marks})"
-            "  AND NOT EXISTS (SELECT 1 FROM subscriptions"
-            "    WHERE stonechat_id = s.stonechat_id AND status IN ('active', 'grace'))"
-            "  AND (SELECT MAX(lapsed_at) FROM subscriptions"
-            "    WHERE stonechat_id = s.stonechat_id AND status = 'lapsed') <= ?",
-            (*providers, lapsed_before),
+            f"SELECT * FROM mailboxes WHERE provider IN ({marks})", providers,
         ).fetchall()
         mailboxes = []
         for row in rows:
@@ -682,121 +615,3 @@ class Store:
             "DELETE FROM reports WHERE created_at < ?", (older_than,)
         )
         return cur.rowcount
-
-    # -- billing ---------------------------------------------------------------
-
-    def record_event(self, event_id: str, event_type: str) -> bool:
-        """Webhook idempotency: True if this is the first delivery."""
-        cur = self._db.execute(
-            "INSERT OR IGNORE INTO stripe_events (event_id, type, received_at)"
-            " VALUES (?, ?, ?)",
-            (event_id, event_type, _now()),
-        )
-        return cur.rowcount == 1
-
-    def create_subscription(
-        self,
-        plan: str,
-        source: str,
-        code_hash: str,
-        code_plain: str,
-        *,
-        stripe_customer_id: str | None = None,
-        stripe_subscription_id: str | None = None,
-        checkout_session_id: str | None = None,
-        note: str | None = None,
-    ) -> dict:
-        """Raises sqlite3.IntegrityError on a duplicate code hash, checkout
-        session, or Stripe subscription id — callers retry or bail."""
-        now = _now()
-        row_id = str(uuid.uuid4())
-        self._db.execute(
-            "INSERT INTO subscriptions (id, source, plan, status,"
-            " stripe_customer_id, stripe_subscription_id, checkout_session_id,"
-            " code_hash, code_plain, note, created_at, updated_at)"
-            " VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)",
-            (row_id, source, plan, stripe_customer_id, stripe_subscription_id,
-             checkout_session_id, code_hash, code_plain, note, now, now),
-        )
-        row = self._db.execute(
-            "SELECT * FROM subscriptions WHERE id = ?", (row_id,)
-        ).fetchone()
-        return dict(row)
-
-    def subscription_by_session(self, session_id: str) -> dict | None:
-        row = self._db.execute(
-            "SELECT * FROM subscriptions WHERE checkout_session_id = ?",
-            (session_id,),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def subscription_by_stripe_sub(self, sub_id: str) -> dict | None:
-        row = self._db.execute(
-            "SELECT * FROM subscriptions WHERE stripe_subscription_id = ?",
-            (sub_id,),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def claim_subscription(self, code_hash: str, stonechat_id: str) -> dict | None:
-        """Atomically bind an unclaimed, non-lapsed code to an account and
-        drop the plaintext code. None if the code is unknown, spent, or dead."""
-        cur = self._db.execute(
-            "UPDATE subscriptions SET stonechat_id = ?, code_plain = NULL,"
-            " updated_at = ?"
-            " WHERE code_hash = ? AND stonechat_id IS NULL AND status != 'lapsed'",
-            (stonechat_id, _now(), code_hash),
-        )
-        if cur.rowcount != 1:
-            return None
-        row = self._db.execute(
-            "SELECT * FROM subscriptions WHERE code_hash = ?", (code_hash,)
-        ).fetchone()
-        return dict(row) if row else None
-
-    def entitlement_for(self, stonechat_id: str) -> dict | None:
-        """The account's best live subscription (machine beats mailbox).
-        `grace` still counts — payment trouble shouldn't cut service instantly."""
-        row = self._db.execute(
-            "SELECT * FROM subscriptions"
-            " WHERE stonechat_id = ? AND status IN ('active', 'grace')"
-            " ORDER BY CASE plan WHEN 'machine' THEN 0 ELSE 1 END, created_at"
-            " LIMIT 1",
-            (stonechat_id,),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def set_subscription_status(
-        self,
-        stripe_subscription_id: str,
-        status: str,
-        *,
-        current_period_end: str | None = None,
-    ) -> bool:
-        """Lifecycle transitions, guarded so out-of-order webhooks can't
-        resurrect a lapsed subscription or re-grace an already-lapsed one."""
-        now = _now()
-        if status == "active":
-            cur = self._db.execute(
-                "UPDATE subscriptions SET status = 'active', grace_since = NULL,"
-                " current_period_end = COALESCE(?, current_period_end),"
-                " updated_at = ?"
-                " WHERE stripe_subscription_id = ? AND status != 'lapsed'",
-                (current_period_end, now, stripe_subscription_id),
-            )
-        elif status == "grace":
-            cur = self._db.execute(
-                "UPDATE subscriptions SET status = 'grace', grace_since = ?,"
-                " updated_at = ?"
-                " WHERE stripe_subscription_id = ? AND status = 'active'",
-                (now, now, stripe_subscription_id),
-            )
-        elif status == "lapsed":
-            cur = self._db.execute(
-                "UPDATE subscriptions SET status = 'lapsed', lapsed_at = ?,"
-                " updated_at = ?"
-                " WHERE stripe_subscription_id = ? AND status != 'lapsed'",
-                (now, now, stripe_subscription_id),
-            )
-        else:
-            raise ValueError(f"unknown subscription status: {status}")
-        return cur.rowcount == 1

@@ -89,7 +89,7 @@ class ApiException implements Exception {
       detail = null,
       refused = true;
 
-  /// Machine-readable error code (e.g. 'subscription_required'), when the
+  /// Machine-readable error code (e.g. 'access_required'), when the
   /// hub sent a structured detail.
   String? get code => detail is Map ? (detail as Map)['code'] as String? : null;
 
@@ -363,7 +363,7 @@ class HubApi {
     await _check(r, (_) => null);
   }
 
-  /// Delete the account on the hub: its mailbox, its billing and its
+  /// Delete the account on the hub: its mailbox, its plan and its
   /// directory entry (PROTOCOL.md "Hub API"). [signatureB64] is
   /// CryptoService.signAccountDeletion over [timestamp].
   Future<void> deleteAccount({
@@ -403,35 +403,41 @@ class HubApi {
     await _check(r, (_) => null);
   }
 
-  /// The account's live plan, or null (PROTOCOL.md "Billing").
-  Future<({String plan, String status, String? currentPeriodEnd})?>
-  getEntitlement() async {
+  /// The account's plan — the tier the hub's gate grants it — or null
+  /// (PROTOCOL.md "Gate"). [notice] is the gate's own wording for anything
+  /// the user should act on (a failed payment, say); show it as-is.
+  Future<({String plan, String status, String? until, String? notice})?>
+  getAccess() async {
     final r = await http.get(
-      Uri.parse('$baseUrl/v1/billing/entitlement'),
+      Uri.parse('$baseUrl/v1/access'),
       headers: _auth,
     );
     return _check(r, (j) {
-      final plan = j['plan'] as String?;
-      if (plan == null) return null;
+      final tier = j['tier'] as String?;
+      if (tier == null) return null;
       return (
-        plan: plan,
-        status: j['status'] as String,
-        currentPeriodEnd: j['current_period_end'] as String?,
+        plan: tier,
+        status: j['status'] as String? ?? 'active',
+        until: j['until'] as String?,
+        notice: j['notice'] as String?,
       );
     });
   }
 
-  /// Redeem an activation code from a landing-page purchase (or a comp
-  /// grant), binding its subscription to this account.
-  Future<({String plan, String status})> redeemCode(String code) async {
+  /// Redeem an activation code (from a purchase on stonechat.app, or a
+  /// tester code). The hub hands it to its gate, which grants the tier.
+  Future<({String plan, String status})> claimCode(String code) async {
     final r = await http.post(
-      Uri.parse('$baseUrl/v1/billing/redeem'),
+      Uri.parse('$baseUrl/v1/access/claim'),
       headers: _auth,
       body: jsonEncode({'code': code}),
     );
     return _check(
       r,
-      (j) => (plan: j['plan'] as String, status: j['status'] as String),
+      (j) => (
+        plan: j['tier'] as String,
+        status: j['status'] as String? ?? 'active',
+      ),
     );
   }
 }

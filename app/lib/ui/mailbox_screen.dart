@@ -80,7 +80,7 @@ class _MailboxScreenState extends State<MailboxScreen> {
 
   Future<void> _loadPlan() async {
     try {
-      final e = await context.read<AppState>().api.getEntitlement();
+      final e = await context.read<AppState>().api.getAccess();
       if (mounted) setState(() => _plan = e?.plan);
     } on Exception {
       // best-effort; the invites entry also keys off the provider
@@ -336,7 +336,7 @@ class _MailboxScreenState extends State<MailboxScreen> {
 
   // In debug builds default to a local Docker mailbox so development never
   // needs a cloud account; release builds pick the provider the account's
-  // plan entitles it to (PROTOCOL.md "Billing"): mailbox → mailbox_host,
+  // plan entitles it to (PROTOCOL.md "Gate"): mailbox → mailbox_host,
   // machine → gcp. --dart-define=STONECHAT_PROVIDER overrides everything.
   static const _envProvider = String.fromEnvironment('STONECHAT_PROVIDER');
 
@@ -344,7 +344,7 @@ class _MailboxScreenState extends State<MailboxScreen> {
   Future<String?> _resolveProvider() async {
     if (_envProvider != '') return _envProvider;
     if (kDebugMode) return 'local';
-    final entitlement = await context.read<AppState>().api.getEntitlement();
+    final entitlement = await context.read<AppState>().api.getAccess();
     if (entitlement == null) return null;
     return entitlement.plan == 'machine' ? 'gcp' : 'mailbox_host';
   }
@@ -424,7 +424,7 @@ class _MailboxScreenState extends State<MailboxScreen> {
       _loadPlan();
     } on ApiException catch (e) {
       if (!mounted) return;
-      if (e.code == 'subscription_required') {
+      if (e.code == 'access_required') {
         // Belt and braces: the mailbox re-checks the entitlement (it may have
         // lapsed since we looked). Offer the code path and retry.
         final activated = await showRedeemSheet(context);

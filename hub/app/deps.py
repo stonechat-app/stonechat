@@ -1,7 +1,7 @@
 """Shared FastAPI dependencies: the store singleton and bearer-token auth.
 
-Lives outside main.py so routers (billing, admin) can import them without a
-circular import.
+Lives outside main.py so routers (gate, admin, report) can import them without
+a circular import.
 """
 
 import os

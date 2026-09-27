@@ -834,17 +834,14 @@ User auth: `Authorization: Bearer <account_token>` (issued at registration).
 | POST   | `/v1/register`            | none   | `{"pubkey": "<base64 Ed25519>", "pq_pk": "<base64 X-Wing, 1216 bytes>", "pq_sig": "<base64>"}` → `{"stonechat_id", "account_token"}`. `pq_sig` is Ed25519 over `"stonechat-v1-pqpk" \|\| pq_pk`; the hub verifies it (and clients re-verify on every resolve — the directory stays untrusted). |
 | POST   | `/v1/recover`             | none   | `{"pubkey", "timestamp", "signature"}` → `{"stonechat_id", "account_token"}` — identity restore. `signature` is Ed25519 over `"stonechat-v1-recover" \|\| str(timestamp)` (unix seconds, ±5 min). Rotates the account token: the recovering device becomes the account, any previous token dies. 404 if the key was never registered (client falls back to `/v1/register`). |
 | GET    | `/v1/directory/{stonechat_id}` | none | Lookup by full SC- ID only (no handles; the 160-bit ID is not enumerable). → `{"stonechat_id", "pubkey", "pq_pk", "pq_sig", "mailbox": {"address", "status", "tls_fp", "tls_sig"} \| null}`. 400 on a non-ID string, 404 if unknown. |
-| POST   | `/v1/mailbox`              | bearer | `{"country": "DE"}` (the app's form — the hub resolves it against the catalog and the caller's plan) **or** `{"provider": "gcp"\|"aws"\|"digitalocean"\|"local"\|"mailbox_host", "machine": {"machine_type", "region", "disk_gb"}}`. For `mailbox_host`, `region` is the ISO country code: placement is least-loaded *within* that country and fails rather than falling back to another. → 202, provisioning starts. One mailbox per user. Paid providers require an entitlement (see Billing): missing/insufficient plan → 402 `{"code": "subscription_required", "plan_required", "message"}`. |
+| POST   | `/v1/mailbox`              | bearer | `{"country": "DE"}` (the app's form — the hub resolves it against the catalog and the caller's plan) **or** `{"provider": "gcp"\|"aws"\|"digitalocean"\|"local"\|"mailbox_host", "machine": {"machine_type", "region", "disk_gb"}}`. For `mailbox_host`, `region` is the ISO country code: placement is least-loaded *within* that country and fails rather than falling back to another. → 202, provisioning starts. One mailbox per user. On a gated hub, gated providers require a tier (see "Gate"): missing/insufficient → 402 `{"code": "access_required", "tier_required", "message"}`; gate unreachable → 503 `{"code": "gate_unavailable"}`. |
 | POST   | `/v1/mailbox/external`     | bearer | `{"address"}` — list a self-provisioned relay. The hub confirms ownership via `GET {address}/owner?stonechat_id=<caller>` — the mailbox confirms the supplied ID rather than exposing its owner (ownership is proven, not claimed). The relay's token never reaches the hub. |
 | POST   | `/v1/mailbox/tls`          | bearer | `{"tls_fp", "tls_sig"}` — owner publishes the signature over their mailbox's TLS fingerprint. The hub verifies the Ed25519 signature against the registered pubkey and that `tls_fp` matches the fingerprint it observed. |
 | GET    | `/v1/mailbox`              | bearer | `{"status": "none"\|"provisioning"\|"running"\|"error", "address", "mailbox_token", "provider", "tls_fp", "error", "mailbox_host"}`. `mailbox_host` is `{"address", "admin_token"}` on running dedicated VMs (pre-installed mailbox host, see "Mailbox host"), else `null`. |
 | DELETE | `/v1/mailbox`              | bearer | Destroys the VM and forgets it. |
-| POST   | `/v1/account/delete`       | bearer | `{"timestamp", "signature"}` → `{"status": "deleted"}` — deletes the account. `signature` is Ed25519 by the identity key over `"stonechat-v1-delete" \|\| str(timestamp)` (unix seconds, ±5 min), so a token alone cannot erase an account and a linked device cannot at all. In order: destroys the mailbox's machine, cancels live Stripe subscriptions, unlinks every subscription row from the ID, drops the account. 409 `{"code": "subscription_active"}` if Stripe billing is live and the hub has no Stripe API key to cancel it (nothing is deleted). Afterwards the directory answers 404, as for an ID it never saw; peers are not notified. The ID is a hash of the pubkey, so registering the same key again yields the same ID as a new, empty account. |
-| POST   | `/v1/billing/webhook`     | Stripe signature | Stripe events: `checkout.session.completed` mints a subscription + activation code; `invoice.paid` / `invoice.payment_failed` / `customer.subscription.deleted` drive the status lifecycle. Idempotent per event id. |
-| GET    | `/v1/billing/activation/{session_id}` | none (the `cs_…` checkout session id is the secret; rate-limited) | → `{"plan", "code"\|null, "claimed", "status"}`. 404 until the webhook lands — the landing success page polls. |
-| POST   | `/v1/billing/redeem`      | bearer | `{"code": "STONECHAT-XXXX-XXXX"}` → binds the code's subscription to the caller's Stonechat ID → `{"plan", "status", "current_period_end"}`. 404 invalid/spent (indistinguishable), 409 if the account already has a live plan. |
-| GET    | `/v1/billing/entitlement` | bearer | `{"plan": null}` or `{"plan", "status", "source", "current_period_end"}`. |
-| POST   | `/v1/billing/comp`        | `X-Admin-Token` | `{"plan", "note"}` → `{"plan", "code"}` — free grant (testers). Disabled unless `STONECHAT_ADMIN_TOKEN` is set. |
+| POST   | `/v1/account/delete`       | bearer | `{"timestamp", "signature"}` → `{"status": "deleted"}` — deletes the account. `signature` is Ed25519 by the identity key over `"stonechat-v1-delete" \|\| str(timestamp)` (unix seconds, ±5 min), so a token alone cannot erase an account and a linked device cannot at all. In order: on a gated hub, asks the gate to release the ID (it ends what it grants, and what the user pays for) — the gate's 409 refusal is passed through and nothing is deleted; then destroys the mailbox's machine and drops the account. Afterwards the directory answers 404, as for an ID it never saw; peers are not notified. The ID is a hash of the pubkey, so registering the same key again yields the same ID as a new, empty account. |
+| GET    | `/v1/access`              | bearer | `{"gated", "tier", "status", "until", "notice"}`. `gated: false` → an open hub; nothing needs a tier and there is nothing to redeem. `tier` is `"mailbox"`, `"machine"` or null; `notice` is the gate's own text for the user, shown as-is. 503 if the gate is unreachable. |
+| POST   | `/v1/access/claim`        | bearer | `{"code"}` → forwarded to the gate for the caller's ID → same shape as `GET /v1/access`. The gate's 404/409 refusals pass through unchanged (the hosted gate: 404 `invalid_code`, 409 `already_granted`). 404 `not_gated` on an open hub. |
 | POST   | `/v1/report`              | signature | `{"reported_id", "reporter_pubkey", "timestamp", "category", "note", "evidence"\|null, "signature"}` → 202 `{"report_id"}`. See "Reporting". 400 malformed/self-report/unknown category, 401 bad signature, 404 `{"code": "not_our_account"}` if this hub does not host the reported ID. |
 
 `mailbox_token` is the `STONECHAT_OWNER_TOKEN` the client uses for its own `/ws`.
@@ -887,36 +884,52 @@ party sent are eligible, media is described rather than uploaded, and the
 signature covers the attachment's exact bytes. Client side: `app/lib/core/
 report.dart`. Hub side, including retention: `hub/app/report.py`.
 
-### Billing
+### Gate
 
-Paid plans map to providers: **mailbox** → `mailbox_host` (container on a shared
-host), **machine** → `gcp`/`aws`/`digitalocean` (dedicated VM). Machine
-outranks mailbox
-(a Machine subscriber may run on a shared host); `local` and `external` are
-ungated. Purchases happen on the landing page via Stripe Payment Links with
-`plan` metadata; the webhook mints an **activation code** — `STONECHAT-` + 8 chars
-from an unambiguous alphabet (`ABCDEFGHJKMNPQRSTVWXYZ23456789`), matched
-case-insensitively, separators ignored. The success page shows the code (via
-the activation endpoint); the app redeems it, which is the only moment the
-subscription touches a Stonechat ID. Subscription status: `active` → `grace`
-(payment failed; service continues) → `lapsed` (canceled or grace exhausted;
-terminal). Unclaimed codes on a lapsed subscription are dead.
+Tiers map to providers: **mailbox** → `mailbox_host` (container on a shared
+host), **machine** → `gcp`/`aws`/`digitalocean`/`hetzner`/`vultr` (dedicated
+VM). Machine outranks mailbox (a Machine holder may run on a shared host);
+`local` and `external` are never gated.
 
-Codes are single-use, with one operator-configured exception: if the hub is
-started with `STONECHAT_TEST_CODE`, redeeming that code mints and claims a fresh
-comp subscription every time (plan from `STONECHAT_TEST_CODE_PLAN`, default
-`private`). This is how TestFlight testers reactivate after a reset without
-minting a comp code per device. The redeem API shape is unchanged.
+Who holds which tier is not the hub's to decide. A hub started without
+`STONECHAT_GATE_URL` is **open**: every provider it offers is free to use and
+nothing is ever reaped. With it, the hub asks that service — the **gate** — and
+keeps no copy of the answer. Payment, coupons, invite codes, an allowlist: all
+of it lives behind this contract, every call carrying
+`Authorization: Bearer <STONECHAT_GATE_TOKEN>`:
 
-The hub stores **only**: pubkey, stonechat_id, hashed account
-token, current mailbox record (provider, provider-side resource id, address,
-status), and — for paying accounts — a subscription row (plan, status,
-Stripe customer/subscription ids, hashed activation code; the plaintext code
-is kept only until redeemed, then dropped). After redemption the control
-plane can link a Stonechat ID to a Stripe customer id: Stripe knows who paid, the
-hub knows which Stonechat ID they paid for — that is the entire, and
-deliberate, billing privacy cost. No names, no emails, no message data, no
-contact graph. It never sees prekeys — those live on the user's mailbox.
+| Method | Path | Body → response |
+|--------|------|-----------------|
+| GET  | `/v1/access/{stonechat_id}` | → access object |
+| POST | `/v1/access/{stonechat_id}/claim` | `{"code"}` → access object; 404/409 with a `{"detail": …}` body the hub passes to the client verbatim |
+| POST | `/v1/access/{stonechat_id}/release` | the account is being deleted: end what it grants → 2xx; 409 `{"detail": …}` refuses the deletion |
+
+Access object: `{"tier": "mailbox"|"machine"|null, "status", "until",
+"revoked_at", "notice"}`. A tier the hub does not know reads as null.
+`revoked_at` is when a tier the ID once held was lost (null if it never held
+one); the hub's reaper destroys a gated mailbox once its owner's `revoked_at`
+is older than `STONECHAT_REAP_RETENTION_DAYS`, and leaves owners with a null
+one alone. The gate takes the Stonechat ID on trust — the hub has already
+authenticated the user — so the token is the whole of its security.
+
+Failure is asymmetric on purpose: a gate the hub cannot reach refuses gated
+provisioning (503) and skips that reap pass; nothing already running is
+touched. `scripts/stub_gate.py` is a working gate that grants tiers for codes
+(and what `scripts/e2e.py` runs against).
+
+The hosted service's gate sells tiers through Stripe Payment Links on
+stonechat.app. The webhook mints an **activation code** — `STONECHAT-` + 8
+chars from an unambiguous alphabet (`ABCDEFGHJKMNPQRSTVWXYZ23456789`), matched
+case-insensitively, separators ignored — which the purchase page shows and the
+app claims. Claiming is the only moment a payment touches a Stonechat ID: from
+then on that gate can link the ID to a Stripe customer id (Stripe knows who
+paid; the gate knows which ID they paid for). That is the entire, and
+deliberate, privacy cost of paying — and it is borne by the gate, not the hub.
+
+The hub stores **only**: pubkey, stonechat_id, hashed account token, current
+mailbox record (provider, provider-side resource id, address, status). No
+names, no emails, no payment data, no message data, no contact graph. It never
+sees prekeys — those live on the user's mailbox.
 
 ## Versioning
 

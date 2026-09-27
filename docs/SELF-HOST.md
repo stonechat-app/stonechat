@@ -303,8 +303,10 @@ optional: it is how Caddy proves the domain to Let's Encrypt, and closing it
 breaks renewal 60 days later. Phones need a real certificate for the hub, so run
 the `tls` profile for anything beyond local testing.
 
-A self-hosted hub runs with billing off: no plans, no payment, every feature
-open. Back it up with `sqlite3 hub.db ".backup out.db"` (it is in WAL mode, so
+A self-hosted hub is open by default: no tiers, no payment, every feature
+open. To restrict who may use the mailboxes you provision, point
+`STONECHAT_GATE_URL` at a service that decides it (PROTOCOL.md "Gate";
+`scripts/stub_gate.py` is a working example that grants access for codes). Back it up with `sqlite3 hub.db ".backup out.db"` (it is in WAL mode, so
 a plain `cp` of a running hub is not safe).
 
 ### 2. Point the app at it
