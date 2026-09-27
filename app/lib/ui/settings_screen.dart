@@ -5,6 +5,7 @@ library;
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
@@ -19,6 +20,9 @@ import 'devices_screen.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
 import 'widgets.dart';
+
+/// Where this app's source lives — the AGPL §13 offer to everyone using it.
+const sourceUrl = 'https://github.com/stonechat-app/stonechat';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -131,6 +135,20 @@ class SettingsScreen extends StatelessWidget {
                   style: TextStyle(color: Zn.muted, fontSize: 12)),
               onTap: () => _resetIdentity(context, app),
             ),
+          const _SectionLabel('About'),
+          ListTile(
+            leading: const Icon(Icons.code, color: Zn.muted, size: 20),
+            title: const Text('Source code'),
+            subtitle: const Text(
+                '$sourceUrl — free software under the AGPL-3.0. Tap to copy.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            onTap: () async {
+              await Clipboard.setData(const ClipboardData(text: sourceUrl));
+              if (context.mounted) {
+                showZnSnack(context, 'Source code link copied');
+              }
+            },
+          ),
           const _VersionFooter(),
         ],
       ),
