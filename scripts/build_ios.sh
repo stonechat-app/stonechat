@@ -1,14 +1,26 @@
 #!/bin/bash
 
 # Stonechat - iOS Production Build Script
-# Increments the build number and builds the production IPA
+# Increments the build number and builds the production IPA.
+# ./scripts/build_ios.sh --upload also sends it to App Store Connect (TestFlight).
 
 set -e
+
+UPLOAD=0
+[ "${1:-}" = "--upload" ] && UPLOAD=1
 
 echo "Starting iOS Production Build..."
 
 # Change to the Flutter app directory
 cd "$(dirname "$0")/../app"
+
+# App Store Connect API key for --upload (gitignored): ASC_KEY_ID,
+# ASC_ISSUER_ID and ASC_KEY_PATH (relative to app/).
+if [ -f .env.appstore ]; then
+    set -a
+    . ./.env.appstore
+    set +a
+fi
 
 # Check if Flutter is installed
 if ! command -v flutter &> /dev/null; then
@@ -55,6 +67,11 @@ fi
 
 # Build the iOS app
 echo "Building iOS app (STONECHAT_HUB=$STONECHAT_HUB, STONECHAT_PROVIDER=${STONECHAT_PROVIDER:-<plan-driven>})..."
+# Automatic signing, from this Mac's keychain: needs the Gazelle Labs Apple
+# Distribution certificate and Xcode-managed App Store profiles that include it.
+# Refresh the profiles (they expire yearly, and change with capabilities) by
+# exporting any archive once from Xcode's Organizer with automatic signing.
+# "No Accounts" warnings during export are expected and harmless.
 flutter build ipa "${DEFINES[@]}"
 
 # Find the generated IPA (name may vary)
@@ -92,3 +109,16 @@ echo ""
 echo "Build completed successfully!"
 echo "IPA: app/$IPA_FILE"
 echo "Version: $NEW_VERSION"
+
+if [ "$UPLOAD" = 1 ]; then
+    : "${ASC_KEY_ID:?--upload needs ASC_KEY_ID (app/.env.appstore)}"
+    : "${ASC_ISSUER_ID:?--upload needs ASC_ISSUER_ID (app/.env.appstore)}"
+    : "${ASC_KEY_PATH:?--upload needs ASC_KEY_PATH (app/.env.appstore)}"
+    echo ""
+    echo "Uploading build $NEW_BUILD_NUMBER to App Store Connect..."
+    # altool finds the key as AuthKey_<id>.p8 inside API_PRIVATE_KEYS_DIR.
+    API_PRIVATE_KEYS_DIR="$(cd "$(dirname "$ASC_KEY_PATH")" && pwd)" \
+        xcrun altool --upload-app -f "$IPA_FILE" -t ios \
+        --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+    echo "Uploaded. It shows in TestFlight once Apple finishes processing."
+fi
