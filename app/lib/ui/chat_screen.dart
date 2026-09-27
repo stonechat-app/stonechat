@@ -65,6 +65,30 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _flashId; // briefly tinted row after a jump (reply tap, search)
   Timer? _flashTimer;
 
+  // Arrival animation: only messages sent after the screen opened, and each
+  // only once — scrolling back through history never replays it.
+  final _openedAt = DateTime.now().millisecondsSinceEpoch;
+  final _arrived = <String>{};
+
+  Widget _arrive(Message m, Widget child) {
+    final animate = _arrived.add(m.id) && m.sentAt >= _openedAt - 2000;
+    // Always the same wrapper, so a rebuild mid-animation (pending → sent is
+    // quick) lets it finish instead of snapping.
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: animate ? 0 : 1, end: 1),
+      duration: Zn.dur(context, Zn.medium),
+      curve: Zn.ease,
+      builder: (context, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(
+          offset: Offset(0, 6 * (1 - t)),
+          child: child,
+        ),
+      ),
+      child: child,
+    );
+  }
+
   bool get isGroup => widget.group != null;
   String get conversationId => widget.contact?.stonechatId ?? widget.group!.id;
 
@@ -86,6 +110,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty) return;
+    HapticFeedback.lightImpact();
     _input.clear();
     final chat = context.read<ChatState>();
     final editing = _editing;
@@ -229,6 +254,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _showMessageSheet(Message m) {
     final chat = context.read<ChatState>();
     if (m.deleted) return;
+    HapticFeedback.mediumImpact();
     // Local rows (call epitaphs, system notices): delete-for-me only.
     final isLocalRow =
         m.kind == MessageKind.call || m.kind == MessageKind.notice;
@@ -259,6 +285,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       GestureDetector(
                         onTap: () {
                           Navigator.pop(sheetContext);
+                          HapticFeedback.selectionClick();
                           chat.react(m, emoji);
                         },
                         child: Container(
@@ -394,6 +421,7 @@ class _ChatScreenState extends State<ChatScreen> {
         child: EmojiPicker(
           onEmojiSelected: (category, emoji) {
             Navigator.pop(sheetContext);
+            HapticFeedback.selectionClick();
             chat.react(m, emoji.emoji);
           },
           config: const Config(
@@ -1255,77 +1283,86 @@ class _ChatScreenState extends State<ChatScreen> {
                           isGroup ? (m.senderId ?? '') : conversationId,
                         );
                   if (m.kind == MessageKind.notice) {
-                    return GestureDetector(
-                      onLongPress: () => _showMessageSheet(m),
-                      behavior: HitTestBehavior.opaque,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 10),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(
-                              m.text.contains('disappearing messages')
-                                  ? Icons.timer_outlined
-                                  : Icons.info_outline,
-                              size: 11,
-                              color: Zn.muted,
-                            ),
-                            const SizedBox(width: 5),
-                            Flexible(
-                              child: Text(
-                                m.text,
-                                textAlign: TextAlign.center,
-                                style: Zn.mono(size: 10, color: Zn.muted),
+                    return _arrive(
+                      m,
+                      GestureDetector(
+                        onLongPress: () => _showMessageSheet(m),
+                        behavior: HitTestBehavior.opaque,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                m.text.contains('disappearing messages')
+                                    ? Icons.timer_outlined
+                                    : Icons.info_outline,
+                                size: 11,
+                                color: Zn.muted,
                               ),
-                            ),
-                          ],
+                              const SizedBox(width: 5),
+                              Flexible(
+                                child: Text(
+                                  m.text,
+                                  textAlign: TextAlign.center,
+                                  style: Zn.mono(size: 10, color: Zn.muted),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     );
                   }
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (previous != null) _GapMarker.between(previous, m),
-                      GestureDetector(
-                        onLongPress: () => _showMessageSheet(m),
-                        behavior: HitTestBehavior.opaque,
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 300),
-                          color: _flashId == m.id
-                              ? Zn.orange.withValues(alpha: 0.08)
-                              : Colors.transparent,
-                          child: _LedgerEntry(
-                            message: m,
-                            peerName: senderName,
-                            peerColor: railColor,
-                            // A notice breaks the run: re-show the sender after it.
-                            showSender:
-                                previous == null ||
-                                previous.kind == MessageKind.notice ||
-                                previous.outgoing != m.outgoing ||
-                                previous.senderId != m.senderId,
-                            reactions:
-                                chat.reactionsByMessage[m.id] ?? const {},
-                            myEmoji: chat.myReactionTo(m),
-                            onReact: (emoji) => chat.react(m, emoji),
-                            quoteSender: m.replyToId == null
-                                ? null
-                                : _senderName(m.replyToSender, chat),
-                            onQuoteTap: m.replyToId == null
-                                ? null
-                                : () => _jumpToMessage(m.replyToId!),
-                            searchQuery: searchQuery,
-                            owed: isGroup ? chat.owedFor(m.id) : 0,
-                            // Fan-out targets, so everyone but us.
-                            memberCount: isGroup ? (memberCount ?? 1) - 1 : 0,
-                            onRetry: m.status == MessageStatus.failed
-                                ? () => chat.retryMessage(m)
-                                : null,
+                  return _arrive(
+                    m,
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        if (previous != null) _GapMarker.between(previous, m),
+                        GestureDetector(
+                          onLongPress: () => _showMessageSheet(m),
+                          behavior: HitTestBehavior.opaque,
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 300),
+                            color: _flashId == m.id
+                                ? Zn.orange.withValues(alpha: 0.08)
+                                : Colors.transparent,
+                            child: _LedgerEntry(
+                              message: m,
+                              peerName: senderName,
+                              peerColor: railColor,
+                              // A notice breaks the run: re-show the sender after it.
+                              showSender:
+                                  previous == null ||
+                                  previous.kind == MessageKind.notice ||
+                                  previous.outgoing != m.outgoing ||
+                                  previous.senderId != m.senderId,
+                              reactions:
+                                  chat.reactionsByMessage[m.id] ?? const {},
+                              myEmoji: chat.myReactionTo(m),
+                              onReact: (emoji) {
+                                HapticFeedback.selectionClick();
+                                chat.react(m, emoji);
+                              },
+                              quoteSender: m.replyToId == null
+                                  ? null
+                                  : _senderName(m.replyToSender, chat),
+                              onQuoteTap: m.replyToId == null
+                                  ? null
+                                  : () => _jumpToMessage(m.replyToId!),
+                              searchQuery: searchQuery,
+                              owed: isGroup ? chat.owedFor(m.id) : 0,
+                              // Fan-out targets, so everyone but us.
+                              memberCount: isGroup ? (memberCount ?? 1) - 1 : 0,
+                              onRetry: m.status == MessageStatus.failed
+                                  ? () => chat.retryMessage(m)
+                                  : null,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   );
                 },
               ),
@@ -1529,7 +1566,6 @@ class _LedgerEntry extends StatelessWidget {
     }
     return null;
   }
-
 
   /// The message text as spans, query matches tinted.
   List<TextSpan> _highlighted(String text) {
@@ -1741,46 +1777,13 @@ class _LedgerEntry extends StatelessWidget {
                         ),
                       ),
                     ),
-                  if (reactions.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Wrap(
-                        spacing: 6,
-                        runSpacing: 4,
-                        children: [
-                          for (final entry in _aggregated().entries)
-                            GestureDetector(
-                              onTap: () => onReact?.call(entry.key),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: Zn.raised,
-                                  borderRadius: BorderRadius.circular(
-                                    Zn.radius,
-                                  ),
-                                  border: Border.all(
-                                    color: myEmoji == entry.key
-                                        ? Zn.orange
-                                        : Zn.line,
-                                  ),
-                                ),
-                                child: Text(
-                                  entry.value > 1
-                                      ? '${entry.key} ${entry.value}'
-                                      : entry.key,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    color: Zn.text,
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
+                  // Always mounted, even empty: the row tells a reaction that
+                  // just arrived from one that was there when it scrolled in.
+                  _ReactionRow(
+                    counts: _aggregated(),
+                    myEmoji: myEmoji,
+                    onReact: onReact,
+                  ),
                 ],
               ),
             ),
@@ -1799,20 +1802,26 @@ class _LedgerEntry extends StatelessWidget {
                     ),
                     if (message.outgoing) ...[
                       const SizedBox(width: 4),
-                      Text(
-                        switch (message.status) {
-                          MessageStatus.pending => '◌',
-                          MessageStatus.failed => '✕',
-                          MessageStatus.sent => '●',
-                          _ => '●●', // delivered / read, read lights up
-                        },
-                        style: Zn.mono(
-                          size: 9,
-                          color: switch (message.status) {
-                            MessageStatus.read => Zn.amber,
-                            MessageStatus.failed => Zn.danger,
-                            _ => Zn.muted,
+                      // Cross-fade so "it landed" is a moment, not a swap.
+                      AnimatedSwitcher(
+                        duration: Zn.dur(context, Zn.fast),
+                        switchInCurve: Zn.ease,
+                        child: Text(
+                          switch (message.status) {
+                            MessageStatus.pending => '◌',
+                            MessageStatus.failed => '✕',
+                            MessageStatus.sent => '●',
+                            _ => '●●', // delivered / read, read lights up
                           },
+                          key: ValueKey(message.status),
+                          style: Zn.mono(
+                            size: 9,
+                            color: switch (message.status) {
+                              MessageStatus.read => Zn.amber,
+                              MessageStatus.failed => Zn.danger,
+                              _ => Zn.muted,
+                            },
+                          ),
                         ),
                       ),
                     ],
@@ -1822,6 +1831,82 @@ class _LedgerEntry extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Reaction chips under a message. A chip that is new, or whose count went
+/// up, pops once; everything present when the row mounted stays still.
+class _ReactionRow extends StatefulWidget {
+  final Map<String, int> counts; // emoji → how many reacted with it
+  final String? myEmoji;
+  final void Function(String emoji)? onReact;
+
+  const _ReactionRow({required this.counts, this.myEmoji, this.onReact});
+
+  @override
+  State<_ReactionRow> createState() => _ReactionRowState();
+}
+
+class _ReactionRowState extends State<_ReactionRow> {
+  final _generation = <String, int>{}; // bumped per pop: a new key restarts it
+  final _popping = <String>{};
+
+  @override
+  void didUpdateWidget(_ReactionRow old) {
+    super.didUpdateWidget(old);
+    _popping.clear();
+    for (final entry in widget.counts.entries) {
+      if (entry.value > (old.counts[entry.key] ?? 0)) {
+        _generation[entry.key] = (_generation[entry.key] ?? 0) + 1;
+        _popping.add(entry.key);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.counts.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 4,
+        children: [
+          for (final entry in widget.counts.entries)
+            TweenAnimationBuilder<double>(
+              key: ValueKey('${entry.key}#${_generation[entry.key] ?? 0}'),
+              tween: Tween(
+                begin: _popping.contains(entry.key) ? 0.85 : 1,
+                end: 1,
+              ),
+              duration: Zn.dur(context, Zn.fast),
+              curve: Zn.ease,
+              builder: (context, scale, child) =>
+                  Transform.scale(scale: scale, child: child),
+              child: GestureDetector(
+                onTap: () => widget.onReact?.call(entry.key),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Zn.raised,
+                    borderRadius: BorderRadius.circular(Zn.radius),
+                    border: Border.all(
+                      color: widget.myEmoji == entry.key ? Zn.orange : Zn.line,
+                    ),
+                  ),
+                  child: Text(
+                    entry.value > 1 ? '${entry.key} ${entry.value}' : entry.key,
+                    style: const TextStyle(fontSize: 13, color: Zn.text),
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -2283,6 +2368,7 @@ class _ComposerState extends State<_Composer> {
       final path = await _recorder.stop();
       final started = _recordingStarted!;
       _ticker?.cancel();
+      HapticFeedback.mediumImpact();
       setState(() => _recordingStarted = null);
       if (path != null) {
         final duration = DateTime.now().difference(started);
@@ -2308,6 +2394,7 @@ class _ComposerState extends State<_Composer> {
       path:
           '${dir.path}/stonechat-voice-${DateTime.now().millisecondsSinceEpoch}.m4a',
     );
+    HapticFeedback.mediumImpact();
     setState(() => _recordingStarted = DateTime.now());
     _ticker = Timer.periodic(
       const Duration(seconds: 1),
@@ -2396,27 +2483,48 @@ class _ComposerState extends State<_Composer> {
           if (widget.onVoiceRecorded != null)
             IconButton(
               onPressed: _toggleRecording,
-              icon: Icon(
-                _recording ? Icons.stop_circle_outlined : Icons.mic_none,
-                color: _recording ? Zn.danger : Zn.muted,
-                size: 22,
+              icon: AnimatedSwitcher(
+                duration: Zn.dur(context, Zn.fast),
+                switchInCurve: Zn.ease,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: ScaleTransition(
+                    scale: Tween(begin: 0.8, end: 1.0).animate(animation),
+                    child: child,
+                  ),
+                ),
+                child: Icon(
+                  _recording ? Icons.stop_circle_outlined : Icons.mic_none,
+                  key: ValueKey(_recording),
+                  color: _recording ? Zn.danger : Zn.muted,
+                  size: 22,
+                ),
               ),
             ),
-          IconButton(
-            onPressed: _recording ? null : widget.onSend,
-            icon: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                color: _recording ? Zn.line : Zn.orange,
-                borderRadius: BorderRadius.circular(Zn.radius),
-              ),
-              child: const Icon(
-                Icons.arrow_upward,
-                size: 20,
-                color: Zn.onAccent,
-              ),
-            ),
+          // Lights up once there is something to send.
+          ValueListenableBuilder(
+            valueListenable: widget.controller,
+            builder: (context, value, _) {
+              final armed = !_recording && value.text.trim().isNotEmpty;
+              return IconButton(
+                onPressed: _recording ? null : widget.onSend,
+                icon: AnimatedContainer(
+                  duration: Zn.dur(context, Zn.fast),
+                  curve: Zn.ease,
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: armed ? Zn.orange : Zn.line,
+                    borderRadius: BorderRadius.circular(Zn.radius),
+                  ),
+                  child: Icon(
+                    Icons.arrow_upward,
+                    size: 20,
+                    color: armed ? Zn.onAccent : Zn.muted,
+                  ),
+                ),
+              );
+            },
           ),
         ],
       ),

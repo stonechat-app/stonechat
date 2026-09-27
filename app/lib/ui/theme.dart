@@ -24,6 +24,15 @@ abstract final class Zn {
 
   static const radius = 4.0;
 
+  // motion — short and ease-out, never springy: a console updates, it doesn't
+  // bounce. Every animation goes through [dur] so reduce-motion turns it off.
+  static const fast = Duration(milliseconds: 150);
+  static const medium = Duration(milliseconds: 220);
+  static const ease = Curves.easeOutCubic;
+
+  static Duration dur(BuildContext context, Duration d) =>
+      MediaQuery.disableAnimationsOf(context) ? Duration.zero : d;
+
   static const monoFamily = 'Menlo';
   static const monoFallback = ['Roboto Mono', 'monospace'];
 
@@ -32,15 +41,14 @@ abstract final class Zn {
     Color color = muted,
     FontWeight weight = FontWeight.w400,
     double? letterSpacing,
-  }) =>
-      TextStyle(
-        fontFamily: monoFamily,
-        fontFamilyFallback: monoFallback,
-        fontSize: size,
-        color: color,
-        fontWeight: weight,
-        letterSpacing: letterSpacing,
-      );
+  }) => TextStyle(
+    fontFamily: monoFamily,
+    fontFamilyFallback: monoFallback,
+    fontSize: size,
+    color: color,
+    fontWeight: weight,
+    letterSpacing: letterSpacing,
+  );
 
   /// Deterministic accent for a contact, derived from their ID.
   static Color idColor(String stonechatId) {

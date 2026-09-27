@@ -1,6 +1,7 @@
 /// Shared Stonechat UI pieces: the relay status strip and ID-derived avatars.
 library;
 
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -22,16 +23,23 @@ class RelayStrip extends StatelessWidget {
     // the hub that the network is fine and the mailbox simply isn't there.
     final down = mailbox.mailboxDownFor;
 
-    final (dot, label, color) = switch ((mailbox.record.status, mailbox.socketConnected)) {
+    final (dot, label, color) = switch ((
+      mailbox.record.status,
+      mailbox.socketConnected,
+    )) {
       ('running', true) => ('●', "You're reachable", Zn.ok),
       ('running', false) when down != null => (
-          '✕',
-          "Your mailbox isn't answering · ${formatOutage(down)} — tap to check",
-          Zn.danger
-        ),
+        '✕',
+        "Your mailbox isn't answering · ${formatOutage(down)} — tap to check",
+        Zn.danger,
+      ),
       ('running', false) => ('◐', 'Connecting to your mailbox…', Zn.amber),
       ('provisioning', _) => ('◌', 'Setting up your mailbox…', Zn.amber),
-      ('error', _) => ('✕', "Mailbox setup didn't work — tap to see why", Zn.danger),
+      ('error', _) => (
+        '✕',
+        "Mailbox setup didn't work — tap to see why",
+        Zn.danger,
+      ),
       _ => ('○', 'No mailbox yet — tap to set up', Zn.muted),
     };
 
@@ -47,18 +55,123 @@ class RelayStrip extends StatelessWidget {
             bottom: BorderSide(color: Zn.line),
           ),
         ),
-        child: Row(
-          children: [
-            Text(dot, style: Zn.mono(size: 11, color: color)),
-            const SizedBox(width: 8),
-            Text(label,
-                style: TextStyle(
-                    fontSize: 12.5, color: color, fontWeight: FontWeight.w500)),
-          ],
+        // Keyed by label: a state change cross-fades instead of snapping, so
+        // turning reachable (or dropping off) registers.
+        child: AnimatedSwitcher(
+          duration: Zn.dur(context, Zn.medium),
+          switchInCurve: Zn.ease,
+          layoutBuilder: (current, previous) => Stack(
+            alignment: Alignment.centerLeft,
+            children: [...previous, ?current],
+          ),
+          child: Row(
+            key: ValueKey(label),
+            children: [
+              switch (dot) {
+                '◐' => _Pulse(
+                  child: Text(dot, style: Zn.mono(size: 11, color: color)),
+                ),
+                '◌' => _TermSpinner(color: color),
+                _ => Text(dot, style: Zn.mono(size: 11, color: color)),
+              },
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: color,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
+}
+
+/// Slow breathing for "in progress, not stuck" — the connecting dot.
+class _Pulse extends StatefulWidget {
+  final Widget child;
+  const _Pulse({required this.child});
+
+  @override
+  State<_Pulse> createState() => _PulseState();
+}
+
+class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
+  late final _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.value = 1;
+    } else if (!_controller.isAnimating) {
+      _controller.repeat(reverse: true);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => FadeTransition(
+    opacity: Tween(
+      begin: 0.35,
+      end: 1.0,
+    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut)),
+    child: widget.child,
+  );
+}
+
+/// A terminal spinner for work that takes a while (mailbox setup). Falls
+/// back to the static glyph under reduce-motion.
+class _TermSpinner extends StatefulWidget {
+  final Color color;
+  const _TermSpinner({required this.color});
+
+  @override
+  State<_TermSpinner> createState() => _TermSpinnerState();
+}
+
+class _TermSpinnerState extends State<_TermSpinner> {
+  static const _frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  Timer? _timer;
+  var _frame = 0;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _timer?.cancel();
+    _timer = MediaQuery.disableAnimationsOf(context)
+        ? null
+        : Timer.periodic(
+            const Duration(milliseconds: 80),
+            (_) => setState(() => _frame = (_frame + 1) % _frames.length),
+          );
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Text(
+    _timer == null ? '◌' : _frames[_frame],
+    style: Zn.mono(size: 11, color: widget.color),
+  );
 }
 
 /// Square avatar: the contact's profile photo when we hold one (E2EE-shared,
@@ -114,10 +227,22 @@ class StonechatAvatar extends StatelessWidget {
   Widget _initials(Color color) {
     final initials = name.isEmpty
         ? '?'
-        : name.trim().split(RegExp(r'\s+')).take(2).map((w) => w[0]).join().toUpperCase();
+        : name
+              .trim()
+              .split(RegExp(r'\s+'))
+              .take(2)
+              .map((w) => w[0])
+              .join()
+              .toUpperCase();
     return Center(
-      child: Text(initials,
-          style: Zn.mono(size: size * 0.33, color: color, weight: FontWeight.w700)),
+      child: Text(
+        initials,
+        style: Zn.mono(
+          size: size * 0.33,
+          color: color,
+          weight: FontWeight.w700,
+        ),
+      ),
     );
   }
 }
@@ -167,7 +292,10 @@ class ZnTabBar extends StatelessWidget {
                           Align(
                             alignment: Alignment.topCenter,
                             child: Container(
-                                width: 56, height: 2, color: Zn.orange),
+                              width: 56,
+                              height: 2,
+                              color: Zn.orange,
+                            ),
                           ),
                         Center(
                           child: Row(
@@ -176,10 +304,11 @@ class ZnTabBar extends StatelessWidget {
                               Text(
                                 tabs[i].label.toUpperCase(),
                                 style: Zn.mono(
-                                    size: 10,
-                                    letterSpacing: 2,
-                                    weight: FontWeight.w700,
-                                    color: i == index ? Zn.orange : Zn.muted),
+                                  size: 10,
+                                  letterSpacing: 2,
+                                  weight: FontWeight.w700,
+                                  color: i == index ? Zn.orange : Zn.muted,
+                                ),
                               ),
                               if (tabs[i].dot) ...[
                                 const SizedBox(width: 6),
@@ -187,7 +316,9 @@ class ZnTabBar extends StatelessWidget {
                                   width: 6,
                                   height: 6,
                                   decoration: const BoxDecoration(
-                                      color: Zn.orange, shape: BoxShape.circle),
+                                    color: Zn.orange,
+                                    shape: BoxShape.circle,
+                                  ),
                                 ),
                               ],
                             ],
@@ -208,8 +339,10 @@ class ZnTabBar extends StatelessWidget {
 void showZnSnack(BuildContext context, String message, {bool error = false}) {
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
-      content: Text(message,
-          style: TextStyle(color: error ? Zn.danger : Zn.text)),
+      content: Text(
+        message,
+        style: TextStyle(color: error ? Zn.danger : Zn.text),
+      ),
     ),
   );
 }
@@ -247,7 +380,9 @@ class ZnOptionCard extends StatelessWidget {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               border: Border.all(
-                  color: selected ? Zn.orange : Zn.line, width: 1.5),
+                color: selected ? Zn.orange : Zn.line,
+                width: 1.5,
+              ),
             ),
             child: selected
                 ? Center(
@@ -255,7 +390,9 @@ class ZnOptionCard extends StatelessWidget {
                       width: 8,
                       height: 8,
                       decoration: const BoxDecoration(
-                          color: Zn.orange, shape: BoxShape.circle),
+                        color: Zn.orange,
+                        shape: BoxShape.circle,
+                      ),
                     ),
                   )
                 : null,
@@ -271,15 +408,16 @@ class ZnOptionCard extends StatelessWidget {
           color: active
               ? Zn.ok.withValues(alpha: 0.05)
               : selected
-                  ? Zn.orange.withValues(alpha: 0.06)
-                  : Zn.surface,
+              ? Zn.orange.withValues(alpha: 0.06)
+              : Zn.surface,
           borderRadius: BorderRadius.circular(Zn.radius),
           border: Border.all(
-              color: active
-                  ? Zn.ok
-                  : selected
-                      ? Zn.orange
-                      : Zn.line),
+            color: active
+                ? Zn.ok
+                : selected
+                ? Zn.orange
+                : Zn.line,
+          ),
         ),
         child: Opacity(
           opacity: dimmed ? 0.45 : 1,
@@ -298,17 +436,23 @@ class ZnOptionCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(title,
-                            style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w600,
-                                color: selected || active
-                                    ? Zn.text
-                                    : Zn.muted)),
+                        Text(
+                          title,
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                            color: selected || active ? Zn.text : Zn.muted,
+                          ),
+                        ),
                         const SizedBox(height: 3),
-                        Text(subtitle,
-                            style: const TextStyle(
-                                color: Zn.muted, fontSize: 12.5, height: 1.4)),
+                        Text(
+                          subtitle,
+                          style: const TextStyle(
+                            color: Zn.muted,
+                            fontSize: 12.5,
+                            height: 1.4,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -330,7 +474,11 @@ class ZnLabeledField extends StatelessWidget {
   final String label;
   final TextEditingController controller;
 
-  const ZnLabeledField({super.key, required this.label, required this.controller});
+  const ZnLabeledField({
+    super.key,
+    required this.label,
+    required this.controller,
+  });
 
   @override
   Widget build(BuildContext context) {
