@@ -1,6 +1,6 @@
 # Stonechat web client
 
-Design and threat analysis: `notes/docs/WEB_CLIENT.md` (internal). This
+Design and threat analysis: [`docs/WEB_CLIENT.md`](../docs/WEB_CLIENT.md). This
 README is the build record and the open decisions.
 
 Status: **linking works; messaging does not.** A browser session can be
