@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart' show MethodChannel;
 import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
@@ -37,6 +38,11 @@ class ChatDb {
 
   ChatDb._(this._db);
 
+  /// Wrap an already-open database — tests run on in-memory SQLite, since the
+  /// app's SQLCipher needs its native library.
+  @visibleForTesting
+  ChatDb.forTesting(this._db);
+
   /// Delete the on-disk database. Called during a fresh-install wipe
   /// (app_state): the SQLCipher key in the keystore is being discarded, so a
   /// persisted DB encrypted under the old key would be unopenable — drop it
@@ -58,72 +64,131 @@ class ChatDb {
       // schema below is simply the schema. An older database is wiped
       // (deleteDatabaseFiles) rather than upgraded.
       version: 1,
-      onCreate: (db, _) async {
-        await db.execute('''
-          CREATE TABLE contacts (
-            stonechat_id        TEXT PRIMARY KEY,
-            display_name   TEXT NOT NULL,
-            pubkey         TEXT NOT NULL,
-            pq_pk          TEXT,
-            status         TEXT NOT NULL,
-            mailbox_address TEXT,
-            tls_fp         TEXT,
-            hub            TEXT,
-            created_at     INTEGER NOT NULL,
-            pinned_at      INTEGER,
-            expire_timer_ms INTEGER NOT NULL DEFAULT 0,
-            expire_timer_at INTEGER NOT NULL DEFAULT 0,
-            blocked_at     INTEGER,
-            muted_until    INTEGER,
-            archived_at    INTEGER,
-            avatar         BLOB,
-            profile_at     INTEGER NOT NULL DEFAULT 0,
-            devices_v      INTEGER NOT NULL DEFAULT 0,
-            bundle_token   TEXT
-          )
-        ''');
-        await db.execute('''
-          CREATE TABLE messages (
-            id          TEXT PRIMARY KEY,
-            contact_id  TEXT NOT NULL REFERENCES contacts(stonechat_id),
-            sender_id   TEXT,
-            outgoing    INTEGER NOT NULL,
-            text        TEXT NOT NULL,
-            kind        TEXT NOT NULL DEFAULT 'text',
-            media_path  TEXT,
-            duration_ms INTEGER,
-            file_name   TEXT,
-            sent_at     INTEGER NOT NULL,
-            status      TEXT NOT NULL,
-            edited_at   INTEGER,
-            deleted     INTEGER NOT NULL DEFAULT 0,
-            expires_at  INTEGER,
-            reply_to_id      TEXT,
-            reply_to_sender  TEXT,
-            reply_to_preview TEXT,
-            blob             TEXT,
-            fail_reason      TEXT,
-            attempts         INTEGER NOT NULL DEFAULT 0,
-            last_attempt_at  INTEGER
-          )
-        ''');
-        await db.execute(
-          'CREATE INDEX idx_messages_contact ON messages(contact_id, sent_at)',
-        );
-        await db.execute(
-          'CREATE INDEX idx_messages_expires ON messages(expires_at)',
-        );
-        await db.execute(_createGroups);
-        await db.execute(_createGroupMembers);
-        await db.execute(_createGroupOutbox);
-        await db.execute(_createSessions);
-        await db.execute(_createPrekeys);
-        await db.execute(_createReceipts);
-        await db.execute(_createReactions);
-        await db.execute(_createKv);
-      },
+      onCreate: (db, _) => createSchema(db),
+      onOpen: ensureBlocked,
     );
     return ChatDb._(db);
+  }
+
+  /// The schema — the whole of it; there is no migration chain (see `open`).
+  @visibleForTesting
+  static Future<void> createSchema(Database db) async {
+    await db.execute('''
+      CREATE TABLE contacts (
+        stonechat_id        TEXT PRIMARY KEY,
+        display_name   TEXT NOT NULL,
+        pubkey         TEXT NOT NULL,
+        pq_pk          TEXT,
+        status         TEXT NOT NULL,
+        mailbox_address TEXT,
+        tls_fp         TEXT,
+        hub            TEXT,
+        created_at     INTEGER NOT NULL,
+        pinned_at      INTEGER,
+        expire_timer_ms INTEGER NOT NULL DEFAULT 0,
+        expire_timer_at INTEGER NOT NULL DEFAULT 0,
+        muted_until    INTEGER,
+        archived_at    INTEGER,
+        avatar         BLOB,
+        profile_at     INTEGER NOT NULL DEFAULT 0,
+        devices_v      INTEGER NOT NULL DEFAULT 0,
+        bundle_token   TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE messages (
+        id          TEXT PRIMARY KEY,
+        contact_id  TEXT NOT NULL REFERENCES contacts(stonechat_id),
+        sender_id   TEXT,
+        outgoing    INTEGER NOT NULL,
+        text        TEXT NOT NULL,
+        kind        TEXT NOT NULL DEFAULT 'text',
+        media_path  TEXT,
+        duration_ms INTEGER,
+        file_name   TEXT,
+        sent_at     INTEGER NOT NULL,
+        status      TEXT NOT NULL,
+        edited_at   INTEGER,
+        deleted     INTEGER NOT NULL DEFAULT 0,
+        expires_at  INTEGER,
+        reply_to_id      TEXT,
+        reply_to_sender  TEXT,
+        reply_to_preview TEXT,
+        blob             TEXT,
+        fail_reason      TEXT,
+        attempts         INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at  INTEGER
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX idx_messages_contact ON messages(contact_id, sent_at)',
+    );
+    await db.execute(
+      'CREATE INDEX idx_messages_expires ON messages(expires_at)',
+    );
+    await db.execute(_createGroups);
+    await db.execute(_createGroupMembers);
+    await db.execute(_createGroupOutbox);
+    await db.execute(_createSessions);
+    await db.execute(_createPrekeys);
+    await db.execute(_createReceipts);
+    await db.execute(_createReactions);
+    await db.execute(_createKv);
+    await db.execute(_createBlocked);
+  }
+
+  /// Blocks moved out of `contacts.blocked_at` into their own table so that
+  /// anyone can be blocked — a group member who is not a contact included.
+  /// There is no migration chain (see `version` above), so a database created
+  /// before the move gets the table here, and its existing blocks copied over
+  /// once: the old column is cleared as it is read, so an unblock is never
+  /// undone by the next launch.
+  @visibleForTesting
+  static Future<void> ensureBlocked(Database db) async {
+    await db.execute(
+      _createBlocked.replaceFirst('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
+    );
+    final cols = await db.rawQuery('PRAGMA table_info(contacts)');
+    if (!cols.any((c) => c['name'] == 'blocked_at')) return;
+    await db.transaction((tx) async {
+      await tx.execute(
+        'INSERT OR IGNORE INTO blocked (stonechat_id, blocked_at) '
+        'SELECT stonechat_id, blocked_at FROM contacts WHERE blocked_at IS NOT NULL',
+      );
+      await tx.execute('UPDATE contacts SET blocked_at = NULL');
+    });
+  }
+
+  // Who this user has blocked — contacts, group members, strangers alike.
+  // Local-only: it is never sent anywhere but our own devices (sync_block).
+  static const _createBlocked = '''
+    CREATE TABLE blocked (
+      stonechat_id TEXT PRIMARY KEY,
+      blocked_at   INTEGER NOT NULL
+    )
+  ''';
+
+  Future<Map<String, int>> blocked() async {
+    final rows = await _db.query('blocked');
+    return {
+      for (final r in rows) r['stonechat_id'] as String: r['blocked_at'] as int,
+    };
+  }
+
+  /// Block [stonechatId] at [at], or unblock when [at] is null.
+  Future<void> setBlocked(String stonechatId, int? at) async {
+    if (at == null) {
+      await _db.delete(
+        'blocked',
+        where: 'stonechat_id = ?',
+        whereArgs: [stonechatId],
+      );
+    } else {
+      await _db.insert('blocked', {
+        'stonechat_id': stonechatId,
+        'blocked_at': at,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
   }
 
   static const _createGroups = '''
@@ -248,6 +313,7 @@ class ChatDb {
         'receipts',
         'reactions',
         'kv',
+        'blocked',
       ]) {
         await tx.delete(table);
       }
@@ -890,9 +956,12 @@ class ChatDb {
   Future<List<Map<String, Object?>>> backupContacts() => _db.rawQuery(
     'SELECT stonechat_id, display_name, pubkey, status, mailbox_address, tls_fp, '
     'hub, created_at, pinned_at, expire_timer_ms, expire_timer_at, '
-    'blocked_at, muted_until, archived_at, 0 AS profile_at '
+    'muted_until, archived_at, 0 AS profile_at '
     'FROM contacts ORDER BY created_at',
   );
+
+  Future<List<Map<String, Object?>>> backupBlocked() =>
+      _db.query('blocked', orderBy: 'blocked_at');
 
   Future<List<Map<String, Object?>>> backupGroups() =>
       _db.query('groups', orderBy: 'created_at');
@@ -932,7 +1001,6 @@ class ChatDb {
       'pinned_at',
       'expire_timer_ms',
       'expire_timer_at',
-      'blocked_at',
       'muted_until',
       'archived_at',
       'profile_at',
@@ -974,6 +1042,7 @@ class ChatDb {
       'reply_to_preview',
     },
     'reactions': {'message_id', 'peer_id', 'emoji', 'at'},
+    'blocked': {'stonechat_id', 'blocked_at'},
   };
 
   static const _importRequired = {
@@ -996,6 +1065,7 @@ class ChatDb {
       'status',
     },
     'reactions': {'message_id', 'peer_id', 'emoji', 'at'},
+    'blocked': {'stonechat_id', 'blocked_at'},
   };
 
   /// Merge a decrypted backup payload into the live tables. Everything runs in
@@ -1017,8 +1087,17 @@ class ChatDb {
     required List<Map<String, Object?>> groupMembers,
     required List<Map<String, Object?>> messages,
     required List<Map<String, Object?>> reactions,
+    List<Map<String, Object?>> blocked = const [],
     required int nowMs,
   }) async {
+    // Files written before blocks had their own table carry them on the
+    // contact row; lift them out so they are not lost on restore.
+    final allBlocked = [
+      ...blocked,
+      for (final c in contacts)
+        if (c['blocked_at'] != null)
+          {'stonechat_id': c['stonechat_id'], 'blocked_at': c['blocked_at']},
+    ];
     return _db.transaction((tx) async {
       Future<int> count(String table) async => Sqflite.firstIntValue(
         await tx.rawQuery('SELECT COUNT(*) FROM $table'),
@@ -1061,6 +1140,7 @@ class ChatDb {
         },
       );
       await merge('reactions', reactions);
+      await merge('blocked', allBlocked);
 
       return (
         contactsAdded: contactsAdded,

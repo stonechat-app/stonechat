@@ -81,13 +81,23 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               title: Text(m.stonechatId == chat.app.stonechatId
                   ? '${m.displayName} (you)'
                   : m.displayName),
-              subtitle: m.stonechatId == group.adminId
-                  ? Text('ADMIN',
-                      style: Zn.mono(size: 8, color: Zn.orange, letterSpacing: 2))
+              subtitle: m.stonechatId == group.adminId ||
+                      chat.isBlocked(m.stonechatId)
+                  ? Text(
+                      [
+                        if (m.stonechatId == group.adminId) 'ADMIN',
+                        if (chat.isBlocked(m.stonechatId)) 'BLOCKED',
+                      ].join(' · '),
+                      style: Zn.mono(
+                          size: 8,
+                          color: chat.isBlocked(m.stonechatId)
+                              ? Zn.danger
+                              : Zn.orange,
+                          letterSpacing: 2))
                   : null,
               onLongPress: m.stonechatId == chat.app.stonechatId
                   ? null
-                  : () => _reportMember(chat, m),
+                  : () => _memberActions(chat, m),
               trailing: isAdmin && m.stonechatId != chat.app.stonechatId
                   ? IconButton(
                       icon: const Icon(Icons.person_remove_outlined,
@@ -168,13 +178,57 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     await chat.updateGroupMembership(widget.group, removeIds: {m.stonechatId});
   }
 
-  /// Report a group member. Two things differ from reporting a contact.
-  ///
-  /// Evidence comes from the *group* conversation, filtered to this member —
-  /// what they said in the room is the whole complaint. And blocking is only
-  /// offered when they are already a contact, because that is where the flag
-  /// lives (models.dart); for a stranger met in a group, leaving is still the
-  /// only remedy the client has.
+  /// Long-press on a member: block/unblock and report. Any member can be
+  /// blocked, contact or not — the block is keyed by Stonechat ID.
+  void _memberActions(ChatState chat, GroupMember m) {
+    final blocked = chat.isBlocked(m.stonechatId);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: Icon(
+                blocked ? Icons.lock_open_outlined : Icons.block,
+                color: blocked ? Zn.muted : Zn.danger,
+              ),
+              title: Text(
+                blocked ? 'Unblock ${m.displayName}' : 'Block ${m.displayName}',
+                style: TextStyle(color: blocked ? null : Zn.danger),
+              ),
+              subtitle: blocked
+                  ? null
+                  : const Text(
+                      'Their group messages stay here, collapsed. They are not told.',
+                      style: TextStyle(color: Zn.muted, fontSize: 12),
+                    ),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                chat.setBlocked(m.stonechatId, !blocked);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.flag_outlined, color: Zn.muted),
+              title: const Text('Report'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                _reportMember(chat, m);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Report a group member. Evidence comes from the *group* conversation,
+  /// filtered to this member — what they said in the room is the whole
+  /// complaint.
   Future<void> _reportMember(ChatState chat, GroupMember m) async {
     final history = await chat.historyFor(widget.group.id);
     if (!mounted) return;
@@ -185,17 +239,15 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       displayName: m.displayName,
       hub: contact?.hub,
       conversation: history.where((msg) => msg.senderId == m.stonechatId).toList(),
-      canBlock: contact != null && !contact.isBlocked,
+      canBlock: !chat.isBlocked(m.stonechatId),
     );
-    if (outcome.alsoBlock && contact != null && !contact.isBlocked) {
-      await chat.toggleBlock(contact);
-    }
+    if (outcome.alsoBlock) await chat.setBlocked(m.stonechatId, true);
   }
 
   void _showAddSheet(ChatState chat, List<GroupMember> members) {
     final candidates = chat.acceptedContacts
         .where((c) =>
-            !c.isBlocked && !members.any((m) => m.stonechatId == c.stonechatId))
+            !chat.isBlocked(c.stonechatId) && !members.any((m) => m.stonechatId == c.stonechatId))
         .toList();
     if (candidates.isEmpty) {
       showZnSnack(context, 'Everyone you know is already in this group');

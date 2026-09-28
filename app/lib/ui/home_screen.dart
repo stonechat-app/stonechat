@@ -468,7 +468,9 @@ class _GroupTile extends StatelessWidget {
       subtitle: last == null
           ? Text('$memberCount members', style: Zn.mono(size: 11))
           : Text(
-              '${last.outgoing ? '› ' : ''}${last.preview}',
+              !last.outgoing && chat.isBlocked(last.senderId ?? '')
+                  ? 'Message from a blocked member'
+                  : '${last.outgoing ? '› ' : ''}${last.preview}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(color: Zn.muted, fontSize: 13),
@@ -644,7 +646,7 @@ class _ConversationTile extends StatelessWidget {
         last,
         contact.isPinned,
         muted: contact.isMuted,
-        blocked: contact.isBlocked,
+        blocked: chat.isBlocked(contact.stonechatId),
       ),
       onTap: () => Navigator.push(
         context,
@@ -655,7 +657,7 @@ class _ConversationTile extends StatelessWidget {
         pinned: contact.isPinned,
         muted: contact.isMuted,
         archived: contact.isArchived,
-        blocked: contact.isBlocked,
+        blocked: chat.isBlocked(contact.stonechatId),
         onTogglePin: () => chat.togglePinContact(contact),
         onMute: (until) => chat.setMute(contact.stonechatId, until),
         onToggleArchive: () => chat.toggleArchive(contact.stonechatId),
@@ -684,9 +686,9 @@ Future<void> _reportContact(
     displayName: contact.displayName,
     hub: contact.hub,
     conversation: history,
-    canBlock: !contact.isBlocked,
+    canBlock: !chat.isBlocked(contact.stonechatId),
   );
-  if (outcome.alsoBlock && !contact.isBlocked) {
+  if (outcome.alsoBlock && !chat.isBlocked(contact.stonechatId)) {
     await chat.toggleBlock(contact);
   }
 }

@@ -23,7 +23,6 @@ class Contact {
   int? pinnedAt; // ms epoch when the user pinned this conversation
   int expireTimerMs; // disappearing-messages TTL, 0 = off
   int expireTimerAt; // ms epoch of the last timer change (last-writer-wins)
-  int? blockedAt; // ms epoch when the user blocked this contact (local-only)
   int? mutedUntil; // ms epoch until which the conversation is muted
   int? archivedAt; // ms epoch when the user archived this conversation
   Uint8List? avatar; // their profile photo (PROTOCOL.md "Profiles")
@@ -51,7 +50,6 @@ class Contact {
     this.pinnedAt,
     this.expireTimerMs = 0,
     this.expireTimerAt = 0,
-    this.blockedAt,
     this.mutedUntil,
     this.archivedAt,
     this.avatar,
@@ -62,7 +60,6 @@ class Contact {
 
   bool get isAccepted => status == ContactStatus.accepted;
   bool get isPinned => pinnedAt != null;
-  bool get isBlocked => blockedAt != null;
   bool get isMuted =>
       (mutedUntil ?? 0) > DateTime.now().millisecondsSinceEpoch;
   bool get isArchived => archivedAt != null;
@@ -80,7 +77,6 @@ class Contact {
         'pinned_at': pinnedAt,
         'expire_timer_ms': expireTimerMs,
         'expire_timer_at': expireTimerAt,
-        'blocked_at': blockedAt,
         'muted_until': mutedUntil,
         'archived_at': archivedAt,
         'avatar': avatar,
@@ -102,7 +98,6 @@ class Contact {
         pinnedAt: r['pinned_at'] as int?,
         expireTimerMs: r['expire_timer_ms'] as int,
         expireTimerAt: r['expire_timer_at'] as int,
-        blockedAt: r['blocked_at'] as int?,
         mutedUntil: r['muted_until'] as int?,
         archivedAt: r['archived_at'] as int?,
         avatar: r['avatar'] == null
@@ -393,6 +388,9 @@ class EnvelopeType {
   /// drops what it holds for that peer, which is the only thing that makes
   /// "clear chat" mean anything on a user who has more than one device.
   static const syncClear = 'sync_clear';
+  /// Someone blocked or unblocked — `{"peer", "blocked_at"|null}`. Blocks are
+  /// local-only, so this is the only way a second device learns of one.
+  static const syncBlock = 'sync_block';
 }
 
 class ReceiptKind {

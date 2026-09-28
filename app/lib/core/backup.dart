@@ -78,6 +78,7 @@ class BackupService {
     required List<Map<String, Object?>> groupMembers,
     required List<Map<String, Object?>> messages,
     required List<Map<String, Object?>> reactions,
+    List<Map<String, Object?>> blocked = const [],
     required int nowMs,
   }) {
     // Plain map copies: sqflite rows are library-private map types, and the
@@ -95,12 +96,16 @@ class BackupService {
         'group_members': groupMembers.length,
         'messages': messages.length,
         'reactions': reactions.length,
+        'blocked': blocked.length,
       },
       'contacts': copy(contacts),
       'groups': copy(groups),
       'group_members': copy(groupMembers),
       'messages': copy(messages),
       'reactions': copy(reactions),
+      // Added after payload version 1 without a bump: older readers ignore
+      // the key, and a missing key reads as no blocks.
+      'blocked': copy(blocked),
     };
   }
 
@@ -117,6 +122,7 @@ class BackupService {
       groupMembers: await db.backupGroupMembers(),
       messages: await db.backupMessages(nowMs),
       reactions: await db.backupReactions(nowMs),
+      blocked: await db.backupBlocked(),
       nowMs: nowMs,
     );
     // The whole payload lives in RAM — fine for text-only (tens of MB even
@@ -205,6 +211,7 @@ class BackupService {
       groupMembers: rows('group_members'),
       messages: rows('messages'),
       reactions: rows('reactions'),
+      blocked: rows('blocked'),
       nowMs: DateTime.now().millisecondsSinceEpoch,
     );
   }

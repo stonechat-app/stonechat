@@ -56,6 +56,9 @@ class _ChatScreenState extends State<ChatScreen> {
   Message? _editing; // composer is rewriting this message instead of sending
   Message? _replyingTo; // composer sends the next message as a reply to this
   bool _jumpedToEnd = false; // first non-empty build lands on the last message
+  // Group messages from blocked members the user chose to look at anyway.
+  // Per screen visit: leaving and coming back collapses them again.
+  final _revealed = <String>{};
 
   // In-chat search: null query = closed. Matches are message ids; the
   // current one is scrolled to and every hit is highlighted in place.
@@ -260,7 +263,7 @@ class _ChatScreenState extends State<ChatScreen> {
         m.kind == MessageKind.call || m.kind == MessageKind.notice;
     // A blocked DM is read-only: anything that would send to the blocked
     // peer is withheld (forwarding elsewhere and delete-for-me stay).
-    final blocked = !isGroup && widget.contact!.isBlocked;
+    final blocked = !isGroup && chat.isBlocked(widget.contact!.stonechatId);
     final myEmoji = chat.myReactionTo(m);
     showModalBottomSheet<void>(
       context: context,
@@ -393,6 +396,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   }
                 },
               ),
+            if (isGroup && !m.outgoing && !isLocalRow && m.senderId != null)
+              _blockSenderTile(chat, m, sheetContext),
             ListTile(
               leading: const Icon(Icons.delete_sweep_outlined, color: Zn.muted),
               title: const Text('Delete for me'),
@@ -404,6 +409,29 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
       ),
+    );
+  }
+
+  /// Block (or unblock) whoever sent [m] in a group — contact or not. Their
+  /// messages stay in the room, collapsed; see ChatState.setBlocked.
+  Widget _blockSenderTile(ChatState chat, Message m, BuildContext sheetContext) {
+    final senderId = m.senderId!;
+    final name =
+        chat.memberOf(m.contactId, senderId)?.displayName ?? 'this member';
+    final blocked = chat.isBlocked(senderId);
+    return ListTile(
+      leading: Icon(
+        blocked ? Icons.lock_open_outlined : Icons.block,
+        color: blocked ? Zn.muted : Zn.danger,
+      ),
+      title: Text(
+        blocked ? 'Unblock $name' : 'Block $name',
+        style: TextStyle(color: blocked ? null : Zn.danger),
+      ),
+      onTap: () {
+        Navigator.pop(sheetContext);
+        chat.setBlocked(senderId, !blocked);
+      },
     );
   }
 
@@ -462,7 +490,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     // No forwarding to blocked contacts — the composer is closed to them too.
-    final contacts = chat.acceptedContacts.where((c) => !c.isBlocked).toList();
+    final contacts = chat.acceptedContacts.where((c) => !chat.isBlocked(c.stonechatId)).toList();
     final groups = isMedia ? const <Group>[] : chat.groups;
     if (contacts.isEmpty && groups.isEmpty) {
       showZnSnack(context, 'No one to forward to yet');
@@ -1128,7 +1156,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
               actions: [
-                if (!isGroup && !widget.contact!.isBlocked) ...[
+                if (!isGroup && !chat.isBlocked(widget.contact!.stonechatId)) ...[
                   IconButton(
                     icon: const Icon(
                       Icons.call_outlined,
@@ -1191,9 +1219,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         displayName: contact.displayName,
                         hub: contact.hub,
                         conversation: chat.messagesFor(contact.stonechatId),
-                        canBlock: !contact.isBlocked,
+                        canBlock: !chat.isBlocked(contact.stonechatId),
                       );
-                      if (outcome.alsoBlock && !contact.isBlocked) {
+                      if (outcome.alsoBlock && !chat.isBlocked(contact.stonechatId)) {
                         await chat.toggleBlock(contact);
                       }
                       return;
@@ -1221,7 +1249,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     if (!isGroup)
                       PopupMenuItem(
                         value: 'block',
-                        child: widget.contact!.isBlocked
+                        child: chat.isBlocked(widget.contact!.stonechatId)
                             ? const Text('Unblock')
                             : const Text(
                                 'Block',
@@ -1311,6 +1339,17 @@ class _ChatScreenState extends State<ChatScreen> {
                             ],
                           ),
                         ),
+                      ),
+                    );
+                  }
+                  if (isGroup &&
+                      !m.outgoing &&
+                      chat.isBlocked(m.senderId ?? '') &&
+                      !_revealed.contains(m.id)) {
+                    return _arrive(
+                      m,
+                      _BlockedMessage(
+                        onReveal: () => setState(() => _revealed.add(m.id)),
                       ),
                     );
                   }
@@ -1447,7 +1486,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
-          if (!isGroup && widget.contact!.isBlocked)
+          if (!isGroup && chat.isBlocked(widget.contact!.stonechatId))
             Container(
               decoration: const BoxDecoration(
                 color: Zn.surface,
@@ -2527,6 +2566,37 @@ class _ComposerState extends State<_Composer> {
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A group message from someone the user blocked: present, so the room
+/// still makes sense, but closed until tapped.
+class _BlockedMessage extends StatelessWidget {
+  final VoidCallback onReveal;
+
+  const _BlockedMessage({required this.onReveal});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onReveal,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        child: Row(
+          children: [
+            const Icon(Icons.block, size: 12, color: Zn.muted),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                'Message from a blocked member · tap to show',
+                style: Zn.mono(size: 10, color: Zn.muted),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

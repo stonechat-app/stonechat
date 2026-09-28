@@ -48,6 +48,8 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  # In-memory SQLite for DB tests (the app's SQLCipher needs its native lib).
+  sqflite_common_ffi: ^2.4.0+3 # 2.4.1+ needs Dart 3.12
   flutter_launcher_icons: ^0.14.4
 
 # Regenerate launcher icons after changing assets/icon/app_icon.png:

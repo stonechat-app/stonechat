@@ -191,12 +191,20 @@ final class Drainer {
     else { return nil }
 
     // Sender must be an accepted, unblocked contact with a session —
-    // checked BEFORE any ratchet state is touched.
+    // checked BEFORE any ratchet state is touched. Blocks live in their own
+    // table (anyone can be blocked, not only contacts); a blocked sender's
+    // envelope is left for the app, which drops or collapses it.
     guard
       let contact = db.query(
-        "SELECT display_name, status, blocked_at FROM contacts WHERE stonechat_id = ?",
+        "SELECT display_name, status FROM contacts WHERE stonechat_id = ?",
         [from]),
-      contact[1] == "accepted", contact[2] == nil,
+      contact[1] == "accepted",
+      // `query` answers nil for "no row" and for "no such table" alike, so
+      // require the table first: after an update, before the app has run
+      // once and created it, fail safe to the generic alert.
+      db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+               ["blocked"]) != nil,
+      db.query("SELECT 1 FROM blocked WHERE stonechat_id = ?", [from]) == nil,
       let stateJson = db.query("SELECT state FROM sessions WHERE peer_id = ?", [from])?
         .first ?? nil
     else {

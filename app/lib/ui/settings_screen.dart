@@ -16,6 +16,7 @@ import '../state/app_state.dart';
 import '../state/call_state.dart';
 import '../state/chat_state.dart';
 import '../state/mailbox_state.dart';
+import 'blocked_screen.dart';
 import 'devices_screen.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
@@ -53,6 +54,21 @@ class SettingsScreen extends StatelessWidget {
             title: const Text('Typing indicators'),
             subtitle: const Text('Show contacts when you are typing.',
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
+          ),
+          ListTile(
+            title: const Text('Blocked people'),
+            subtitle: Text(
+                switch (context.watch<ChatState>().blocked.length) {
+                  0 => 'Nobody',
+                  1 => '1 person',
+                  final n => '$n people',
+                },
+                style: const TextStyle(color: Zn.muted, fontSize: 12)),
+            leading: const Icon(Icons.block, color: Zn.muted, size: 20),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const BlockedScreen()),
+            ),
           ),
           const _NotificationsSection(),
           const _SectionLabel('Security'),

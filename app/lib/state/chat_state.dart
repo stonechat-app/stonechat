@@ -136,6 +136,13 @@ class ChatState extends ChangeNotifier {
   void Function(String title, String body)? onNotice;
 
   List<Contact> contacts = [];
+
+  /// Who this user has blocked, by Stonechat ID → ms epoch. Contacts, group
+  /// members and strangers alike; local-only (mirrored to our own devices by
+  /// sync_block, nowhere else).
+  final Map<String, int> blocked = {};
+
+  bool isBlocked(String stonechatId) => blocked.containsKey(stonechatId);
   List<Group> groups = [];
   final Map<String, List<GroupMember>> groupMembers = {}; // by group id
   final Map<String, List<Message>> _messages = {}; // by conversation id
@@ -301,12 +308,44 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Block/unblock is local-only enforcement: we stop rendering their DM
-  /// traffic and stop sending them anything; they are never told.
-  Future<void> toggleBlock(Contact c) async {
-    c.blockedAt = c.isBlocked ? null : DateTime.now().millisecondsSinceEpoch;
-    await app.db.upsertContact(c);
+  /// Block/unblock anyone — a contact, a group member, a stranger. Local-only
+  /// enforcement, and they are never told: their DMs, calls and contact
+  /// requests stop at the door, we stop sending them anything direct, and
+  /// in groups their messages still arrive (the group stays coherent) but
+  /// render collapsed. Our own other devices follow via sync_block.
+  Future<void> setBlocked(String stonechatId, bool block) async {
+    if (block == isBlocked(stonechatId)) return;
+    final at = block ? DateTime.now().millisecondsSinceEpoch : null;
+    await _applyBlock(stonechatId, at);
+    unawaited(_syncToSiblings(EnvelopeType.syncBlock, {
+      'peer': stonechatId,
+      'blocked_at': at,
+    }));
+  }
+
+  Future<void> toggleBlock(Contact c) =>
+      setBlocked(c.stonechatId, !isBlocked(c.stonechatId));
+
+  Future<void> _applyBlock(String stonechatId, int? at) async {
+    await app.db.setBlocked(stonechatId, at);
+    if (at == null) {
+      blocked.remove(stonechatId);
+    } else {
+      blocked[stonechatId] = at;
+    }
     notifyListeners();
+  }
+
+  /// A block made on another of our devices. Last writer wins would need a
+  /// clock we don't share; a block is rare enough that applying each change
+  /// as it arrives is right.
+  Future<void> _applySyncBlock(Map<String, dynamic> payload) async {
+    final peer = payload['peer'];
+    final at = payload['blocked_at'];
+    if (peer is! String || peer == app.stonechatId) return;
+    if (at != null && at is! int) return;
+    if ((at != null) == isBlocked(peer)) return;
+    await _applyBlock(peer, at as int?);
   }
 
   /// Mute until [untilMs] (null = unmute). Local-only presentation.
@@ -346,6 +385,9 @@ class ChatState extends ChangeNotifier {
 
   Future<void> load() async {
     contacts = await app.db.contacts();
+    blocked
+      ..clear()
+      ..addAll(await app.db.blocked());
     groups = await app.db.groups();
     for (final c in contacts) {
       lastMessage[c.stonechatId] = await app.db.lastMessageFor(c.stonechatId);
@@ -406,6 +448,7 @@ class ChatState extends ChangeNotifier {
   /// identity — and re-registers when the next identity gets a mailbox.
   void reset() {
     contacts = [];
+    blocked.clear();
     groups = [];
     groupMembers.clear();
     _messages.clear();
@@ -1757,7 +1800,7 @@ class ChatState extends ChangeNotifier {
   Future<void> updateMyAvatar(Uint8List? bytes) async {
     await app.setAvatar(bytes);
     final payload = _profilePayload();
-    for (final contact in acceptedContacts.where((c) => !c.isBlocked)) {
+    for (final contact in acceptedContacts.where((c) => !isBlocked(c.stonechatId))) {
       try {
         await _deliver(
           contact,
@@ -2645,7 +2688,7 @@ class ChatState extends ChangeNotifier {
       return;
     }
     final contact = contactById(message.contactId);
-    if (contact == null || contact.isBlocked) return;
+    if (contact == null || isBlocked(contact.stonechatId)) return;
     await _trySend(contact, message);
   }
 
@@ -2825,7 +2868,7 @@ class ChatState extends ChangeNotifier {
     for (final message in await app.db.pendingMessages()) {
       final contact = contactById(message.contactId);
       // Blocked: hold their pending sends — they resume if ever unblocked.
-      if (contact == null || contact.isBlocked) continue;
+      if (contact == null || isBlocked(contact.stonechatId)) continue;
       final cached = _messages[message.contactId]
           ?.where((m) => m.id == message.id)
           .firstOrNull;
@@ -2889,7 +2932,7 @@ class ChatState extends ChangeNotifier {
   void _queueReceipt(String peerId, String kind, String messageId) {
     // A blocked peer gets nothing from us — not even checkmarks. Local read
     // state still moves; only the receipt is withheld.
-    if (contactById(peerId)?.isBlocked ?? false) return;
+    if (isBlocked(peerId)) return;
     ((_receiptQueue[peerId] ??= {})[kind] ??= <String>{}).add(messageId);
     _receiptFlushTimer ??= Timer(const Duration(seconds: 2), () {
       _receiptFlushTimer = null;
@@ -3049,7 +3092,9 @@ class ChatState extends ChangeNotifier {
       final group = groupById(conversationId);
       if (group == null) {
         final contact = contactById(conversationId);
-        if (contact == null || !contact.isAccepted || contact.isBlocked) {
+        if (contact == null ||
+            !contact.isAccepted ||
+            isBlocked(contact.stonechatId)) {
           return;
         }
         if (!((await _loadSession(
@@ -3439,8 +3484,7 @@ class ChatState extends ChangeNotifier {
   Future<void> react(Message message, String emoji) async {
     if (message.deleted) return;
     // A blocked DM is read-only: nothing may leave for that peer.
-    if (groupById(message.contactId) == null &&
-        (contactById(message.contactId)?.isBlocked ?? false)) {
+    if (groupById(message.contactId) == null && isBlocked(message.contactId)) {
       return;
     }
     final applied = myReactionTo(message) == emoji ? '' : emoji;
@@ -3586,10 +3630,23 @@ class ChatState extends ChangeNotifier {
     // the type switch so it is learned even from traffic we go on to drop.
     await _noteBundleToken(envelope.from, envelope.bundleToken);
 
-    // Blocked senders: their DM traffic and calls stop at the door. Decrypt
-    // first (above) so the ratchet stays current for a later unblock; group
-    // envelopes still flow — leaving the group is the remedy there.
-    if (contact != null && contact.isBlocked) {
+    // Blocked senders — contacts or not: their DM traffic, calls and contact
+    // requests stop at the door. Decrypt first (above) so the ratchet stays
+    // current for a later unblock. In groups, messages still arrive (below)
+    // and render collapsed, so the room stays coherent; the extras that only
+    // matter to the blocked person's presence are dropped here.
+    if (isBlocked(envelope.from)) {
+      switch (envelope.type) {
+        case EnvelopeType.groupReaction:
+          _dropLog(envelope, 'sender is blocked');
+          return;
+        case EnvelopeType.groupCreate || EnvelopeType.groupUpdate
+            when groupById(payload['group_id'] as String? ?? '') == null:
+          // An invitation to a new group. Updates to a group we share still
+          // apply — an admin we blocked must not fork our view of membership.
+          _dropLog(envelope, 'group invite from a blocked sender');
+          return;
+      }
       switch (envelope.type) {
         case EnvelopeType.contactRequest ||
             EnvelopeType.msg ||
@@ -3807,7 +3864,12 @@ class ChatState extends ChangeNotifier {
         // anyway (the bubble renders "unavailable") rather than refuse to ack
         // an envelope that can never succeed. Anything transient throws
         // instead, leaving it queued for the next drain.
-        final path = await _fetchSharedMedia(envelope, sender, payload);
+        // Blocked sender: don't fetch. The blob sits on *their* mailbox, and
+        // fetching would tell it we are still reading; the bubble renders
+        // collapsed, then "unavailable" if revealed.
+        final path = isBlocked(envelope.from)
+            ? null
+            : await _fetchSharedMedia(envelope, sender, payload);
         final (replyId, replySender, replyPreview) = _replyFrom(payload);
         await _storeIncomingConversation(
           group.id,
@@ -3876,6 +3938,13 @@ class ChatState extends ChangeNotifier {
           return;
         }
         await _applySyncClear(payload);
+
+      case EnvelopeType.syncBlock:
+        if (envelope.from != app.stonechatId) {
+          _dropLog(envelope, 'sync from someone else\'s identity');
+          return;
+        }
+        await _applySyncBlock(payload);
 
       case EnvelopeType.typing:
         _applyTyping(envelope, payload);
