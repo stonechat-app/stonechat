@@ -33,4 +33,9 @@ ENV STONECHAT_HUB_DB=/var/lib/stonechat/hub.db \
 
 WORKDIR /srv/hub
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --no-access-log: the hub never writes a client's IP to its logs. Behind a
+# proxy, the client's IP comes from X-Forwarded-For, trusted only from the
+# addresses in FORWARDED_ALLOW_IPS (uvicorn reads it; default 127.0.0.1) —
+# without that every request looks like the proxy, and the per-IP rate limits
+# become one limit for everyone.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--no-access-log"]

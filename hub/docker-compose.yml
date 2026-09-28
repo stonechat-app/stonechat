@@ -32,6 +32,11 @@ services:
       # to dedicated VMs. Absent, mailbox provisioning is refused and
       # bring-your-own mailboxes still work.
       STONECHAT_RELAY_BINARY: /opt/stonechat/stonechat-relay
+      # Caddy's address on the edge network (see there): the only peer whose
+      # X-Forwarded-For the hub believes, so its per-IP rate limits see the
+      # real client rather than Caddy.
+      FORWARDED_ALLOW_IPS: 10.53.249.2
+    networks: [default, edge]
     ports:
       # Behind Caddy (tls profile) set STONECHAT_BIND=127.0.0.1: Caddy reaches
       # the hub over the compose network, so it need not be exposed at all.
@@ -64,6 +69,9 @@ services:
     profiles: [tls]
     restart: always
     depends_on: [hub]
+    networks:
+      edge:
+        ipv4_address: 10.53.249.2
     ports:
       # :80 is not optional — it is where the ACME challenge is answered, so
       # closing it breaks renewal in 60 days rather than today.
@@ -94,6 +102,23 @@ configs:
       ${STONECHAT_HUB_DOMAIN:-} {
         reverse_proxy hub:8000
       }
+
+networks:
+  # Caddy's own network, with a fixed address, so the hub can trust
+  # X-Forwarded-For from exactly that address (FORWARDED_ALLOW_IPS) and nothing
+  # else. Caddy is on this network only, so every request it proxies arrives
+  # from 10.53.249.2 — while a request through the published port arrives from
+  # the default network's gateway and cannot spoof the header. Caddy overwrites
+  # any X-Forwarded-For the client sent. Change the subnet if it collides with
+  # one of this box's; keep the address inside it.
+  edge:
+    ipam:
+      config:
+        - subnet: 10.53.249.0/29
+          # Docker hands out addresses to the other containers from here only,
+          # which keeps Caddy's .2 free: without it, whichever container joins
+          # first can take .2 and Caddy fails with "Address already in use".
+          ip_range: 10.53.249.4/30
 
 volumes:
   caddy-data:
