@@ -10,8 +10,12 @@
 	<false/>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<!-- Non-exempt: the app implements its own end-to-end encryption and a
+	     post-quantum KEM (core/, pqcore/), not just the OS's TLS. App Store
+	     Connect asks the export-compliance questions for each build until an
+	     ITSEncryptionExportComplianceCode is added here. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
