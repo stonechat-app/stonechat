@@ -12,18 +12,25 @@
 //!
 //! Config (env):
 //!     STONECHAT_OWNER_ID     Stonechat ID of the owner (the only valid recipient)
-//!     STONECHAT_OWNER_TOKEN  shared secret the owner's device presents on /ws
+//!     STONECHAT_OWNER_TOKEN  device 1's token: the primary device presents it on
+//!                            every authenticated route. Other devices have
+//!                            tokens of their own, minted by the primary.
 //!     STONECHAT_PORT         listen port (default 8080)
 //!     STONECHAT_DB           sqlite path (default ./mailbox.db)
 //!     STONECHAT_BLOBS        blob dir (default ./blobs)
 //!     STONECHAT_TLS_DIR      where the TLS key/cert live (default: the DB's directory)
+//!     STONECHAT_MAX_QUEUE_BYTES  per-device cap on queued envelope bytes (default 64 MiB)
+//!     STONECHAT_LIMIT_INBOX / _BLOB / _BUNDLE   deposit rate limits (limit.rs)
 //!
 //! Transport: everything is served over TLS with a self-signed certificate
 //! generated on first boot (or reused from disk — the fingerprint clients pin
 //! must survive a Python→Rust swap on the same volume).
 
+#[cfg(test)]
+mod api_tests;
 mod blobs;
 mod db;
+mod limit;
 mod link;
 mod push;
 mod routes;
@@ -45,6 +52,11 @@ use axum::Router;
 pub const WIRE_VERSION: i64 = 1;
 pub const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
 pub const MAX_QUEUE_DEPTH: i64 = 10_000;
+/// Default for `STONECHAT_MAX_QUEUE_BYTES`. The row cap alone allows 640 MiB
+/// per device; this is what a device's queue may actually weigh. Text
+/// envelopes run to a few KB each, so the row cap is still the one a real
+/// backlog meets first.
+pub const MAX_QUEUE_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_BLOB_BYTES: usize = 64 * 1024 * 1024; // videos/documents; mirrored in the app
 pub const MAX_TOTAL_BLOB_BYTES: u64 = 1024 * 1024 * 1024;
 /// How much of a blob is in memory at once, either direction (blobs.rs).
@@ -62,6 +74,8 @@ pub const MAX_PREKEY_UPLOAD_BYTES: usize = 256 * 1024;
 /// cannot read it (core/src/devcert.rs) and has no business trying.
 pub const MAX_CERT_BYTES: usize = 8 * 1024;
 pub const PUSH_DEBOUNCE: Duration = Duration::from_secs(5);
+/// Call offers ring through the ordinary debounce, not through all of it.
+pub const PUSH_DEBOUNCE_RING: Duration = Duration::from_secs(2);
 // A socket write succeeding is not delivery: a freshly-backgrounded phone
 // keeps its TCP connection open while the suspended app never reads the
 // frame. Live delivery only counts once the device acks — envelopes still
@@ -99,7 +113,9 @@ pub struct AppState {
     /// The browser transport's certificate schedule, if it is enabled.
     pub wt_certs: Option<Arc<wtcert::CertSchedule>>,
     pub http: reqwest::Client,
-    pub last_gateway_ping: Mutex<HashMap<i64, Instant>>,
+    /// Keyed by (device, ring) — see push::ping_due.
+    pub last_gateway_ping: Mutex<HashMap<(i64, bool), Instant>>,
+    pub limits: limit::Limits,
 }
 
 impl AppState {
@@ -141,8 +157,46 @@ fn own_build_id() -> String {
     h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
-fn env_or(key: &str, default: &str) -> String {
+pub fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Every route, once. Both transports serve this router (wt.rs "One router,
+/// two transports"), and the tests drive it directly.
+pub fn router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(routes::health))
+        .route("/status", get(routes::status))
+        .route("/owner", get(routes::owner_check))
+        .route("/prekeys", post(routes::upload_prekeys))
+        .route("/prekeys/bundle", get(routes::prekey_bundle))
+        .route("/prekeys/devices", get(routes::prekey_devices))
+        .route("/devices", get(routes::list_devices).post(routes::mint_device))
+        .route("/devices/{device_id}", axum::routing::delete(routes::revoke_device))
+        .route("/inbox", post(routes::inbox))
+        .route("/push-config", post(routes::push_config))
+        .route("/turn-credentials", get(routes::turn_credentials))
+        .route("/blob", post(routes::blob_upload))
+        .route(
+            "/blob/{blob_id}",
+            get(routes::blob_download).delete(routes::blob_delete),
+        )
+        .route("/ws", get(ws::ws_owner))
+        // Public by design: these are hashes of certificates the relay is
+        // about to present anyway. The owner's signature over them lives in
+        // the hub directory — this endpoint states, it does not vouch.
+        .route("/wt/certs", get(routes::wt_certs))
+        // Bounds every route that buffers its body into `Bytes` — envelopes,
+        // prekeys, certs. Blobs are the one large body and they no longer
+        // buffer (routes.rs takes `Body` and streams, which opts out of this
+        // layer and enforces MAX_BLOB_BYTES itself), so this can sit just above
+        // the largest of the rest instead of at blob size. It was 64 MiB, which
+        // meant a junk POST to /inbox could make the relay hold 64 MiB before
+        // the handler's own 64 KiB check ever ran.
+        .layer(DefaultBodyLimit::max(MAX_PREKEY_UPLOAD_BYTES + 1024))
+        // Outermost, so a refused deposit costs a map lookup and nothing else.
+        .layer(axum::middleware::from_fn_with_state(state.clone(), limit::guard))
+        .with_state(state)
 }
 
 #[tokio::main]
@@ -176,6 +230,10 @@ async fn main() {
     let wt_port: u16 = env_or("STONECHAT_WT_PORT", "8443")
         .parse()
         .expect("bad STONECHAT_WT_PORT");
+
+    let max_queue_bytes: u64 = env_or("STONECHAT_MAX_QUEUE_BYTES", &MAX_QUEUE_BYTES.to_string())
+        .parse()
+        .expect("bad STONECHAT_MAX_QUEUE_BYTES");
 
     let cfg = Config {
         owner_id,
@@ -221,7 +279,8 @@ async fn main() {
         ))
     };
     let state = Arc::new(AppState {
-        mailbox: db::Mailbox::open(&db_path, &cfg.owner_token).expect("mailbox db"),
+        mailbox: db::Mailbox::open(&db_path, &cfg.owner_token, max_queue_bytes)
+            .expect("mailbox db"),
         blobs: blobs::BlobStore::open(&blob_dir).expect("blob store"),
         link: link::DeviceLinks::new(),
         tls_fp: tls.fingerprint_b64.clone(),
@@ -232,6 +291,7 @@ async fn main() {
             .build()
             .expect("http client"),
         last_gateway_ping: Mutex::new(HashMap::new()),
+        limits: limit::Limits::from_env().expect("bad rate limit"),
         cfg,
     });
 
@@ -260,37 +320,7 @@ async fn main() {
         });
     }
 
-    let app = Router::new()
-        .route("/health", get(routes::health))
-        .route("/status", get(routes::status))
-        .route("/owner", get(routes::owner_check))
-        .route("/prekeys", post(routes::upload_prekeys))
-        .route("/prekeys/bundle", get(routes::prekey_bundle))
-        .route("/prekeys/devices", get(routes::prekey_devices))
-        .route("/devices", get(routes::list_devices).post(routes::mint_device))
-        .route("/devices/{device_id}", axum::routing::delete(routes::revoke_device))
-        .route("/inbox", post(routes::inbox))
-        .route("/push-config", post(routes::push_config))
-        .route("/turn-credentials", get(routes::turn_credentials))
-        .route("/blob", post(routes::blob_upload))
-        .route(
-            "/blob/{blob_id}",
-            get(routes::blob_download).delete(routes::blob_delete),
-        )
-        .route("/ws", get(ws::ws_owner))
-        // Public by design: these are hashes of certificates the relay is
-        // about to present anyway. The owner's signature over them lives in
-        // the hub directory — this endpoint states, it does not vouch.
-        .route("/wt/certs", get(routes::wt_certs))
-        // Bounds every route that buffers its body into `Bytes` — envelopes,
-        // prekeys, certs. Blobs are the one large body and they no longer
-        // buffer (routes.rs takes `Body` and streams, which opts out of this
-        // layer and enforces MAX_BLOB_BYTES itself), so this can sit just above
-        // the largest of the rest instead of at blob size. It was 64 MiB, which
-        // meant a junk POST to /inbox could make the relay hold 64 MiB before
-        // the handler's own 64 KiB check ever ran.
-        .layer(DefaultBodyLimit::max(MAX_PREKEY_UPLOAD_BYTES + 1024))
-        .with_state(state.clone());
+    let app = router(state.clone());
 
     let o = &state.cfg.owner_id;
     log::info!(
@@ -321,7 +351,8 @@ async fn main() {
     .expect("rustls config");
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     axum_server::bind_rustls(addr, rustls_config)
-        .serve(app.into_make_service())
+        // With the peer address, which is what limit.rs meters by.
+        .serve(app.into_make_service_with_connect_info::<SocketAddr>())
         .await
         .expect("server");
 }

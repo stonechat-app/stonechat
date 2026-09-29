@@ -44,16 +44,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
+use axum::extract::ConnectInfo;
 use axum::http::{Method, Request};
 use axum::Router;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
 use tower::ServiceExt;
 use wtransport::endpoint::IncomingSession;
 use wtransport::{Endpoint, Identity, ServerConfig};
 
-use crate::link::Frame;
+use crate::link::{self, Close, FrameSink, DRAIN_PAGE, WRITE_TIMEOUT};
 use crate::wtcert::CertSchedule;
 use crate::{AppState, MAX_BLOB_BYTES};
 
@@ -296,6 +296,10 @@ async fn session(
     let request = incoming.await.map_err(|e| e.to_string())?;
     let connection = Arc::new(request.accept().await.map_err(|e| e.to_string())?);
 
+    // What the rate limits meter by (limit.rs). QUIC validates the address
+    // before a session exists, so it is no easier to forge than TCP's.
+    let peer = connection.remote_address();
+
     // One stream per request, many in flight.
     loop {
         let (send, recv) = match connection.accept_bi().await {
@@ -305,7 +309,7 @@ async fn session(
         let state = Arc::clone(&state);
         let router = router.clone();
         tokio::spawn(async move {
-            if let Err(e) = stream(send, recv, state, router).await {
+            if let Err(e) = stream(send, recv, state, router, peer).await {
                 log::debug!("webtransport stream ended: {e}");
             }
         });
@@ -318,6 +322,7 @@ async fn stream(
     mut recv: wtransport::RecvStream,
     state: Arc<AppState>,
     router: Router,
+    peer: SocketAddr,
 ) -> Result<(), String> {
     let (header, rest) = read_header(&mut recv).await?;
     let req: Value = serde_json::from_str(&header).map_err(|e| e.to_string())?;
@@ -365,7 +370,7 @@ async fn stream(
         return Err(format!("request body of {len} bytes exceeds the transport limit"));
     }
 
-    dispatch(router, method, &path, body_stream(recv, rest, len), &mut send).await?;
+    dispatch(router, method, &path, body_stream(recv, rest, len), peer, &mut send).await?;
     send.finish().await.map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -389,13 +394,17 @@ async fn dispatch(
     method: &str,
     path: &str,
     body: Body,
+    peer: SocketAddr,
     send: &mut wtransport::SendStream,
 ) -> Result<(), String> {
-    let request = Request::builder()
+    let mut request = Request::builder()
         .method(Method::from_bytes(method.as_bytes()).map_err(|_| "bad method")?)
         .uri(path)
         .body(body)
         .map_err(|e| e.to_string())?;
+    // The TLS listener attaches this itself; here nothing would, and a
+    // request without it is metered against the global limit alone.
+    request.extensions_mut().insert(ConnectInfo(peer));
 
     let response = router
         .oneshot(request)
@@ -449,53 +458,48 @@ async fn dispatch(
     Ok(())
 }
 
+struct WtSink(wtransport::SendStream);
+
+impl FrameSink for WtSink {
+    async fn text(&mut self, text: String) -> bool {
+        self.0.write_all(format!("{text}\n").as_bytes()).await.is_ok()
+    }
+    async fn close(&mut self, (code, reason): Close) {
+        // The close code is what tells a client "you were replaced" apart
+        // from "you were revoked" — the app shows different things for
+        // those, so it has to survive the transport.
+        let line = format!("{}\n", json!({"close": code, "reason": reason}));
+        let _ = self.0.write_all(line.as_bytes()).await;
+        let _ = self.0.finish().await;
+    }
+}
+
 /// The owner socket: drain on connect, delete rows on ack. Same messages the
 /// WebSocket carries, on a stream instead of a frame sequence.
 async fn socket(
-    mut send: wtransport::SendStream,
+    send: wtransport::SendStream,
     mut recv: wtransport::RecvStream,
     pending: Vec<u8>,
     state: Arc<AppState>,
     device: i64,
 ) -> Result<(), String> {
-    let (tx, mut rx) = mpsc::unbounded_channel::<Frame>();
-    let conn_id = state.link.attach(device, tx).await;
+    let (conn_id, out) = state.link.attach(device).await;
     state.mailbox.touch_device(device);
     log::info!(
         "device {device} draining {} envelopes over webtransport",
         state.mailbox.device_depth(device)
     );
 
-    // Writer, mirroring ws.rs: everything to the client flows through the
-    // link's queue, so the drain and live pushes serialize the same way.
-    let writer = tokio::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            match frame {
-                Frame::Text(text) => {
-                    if send.write_all(format!("{text}\n").as_bytes()).await.is_err() {
-                        break;
-                    }
-                }
-                Frame::Close { code, reason } => {
-                    // The close code is what tells a client "you were replaced"
-                    // apart from "you were revoked" — the app shows different
-                    // things for those, so it has to survive the transport.
-                    let _ = send
-                        .write_all(
-                            format!("{}\n", json!({"close": code, "reason": reason}))
-                                .as_bytes(),
-                        )
-                        .await;
-                    let _ = send.finish().await;
-                    break;
-                }
-            }
-        }
-    });
-
-    for envelope in state.mailbox.all(device) {
-        state.link.push(device, &envelope).await;
-    }
+    // Writer, the same pump ws.rs runs: QUIC's per-stream flow control is the
+    // backpressure, so a browser that stops reading stalls the write here
+    // rather than growing a buffer.
+    let queue = state.clone();
+    let mut writer = tokio::spawn(link::pump(
+        out,
+        WtSink(send),
+        move |after| queue.mailbox.page(device, after, DRAIN_PAGE),
+        WRITE_TIMEOUT,
+    ));
 
     // Reader: newline-delimited acks, starting with anything that arrived
     // alongside the upgrade request.
@@ -515,9 +519,13 @@ async fn socket(
         if acc.len() > MAX_HEADER {
             break; // no newline in a sane amount of data is not an ack stream
         }
-        match recv.read(&mut buf).await {
-            Ok(Some(n)) => acc.extend_from_slice(&buf[..n]),
-            _ => break,
+        // The writer ending ends the connection, as in ws.rs.
+        tokio::select! {
+            read = recv.read(&mut buf) => match read {
+                Ok(Some(n)) => acc.extend_from_slice(&buf[..n]),
+                _ => break,
+            },
+            _ = &mut writer => break,
         }
     }
 

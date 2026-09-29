@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use sha1::Sha1;
 use tokio::io::AsyncReadExt;
 
-use crate::db::{OpkUpload, SpkUpload};
+use crate::db::{OpkUpload, Put, SpkUpload, PRIMARY_DEVICE};
 use crate::{blobs, push, AppState, BLOB_CHUNK_BYTES, MAX_BLOB_BYTES, MAX_CERT_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
 
 fn detail(status: StatusCode, msg: &str) -> Response {
@@ -32,12 +32,27 @@ fn detail(status: StatusCode, msg: &str) -> Response {
 /// unchanged (MULTIDEVICE.md "Device model"). The 401 body is the historical
 /// "owner only" either way — a caller holding no valid token learns nothing
 /// about how many devices exist.
+///
+/// This is authentication, and for a device's *own* things — its socket, its
+/// queue, its prekeys, its push registration — it is all that is needed.
+/// Managing the mailbox is more than that: see [`auth_primary`].
 fn auth_device(state: &AppState, q: &HashMap<String, String>) -> Result<i64, Response> {
     let given = q.get("token").map(String::as_str).unwrap_or("");
     state
         .mailbox
         .device_for_token(given)
         .ok_or_else(|| detail(StatusCode::UNAUTHORIZED, "owner only"))
+}
+
+/// The primary, and nobody else. A linked device holds a certificate and a
+/// token for its own queue; it does not get to decide which devices the
+/// mailbox has, because a stolen one would then decide it too. 401 for no
+/// valid token, as everywhere; 403 for a valid token on the wrong device.
+fn auth_primary(state: &AppState, q: &HashMap<String, String>) -> Result<(), Response> {
+    match auth_device(state, q)? {
+        PRIMARY_DEVICE => Ok(()),
+        _ => Err(detail(StatusCode::FORBIDDEN, "primary device only")),
+    }
 }
 
 /// The derived per-mailbox capability that lets an established contact list
@@ -313,9 +328,10 @@ pub async fn inbox(State(state): State<Arc<AppState>>, body: Bytes) -> Response 
     let envelope_json = serde_json::to_string(&envelope).unwrap();
 
     // Transient envelopes (typing indicators) are only worth anything live:
-    // never queued, never woken for. If the device isn't connected they vanish.
+    // never queued, never woken for. If the device isn't connected, or is
+    // too far behind to take one more, they vanish.
     if envelope.get("transient") == Some(&Value::Bool(true)) {
-        let delivered = state.link.push(device, &envelope_json).await;
+        let delivered = state.link.push_transient(device, &envelope_json).await;
         return Json(json!({
             "status": if delivered { "delivered" } else { "dropped" },
             "devices_v": devices_v,
@@ -323,18 +339,26 @@ pub async fn inbox(State(state): State<Arc<AppState>>, body: Bytes) -> Response 
         .into_response();
     }
 
-    if !state.mailbox.put(device, &envelope) {
-        return detail(StatusCode::SERVICE_UNAVAILABLE, "mailbox full");
+    let id = envelope["id"].as_str().unwrap();
+    match state.mailbox.put(device, id, &envelope_json) {
+        Put::Full => return detail(StatusCode::SERVICE_UNAVAILABLE, "mailbox full"),
+        // Already queued: answered exactly as the first delivery was, and
+        // otherwise a no-op. Sending it down the socket or pinging the
+        // gateway again would let one envelope, replayed, do both forever.
+        Put::Duplicate => {
+            return Json(json!({"status": "queued", "devices_v": devices_v})).into_response()
+        }
+        Put::Queued => {}
     }
-    // Best-effort immediate push; the row is only removed when the device acks.
-    let delivered_live = state.link.push(device, &envelope_json).await;
+    // Best-effort immediate delivery: a connected device is woken and reads
+    // the row from its queue. The row is only removed when the device acks.
+    let delivered_live = state.link.wake(device).await;
     if envelope.get("push") != Some(&Value::Bool(false)) {
         // push: false (receipts) → deliver on the next connect, don't wake the
-        // phone. ring: true (call offers) → always ping, skipping the debounce.
+        // phone. ring: true (call offers) → a shorter grace and debounce.
         let ring = envelope.get("ring") == Some(&Value::Bool(true));
         if delivered_live {
-            let id = envelope["id"].as_str().unwrap().to_string();
-            tokio::spawn(push::ping_gateway_if_unacked(state.clone(), device, id, ring));
+            tokio::spawn(push::ping_gateway_if_unacked(state.clone(), device, id.to_string(), ring));
         } else {
             tokio::spawn(push::ping_gateway(state.clone(), device, ring));
         }
@@ -345,8 +369,8 @@ pub async fn inbox(State(state): State<Arc<AppState>>, body: Bytes) -> Response 
 // -- devices (MULTIDEVICE.md "Device model") ----------------------------------
 
 /// List this mailbox's devices. Any device token: a linked desktop should be
-/// able to show the same device list the phone shows, including to revoke
-/// from.
+/// able to show the same device list the phone shows. Showing is all — what
+/// a linked device may *do* to the list is remove itself from it.
 pub async fn list_devices(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
@@ -373,12 +397,17 @@ pub async fn list_devices(
 /// is chosen by a device the user already trusts and never transits this
 /// handler's response in a form the relay could correlate later — the relay
 /// stores only its hash.
+///
+/// Primary only. A new device is worth nothing without a certificate, and
+/// only the primary can sign one; a linked device minting rows could do no
+/// good with them and, if stolen, could mint itself a successor with no
+/// expiry to outlive its own revocation.
 pub async fn mint_device(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
-    if let Err(r) = auth_device(&state, &q) {
+    if let Err(r) = auth_primary(&state, &q) {
         return r;
     }
     let parsed: Option<Value> = serde_json::from_slice(&body).ok();
@@ -433,22 +462,38 @@ pub async fn mint_device(
 }
 
 /// Revoke a device: its queue, prekeys and push registration go, and its
-/// socket is cut now rather than at the next reconnect. Any device may revoke
-/// any device including itself — a stolen phone is revoked *from* the laptop.
+/// socket is cut now rather than at the next reconnect.
+///
+/// The primary revokes any linked device — a stolen laptop is revoked *from*
+/// the phone. A linked device revokes itself and nothing else, which is
+/// "sign out"; were it able to revoke its siblings, stealing one device
+/// would be enough to evict all the others. Nobody revokes the primary here:
+/// its token is the mailbox's own, and the way to retire it is to move the
+/// mailbox.
 ///
 /// Honest limit, restated from MULTIDEVICE.md: this is a delivery cut, not a
-/// cryptographic excision. The revoked device still holds the identity secret.
+/// cryptographic excision. The revoked device keeps its device keys and its
+/// certificate until that expires, and everything it already received.
 pub async fn revoke_device(
     State(state): State<Arc<AppState>>,
     Path(device_id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = auth_device(&state, &q) {
-        return r;
-    }
+    let caller = match auth_device(&state, &q) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
     let Ok(device_id) = device_id.parse::<i64>() else {
         return detail(StatusCode::BAD_REQUEST, "bad device");
     };
+    // Decided before the device is looked up, so a linked device asking
+    // about ids that are not its own learns nothing about which exist.
+    if device_id == PRIMARY_DEVICE {
+        return detail(StatusCode::FORBIDDEN, "the primary device cannot be revoked");
+    }
+    if caller != PRIMARY_DEVICE && caller != device_id {
+        return detail(StatusCode::FORBIDDEN, "a linked device can revoke only itself");
+    }
     let (existed, blob_ids) = state.mailbox.remove_device(device_id);
     if !existed {
         return detail(StatusCode::NOT_FOUND, "no such device");
@@ -508,7 +553,8 @@ pub async fn push_config(
 }
 
 /// Ephemeral credentials for this box's coturn (TURN REST API scheme).
-/// Owner-only: the relay carries the owner's call media, nobody else's.
+/// Any of the owner's devices — a call is answered on whichever one is in
+/// hand — and nobody else: the relay carries the owner's call media only.
 /// The TURN host is the same address the owner reached this server at.
 pub async fn turn_credentials(
     State(state): State<Arc<AppState>>,
@@ -668,20 +714,28 @@ fn content_length(headers: &HeaderMap) -> Option<u64> {
     headers.get(header::CONTENT_LENGTH)?.to_str().ok()?.parse().ok()
 }
 
-/// Owner-only: reclaim the space a shared group blob holds once every member
-/// has fetched it. Without this a group photo would sit out the full BLOB_TTL
-/// against the sender's own storage cap. Idempotent — deleting a blob that is
-/// already gone is a success, so a retried cleanup never errors.
+/// Reclaim the space a shared group blob holds once every member has fetched
+/// it. Without this a group photo would sit out the full BLOB_TTL against the
+/// sender's own storage cap. Idempotent — deleting a blob that is already
+/// gone is a success, so a retried cleanup never errors.
+///
+/// Any device, because any device sends group media and parks the blob here;
+/// but a linked device may not delete one a sibling still has queued, which
+/// is the only blob whose loss would cost anybody anything.
 pub async fn blob_delete(
     State(state): State<Arc<AppState>>,
     Path(blob_id): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(r) = auth_device(&state, &q) {
-        return r;
-    }
+    let caller = match auth_device(&state, &q) {
+        Ok(d) => d,
+        Err(r) => return r,
+    };
     if !blobs::valid_blob_id(&blob_id) {
         return detail(StatusCode::BAD_REQUEST, "bad blob id");
+    }
+    if caller != PRIMARY_DEVICE && state.mailbox.blob_owed_to_sibling(&blob_id, caller) {
+        return detail(StatusCode::FORBIDDEN, "blob is still owed to another device");
     }
     state.blobs.delete(&blob_id);
     Json(json!({"status": "ok"})).into_response()

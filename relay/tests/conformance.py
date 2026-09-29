@@ -61,6 +61,7 @@ DEV3 = "dev3-token-0123456789abcdef0123456789"
 DEV4 = "dev4-token-0123456789abcdef0123456789"
 DEV5 = "dev5-token-0123456789abcdef0123456789"
 DEV6 = "dev6-token-0123456789abcdef0123456789"
+DEV7 = "dev7-token-0123456789abcdef0123456789"
 BUNDLE = hashlib.blake2b(
     TOKEN.encode() + b"|stonechat-bundle|", digest_size=32
 ).hexdigest()
@@ -254,6 +255,24 @@ CORPUS = [
     # the whitelist.
     ("devices-mint-still-rejects-junk-kind", "POST", f"/devices?token={TOKEN}",
      {"device_token": DEV6, "kind": "agentt"}, None),
+    # -- who may manage the mailbox --------------------------------------------
+    # Every device call above is the primary's, which is why none of them
+    # moved when this was added. A linked device's token is authentication for
+    # its own queue, prekeys and socket; it is not authority over the device
+    # list. 403, not 401: the token is good, the device is the wrong one.
+    ("policy-mint-linked", "POST", f"/devices?token={TOKEN}",
+     {"device_token": DEV6, "kind": "linked"}, None),
+    ("policy-linked-cannot-mint", "POST", f"/devices?token={DEV6}",
+     {"device_token": DEV7, "kind": "linked"}, None),
+    ("policy-linked-cannot-revoke-primary", "DELETE", f"/devices/1?token={DEV6}", None, None),
+    ("policy-primary-cannot-revoke-itself", "DELETE", f"/devices/1?token={TOKEN}", None, None),
+    ("policy-linked-cannot-revoke-sibling", "DELETE", f"/devices/5?token={DEV6}", None, None),
+    # Same answer for an id that does not exist: not a way to enumerate.
+    ("policy-linked-cannot-probe", "DELETE", f"/devices/99?token={DEV6}", None, None),
+    ("policy-devices-untouched", "GET", f"/devices?token={DEV6}", None, norm_devices),
+    ("policy-linked-revokes-itself", "DELETE", f"/devices/6?token={DEV6}", None, None),
+    ("policy-revoked-itself-token", "GET", f"/status?token={DEV6}", None, None),
+    ("policy-primary-still-works", "GET", f"/status?token={TOKEN}", None, None),
 ]
 
 

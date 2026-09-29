@@ -3,9 +3,10 @@
 The per-user mailbox. Wire contract: PROTOCOL.md "Mailbox API";
 behavioral contract: the golden corpus in `tests/` (recorded at the 2026-07
 cutover that retired the Python relay — notes/docs/RUST_PORT.md is the port
-record). SQLite schema and TLS PEM handling are unchanged from the Python
-era, so a relay pointed at an old volume serves its queued mail with an
-unchanged pinned TLS fingerprint.
+record). TLS PEM handling is unchanged from the Python era, so a relay
+pointed at an existing volume keeps its pinned TLS fingerprint. The SQLite
+schema is per-device and is not migrated: there are no users yet, so an older
+volume is wiped rather than upgraded (`src/db.rs`).
 
 Why it exists: one relay process runs per hosted user, so idle RSS is the
 Mailbox plan's unit cost. Measured at port time: **Python 57 MB → Rust
@@ -24,7 +25,85 @@ disables), `STONECHAT_WT_ADVERTISE` (comma-separated hosts/IPs the browser
 transport's certificates must name — see below), `STONECHAT_DB` (`mailbox.db`),
 `STONECHAT_BLOBS` (`blobs`),
 `STONECHAT_TLS_DIR` (DB's directory),
-`STONECHAT_TURN_SECRET`/`STONECHAT_TURN_PORT`, `STONECHAT_PUSH_GATEWAY`/`STONECHAT_PUSH_KEY`.
+`STONECHAT_TURN_SECRET`/`STONECHAT_TURN_PORT`, `STONECHAT_PUSH_GATEWAY`/`STONECHAT_PUSH_KEY`,
+`STONECHAT_MAX_QUEUE_BYTES` and `STONECHAT_LIMIT_INBOX`/`_BLOB`/`_BUNDLE`
+(see "What a stranger can cost" below).
+
+### Who may manage the mailbox
+
+A device token is a login to that device's own things: its `/ws`, its queue,
+its prekeys, its push registration, `/status`, TURN credentials. It is not
+authority over the mailbox. Device 1 — the primary, whose token is
+`STONECHAT_OWNER_TOKEN` — is the only one that manages it.
+
+| | primary (device 1) | linked device | no valid token |
+|---|---|---|---|
+| `GET /status`, `POST /prekeys`, `POST /push-config`, `GET /ws` | own | own | 401 (`/ws`: 403 handshake) |
+| `GET /devices`, `GET /turn-credentials` | yes | yes | 401 |
+| `POST /devices` | yes | **403** | 401 |
+| `DELETE /devices/{id}`, a linked device | yes | itself only, else **403** | 401 |
+| `DELETE /devices/1` | **403** | **403** | 401 |
+| `GET /blob/{id}` | yes | yes | that blob's fetch token, else 401 |
+| `DELETE /blob/{id}` | yes | unless a sibling still has it queued (**403**) | 401 |
+| `GET /prekeys/devices`, `GET /prekeys/bundle?device=` | yes | yes | the bundle token, else 401 |
+| `POST /inbox`, `POST /blob`, `GET /prekeys/bundle`, `GET /health`, `GET /owner`, `GET /wt/certs` | open | open | open |
+
+The primary cannot be revoked over the API by anyone, itself included: the
+row is the owner token, and removing it would lock the owner out until the
+next boot re-seeded it. A linked device that could revoke its siblings or add
+devices would make one stolen laptop enough to evict every other device and
+mint itself a successor.
+
+### What a stranger can cost
+
+`/inbox`, `/blob` and `/prekeys/bundle` take no token, by design. What an
+anonymous sender can make the relay hold is bounded regardless of how fast or
+how much they send:
+
+- **The queue is never read whole.** A connecting device drains it in pages of
+  16 envelopes (1 MiB at most), advancing as its socket accepts them. A queue
+  at its cap costs a connection the same memory as a queue of twenty.
+- **A deposit is not handed to the connection; the connection is woken** and
+  reads the row from SQLite, in order, when its socket has room. Only
+  transient envelopes travel in memory, through a channel of 32 frames
+  (2 MiB); when it is full they are dropped and the sender is told `dropped`.
+- **A peer that stops reading is disconnected** after a write has stalled for
+  30 s, rather than waited on.
+- **A queue is capped in bytes as well as rows**: 10,000 envelopes and
+  `STONECHAT_MAX_QUEUE_BYTES` (default `67108864`, 64 MiB) per device. Either
+  cap answers `503 mailbox full`.
+- **A duplicate id is answered and otherwise ignored.** The sender gets the
+  same `{"status": "queued"}` a first delivery gets; nothing is written,
+  delivered or woken a second time.
+- **`ring: true` is debounced** like any other push, on a 2 s window of its
+  own (ordinary pushes: 5 s).
+
+And how fast is limited, per source address and in total, with `429` and
+`Retry-After: 1`:
+
+| Variable | Default | Meters |
+|---|---|---|
+| `STONECHAT_LIMIT_INBOX` | `20/200,100/1000` | `POST /inbox` |
+| `STONECHAT_LIMIT_BLOB` | `1/60,4/240` | `POST /blob` |
+| `STONECHAT_LIMIT_BUNDLE` | `0.5/30,5/300` | `GET /prekeys/bundle` |
+
+The format is `<per-address>,<global>`, each `<requests per second>/<burst>`;
+`off` disables that limiter. A sender may spend its burst at once and is then
+held to the rate. An IPv6 sender is its /64. Each limiter remembers at most
+4096 addresses and, at that cap, forgets the one idle longest — never the whole
+table. Over WebTransport the address is the QUIC session's.
+
+The defaults are sized against what one honest sender does to one mailbox: a
+message is one envelope per recipient device, typing indicators and receipts
+are envelopes too, and a phone coming back online flushes its outbox at once.
+A group send reaches this mailbox as one member's share, from that member's
+address. Two things will exceed them and should raise or disable the limit
+for the run: the benchmarks (`scripts/bench_fanout.py`,
+`scripts/bench_devices.py` — start the relay with `STONECHAT_LIMIT_INBOX=off`),
+and any deployment where the relay sees every client as one address (a reverse
+proxy, or Docker's userland proxy), where the per-address figure becomes a
+second global one. The conformance corpus, `tests/ws_test.py` and
+`scripts/e2e_multidevice.py` run inside the defaults.
 
 ### The browser transport (`STONECHAT_WT_PORT`)
 
@@ -49,16 +128,15 @@ has to refresh before its *last* pin lapses. Rotation happens in place
 `/wt/certs` is unauthenticated and states rather than vouches — every value in
 it is a hash of a certificate the relay hands to anyone who connects. What
 makes it trustworthy is the **owner's signature** over the same list in the hub
-directory, exactly as with the long-lived fingerprint. **That signature does
-not exist yet** — see "Not finished" below.
+directory, exactly as with the long-lived fingerprint.
 
 Separate from the TLS listener on purpose: native clients keep the transport
 they pin today, and a host that blocks UDP loses browser sessions rather than
 its mailbox. A bind failure is logged, not fatal.
 
-The owner's signature over the schedule **now exists** (`POST /v1/mailbox/wt`
-on the hub, signed with `stonechat-v1-wtcerts` over the canonical form in
-`core/src/wtcerts.rs`). The directory serves the list and the signature
+The owner's signature over the schedule is published with
+`POST /v1/mailbox/wt` on the hub, signed with `stonechat-v1-wtcerts` over the
+canonical form in `core/src/wtcerts.rs`. The directory serves the list and the signature
 together, or neither — an unsigned schedule is served as no schedule, because
 a client must not pin one.
 
@@ -169,7 +247,10 @@ id=$(docker create --platform linux/amd64 stonechat-relay-build) && \
 That covers mailboxes created *after* the release. Mailboxes already running
 are upgraded in place — `scripts/roll_relay.py` copies the binary over the
 entrypoint and restarts each container — because their data lives in the
-container itself and recreating one would reset a user's mailbox. See
+container itself and recreating one would reset a user's mailbox. A mailbox
+host installs only a binary signed by its operator's release key
+(`scripts/release_key.py`, mailbox_host/README.md), so the roll needs
+`--release-key`. See
 deploy/README.md "Upgrading the relay without destroying mailboxes".
 
 `/status` reports `build`: BLAKE2b-256 of the executable the process is
@@ -244,7 +325,7 @@ python3 tests/conformance.py https://127.0.0.1:<port> --record   # after intenti
 python3 tests/ws_test.py https://127.0.0.1:<port>   # needs `websockets`
 ```
 
-Status at last run: 91/91 HTTP corpus identical to the goldens (status
+Status at last run: 105/105 HTTP corpus identical to the goldens (status
 codes + bodies, including the FastAPI-style `{"detail": …}` error shapes
 inherited from the Python era), WS suite pass (drain order, ack-delete +
 blob GC, close 4000 replacement, 403 bad token). Provenance: the live
@@ -255,5 +336,12 @@ the group-media surface followed on 2026-07-30 with the original 42
 unchanged, and 27 for the device model on 2026-07-31 (MULTIDEVICE.md phase
 1) — that change re-recorded six earlier expectations, all of them purely
 additive. Phase 3's linking surface followed on 2026-08-02: device kind and
-lifetime, an expired device authenticating as nobody, and `/link` grant
-parking (single-use, unauthenticated collection).
+lifetime, and an expired device authenticating as nobody. (Link grants are
+parked on the hub, not here: the relay has no `/link` route.) Ten more on 2026-09-29 for
+who may manage the mailbox (`policy-*`), appended with the existing 95
+unchanged: every earlier device call in the corpus is the primary's.
+
+What the corpus cannot express — paging, the bounded channel, the write
+timeout, rate limits and their eviction — is in `cargo test`
+(`src/api_tests.rs` drives the router in-process; `link.rs`, `db.rs`,
+`limit.rs` and `push.rs` carry their own).

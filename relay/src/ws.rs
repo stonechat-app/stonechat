@@ -3,27 +3,32 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::extract::ws::CloseFrame;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::extract::ws::CloseFrame;
+use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
-use tokio::sync::mpsc;
 
-use crate::link::Frame;
+use crate::link::{self, Close, FrameSink, DRAIN_PAGE, WRITE_TIMEOUT};
 use crate::AppState;
+
+/// How long a socket we have closed is given to say so back.
+const CLOSE_LINGER: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The one place the transport-agnostic frame becomes a WebSocket frame.
 /// `wt.rs` has the matching two lines for WebTransport.
-fn to_ws(frame: Frame) -> Message {
-    match frame {
-        Frame::Text(text) => Message::Text(text.into()),
-        Frame::Close { code, reason } => Message::Close(Some(CloseFrame {
-            code,
-            reason: reason.into(),
-        })),
+struct WsSink(SplitSink<WebSocket, Message>);
+
+impl FrameSink for WsSink {
+    async fn text(&mut self, text: String) -> bool {
+        self.0.send(Message::Text(text.into())).await.is_ok()
+    }
+    async fn close(&mut self, (code, reason): Close) {
+        let frame = CloseFrame { code, reason: reason.into() };
+        let _ = self.0.send(Message::Close(Some(frame))).await;
     }
 }
 
@@ -47,42 +52,50 @@ pub async fn ws_owner(
 }
 
 async fn handle(socket: WebSocket, state: Arc<AppState>, device: i64) {
-    let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Frame>();
-    let conn_id = state.link.attach(device, tx).await;
+    let (sink, mut stream) = socket.split();
+    let (conn_id, out) = state.link.attach(device).await;
     state.mailbox.touch_device(device);
     log::info!(
         "device {device} connected, draining {} envelopes",
         state.mailbox.device_depth(device)
     );
 
-    // Writer: everything to the socket flows through the link's queue, so
-    // drain and live pushes serialize exactly like Python's send_lock.
-    let writer = tokio::spawn(async move {
-        while let Some(frame) = rx.recv().await {
-            let closing = matches!(frame, Frame::Close { .. });
-            if sink.send(to_ws(frame)).await.is_err() || closing {
-                break;
+    // Writer: everything to the socket flows through the pump, so the drain
+    // and live pushes serialize exactly like Python's send_lock.
+    let queue = state.clone();
+    let mut writer = tokio::spawn(link::pump(
+        out,
+        WsSink(sink),
+        move |after| queue.mailbox.page(device, after, DRAIN_PAGE),
+        WRITE_TIMEOUT,
+    ));
+
+    let acks = state.clone();
+    let reader = async move {
+        while let Some(Ok(msg)) = stream.next().await {
+            match msg {
+                Message::Text(text) => {
+                    let Ok(ack) = serde_json::from_str::<Value>(&text) else { continue };
+                    if let Some(id) = ack.get("ack").and_then(Value::as_str) {
+                        // An ack deletes only this device's row; a sibling
+                        // still owed the same envelope keeps its copy.
+                        acks.delete_envelope(device, id);
+                    }
+                }
+                Message::Close(_) => break,
+                _ => {}
             }
         }
-    });
+    };
+    tokio::pin!(reader);
 
-    for envelope in state.mailbox.all(device) {
-        state.link.push(device, &envelope).await;
-    }
-
-    while let Some(Ok(msg)) = stream.next().await {
-        match msg {
-            Message::Text(text) => {
-                let Ok(ack) = serde_json::from_str::<Value>(&text) else { continue };
-                if let Some(id) = ack.get("ack").and_then(Value::as_str) {
-                    // An ack deletes only this device's row; a sibling still
-                    // owed the same envelope keeps its copy.
-                    state.delete_envelope(device, id);
-                }
-            }
-            Message::Close(_) => break,
-            _ => {}
+    // Either half ending ends the connection. The writer ends on its own
+    // when the peer stops reading or the device was replaced or revoked, and
+    // a socket that outlived its writer would be a connection nothing drains.
+    tokio::select! {
+        _ = &mut reader => {}
+        _ = &mut writer => {
+            let _ = tokio::time::timeout(CLOSE_LINGER, &mut reader).await;
         }
     }
 

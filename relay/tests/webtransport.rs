@@ -48,6 +48,10 @@ fn free_ports() -> (u16, u16) {
 }
 
 fn start_relay() -> Relay {
+    start_relay_with(&[])
+}
+
+fn start_relay_with(env: &[(&str, &str)]) -> Relay {
     let (port, wt_port) = free_ports();
     let dir = std::env::temp_dir().join(format!("stonechat-wt-e2e-{port}"));
     std::fs::create_dir_all(&dir).unwrap();
@@ -59,6 +63,7 @@ fn start_relay() -> Relay {
         .env("STONECHAT_DB", dir.join("mailbox.db"))
         .env("STONECHAT_BLOBS", dir.join("blobs"))
         .env("STONECHAT_TLS_DIR", &dir)
+        .envs(env.iter().copied())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -616,4 +621,49 @@ async fn many_requests_share_one_session() {
         .get(format!("{}/status?token={TOKEN}", relay.https))
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(queued["queued"], 12);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deposits_are_metered_by_address_on_both_transports() {
+    // The router is shared, but the peer address is not: the TLS listener
+    // supplies it and the QUIC session has to attach its own. A per-address
+    // burst far below the global one tells the two apart — if the address
+    // went missing over WebTransport, the third deposit would be accepted.
+    let relay = start_relay_with(&[("STONECHAT_LIMIT_INBOX", "0.001/2,0.001/100")]);
+    let http = http();
+    let conn = connect(&relay, &http).await;
+
+    let post = |i: u32| {
+        serde_json::to_vec(&serde_json::json!({
+            "v": 1, "id": format!("wt-limit-{i}"), "to": OWNER, "device": 1,
+            "sealed": B64.encode(b"x"),
+        }))
+        .unwrap()
+    };
+    let mut statuses = Vec::new();
+    for i in 0..3 {
+        let (head, body) = request(&conn, "POST", "/inbox", &post(i)).await;
+        statuses.push(head["status"].as_u64().unwrap());
+        if i == 2 {
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["detail"], "too many requests");
+            assert_eq!(head["headers"]["retry-after"], "1");
+        }
+    }
+    assert_eq!(statuses, [200, 200, 429]);
+
+    // The same sender over the other transport is the same sender.
+    let over_tls = http
+        .post(format!("{}/inbox", relay.https))
+        .body(post(3))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(over_tls.status(), 429);
+
+    // Nothing else is metered, and nothing refused was stored.
+    let status: Value = http
+        .get(format!("{}/status?token={TOKEN}", relay.https))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(status["queued"], 2);
 }

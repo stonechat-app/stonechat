@@ -879,5 +879,115 @@
     {
       "detail": "bad kind"
     }
+  ],
+  "policy-mint-linked": [
+    200,
+    {
+      "device_id": 6,
+      "kind": "linked",
+      "expires_at": null,
+      "devices_v": 7
+    }
+  ],
+  "policy-linked-cannot-mint": [
+    403,
+    {
+      "detail": "primary device only"
+    }
+  ],
+  "policy-linked-cannot-revoke-primary": [
+    403,
+    {
+      "detail": "the primary device cannot be revoked"
+    }
+  ],
+  "policy-primary-cannot-revoke-itself": [
+    403,
+    {
+      "detail": "the primary device cannot be revoked"
+    }
+  ],
+  "policy-linked-cannot-revoke-sibling": [
+    403,
+    {
+      "detail": "a linked device can revoke only itself"
+    }
+  ],
+  "policy-linked-cannot-probe": [
+    403,
+    {
+      "detail": "a linked device can revoke only itself"
+    }
+  ],
+  "policy-devices-untouched": [
+    200,
+    {
+      "devices_v": 7,
+      "devices": [
+        {
+          "device_id": 1,
+          "kind": "primary",
+          "cert": null,
+          "created_at": "X",
+          "expires_at": null,
+          "last_seen": null
+        },
+        {
+          "device_id": 3,
+          "kind": "web",
+          "cert": null,
+          "created_at": "X",
+          "expires_at": "X",
+          "last_seen": null
+        },
+        {
+          "device_id": 5,
+          "kind": "agent",
+          "cert": null,
+          "created_at": "X",
+          "expires_at": null,
+          "last_seen": null
+        },
+        {
+          "device_id": 6,
+          "kind": "linked",
+          "cert": null,
+          "created_at": "X",
+          "expires_at": null,
+          "last_seen": null
+        }
+      ]
+    }
+  ],
+  "policy-linked-revokes-itself": [
+    200,
+    {
+      "status": "ok",
+      "devices_v": 8
+    }
+  ],
+  "policy-revoked-itself-token": [
+    401,
+    {
+      "detail": "owner only"
+    }
+  ],
+  "policy-primary-still-works": [
+    200,
+    {
+      "status": "ok",
+      "v": 1,
+      "queued": 3,
+      "prekeys": {
+        "spk": true,
+        "opks": 0,
+        "kspk": true,
+        "kopks": 0
+      },
+      "device_id": 1,
+      "devices_v": 8,
+      "bundle_token": "d4e204a9b3c978103c24ad1d8b67203077311f32d08f5008047faf6a98d76ae1",
+      "build": "X"
+    }
   ]
 }

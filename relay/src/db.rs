@@ -5,6 +5,7 @@
 //! Pre-launch, so there is no schema migration — the tables are created as
 //! they are meant to be, and an older volume is wiped rather than upgraded.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use blake2::digest::consts::U32;
@@ -13,6 +14,36 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 use crate::{MAX_KOPKS, MAX_OPKS, MAX_QUEUE_DEPTH};
+
+/// What became of an envelope handed to [`Mailbox::put`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Put {
+    /// A new row. The caller delivers and wakes.
+    Queued,
+    /// This device already holds this id. Nothing was written, and nothing
+    /// may be delivered or woken for: a retry is answered, not repeated.
+    Duplicate,
+    /// The device's queue is at its row or byte cap.
+    Full,
+}
+
+/// How much one device's queue holds. Kept in memory because the byte cap is
+/// checked on every deposit, and asking SQLite for `SUM(LENGTH(body))` reads
+/// every queued body to answer.
+#[derive(Default, Clone, Copy)]
+struct Usage {
+    rows: i64,
+    bytes: u64,
+}
+
+struct QueueState {
+    /// The rowid the next envelope gets. Assigned here rather than left to
+    /// SQLite, which hands out `max(rowid) + 1` and so *reuses* a number once
+    /// the newest row is acked — and a drain cursor that has already passed
+    /// that number would skip the envelope that inherited it.
+    next_seq: i64,
+    usage: HashMap<i64, Usage>,
+}
 
 type Blake2b256 = Blake2b<U32>;
 
@@ -61,10 +92,13 @@ pub struct OpkUpload {
 
 pub struct Mailbox {
     db: Mutex<Connection>,
+    /// Locked after `db`, never before it.
+    queue: Mutex<QueueState>,
+    max_queue_bytes: u64,
 }
 
 impl Mailbox {
-    pub fn open(path: &str, owner_token: &str) -> rusqlite::Result<Self> {
+    pub fn open(path: &str, owner_token: &str, max_queue_bytes: u64) -> rusqlite::Result<Self> {
         let db = Connection::open(path)?;
         db.execute_batch(
             "CREATE TABLE IF NOT EXISTS envelopes (
@@ -116,7 +150,31 @@ impl Mailbox {
                key TEXT PRIMARY KEY,
                value TEXT NOT NULL);",
         )?;
-        let mailbox = Self { db: Mutex::new(db) };
+        let queue = {
+            let next_seq: i64 = db.query_row(
+                "SELECT IFNULL(MAX(rowid), 0) + 1 FROM envelopes",
+                [],
+                |r| r.get(0),
+            )?;
+            let mut usage: HashMap<i64, Usage> = HashMap::new();
+            let mut stmt = db.prepare(
+                "SELECT device, COUNT(*), IFNULL(SUM(LENGTH(CAST(body AS BLOB))), 0)
+                 FROM envelopes GROUP BY device",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+            })?;
+            for row in rows {
+                let (device, rows, bytes) = row?;
+                usage.insert(device, Usage { rows, bytes: bytes as u64 });
+            }
+            QueueState { next_seq, usage }
+        };
+        let mailbox = Self {
+            db: Mutex::new(db),
+            queue: Mutex::new(queue),
+            max_queue_bytes,
+        };
         mailbox.seed_primary_device(owner_token);
         Ok(mailbox)
     }
@@ -272,11 +330,14 @@ impl Mailbox {
     /// it. Returns the blob ids its dropped envelopes referenced so the caller
     /// can release them, and false if there was no such device.
     ///
-    /// Device 1 is revocable like any other — MULTIDEVICE.md treats devices
-    /// uniformly and "primary" is a bootstrap distinction only. Losing it
-    /// costs the mailbox its `STONECHAT_OWNER_TOKEN` login until the next
-    /// boot re-seeds it, which is the honest consequence of asking for it.
+    /// Device 1 is not revocable. Its token is `STONECHAT_OWNER_TOKEN`, so
+    /// removing the row would lock the owner out of their own mailbox until
+    /// the next boot re-seeded it. Refused here as well as in the route, so
+    /// no later caller can do it by accident.
     pub fn remove_device(&self, device_id: i64) -> (bool, Vec<String>) {
+        if device_id == PRIMARY_DEVICE {
+            return (false, Vec::new());
+        }
         let db = self.db.lock().unwrap();
         let existed = db
             .execute("DELETE FROM devices WHERE device_id = ?1", params![device_id])
@@ -314,6 +375,7 @@ impl Mailbox {
             .unwrap();
         }
         Self::bump_devices_v(&db);
+        self.queue.lock().unwrap().usage.remove(&device_id);
         (true, blob_ids)
     }
 
@@ -520,45 +582,69 @@ impl Mailbox {
         .unwrap()
     }
 
-    /// Queue an envelope. `false` means the mailbox is full. Duplicate ids
-    /// are silently ignored (INSERT OR IGNORE) — idempotent delivery.
-    /// Queue an envelope for one device. The depth cap meters *delivery*, so
-    /// it is per device (MULTIDEVICE.md "Relay changes") — one device that
+    /// Queue an envelope for one device. The caps meter *delivery*, so they
+    /// are per device (MULTIDEVICE.md "Relay changes") — one device that
     /// stops draining must not stop the others receiving mail.
-    pub fn put(&self, device: i64, envelope: &Value) -> bool {
+    ///
+    /// Two caps, because rows alone bound nothing: 10,000 envelopes of 64 KiB
+    /// are 640 MiB. A duplicate is reported before either is checked — the
+    /// envelope is already here, which is what its sender wants to know.
+    pub fn put(&self, device: i64, envelope_id: &str, body: &str) -> Put {
         let db = self.db.lock().unwrap();
-        let depth: i64 = db
+        let mut queue = self.queue.lock().unwrap();
+        let held: bool = db
             .query_row(
-                "SELECT COUNT(*) FROM envelopes WHERE device = ?1",
-                params![device],
-                |r| r.get(0),
+                "SELECT 1 FROM envelopes WHERE id = ?1 AND device = ?2",
+                params![envelope_id, device],
+                |_| Ok(()),
             )
-            .unwrap();
-        if depth >= MAX_QUEUE_DEPTH {
-            return false;
+            .optional()
+            .unwrap()
+            .is_some();
+        if held {
+            return Put::Duplicate;
+        }
+        let used = queue.usage.get(&device).copied().unwrap_or_default();
+        if used.rows >= MAX_QUEUE_DEPTH
+            || used.bytes + body.len() as u64 > self.max_queue_bytes
+        {
+            return Put::Full;
         }
         db.execute(
-            "INSERT OR IGNORE INTO envelopes (id, device, body, received_at)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO envelopes (rowid, id, device, body, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
-                envelope["id"].as_str().unwrap(),
+                queue.next_seq,
+                envelope_id,
                 device,
-                serde_json::to_string(envelope).unwrap(),
+                body,
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, false),
             ],
         )
         .unwrap();
-        true
+        queue.next_seq += 1;
+        let used = queue.usage.entry(device).or_default();
+        used.rows += 1;
+        used.bytes += body.len() as u64;
+        Put::Queued
     }
 
-    /// One device's queued envelope bodies, oldest first (its /ws drain order).
-    pub fn all(&self, device: i64) -> Vec<String> {
+    /// The next `limit` of one device's queued envelopes after `after`,
+    /// oldest first, each with the sequence number to resume from. The drain
+    /// reads the queue through this and nothing else, so what it holds in
+    /// memory is a page, never the queue (link.rs "pump").
+    pub fn page(&self, device: i64, after: i64, limit: usize) -> Vec<(i64, String)> {
         let db = self.db.lock().unwrap();
         let mut stmt = db
-            .prepare("SELECT body FROM envelopes WHERE device = ?1 ORDER BY received_at")
+            .prepare(
+                "SELECT rowid, body FROM envelopes
+                 WHERE device = ?1 AND rowid > ?2 ORDER BY rowid LIMIT ?3",
+            )
             .unwrap();
         let rows = stmt
-            .query_map(params![device], |r| r.get::<_, String>(0))
+            .query_map(params![device, after, limit as i64], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
             .unwrap();
         rows.map(|r| r.unwrap()).collect()
     }
@@ -595,6 +681,10 @@ impl Mailbox {
         )
         .unwrap();
         let body = body?;
+        if let Some(used) = self.queue.lock().unwrap().usage.get_mut(&device) {
+            used.rows = (used.rows - 1).max(0);
+            used.bytes = used.bytes.saturating_sub(body.len() as u64);
+        }
         serde_json::from_str::<Value>(&body)
             .ok()?
             .get("blob_id")?
@@ -614,6 +704,20 @@ impl Mailbox {
         .unwrap()
     }
 
+    /// Whether a device other than `device` still has this blob queued. What
+    /// stops a linked device deleting media a sibling has yet to fetch.
+    pub fn blob_owed_to_sibling(&self, blob_id: &str, device: i64) -> bool {
+        let db = self.db.lock().unwrap();
+        db.query_row(
+            "SELECT COUNT(*) FROM envelopes
+             WHERE device != ?2 AND body LIKE '%' || ?1 || '%'",
+            params![blob_id, device],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    }
+
     /// Total queued across all devices — what /status reports and the boot
     /// log prints.
     pub fn depth(&self) -> i64 {
@@ -630,5 +734,118 @@ impl Mailbox {
             |r| r.get(0),
         )
         .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mailbox(max_queue_bytes: u64) -> Mailbox {
+        Mailbox::open(":memory:", "owner-token", max_queue_bytes).unwrap()
+    }
+
+    fn body(id: &str, pad: usize) -> String {
+        format!(r#"{{"v":1,"id":"{id}","sealed":"{}"}}"#, "a".repeat(pad))
+    }
+
+    #[test]
+    fn a_duplicate_id_is_reported_and_not_stored_twice() {
+        let m = mailbox(1 << 20);
+        assert_eq!(m.put(1, "e-1", &body("e-1", 10)), Put::Queued);
+        assert_eq!(m.put(1, "e-1", &body("e-1", 10)), Put::Duplicate);
+        assert_eq!(m.device_depth(1), 1);
+        // The same id for a sibling is that sibling's own row.
+        let two = m.add_device(&"t".repeat(32), "linked", None);
+        assert_eq!(m.put(two, "e-1", &body("e-1", 10)), Put::Queued);
+    }
+
+    #[test]
+    fn the_byte_cap_is_per_device_and_released_by_an_ack() {
+        let one = body("x", 300);
+        let m = mailbox(one.len() as u64 * 2);
+        let two = m.add_device(&"t".repeat(32), "linked", None);
+        assert_eq!(m.put(1, "a", &one), Put::Queued);
+        assert_eq!(m.put(1, "b", &one), Put::Queued);
+        assert_eq!(m.put(1, "c", &one), Put::Full);
+        // A full sibling does not stop this one receiving.
+        assert_eq!(m.put(two, "c", &one), Put::Queued);
+        // A retry of something already held is still a duplicate, not "full".
+        assert_eq!(m.put(1, "a", &one), Put::Duplicate);
+        m.delete(1, "a");
+        assert_eq!(m.put(1, "c", &one), Put::Queued);
+        // Acking an id that is not queued must not credit the device.
+        m.delete(1, "never-queued");
+        assert_eq!(m.put(1, "d", &one), Put::Full);
+    }
+
+    #[test]
+    fn usage_is_recounted_from_the_rows_on_open() {
+        let dir = std::env::temp_dir().join(format!("stonechat-db-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mailbox.db");
+        let one = body("x", 300);
+        {
+            let m = Mailbox::open(path.to_str().unwrap(), "t", one.len() as u64 * 2).unwrap();
+            assert_eq!(m.put(1, "a", &one), Put::Queued);
+            assert_eq!(m.put(1, "b", &one), Put::Queued);
+        }
+        let m = Mailbox::open(path.to_str().unwrap(), "t", one.len() as u64 * 2).unwrap();
+        assert_eq!(m.put(1, "c", &one), Put::Full);
+        assert_eq!(m.page(1, 0, 10).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pages_are_bounded_ordered_and_resume_from_the_cursor() {
+        let m = mailbox(1 << 20);
+        for i in 0..7 {
+            m.put(1, &format!("e-{i}"), &body(&format!("e-{i}"), 4));
+        }
+        let first = m.page(1, 0, 3);
+        assert_eq!(first.len(), 3);
+        assert!(first[0].1.contains("e-0") && first[2].1.contains("e-2"));
+        let second = m.page(1, first[2].0, 3);
+        assert!(second[0].1.contains("e-3"));
+        let rest = m.page(1, second[2].0, 3);
+        assert_eq!(rest.len(), 1);
+        assert!(m.page(1, rest[0].0, 3).is_empty());
+    }
+
+    #[test]
+    fn a_sequence_number_is_never_reused_after_an_ack() {
+        // SQLite's own rowid would be: ack the newest row and the next insert
+        // inherits its number, behind a cursor that already passed it.
+        let m = mailbox(1 << 20);
+        m.put(1, "a", &body("a", 4));
+        let cursor = m.page(1, 0, 10)[0].0;
+        m.delete(1, "a");
+        m.put(1, "b", &body("b", 4));
+        let next = m.page(1, cursor, 10);
+        assert_eq!(next.len(), 1, "the envelope after an ack was skipped");
+        assert!(next[0].0 > cursor);
+    }
+
+    #[test]
+    fn the_primary_device_cannot_be_removed() {
+        let m = mailbox(1 << 20);
+        assert_eq!(m.remove_device(PRIMARY_DEVICE), (false, Vec::new()));
+        assert_eq!(m.device_for_token("owner-token"), Some(PRIMARY_DEVICE));
+        let two = m.add_device(&"t".repeat(32), "linked", None);
+        m.put(two, "a", &body("a", 4));
+        assert!(m.remove_device(two).0);
+        assert_eq!(m.device_depth(two), 0);
+    }
+
+    #[test]
+    fn a_blob_is_owed_to_a_sibling_only_while_the_sibling_has_it_queued() {
+        let m = mailbox(1 << 20);
+        let two = m.add_device(&"t".repeat(32), "linked", None);
+        let blob = "123e4567-e89b-42d3-a456-426614174000";
+        m.put(1, "a", &format!(r#"{{"id":"a","blob_id":"{blob}"}}"#));
+        assert!(m.blob_owed_to_sibling(blob, two));
+        assert!(!m.blob_owed_to_sibling(blob, 1));
+        m.delete(1, "a");
+        assert!(!m.blob_owed_to_sibling(blob, two));
     }
 }
