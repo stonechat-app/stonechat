@@ -5,6 +5,10 @@ its websocket forever: auto-accepts contact requests and replies to every
 message with a random canned sentence. Add its SC- ID from the phone's
 "Add contact" screen and you have someone to chat with.
 
+Groups: add the bot to a group and it answers there too — to people, never
+to another echo bot (any member whose name ends in "(echo bot)"), so several
+bots can share a group without talking to each other forever.
+
 Usage (first run provisions; later runs reuse the saved identity):
 
     STONECHAT_TEST_CODE=STONECHAT-XXXX-XXXX python3 scripts/echo_bot.py
@@ -16,7 +20,8 @@ Usage (first run provisions; later runs reuse the saved identity):
     python3 scripts/echo_bot.py --destroy      # tear down mailbox + state
 
 Env: STONECHAT_HUB (default https://hub.stonechat.app), STONECHAT_TEST_CODE (required on
-first run — the shared tier is plan-gated), STONECHAT_BOT_NAME (default: a random
+first run — the shared tier needs a tier from the hub's gate; a tester code
+from the gate's GATE_TEST_CODES), STONECHAT_BOT_NAME (default: a random
 "<word> (echo bot)", chosen once and kept with the identity),
 STONECHAT_BOT_STATE (default ~/.stonechat_echo_bot.pkl).
 
@@ -231,6 +236,9 @@ def save(bot: Phone) -> None:
         "peer_certs": bot.peer_certs,
         # Their bundle tokens, so fan-out survives a restart.
         "bundle_tokens": bot.bundle_tokens,
+        # Groups we are in: {group_id: {"name", "admin", "version",
+        # "members": {stonechat_id: display_name}}}.
+        "groups": bot.groups,
     }))
 
 
@@ -251,6 +259,7 @@ def load() -> Phone | None:
     bot.cert = s.get("cert")
     bot.peer_certs = s.get("peer_certs", {})
     bot.bundle_tokens = s.get("bundle_tokens", {})
+    bot.groups = s.get("groups", {})
     bot.stonechat_id, bot.token, bot.mailbox = s["stonechat_id"], s["token"], s["mailbox"]
     bot.sessions, bot.spk, bot.opks = s["sessions"], s["spk"], s["opks"]
     bot.kspk, bot.kopks = s.get("kspk"), s.get("kopks", {})
@@ -269,17 +278,17 @@ def load() -> Phone | None:
 
 def redeem(bot: Phone) -> None:
     code = os.environ.get("STONECHAT_TEST_CODE") or sys.exit(
-        "the shared tier is plan-gated — set STONECHAT_TEST_CODE (the current tester "
-        "live in the hub's systemd drop-in, STONECHAT_TEST_CODES)")
-    r = httpx.post(f"{HUB}/v1/billing/redeem", headers=bot.auth,
+        "the shared tier is gated — set STONECHAT_TEST_CODE (a tester code from "
+        "the gate's GATE_TEST_CODES)")
+    r = httpx.post(f"{HUB}/v1/access/claim", headers=bot.auth,
                    json={"code": code}, timeout=30)
     if r.status_code == 404:
-        sys.exit(f"hub does not recognize code {code!r} — that's the "
-                 "placeholder or a revoked code; use the current one from "
-                 "the hub's drop-in")
+        sys.exit(f"the gate does not recognize code {code!r} — that's the "
+                 "placeholder or a revoked code; use a current GATE_TEST_CODES "
+                 "entry")
     if r.status_code >= 400:
-        sys.exit(f"redeeming {code!r} failed ({r.status_code}): {r.text[:300]}")
-    print("entitlement:", r.json()["plan"], r.json()["status"])
+        sys.exit(f"claiming {code!r} failed ({r.status_code}): {r.text[:300]}")
+    print("access:", r.json()["tier"], r.json()["status"])
 
 
 def ensure_provisioned(bot: Phone) -> None:
@@ -402,6 +411,14 @@ async def handle(bot: Phone, outer: dict) -> None:
                       "I'll answer with one of my ten sentences."})
     elif type_ == "contact_accept":
         print(f"{sender} accepted our request")
+    elif type_ in ("group_create", "group_update"):
+        apply_membership(bot, sender, payload)
+    elif type_ == "group_leave":
+        group = bot.groups.get(payload.get("group_id"))
+        if group is not None:
+            group["members"].pop(sender, None)
+    elif type_ in ("group_msg", "group_media"):
+        await answer_group(bot, sender, type_, payload)
     elif type_ in ("msg", "media"):
         got = payload.get("text", f"<{type_}>")
         print(f"{sender[:12]}…: {got!r}")
@@ -412,6 +429,72 @@ async def handle(bot: Phone, outer: dict) -> None:
         # typing, receipts, reactions, profile updates, calls… decrypting
         # above already kept the ratchet current; nothing to answer.
         print(f"ignoring {type_} from {sender[:12]}…")
+
+
+# -- groups (PROTOCOL.md "Groups (client-side fan-out)") ------------------------
+
+def is_bot_name(name: str) -> bool:
+    return name.endswith("(echo bot)")
+
+
+def apply_membership(bot: Phone, sender: str, payload: dict) -> None:
+    """group_create / group_update: only the admin defines membership, and a
+    stale or replayed version never regresses it — the same rules the app
+    applies."""
+    group_id, admin = payload.get("group_id"), payload.get("admin")
+    members = payload.get("members") or []
+    if not group_id or sender != admin:
+        return
+    known = bot.groups.get(group_id)
+    if known is not None and (sender != known["admin"]
+                              or payload.get("version", 0) <= known["version"]):
+        return
+    roster = {m["stonechat_id"]: m.get("display_name") or m["stonechat_id"][:12]
+              for m in members if m.get("stonechat_id")}
+    if bot.stonechat_id not in roster:
+        bot.groups.pop(group_id, None)
+        print(f"removed from group {payload.get('name')!r}")
+        return
+    bot.groups[group_id] = {"name": payload.get("name", ""), "admin": admin,
+                            "version": payload.get("version", 0),
+                            "members": roster}
+    print(f"group {payload.get('name')!r}: {len(roster)} members")
+    if known is None:
+        # Joined: say so once, so the tester can see the bot is live there.
+        # Scheduled, not awaited: fan-out to every member takes a while, and
+        # the envelope should be acked now.
+        asyncio.get_running_loop().create_task(say_in_group(
+            bot, group_id, f"{bot.name} here — I'll answer anything people "
+                           "say in this group."))
+
+
+async def say_in_group(bot: Phone, group_id: str, text: str) -> None:
+    """Fan one group_msg out to every other member, pairwise, as the app
+    does. A member we cannot reach does not stop the rest."""
+    group = bot.groups.get(group_id)
+    if group is None:
+        return
+    for member_id in list(group["members"]):
+        if member_id == bot.stonechat_id:
+            continue
+        try:
+            send(bot, resolve(member_id), "group_msg",
+                 {"group_id": group_id, "text": text})
+        except Exception as exc:
+            print(f"  ! group send to {member_id[:12]}…: {exc!r}")
+
+
+async def answer_group(bot: Phone, sender: str, type_: str, payload: dict) -> None:
+    group = bot.groups.get(payload.get("group_id"))
+    if group is None or sender not in group["members"]:
+        return  # unknown group, or not a member — the app drops these too
+    name = group["members"][sender]
+    got = payload.get("text", f"<{type_}>")
+    print(f"[{group['name']}] {name}: {got!r}")
+    if is_bot_name(name):
+        return  # never answer another bot: two of us would never stop
+    await asyncio.sleep(random.uniform(0.6, 1.8))
+    await say_in_group(bot, payload["group_id"], random.choice(SENTENCES))
 
 
 async def run(bot: Phone) -> None:
@@ -449,6 +532,7 @@ def main() -> None:
         bot = Phone(BOT_NAME)
         bot.peer_certs = {}
         bot.bundle_tokens = {}
+        bot.groups = {}
         print("registering fresh identity on", HUB)
         bot.register()
         save(bot)
