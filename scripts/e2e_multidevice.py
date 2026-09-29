@@ -371,8 +371,37 @@ def main() -> int:
     except Exception:
         print("  ok   a relabelled from_device fails to decrypt (AEAD-bound)")
 
-    # -- 6. a revoked device stops receiving ----------------------------------
-    print("6) revocation: delivery stops, devices_v bumps")
+    # -- 6. who may manage the mailbox, and what revocation does ---------------
+    print("6) device management is the primary's; revocation stops delivery")
+    # A linked device's token is a login to its own queue, not authority over
+    # the device list: it cannot add a device, and it cannot remove the
+    # primary or a sibling. Its one power there is to sign itself out.
+    dev3_token = base64.urlsafe_b64encode(nacl_random(32)).decode().rstrip("=")
+    r = MX.post(f"{a_addr}/devices", params={"token": dev2_token},
+                json={"device_token": dev3_token, "kind": "linked"})
+    assert r.status_code == 403, f"a linked device minted a device: {r.status_code}"
+    r = MX.delete(f"{a_addr}/devices/1", params={"token": dev2_token})
+    assert r.status_code == 403, f"a linked device revoked the primary: {r.status_code}"
+    r = MX.delete(f"{a_addr}/devices/1", params={"token": a_tok})
+    assert r.status_code == 403, f"the primary was revoked over the API: {r.status_code}"
+    assert MX.get(f"{a_addr}/status", params={"token": a_tok}).status_code == 200, \
+        "the owner token must survive every attempt to revoke device 1"
+
+    r = MX.post(f"{a_addr}/devices", params={"token": a_tok},
+                json={"device_token": dev3_token, "kind": "linked"})
+    r.raise_for_status()
+    assert r.json()["device_id"] == 3
+    r = MX.delete(f"{a_addr}/devices/3", params={"token": dev2_token})
+    assert r.status_code == 403, f"a linked device revoked a sibling: {r.status_code}"
+    assert MX.get(f"{a_addr}/status", params={"token": dev3_token}).status_code == 200
+    print("  ok   a linked device cannot mint, nor revoke the primary or a sibling")
+
+    # Signing out: device 3 removes itself, and is then nobody.
+    MX.delete(f"{a_addr}/devices/3", params={"token": dev3_token}).raise_for_status()
+    assert MX.get(f"{a_addr}/status", params={"token": dev3_token}).status_code == 401
+    print("  ok   a linked device can revoke itself")
+
+    # The primary revokes device 2.
     before = MX.get(f"{a_addr}/status", params={"token": a_tok}).json()["devices_v"]
     MX.delete(f"{a_addr}/devices/2", params={"token": a_tok}).raise_for_status()
     after = MX.get(f"{a_addr}/status", params={"token": a_tok}).json()["devices_v"]

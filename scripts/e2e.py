@@ -23,6 +23,7 @@ import copy
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import socket
 import ssl
@@ -129,15 +130,68 @@ def live_cert_fp(address: str) -> str:
     return base64.b64encode(hashlib.blake2b(der, digest_size=32).digest()).decode()
 
 
+class Rejected(Exception):
+    """Something a client must refuse, and drop for good: no retry makes a
+    malformed envelope well-formed, or a lying directory honest."""
+
+
+_WIRE_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
+
+
+def is_wire_id(value) -> bool:
+    """A UUID in its canonical form (PROTOCOL.md "Envelope"). Envelope and blob
+    ids end up in file names and URLs on the receiving side, so anything else
+    is refused where it enters rather than escaped where it is used."""
+    return isinstance(value, str) and _WIRE_ID.fullmatch(value) is not None
+
+
+def check_directory_entry(asked_for: str, entry: dict) -> dict:
+    """PROTOCOL.md "Directory resolution": what a client checks before it
+    believes a directory's answer. Returns the entry, or raises Rejected.
+
+    Against the ID that was ASKED FOR, never the one in the answer: somebody
+    else's complete record is internally consistent — its key does hash to its
+    ID — and the only thing wrong with it is that it is not what was asked for.
+    """
+    try:
+        identity = base64.b64decode(entry["pubkey"], validate=True)
+        if entry["stonechat_id"] != asked_for \
+                or stonechat_id_from_pubkey(identity) != asked_for:
+            raise Rejected(f"directory answered for {asked_for} with a record "
+                           "that does not commit to it")
+        verify = VerifyKey(identity)
+        verify.verify(PQPK_SIG_CONTEXT + base64.b64decode(entry["pq_pk"]),
+                      base64.b64decode(entry["pq_sig"]))
+        mailbox = entry.get("mailbox")
+        # A mailbox nobody vouched for is one to stay away from, not one to
+        # connect to unpinned. An owner who has not signed yet (just
+        # provisioned) reads as "no mailbox", which is what it is to a sender.
+        if mailbox and mailbox.get("tls_sig"):
+            verify.verify(TLS_SIG_CONTEXT + base64.b64decode(mailbox["tls_fp"]),
+                          base64.b64decode(mailbox["tls_sig"]))
+            if not str(mailbox.get("address", "")).startswith("https://"):
+                raise Rejected("mailbox address is not https")
+        elif mailbox:
+            entry = {**entry, "mailbox": None}
+    except Rejected:
+        raise
+    except Exception as e:
+        raise Rejected(f"directory record for {asked_for} does not verify: {e!r}")
+    return entry
+
+
+def resolve_directory(stonechat_id: str) -> dict:
+    r = httpx.get(f"{HUB}/v1/directory/{stonechat_id}", timeout=10)
+    r.raise_for_status()
+    return check_directory_entry(stonechat_id, r.json())
+
+
 def assert_pinned(phone: "Phone") -> None:
     """The full client-side transport check: directory fp is vouched for by
     the owner's identity key AND matches the certificate actually served."""
-    entry = httpx.get(f"{HUB}/v1/directory/{phone.stonechat_id}").json()
-    srv = entry["mailbox"]
-    VerifyKey(base64.b64decode(entry["pubkey"])).verify(
-        TLS_SIG_CONTEXT + base64.b64decode(srv["tls_fp"]),
-        base64.b64decode(srv["tls_sig"]),
-    )
+    srv = resolve_directory(phone.stonechat_id)["mailbox"]
+    assert srv, "the owner has signed no fingerprint for this mailbox"
     assert srv["tls_fp"] == live_cert_fp(srv["address"]), \
         "served certificate must match the owner-signed fingerprint"
 
@@ -145,6 +199,12 @@ def assert_pinned(phone: "Phone") -> None:
 # -- session crypto (PROTOCOL.md) ----------------------------------------------
 
 import pqcore  # noqa: E402  (scripts/pqcore.py — ctypes over the Rust core)
+import release_key  # noqa: E402  (scripts/release_key.py — relay release signing)
+
+# A release key for this run only. The mailbox host under test is told its
+# public half, so the roll below exercises the signature check for real rather
+# than switching it off.
+RELEASE_KEY = SigningKey.generate()
 
 X3DH_KDF_KEY = b"stonechat-v1-pqxdh-kdf"
 SPK_SIG_CONTEXT = b"stonechat-v1-spk"
@@ -368,6 +428,7 @@ class MailboxHostUnderTest:
             # customers run), so name the image the local provider already built
             # from this checkout.
             "STONECHAT_MAILBOX_HOST_IMAGE": image_tag(),
+            "STONECHAT_RELAY_RELEASE_KEYS": release_key.public_b64(RELEASE_KEY),
         }
         cls.proc = subprocess.Popen(
             [sys.executable, str(MAILBOX_HOST_MAIN)], env=env,
@@ -388,11 +449,11 @@ class MailboxHostUnderTest:
         raise SystemExit(f"mailbox host never answered on {MAILBOX_HOST_URL}")
 
     @classmethod
-    def admin(cls, method: str, path: str, **kw):
-        return MX.request(
-            method, f"{MAILBOX_HOST_URL}{path}",
-            headers={"Authorization": f"Bearer {MAILBOX_HOST_TOKEN}"}, **kw,
-        )
+    def admin(cls, method: str, path: str, release_sig: str | None = None, **kw):
+        headers = {"Authorization": f"Bearer {MAILBOX_HOST_TOKEN}"}
+        if release_sig is not None:
+            headers["X-Stonechat-Release-Sig"] = release_sig
+        return MX.request(method, f"{MAILBOX_HOST_URL}{path}", headers=headers, **kw)
 
     @classmethod
     def stop(cls) -> None:
@@ -718,10 +779,7 @@ class Phone:
         # Skipping the second would make the certificate decoration.
         cert = block.get("cert")
         assert cert, "initial envelope must carry the sender's device certificate"
-        sender_entry = httpx.get(f"{HUB}/v1/directory/{envelope['from']}").json()
-        sender_identity = unb64(sender_entry["pubkey"])
-        assert stonechat_id_from_pubkey(sender_identity) == envelope["from"], \
-            "directory key must commit to the sender's Stonechat ID"
+        sender_identity = unb64(resolve_directory(envelope["from"])["pubkey"])
         verify_devcert(cert, sender_identity,
                        device=envelope.get("from_device", PRIMARY_DEVICE))
         assert cert["sig_pub"] == block["ik"], \
@@ -834,12 +892,39 @@ class Phone:
         return json.loads(
             crypto_aead_xchacha20poly1305_ietf_decrypt(box, HSEAL_AD, nonce, key))
 
-    def open_envelope(self, envelope: dict, sender: "Phone") -> dict:
+    def check_envelope(self, inner: dict, wire: dict | None) -> None:
+        """What a recipient checks before an envelope touches a session
+        (PROTOCOL.md "Envelope"). All of it is about the unsealed form, which
+        anyone holding this device's PUBLIC seal key can produce — so none of
+        it is authenticated yet, and none of it may be acted on."""
+        if not is_wire_id(inner.get("id")):
+            raise Rejected("envelope id is not a UUID")
+        if inner.get("blob_id") is not None and not is_wire_id(inner["blob_id"]):
+            raise Rejected("envelope blob_id is not a UUID")
+        if wire is not None and inner["id"] != wire.get("id"):
+            # One id names a message everywhere: it is what gets acked, stored
+            # and receipted. The mailbox only ever saw the outer one.
+            raise Rejected("inner id differs from the id on the wire")
+        if inner.get("to") != self.stonechat_id:
+            raise Rejected("envelope is addressed to somebody else")
+        for field in ("from_device", "device"):
+            if type(inner.get(field)) is not int:
+                raise Rejected(f"envelope {field} is missing or not an integer")
+        if not isinstance(inner.get("from"), str) or not isinstance(inner.get("type"), str):
+            raise Rejected("envelope from/type is missing")
+
+    def open_envelope(self, envelope: dict, sender: "Phone",
+                      wire: dict | None = None) -> dict:
+        """Decrypt an envelope, sealed or already unsealed. `wire` is the
+        sealed form it arrived in, for a caller that unsealed it itself.
+        Raises Rejected for anything a client must drop."""
         if "sealed" in envelope:
+            wire = envelope
             envelope = self.unseal(envelope)
+        self.check_envelope(envelope, wire)
         # Which of the sender's ratchets wrote this. AEAD-bound, so a
         # relabelled envelope simply fails to decrypt.
-        key = (envelope["from"], envelope.get("from_device", PRIMARY_DEVICE))
+        key = (envelope["from"], envelope["from_device"])
         state = self.sessions.get(key)
         if state is not None:
             try:
@@ -902,8 +987,28 @@ def main():
     bob.register()
 
     print("2) directory lookup + commitment check")
-    entry = httpx.get(f"{HUB}/v1/directory/{bob.stonechat_id}").json()
+    entry = resolve_directory(bob.stonechat_id)
     assert entry["pubkey"] == bob.pubkey_b64
+    # A directory that lies. The hub under test is honest, so the lie is made
+    # here: each of these is an answer a hostile hub could give to "who is
+    # Bob?", and each must be refused.
+    alices = httpx.get(f"{HUB}/v1/directory/{alice.stonechat_id}").json()
+    for lie, why in [
+        (alices, "somebody else's record, complete and self-consistent"),
+        ({**entry, "pubkey": alices["pubkey"]}, "Bob's ID over another key"),
+        ({**alices, "stonechat_id": bob.stonechat_id}, "another record relabelled"),
+        ({**entry, "pq_sig": alices["pq_sig"]}, "a pq_pk the identity did not sign"),
+        ({**entry, "mailbox": {"address": "https://203.0.113.9:8080",
+                               "tls_fp": b64(nacl_random(32)),
+                               "tls_sig": b64(nacl_random(64))}},
+         "a mailbox the owner did not vouch for"),
+    ]:
+        try:
+            check_directory_entry(bob.stonechat_id, lie)
+        except Rejected:
+            continue
+        raise AssertionError(f"a lying directory was believed: {why}")
+    print("  ok   five lying answers refused")
     assert stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.stonechat_id
     # The X-Wing identity key rides in the directory under an Ed25519
     # signature — resolvers verify it before sealing anything to it.
@@ -1112,7 +1217,18 @@ def main():
                        capture_output=True, check=True)
         payload = pathlib.Path(local).read_bytes()
     want_build = hashlib.blake2b(payload, digest_size=32).hexdigest()[:16]
+    # The admin token places mailboxes; it does not ship code. Unsigned, or
+    # signed by a key this host was not told about, the upload is refused.
     r = MailboxHostUnderTest.admin("POST", "/v1/relay", content=payload, timeout=180)
+    assert r.status_code == 403, f"an unsigned relay must be refused: {r.status_code}"
+    r = MailboxHostUnderTest.admin(
+        "POST", "/v1/relay", content=payload, timeout=180,
+        release_sig=release_key.sign(SigningKey.generate(), payload))
+    assert r.status_code == 403, f"a stranger's signature must be refused: {r.status_code}"
+    assert MailboxHostUnderTest.admin("GET", "/v1/relay").json()["installed_build"] is None
+    r = MailboxHostUnderTest.admin(
+        "POST", "/v1/relay", content=payload, timeout=180,
+        release_sig=release_key.sign(RELEASE_KEY, payload))
     r.raise_for_status()
     assert r.json()["build"] == want_build, r.json()
     state = MailboxHostUnderTest.admin("GET", "/v1/relay").json()
@@ -1390,6 +1506,39 @@ def main():
         raise
     except Exception:
         pass  # expected: key material for that message no longer exists
+
+    print("6a2) envelopes that fail the recipient's checks never reach a session")
+    # Each is sealed correctly to Bob — anyone holding his public seal key can
+    # do that — and each must be dropped BEFORE decryption is attempted, so a
+    # hostile envelope cannot move his ratchet or name a file on his device.
+    before = copy.deepcopy(bob.sessions)
+    hostile_id = "../../databases/stonechat.db"
+    good = alice.make_envelope(bob, "msg", {"text": "checks"})
+    cases = [
+        ("an id that is not a UUID",
+         alice.wrap(bob, {**good, "id": hostile_id})),
+        ("an inner id that differs from the wire id",
+         {**alice.wrap(bob, good), "id": str(uuid.uuid4())}),
+        ("a blob_id that is not a UUID",
+         alice.wrap(bob, {**good, "blob_id": "../prekeys/bundle?x="})),
+        ("an envelope addressed to somebody else",
+         {**alice.wrap(bob, {**good, "to": alice.stonechat_id}),
+          "to": bob.stonechat_id}),
+        ("a missing from_device",
+         alice.wrap(bob, {k: v for k, v in good.items() if k != "from_device"})),
+    ]
+    for what, wire in cases:
+        try:
+            bob.open_envelope(wire, alice)
+        except Rejected:
+            assert bob.sessions == before, f"{what}: the session moved"
+            continue
+        except Exception as e:
+            raise AssertionError(f"{what}: reached the session ({e!r})")
+        raise AssertionError(f"{what}: accepted")
+    # …and the envelope they were all built from is still good.
+    assert bob.open_envelope(alice.wrap(bob, good), alice) == {"text": "checks"}
+    print(f"  ok   {len(cases)} hostile envelopes dropped, the honest one opened")
 
     print("6b) unsealed / wrong-version envelopes are rejected outright")
     cleartext_env = {

@@ -190,21 +190,10 @@ def peer_devices(bot: Phone, peer: Peer) -> list[int]:
 
 
 def resolve(stonechat_id: str) -> Peer:
-    entry = httpx.get(f"{HUB}/v1/directory/{stonechat_id}", timeout=10)
-    entry.raise_for_status()
-    entry = entry.json()
-    # Against the ID that was asked for, never the one in the answer: a
-    # directory returning somebody else's record is internally consistent.
-    assert entry["stonechat_id"] == stonechat_id \
-        and stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == stonechat_id, \
-        "directory pubkey does not commit to the Stonechat ID"
-    # The identity's X-Wing key is still published and still signature-checked
-    # — a directory serving an unsigned one is serving junk — but **nothing
-    # seals to it any more**. Envelopes go to a device's certified seal key;
-    # see peer_cert() below.
-    VerifyKey(base64.b64decode(entry["pubkey"])).verify(
-        e2e.PQPK_SIG_CONTEXT + base64.b64decode(entry["pq_pk"]),
-        base64.b64decode(entry["pq_sig"]))
+    # One implementation of "do I believe this directory", shared with the
+    # end-to-end test: checked against the ID that was asked for, with the
+    # signatures over pq_pk and the mailbox's TLS fingerprint verified.
+    entry = e2e.resolve_directory(stonechat_id)
     if not entry["mailbox"]:
         raise RuntimeError(f"{stonechat_id} has no running relay — can't deliver")
     return Peer(entry["stonechat_id"], entry["pubkey"],
@@ -395,13 +384,15 @@ def send(bot: Phone, peer: Peer, type_: str, payload: dict) -> None:
 
 async def handle(bot: Phone, outer: dict) -> None:
     inner = bot.unseal(outer)
+    payload = bot.open_envelope(inner, None, wire=outer)
     sender, type_ = inner["from"], inner["type"]
     # Their bundle token rides every envelope. It is what lets a reply reach
     # all of their devices instead of only their primary — without it a
     # browser session never sees an answer to the message it just sent.
+    # Recorded only once the envelope has decrypted: unsealing proves nothing
+    # about who wrote it, and a forged token would cut off their other devices.
     if inner.get("bundle_token"):
         bot.bundle_tokens[sender] = inner["bundle_token"]
-    payload = bot.open_envelope(inner, None)
 
     if type_ == "contact_request":
         name = payload.get("display_name") or sender[:12]
