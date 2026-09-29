@@ -33,7 +33,7 @@ behind this one.
    The **owner signs the schedule** (`stonechat-v1-wtcerts` over a canonical
    length-prefixed form; hub `POST /v1/mailbox/wt`; directory serves list and
    signature together or neither), the web client refuses to pin anything
-   unsigned, and the **address is published** as `server.wt_address` — not
+   unsigned, and the **address is published** as `mailbox.wt_address` — not
    derivable, because container providers map a random host port per mailbox.
    The **whole HTTP surface** is carried too — one bidirectional stream per
    request, dispatched into the relay's existing `axum::Router` so no route is
@@ -49,8 +49,8 @@ behind this one.
    Fixing it means either per-relay hostnames + CA-issued certs
    (abandoning the "no CAs, no domains" stance) or a CA-free browser
    transport — see "Keeping relays CA-free and domain-free" below.
-   Note: E2EE survives that change — envelopes are sealed to the identity
-   key from the directory, so a MITM'd relay connection leaks metadata and
+   Note: E2EE survives that change — envelopes are sealed to the recipient
+   device's certified key, so a MITM'd relay connection leaks metadata and
    can drop messages but cannot read content. Pinning is defense-in-depth;
    it is also the part the web physically cannot honor.
 
@@ -281,6 +281,16 @@ above is unchanged.
 
 Composes the tethered-device shape with transport option B.
 
+> **This section is the design sketch, kept for its reasoning. Where it and
+> the code differ, PROTOCOL.md describes what was built.** The differences
+> that matter: the browser's keys are its long-lived *device* keys, not
+> ephemeral ones, and the QR carries a commitment to them rather than the
+> keys ("Linking a device"); the grant carries a device certificate and the
+> mailbox's address, and the WebTransport pins come from the owner-signed
+> schedule in the directory, not from the grant; the WebTransport session is
+> unauthenticated and each request carries its own token; and the expiry
+> policy is the one under "Expiry policy (as built)" below.
+
 **The static app.** webapp.stonechat.app serves a static, open-source,
 reproducibly built bundle: UI + libsodium WASM. No accounts, no
 database, no server logic — a dumb file server. The code-delivery
@@ -324,8 +334,8 @@ messages flowing during that session's lifetime.
 
 **User's-eye view.** Visit webapp.stonechat.app → QR, no login. Phone:
 Settings → Linked devices → Link a web session → scan → one consent
-card ("sends and receives as you; expires after 7 days unused, 30 days
-max; no history; end it anytime") — the only prompt the user ever
+card ("sends and receives as you; expires on a fixed date; end it
+anytime") — the only prompt the user ever
 sees. Chats
 appear with contacts intact but conversations empty, filling from link
 time forward ("web sessions don't carry history — your history lives
@@ -341,26 +351,39 @@ deliberately does NOT auto-renew on its own, because it is the
 mechanism that bounds a web-app compromise — unconditional auto-renewal
 would collapse "bounded, revocable, visible" back into "permanent."
 
-**Expiry policy (decided): sliding window with a hard cap.**
+**Expiry policy (as built): one fixed deadline, set at link time.**
 
-- **Idle timeout** (default 7 d): each day of active use pushes expiry
-  out again, so a daily-driver laptop never nags; any browser left
-  unused dies within 7 d of last activity. "Active use" = the web
-  device authenticating to its own queue, which the relay observes
-  directly — the browser cannot self-extend without actually being
-  used.
-- **Hard cap** (default 30 d): the session ends at the cap regardless
-  of activity, requiring a fresh QR. This bounds a
-  compromised-but-active session, which sliding expiry alone would
-  keep alive indefinitely.
-- **Configurable per device** from the phone's linked-devices screen:
-  idle timeout (1–14 d), hard cap (1–90 d), and a **strict mode**
-  (hard expiry only, no sliding — for the hardcore/untrusted-ish
-  machines). Defaults 7/30; the phone is the only place these can be
-  changed — the web client can read its own expiry but never set it.
-- Enforcement lives on the **relay** (it deletes the device queue +
-  token at expiry), not in the web client; a malicious page can't
-  ignore it. Revocation from the phone overrides everything, always. Two rough edges the UX owns honestly: no notifications when the
+What follows replaces an earlier decision (a sliding 7-day idle window under
+a 30-day hard cap, enforced by the relay). That was not built, and nothing
+below slides.
+
+- **The relay enforces a fixed expiry.** `POST /devices` takes
+  `expires_in_s` (1 second to 365 days) and the relay computes `expires_at`
+  once, at mint time. Nothing the device does moves it: authenticating,
+  draining its queue and publishing prekeys all leave it where it was. There
+  is no idle timeout and no separate hard cap — there is one deadline. A
+  device minted without `expires_in_s` lives until it is revoked.
+- **At the deadline** the device's token stops authenticating at once, the
+  device disappears from every listing, and deposits addressed to it are
+  refused with `410`. Within the hour a sweep revokes it properly: queue,
+  prekeys and push registration are deleted, its socket is closed, and
+  `devices_v` is bumped so contacts re-read the device list.
+- **The certificate has its own lifetime**, chosen by the phone when it
+  signs: 7 days for a `web` device, 180 for `linked` and `agent`, and equal
+  to `expires_in_s` whenever that is set, so the two clocks agree. Contacts
+  stop encrypting to a device when its certificate expires, whatever the
+  relay thinks. A browser cannot renew its own certificate, and nothing yet
+  asks the phone to reissue one — an expired session is linked again.
+- **Enforcement lives on the relay and in the certificate**, not in the web
+  client; a malicious page can ignore neither. Revocation from the phone
+  overrides everything, always.
+- **Not built yet:** the phone's link dialog offers "Device" and "Agent"
+  and passes no lifetime, so today a browser linked from the app is minted
+  as a `linked` device with a 180-day certificate and no relay expiry. The
+  `web` kind, its 7-day certificate and `expires_in_s` exist in the relay
+  and in the app's linking code; the UI that selects them does not.
+
+Two rough edges the UX owns honestly: no notifications when the
 tab is closed (web is live-only; the phone still gets everything), and
 a link-time warning — "only link browsers on computers you trust" —
 because no protocol fixes a keylogger on the machine you type on.

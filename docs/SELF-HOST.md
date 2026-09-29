@@ -224,9 +224,12 @@ In the app: **Mailbox** → **Self-host** → paste `address` and `mailbox_token
 
 In the app, the Mailbox screen now shows **Invites**. Enter
 `https://<ip>:8200` and the admin token → **Connect** → **New invite**.
-Invites are single-use and valid for 3 days. Send one over any channel. It
-carries no secret, and the friend's app pins your host's certificate, so it
-cannot be intercepted.
+Invites are single-use and valid for 3 days. **An invite is a secret**: it
+contains the token that redeems it, so whoever sees it first can claim a
+mailbox on your box with it. Send it privately, over a channel you trust.
+What the fingerprint inside it buys is different: the friend's app pins your
+host's certificate, so the redeem call itself cannot be intercepted or
+redirected.
 
 Each friend: install the app → create an identity → **Mailbox** → **A friend's
 machine** → paste the invite → **Join with invite**.

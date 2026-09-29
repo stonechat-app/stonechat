@@ -21,9 +21,11 @@ use crate::primitives::{
     AEAD_NONCE_BYTES, AEAD_TAG_BYTES, HSEAL_AD, HSEAL_KDF_KEY, aead_open, aead_seal, keyed_hash_32,
 };
 
-/// Seal `message` to a peer's X-Wing identity key (`pq_pk` in the hub
-/// directory, signature-verified by the host before use). `random` must be
-/// fresh CSPRNG output, `nonce` likewise. `None` when `pq_pk` doesn't parse.
+/// Seal `message` to an X-Wing public key. For envelopes that is the
+/// recipient **device's** `seal_pub`, taken from a device certificate the
+/// host has verified — not the identity's `pq_pk`, which nothing is sealed
+/// to. `random` must be fresh CSPRNG output, `nonce` likewise. `None` when
+/// the key doesn't parse. (The parameter keeps its old name.)
 pub fn seal_to(
     pq_pk: &[u8; XWING_PUBLIC_BYTES],
     message: &[u8],
@@ -40,9 +42,10 @@ pub fn seal_to(
     Some(out)
 }
 
-/// Unseal with our X-Wing identity seed. `None` when the envelope wasn't
-/// sealed to this identity (wrong recipient decapsulates to a wrong shared
-/// secret and the AEAD refuses) or is garbage.
+/// Unseal with an X-Wing seed — for envelopes, this device's own seal
+/// seed. `None` when the envelope wasn't sealed to that key (a wrong
+/// recipient decapsulates to a wrong shared secret and the AEAD refuses) or
+/// is garbage.
 pub fn unseal(seed: &[u8; XWING_SEED_BYTES], sealed: &[u8]) -> Option<Vec<u8>> {
     if sealed.len() < XWING_CIPHERTEXT_BYTES + AEAD_NONCE_BYTES + AEAD_TAG_BYTES {
         return None;
@@ -63,7 +66,9 @@ pub fn unseal(seed: &[u8; XWING_SEED_BYTES], sealed: &[u8]) -> Option<Vec<u8>> {
 /// (and identical to the Dart `X3dhBlock.toJson`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct X3dhBlock {
-    /// Sender's Ed25519 identity key, base64.
+    /// Sender DEVICE's Ed25519 signing key, base64 — the key the
+    /// certificate travelling beside this block (`cert`, a host-layer field
+    /// this struct does not carry) must vouch for. Not the identity key.
     pub ik: String,
     /// Sender's ephemeral X25519 key, base64.
     pub ek: String,

@@ -1,8 +1,12 @@
 //! Forward-secret pairwise sessions: PQXDH establishment + double ratchet
-//! (PROTOCOL.md "Session crypto"). Faithful port of the Dart
-//! `RatchetSession` (app/lib/core/session.dart); the serialized JSON form
-//! is byte-compatible with its `toJson`, so a host can hand the same DB
-//! rows to either implementation during migration.
+//! (PROTOCOL.md "Session crypto"). The serialized JSON form keeps the shape
+//! of the retired Dart `RatchetSession.toJson`.
+//!
+//! Sessions are **device to device**. The long-term Ed25519 keys this
+//! module is handed — [`Identity`], `peer_ed_pk`, `sender_ed_pk` — are the
+//! two devices' *signing* keys, not identity keys. Tying a device key to a
+//! Stonechat ID is the host's job, done with a device certificate
+//! (devcert.rs) before anything here is called.
 //!
 //! A session is a value. Nothing here talks to the network or storage, and
 //! all randomness is caller-supplied. Sessions carry no owner/peer id:
@@ -24,8 +28,9 @@ pub const MAX_SKIP: u64 = 256;
 /// Skipped message keys stored per session; oldest evicted.
 pub const MAX_SKIPPED_KEYS: usize = 512;
 
-/// Own identity, expanded from the Ed25519 seed (the first 32 bytes of the
-/// libsodium signing key the app stores).
+/// This device's long-term handshake key, expanded from an Ed25519 seed.
+/// Hosts pass the **device signing key's** seed. The type keeps its name
+/// from when the identity key played this part; it no longer does.
 #[derive(Clone)]
 pub struct Identity {
     pub ed_seed: [u8; 32],
@@ -47,9 +52,11 @@ impl Identity {
     }
 }
 
-/// A peer's prekey bundle as served by their mailbox. The host must have
-/// verified the SPK/KSPK signatures and the identity-key commitment before
-/// this reaches the session layer.
+/// A peer device's prekey bundle as served by their mailbox. Before this
+/// reaches the session layer the host must have verified the device's
+/// certificate against the peer's identity key, and the SPK/KSPK signatures
+/// against the device key that certificate names. The one-time prekeys
+/// (`opk`, `kopk`) carry no signature and cannot be verified.
 #[derive(Debug, Clone)]
 pub struct PrekeyBundle {
     pub spk_id: u64,
@@ -67,7 +74,7 @@ impl PrekeyBundle {
     /// (`GET /prekeys/bundle`, PROTOCOL.md "Prekeys"):
     /// `{"spk": {id, pub, sig}, "opk": {...}|null, "kspk": {...}, "kopk": {...}|null}`.
     /// Signatures are NOT checked here — that stays with the host, which
-    /// holds the peer's verified identity key.
+    /// holds the peer device's verified certificate.
     pub fn from_relay_json(v: &serde_json::Value) -> Option<PrekeyBundle> {
         fn b64<const N: usize>(v: &serde_json::Value) -> Option<[u8; N]> {
             B64.decode(v.as_str()?).ok()?.try_into().ok()
@@ -223,9 +230,10 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    /// PQXDH as the initiator. The peer's Ed25519 key must already be
-    /// commitment-verified against their Stonechat ID and the bundle's
-    /// SPK + KSPK signatures checked by the host.
+    /// PQXDH as the initiator. `peer_ed_pk` is the peer **device's** signing
+    /// key, taken from a device certificate the host has already verified
+    /// against the peer's identity key; the bundle's SPK + KSPK signatures
+    /// must already have been checked against it.
     pub fn initiate(
         identity: &Identity,
         peer_ed_pk: &[u8; 32],
@@ -286,10 +294,17 @@ impl SessionState {
     }
 
     /// PQXDH as the responder, from an initial envelope's x3dh block and
-    /// our stored prekey private halves. The sender's Ed25519 key must
-    /// already be commitment-verified against the envelope's `from`.
-    /// `kem_seed` is the stored seed of the KEM prekey named by
+    /// our stored prekey private halves. `sender_ed_pk` is the sender
+    /// **device's** signing key (`block.ik`): the host must already have
+    /// verified the certificate in the block against the identity key the
+    /// envelope's `from` commits to, and checked that it vouches for this
+    /// key. `kem_seed` is the stored seed of the KEM prekey named by
     /// `block.kem_id`.
+    ///
+    /// Nothing is authenticated by this call: it cannot fail on a wrong key,
+    /// it only derives a different secret. The host MUST decrypt the
+    /// envelope's message with the returned session and discard the session
+    /// if that fails.
     pub fn respond(
         identity: &Identity,
         sender_ed_pk: &[u8; 32],
@@ -318,7 +333,11 @@ impl SessionState {
         // triggers the usual DH-ratchet step before we can send.
         Ok(SessionState {
             initiated_by_us: false,
-            confirmed: true, // born from a successfully decrypted message
+            // A responder never needs to resend the handshake, so it is
+            // "confirmed" from birth. That is NOT a claim that anything has
+            // been decrypted: the host must discard this session if the
+            // message it was created for does not open.
+            confirmed: true,
             rk: sk,
             dhs_pub: *spk_pub,
             dhs_sec: *spk_sec,
@@ -341,8 +360,10 @@ impl SessionState {
         format!("{ad_prefix}|{dh_b64}|{pn}|{n}").into_bytes()
     }
 
-    /// Encrypt one message. `ad_prefix` is `"stonechat/v1|from|to|type"` — the
-    /// cleartext routing fields get bound into the AEAD. `nonce` must be
+    /// Encrypt one message. `ad_prefix` is
+    /// `"stonechat/v1|from|from_device|to|device|type"` — the routing
+    /// fields, both device numbers included, get bound into the AEAD; this
+    /// function appends `|dh|pn|n`. `nonce` must be
     /// fresh CSPRNG output; it travels beside the ciphertext in the inner
     /// envelope. Mutates the session; persist it before handing the
     /// envelope to the network.

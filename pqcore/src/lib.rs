@@ -1,5 +1,6 @@
 //! Post-quantum KEM core shared by every Stonechat client (C ABI for the Flutter
-//! app, plain Rust for the relay and a future wasm web client).
+//! app, plain Rust for `stonechat-core` and the agent, wasm for the browser
+//! client). The relay does not link it.
 //!
 //! Wraps RustCrypto `ml-kem` (FIPS 203, ML-KEM-768 — PQXDH prekeys, see
 //! PROTOCOL.md "Prekeys") and `x-wing` (draft-connolly-cfrg-xwing-kem —
@@ -9,9 +10,10 @@
 //! Secret keys are carried as seeds — 64 bytes for an ML-KEM-768 prekey,
 //! 32 for an X-Wing identity key — so callers store small opaque blobs and
 //! key expansion stays in here. Nothing in this crate draws entropy:
-//! callers pass CSPRNG bytes explicitly (the app uses libsodium's
-//! `randombytes`, the same source the rest of its crypto trusts), which
-//! also makes every operation deterministic and testable.
+//! callers pass CSPRNG bytes explicitly (the app uses the platform
+//! generator, Dart's `Random.secure()`; the browser client uses
+//! `crypto.getRandomValues`), which also makes every operation
+//! deterministic and testable.
 
 use kem::{Decapsulate, Decapsulator, FromSeed, KeyExport};
 use ml_kem::MlKem768;

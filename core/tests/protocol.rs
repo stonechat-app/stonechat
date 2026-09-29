@@ -285,8 +285,10 @@ fn state_json_round_trips_in_dart_shape() {
 
 #[test]
 fn hybrid_seal_round_trips_and_rejects_wrong_recipient() {
-    // X-Wing identity seed derived exactly as the app does: from the
-    // Ed25519 seed via the domain-separated KDF.
+    // Any 32-byte X-Wing seed will do for a seal round trip; this one is a
+    // keyed hash of a test seed. It is NOT how `pq_pk` is derived — that
+    // hashes the full 64-byte secret key (identity.rs) — and it is not what
+    // envelopes are sealed to, which is a device's own random seal seed.
     let ed_seed = rnd32("seal/id");
     let pq_seed = keyed_hash_32(&ed_seed, PQID_SEED_KEY);
     let pq_pk = pqcore::xwing_pk_from_seed(&pq_seed);

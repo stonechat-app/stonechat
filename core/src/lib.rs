@@ -3,9 +3,10 @@
 //! The single implementation of the Stonechat session protocol — PQXDH
 //! establishment, double ratchet, X-Wing hybrid envelope seal — shared by
 //! every process that must encrypt or decrypt: the Flutter app (dart:ffi),
-//! the iOS Notification Service Extension (Swift over the C ABI), desktop
-//! builds, and a future wasm web client. The relay never links this crate;
-//! it depends on `pqcore` alone.
+//! the iOS Notification Service Extension (Swift over the C ABI), the
+//! headless agent (as a crate) and the browser client (wasm). The relay
+//! links neither this crate nor `pqcore`: prekeys and certificates are
+//! opaque strings to it.
 //!
 //! Design rules (PROTOCOL.md "Session crypto" is the spec; the Dart
 //! original is app/lib/core/session.dart + crypto.dart):

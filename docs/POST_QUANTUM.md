@@ -12,7 +12,7 @@ document explains why it looks the way it does.
 |---|---|---|
 | Session establishment | **PQXDH**: X3DH + ML-KEM-768 (FIPS 203) | Hybrid, resists harvest-now-decrypt-later |
 | Message keys | Double ratchet (X25519 + BLAKE2b) rooted in the PQXDH key | Inherits PQ secrecy from the root |
-| Envelope seal (sealed sender) | **X-Wing** (X25519 + ML-KEM-768) to the recipient's identity or device key | Hybrid, resists harvest-now-decrypt-later |
+| Envelope seal (sealed sender) | **X-Wing** (X25519 + ML-KEM-768) to the recipient **device's** certified key | Hybrid, resists harvest-now-decrypt-later |
 | Symmetric crypto | XChaCha20-Poly1305, BLAKE2b, Argon2id | Already PQ-adequate (256-bit keys) |
 | Signatures | Ed25519 (identity, prekeys, device certs, TLS pins) | **Classical**, forgeable by a future quantum computer |
 | Ratchet healing (PCS) | X25519 DH ratchet | **Classical** |
@@ -43,12 +43,16 @@ as classical X3DH/X25519.
 Signal's PQXDH shape: X3DH with an ML-KEM-768 encapsulation mixed into the
 root key.
 
-- Every user publishes to their own mailbox, alongside the classical SPK/OPKs:
-  - a **KEM signed prekey (KSPK)**: ML-KEM-768, signed with the identity key
-    under the context `stonechat-v1-kspk`, and rotated on the same schedule as
-    the SPK;
+- Every **device** publishes to its mailbox, alongside the classical SPK/OPKs:
+  - a **KEM signed prekey (KSPK)**: ML-KEM-768, signed with the **device's**
+    signing key — the one its device certificate names — under the context
+    `stonechat-v1-kspk`, and rotated on the same schedule as the SPK;
   - a pool of **KEM one-time prekeys (KOPK)**: the client targets about 32,
     and the mailbox caps the pool at 64 (`MAX_KOPKS` in `relay/src/main.rs`).
+    **KOPKs are unsigned**, like classical one-time prekeys. A mailbox can
+    therefore substitute one: the recipient then cannot complete the
+    handshake, and the KEM share of that handshake is a secret the mailbox
+    knows (PROTOCOL.md "Known open gaps").
 - The initiator encapsulates to the KOPK when the bundle has one, and to the
   KSPK otherwise:
 
@@ -79,7 +83,8 @@ The outer envelope a mailbox stores contains only `to` and an opaque `sealed`
 blob. A classical `crypto_box_seal` would let a future quantum attacker open
 every recorded envelope and learn **who wrote to whom**. It wouldn't expose
 the content, because PQXDH protects that. The seal is therefore X-Wing
-(draft-connolly-cfrg-xwing-kem):
+(draft-connolly-cfrg-xwing-kem, **revision 06** — the revision the `x-wing`
+0.1.0 crate implements and tests against):
 
 ```
 kem_ct, kem_ss = XWing.Encaps(recipient_seal_pk)
@@ -87,29 +92,31 @@ key    = BLAKE2b(kem_ss, key="stonechat-v1-hsealkdf", 32)
 sealed = kem_ct (1120 B) || nonce (24 B) || XChaCha20-Poly1305(inner, ad="stonechat-v1-hseal")
 ```
 
-The seal target is one of two keys:
+There is **one** seal target: the recipient **device's own X-Wing key**
+(`seal_pub`, 1216 B). Every device — the primary included — generates its own
+X-Wing keypair and holds a device certificate signed by the identity key
+(`core/src/devcert.rs`) that names it. Senders verify the certificate against
+the identity key the recipient's Stonechat ID commits to, and seal to the key
+it carries. A device without a valid certificate is not encrypted to; there
+is no other key to fall back on.
 
-- **The identity's X-Wing key (`pq_pk`, 1216 B).** Its seed is *derived* from
-  the Ed25519 identity secret rather than stored:
-  `pq_seed = BLAKE2b(identity_sk[64], key="stonechat-v1-pqidseed", 32)`.
-  Identity export, recovery and backups therefore restore it automatically,
-  and it adds no new custody risk because holding the Ed25519 key already
-  means total identity compromise. It is published at registration with
-  `pq_sig = Ed25519("stonechat-v1-pqpk" || pq_pk)`. The hub checks the length
-  and signature before storing it (`hub/app/main.py`), and every resolver
-  re-verifies it before sealing.
-- **A device's own X-Wing key (`seal_pub`).** Linked devices (a second phone,
-  a browser tab, `agent_client`) hold a device certificate signed by the
-  identity (`core/src/devcert.rs`), which carries their own X-Wing key. When a
-  certificate exists, senders seal to that device's key instead of the
-  identity key.
+**The identity's X-Wing key (`pq_pk`) is not a seal target.** It is part of
+the wire format: its seed is derived from the identity secret
+(`pq_seed = BLAKE2b(identity_sk[64], key="stonechat-v1-pqidseed", 32)`), it is
+published at registration with
+`pq_sig = Ed25519("stonechat-v1-pqpk" || pq_pk)`, the hub checks its length
+and signature before storing it (`hub/app/main.py`), and every directory
+record carries both. The Flutter app verifies `pq_sig` when it resolves
+a record and refuses one without a valid key; the browser client and the
+agent ignore the fields. Nothing is encapsulated to `pq_pk` and nothing is
+opened with its private half.
 
 By construction, the seal has **no forward secrecy**, because it is made to a
-long-term key. Recorded envelopes plus a later theft of the identity or device
+long-lived key. Recorded envelopes plus a later theft of that device's seal
 key reveal historical sender/type metadata, but never content.
 
-Code: `core/src/envelope.rs` (`seal_to` / `unseal`), `core/src/identity.rs`
-(`pq_public`, `sign_pq_pk`).
+Code: `core/src/envelope.rs` (`seal_to` / `unseal`), `core/src/devcert.rs`;
+`core/src/identity.rs` (`pq_public`, `sign_pq_pk`) for `pq_pk`.
 
 ### Where the code lives
 
@@ -163,8 +170,9 @@ likely to be addressed next.
    envelopes), because content is already protected by the layers above.
    Switching to a provider with hybrid key exchange would be cheap
    defense-in-depth.
-3. **Signatures.** Ed25519 still signs identities, prekeys, device
-   certificates, TLS/WebTransport pins and recovery. Moving to hybrid
+3. **Signatures.** Ed25519 still signs everything that is signed: device
+   certificates (identity key), signed prekeys (device key), TLS/WebTransport
+   pins and recovery (identity key). Moving to hybrid
    Ed25519 + ML-DSA-44 would add roughly 1.3 KB per public key and 2.4 KB per
    signature, and would require a cross-signed migration of the directory.
    There's no retroactive risk, so this can wait until a quantum computer is

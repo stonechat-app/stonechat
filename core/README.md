@@ -1,24 +1,26 @@
 # stonechat-core
 
 The single implementation of the Stonechat session protocol — PQXDH
-establishment, double ratchet, X-Wing hybrid envelope seal — extracted from
-the Dart app so every process that must encrypt or decrypt links the same
-code (notes/docs/ROADMAP.md is the decision record):
+establishment, double ratchet, X-Wing hybrid envelope seal, device
+certificates — so every process that must encrypt or decrypt links the same
+code:
 
-| Consumer | How | Status |
-|---|---|---|
-| Flutter app | dart:ffi over the C ABI (`app/lib/core/core_ffi.dart`) | **live** — `session.dart` is a thin wrapper since the cutover |
-| iOS Notification Service Extension | Swift over the C ABI, static lib | next — the reason the ABI exists |
-| Desktop (Flutter) | same dart:ffi bindings | later |
-| Web (tethered device, WEB_CLIENT.md) | wasm32 + wasm-bindgen wrapper | later — `cargo build --target wasm32-unknown-unknown` works today |
+| Consumer | How |
+|---|---|
+| Flutter app | dart:ffi over the C ABI (`app/lib/core/core_ffi.dart`); `session.dart` is a thin wrapper |
+| iOS Notification Service Extension | Swift over the C ABI, static lib (`app/ios/NotificationService/`) |
+| Headless agent (`agent_client/`) | the Rust crate, linked directly |
+| Browser client (`webclient/`, docs/WEB_CLIENT.md) | wasm32 (`cargo build --release --target wasm32-unknown-unknown`), bound by hand in `webclient/src/core.ts` over the same C ABI |
+| Python reference clients (`scripts/e2e.py`) | the KEM half only, over ctypes (`scripts/pqcore.py`); the rest is restated in Python against PROTOCOL.md |
 
 One artifact serves everything: the staticlib/cdylib carries this crate's
 session ABI **and** pqcore's KEM symbols (`scripts/build_core.sh`
 supersedes `build_pqcore.sh`; iOS links `app/ios/Core/libstonechat_core.a`
 with `-force_load`).
 
-The **relay is deliberately not a consumer**: it depends on `pqcore` alone
-and must never grow a dependency on protocol code.
+The **relay is deliberately not a consumer**: it links neither this crate nor
+`pqcore` — prekeys and certificates are opaque strings to it — and must never
+grow a dependency on protocol code.
 
 ## Design rules
 
@@ -49,14 +51,22 @@ and must never grow a dependency on protocol code.
 - `src/vault.rs` — the passphrase container behind `.stonechatbackup` and
   the identity-export string: Argon2id whose parameters ride inside the
   container and are authenticated as the AEAD's associated data.
-- `src/session.rs` — PQXDH initiate/respond + double ratchet. Mirrors
-  `app/lib/core/session.dart` (same MAX_SKIP=256 / 512 skipped-key
-  bounds, same trial-then-commit decrypt semantics).
+- `src/session.rs` — PQXDH initiate/respond + double ratchet (MAX_SKIP=256,
+  at most 512 stored skipped keys, trial-then-commit decrypt). The
+  long-term keys in the handshake are the two *devices'* signing keys; the
+  caller verifies the certificates that tie them to identities.
 - `src/envelope.rs` — X-Wing hybrid seal/unseal, `x3dh` block codec.
+- `src/devcert.rs` — device certificates: the length-prefixed signing bytes,
+  signing with the identity key, and verification (signature, commitment to
+  the named SC- ID, expiry).
+- `src/wtcerts.rs` — the owner's signature over a mailbox's WebTransport
+  certificate schedule, in the same length-prefixed style.
 - `src/ids.rs` — Stonechat ID derive/normalize (SC- base32 + checksum).
+- `src/ffi.rs` — the C ABI every non-Rust host calls.
 
-PROTOCOL.md ("Session crypto", "Envelope") is the spec; the Dart files are
-the executable reference until the app switches over.
+PROTOCOL.md ("Devices", "Session crypto", "Envelope") is the spec, and this
+crate is its implementation. `scripts/e2e.py` is the independent restatement
+it is checked against.
 
 ## Tests
 
