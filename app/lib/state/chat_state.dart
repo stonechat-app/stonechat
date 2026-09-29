@@ -632,16 +632,25 @@ class ChatState extends ChangeNotifier {
   /// [hub] when the caller has it (fresh invite, request payload), else the
   /// contact's stored home hub. The verification below is what makes asking a
   /// foreign hub safe: it can lie only into a failed lookup.
+  ///
+  /// The key is checked against the ID that was *asked for*, never the one in
+  /// the answer: a directory that returns somebody else's complete record is
+  /// internally consistent, and only the question can show it up.
   Future<DirectoryEntry> _resolve(String stonechatId, {String? hub}) async {
     final entry = await app.api.directory(
       stonechatId,
       hubUrl: hub ?? contactById(stonechatId)?.hub,
     );
-    if (!app.crypto.pubkeyMatchesId(entry.pubkeyB64, entry.stonechatId)) {
+    if (!app.crypto.directoryAnswers(
+      askedFor: stonechatId,
+      returnedId: entry.stonechatId,
+      pubkeyB64: entry.pubkeyB64,
+    )) {
       throw ApiException.refusing(
         'Directory returned a key that does not match this ID — refusing.',
       );
     }
+    _identityKeys[stonechatId] = entry.pubkeyB64;
     // The X-Wing identity key seals every envelope to this peer; it is only
     // trusted signed by the (commitment-verified) Ed25519 key. Absent or
     // forged → unusable entry: the protocol has no classical-seal fallback.
@@ -678,6 +687,24 @@ class ChatState extends ChangeNotifier {
       }
     }
     return entry;
+  }
+
+  /// Identity keys that have been checked against their SC- ID this run.
+  final Map<String, String> _identityKeys = {};
+
+  /// The identity key a peer's device certificates verify against.
+  ///
+  /// An ID commits to exactly one key, so one we already hold and that still
+  /// hashes to the ID needs no directory: asking again would only tell the hub
+  /// who is writing to us and make receiving depend on it being up. The hash
+  /// is re-checked rather than assumed because the stored value is only as
+  /// good as the code that stored it.
+  Future<String> _identityKeyFor(String peerId) async {
+    final known = _identityKeys[peerId] ?? contactById(peerId)?.pubkeyB64;
+    if (known != null && app.crypto.pubkeyMatchesId(known, peerId)) {
+      return _identityKeys[peerId] = known;
+    }
+    return (await _resolve(peerId)).pubkeyB64;
   }
 
   Future<String> _addressFor(Contact contact, {bool refresh = false}) async {
@@ -835,6 +862,13 @@ class ChatState extends ChangeNotifier {
       _peerCerts[peerId]?.remove(deviceId);
       return;
     }
+    if (cert['stonechat_id'] != peerId) {
+      // Genuine, and somebody else's. The signature only says an identity
+      // vouched for this device; this is what says it was this peer's.
+      _dropLogPlain('device $deviceId of $peerId: certificate names another owner');
+      _peerCerts[peerId]?.remove(deviceId);
+      return;
+    }
     if (cert['device_id'] != deviceId) {
       // The certificate names a different device than the slot it arrived in.
       // Signed, so not forged — but a relay shuffling certificates between
@@ -985,9 +1019,9 @@ class ChatState extends ChangeNotifier {
   }) async {
     // _addressFor also backfills pq_pk for contacts saved before a resolve
     // (e.g. a pending_in row built from an x3dh block alone).
-    Future<void> attempt(String address) => _fanOutToDevices(
+    Future<void> attempt(String address) async => _fanOutToDevices(
       peerId: contact.stonechatId,
-      pubkeyB64: contact.pubkeyB64,
+      pubkeyB64: await _identityKeyFor(contact.stonechatId),
       pqPkB64: contact.pqPkB64!,
       address: address,
       tlsFp: contact.tlsFp!,
@@ -1471,16 +1505,22 @@ class ChatState extends ChangeNotifier {
       _dropLog(envelope, 'x3dh block carries no device certificate');
       return null;
     }
-    // Resolving the sender is the one lookup this path cannot avoid — the
-    // identity key is what the certificate has to verify against, and it is
-    // what their SC- ID commits to. It is also cached, so this is a network
-    // call only the first time we ever hear from them.
-    final senderEntry = await _resolve(envelope.from);
+    // The identity key is what the certificate has to verify against, and it
+    // is what their SC- ID commits to. For someone we already know it is the
+    // key we hold; the directory is asked only the first time we hear from a
+    // stranger.
+    final String senderIdentityB64;
+    try {
+      senderIdentityB64 = await _identityKeyFor(envelope.from);
+    } catch (_) {
+      _dropLog(envelope, 'no identity key for the sender that commits to their ID');
+      return null;
+    }
     _recordCert(
       envelope.from,
       envelope.fromDevice,
       senderCert,
-      senderEntry.pubkeyB64,
+      senderIdentityB64,
     );
     // _recordCert caches it only if it verifies AND names this device, so
     // getting it back out is the check — and it means our reply already has
@@ -1738,10 +1778,10 @@ class ChatState extends ChangeNotifier {
       return entry.mailboxAddress!;
     }
 
-    Future<void> attempt(String address) => _fanOutToDevices(
+    Future<void> attempt(String address) async => _fanOutToDevices(
       outbox: outbox,
       peerId: member.stonechatId,
-      pubkeyB64: member.pubkeyB64,
+      pubkeyB64: await _identityKeyFor(member.stonechatId),
       pqPkB64: member.pqPkB64!,
       address: address,
       tlsFp: member.tlsFp!,
@@ -3696,14 +3736,19 @@ class ChatState extends ChangeNotifier {
           );
           return;
         }
-        // Identity key: the (already commitment-verified) x3dh block if this
-        // was a session-opening message, else the directory (the sender's own
-        // hub when the request names one), best-effort.
+        // Identity key: the directory's (the sender's own hub when the
+        // request names one), else the one the session was opened against.
+        // Never the x3dh block's `ik` — that is the sender's DEVICE key, and
+        // storing it here would make it the root their certificates are
+        // checked against.
         final senderHub = _peerHubFrom(payload);
         final senderEntry = await _resolveOrNull(envelope.from, hub: senderHub);
         final pubkeyB64 =
-            (envelope.x3dh?['ik'] as String?) ?? senderEntry?.pubkeyB64;
-        if (pubkeyB64 == null) return; // unresolvable sender — drop
+            senderEntry?.pubkeyB64 ?? _identityKeys[envelope.from];
+        if (pubkeyB64 == null ||
+            !app.crypto.pubkeyMatchesId(pubkeyB64, envelope.from)) {
+          return; // unresolvable sender — drop
+        }
         contact = Contact(
           stonechatId: envelope.from,
           displayName:

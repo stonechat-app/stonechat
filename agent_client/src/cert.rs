@@ -85,6 +85,14 @@ pub fn verify(cert: &Value, identity_pub: &[u8; 32], device: Option<u32>) -> Res
                 parsed.device_id
             ));
         }
+        CertStatus::WrongIdentity => {
+            return Err(err!(
+                "certificate for device {} is signed by a key {} does not \
+                 commit to — refusing it",
+                parsed.device_id,
+                parsed.stonechat_id
+            ));
+        }
     }
     if let Some(device) = device
         && parsed.device_id != device

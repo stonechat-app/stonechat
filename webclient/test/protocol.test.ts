@@ -226,7 +226,7 @@ async function pair() {
     active = who;
     return fn();
   };
-  return { alice, bob, A, B, aRelay, bRelay, as };
+  return { alice, bob, A, B, aRelay, bRelay, as, entries };
 }
 
 /** Collect whatever a session can currently drain. */
@@ -248,6 +248,57 @@ test('one session sends, the other receives', async () => {
   assert.equal(got.length, 1);
   assert.equal(got[0]!.text, 'hello from a browser');
   assert.equal(got[0]!.peerId, alice.id);
+});
+
+test('a directory answering with someone else\'s record is refused', async () => {
+  // Mallory's record is complete and self-consistent: her key does hash to
+  // her ID. Served in answer to a lookup for Bob, the only thing wrong with it
+  // is that it is not what was asked for — so that is what has to be checked.
+  const { bob, A, as, entries, bRelay } = await pair();
+  const mallory = phone(11);
+  entries[bob.id] = { stonechat_id: mallory.id, pubkey: mallory.pub };
+  await assert.rejects(
+    as('a', () => A.send(bob.id, 'for bob only')),
+    /does not commit/,
+  );
+  assert.equal(bRelay.queues.get(1)?.length ?? 0, 0);
+});
+
+test('a key that does not hash to the ID asked for is refused', async () => {
+  // The cruder lie: Bob's ID on the label, Mallory's key inside.
+  const { bob, A, as, entries } = await pair();
+  const mallory = phone(11);
+  entries[bob.id] = { stonechat_id: bob.id, pubkey: mallory.pub };
+  await assert.rejects(
+    as('a', () => A.send(bob.id, 'for bob only')),
+    /does not commit/,
+  );
+});
+
+test('a certificate signed by another identity is refused by name', async () => {
+  // Correctly signed and unexpired, by a key its SC- ID does not commit to.
+  const mallory = phone(11);
+  const victim = phone(9);
+  const keys = DeviceKeys.generate(core);
+  const forged = core.devcertSign(
+    {
+      stonechat_id: victim.id,
+      device_id: 1,
+      sig_pub: b64encode(keys.sigPublic),
+      seal_pub: b64encode(keys.sealPublic),
+      not_after: Math.floor(Date.now() / 1000) + 3600,
+    },
+    new Uint8Array(32).fill(11),
+  );
+  const now = Math.floor(Date.now() / 1000);
+  assert.equal(
+    core.devcertVerify(forged, b64decode(mallory.pub), now),
+    'wrong_identity',
+  );
+  assert.equal(
+    core.devcertVerify(forged, b64decode(victim.pub), now),
+    'bad_signature',
+  );
 });
 
 test('the ratchet advances across several messages, in order', async () => {

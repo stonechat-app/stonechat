@@ -23,6 +23,7 @@
 //! stolen primary remains total compromise. What this bounds is every
 //! *other* device.
 
+use crate::ids::pubkey_matches_id;
 use crate::primitives::{DEVCERT_SIG_CONTEXT, sign_with_context, verify_with_context};
 
 /// Everything a peer must agree on before it will encrypt to a device.
@@ -70,12 +71,22 @@ impl DeviceCert {
 
     /// Check a certificate against the owner's identity key and a clock.
     ///
+    /// The key must also be the one the certificate's `stonechat_id` commits
+    /// to. A signature only proves *some* identity vouched for this device;
+    /// without the commitment a directory that hands back another user's key
+    /// gets that user's certificates accepted under the wrong name. The
+    /// caller still has to compare `stonechat_id` with the peer it meant —
+    /// this makes the name in the certificate true, not the right one.
+    ///
     /// `now` is caller-supplied like every other input here: the core takes
     /// no ambient anything, and a client that lies to itself about the time
     /// is already lost.
     pub fn verify(&self, identity_pub: &[u8; 32], sig: &[u8; 64], now: u64) -> CertStatus {
         if !verify_with_context(identity_pub, DEVCERT_SIG_CONTEXT, &self.signing_bytes(), sig) {
             return CertStatus::BadSignature;
+        }
+        if !pubkey_matches_id(identity_pub, &self.stonechat_id) {
+            return CertStatus::WrongIdentity;
         }
         if now >= self.not_after {
             return CertStatus::Expired;
@@ -86,12 +97,15 @@ impl DeviceCert {
 
 /// Why a certificate was rejected — distinguished because they mean very
 /// different things. Expired is routine and self-healing (the owner renews);
-/// a bad signature is someone claiming a device that is not theirs.
+/// a bad signature is someone claiming a device that is not theirs; a wrong
+/// identity is a genuine signature by a key the named SC- ID does not commit
+/// to — a substituted identity key, which is a lying directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CertStatus {
     Valid,
     Expired,
     BadSignature,
+    WrongIdentity,
 }
 
 #[cfg(test)]
@@ -101,7 +115,7 @@ mod tests {
 
     fn cert(device_id: u32, not_after: u64) -> DeviceCert {
         DeviceCert {
-            stonechat_id: "SC-TEST".into(),
+            stonechat_id: crate::ids::derive_stonechat_id(&root().public),
             device_id,
             sig_pub: [9u8; 32],
             seal_pub: [3u8; pqcore::XWING_PUBLIC_BYTES],
@@ -139,6 +153,19 @@ mod tests {
         let c = cert(2, 1000);
         let sig = c.sign(&theirs.seed());
         assert_eq!(c.verify(&mine.public, &sig, 1), CertStatus::BadSignature);
+    }
+
+    #[test]
+    fn the_signer_must_be_the_identity_the_cert_names() {
+        // Correctly signed, unexpired — by an identity other than the one the
+        // certificate says it belongs to. This is what a directory serving
+        // someone else's key for an SC- ID produces.
+        let named = root();
+        let signer = IdentityKeys::generate(&[2u8; 32]);
+        let c = cert(2, 1000);
+        assert_eq!(c.stonechat_id, crate::ids::derive_stonechat_id(&named.public));
+        let sig = c.sign(&signer.seed());
+        assert_eq!(c.verify(&signer.public, &sig, 1), CertStatus::WrongIdentity);
     }
 
     #[test]

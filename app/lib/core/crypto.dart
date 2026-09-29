@@ -222,6 +222,17 @@ class CryptoService {
     }
   }
 
+  /// Whether a directory's answer is an answer to the question asked.
+  ///
+  /// Checked against [askedFor], never [returnedId] alone: somebody else's
+  /// complete record is internally consistent — its key does hash to its ID —
+  /// and the only thing wrong with it is that it is not what was asked for.
+  bool directoryAnswers({
+    required String askedFor,
+    required String returnedId,
+    required String pubkeyB64,
+  }) => returnedId == askedFor && pubkeyMatchesId(pubkeyB64, askedFor);
+
   /// Proof of key possession for POST /v1/recover (identity restore): a
   /// signature over the context and the current unix time, so the hub can
   /// re-issue an account token without ever having stored one.

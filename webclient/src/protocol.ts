@@ -181,7 +181,12 @@ export class Protocol {
     const held = refresh ? undefined : this.directory.get(stonechatId);
     if (held) return held;
     const entry = await this.hub.directory(stonechatId);
-    if (this.core.stonechatId(b64decode(entry.pubkey)) !== entry.stonechat_id) {
+    // Against the ID that was asked for, never the one in the answer: a hub
+    // returning somebody else's complete record is internally consistent.
+    if (
+      entry.stonechat_id !== stonechatId ||
+      this.core.stonechatId(b64decode(entry.pubkey)) !== stonechatId
+    ) {
       throw new Error(`the directory's key does not commit to ${stonechatId}`);
     }
     this.directory.set(stonechatId, entry);
@@ -297,6 +302,11 @@ export class Protocol {
     );
     if (status !== 'valid') {
       throw new Error(`Their certificate is ${status} — refusing to send.`);
+    }
+    if (cert.stonechat_id !== peerId) {
+      // Genuine, and somebody else's. The signature only says an identity
+      // vouched for this device; this is what says it was this peer's.
+      throw new Error('Their certificate names a different owner.');
     }
     if (cert.device_id !== device) {
       // Signed and unexpired, but for a different device than the slot it
@@ -1083,6 +1093,7 @@ export class Protocol {
     if (
       this.core.devcertVerify(cert, identityPub, Math.floor(Date.now() / 1000)) !==
         'valid' ||
+      cert.stonechat_id !== from ||
       cert.device_id !== fromDevice
     ) {
       return null;

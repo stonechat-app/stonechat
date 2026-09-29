@@ -885,9 +885,10 @@ class StonechatCore {
 
   /// Check a signed certificate against its owner's identity public key.
   ///
-  /// Returns `valid`, `expired` or `bad_signature` — the distinction matters:
-  /// expiry is routine and heals when the owner renews, a bad signature is
-  /// someone claiming a device that is not theirs. [nowSeconds] is passed in
+  /// Returns `valid`, `expired`, `bad_signature` or `wrong_identity` — the
+  /// distinction matters: expiry is routine and heals when the owner renews,
+  /// a bad signature is someone claiming a device that is not theirs, and a
+  /// wrong identity is a key the certificate's SC- ID does not commit to. [nowSeconds] is passed in
   /// because the core takes no ambient anything.
   String devcertVerify(
     Map<String, dynamic> signed,

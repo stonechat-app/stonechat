@@ -49,9 +49,10 @@ export interface MailboxRoute {
  *
  * The order of checks is the security argument:
  *
- * 1. the identity key must hash to the SC- ID we asked for — the directory is
- *    untrusted, and a lying hub can only produce a *failed* lookup if somebody
- *    actually checks;
+ * 1. the identity key must hash to the SC- ID the entry carries — which makes
+ *    the entry self-consistent and nothing more. That it is the ID that was
+ *    *asked for* is `Protocol.resolve`'s check, the only place the question
+ *    is known; every entry that reaches here must have come through it;
  * 2. the schedule must be signed by that key;
  * 3. only then are the still-valid entries pinnable;
  * 4. and there has to be an address to send them to.

@@ -222,10 +222,11 @@ pub unsafe extern "C" fn stonechat_devcert_sign(
 ///
 /// `now` is caller-supplied Unix seconds: this crate takes no ambient
 /// anything, and a client that lies to itself about the time is already lost.
-/// Returns 0 valid, -3 (refusal) for expired or forged — the caller gets the
-/// distinction in the emitted JSON (`{"status": "valid"|"expired"|
-/// "bad_signature"}`), because expiry is routine and self-healing while a bad
-/// signature is someone claiming a device that is not theirs.
+/// Returns 0 valid, -3 (refusal) otherwise — the caller gets the distinction
+/// in the emitted JSON (`{"status": "valid"|"expired"|"bad_signature"|
+/// "wrong_identity"}`), because expiry is routine and self-healing while a bad
+/// signature is someone claiming a device that is not theirs, and a wrong
+/// identity is a key the certificate's SC- ID does not commit to.
 ///
 /// # Safety
 /// Pointers must be valid for their stated lengths; `identity_pub` is 32
@@ -264,6 +265,7 @@ pub unsafe extern "C" fn stonechat_devcert_verify(
             crate::devcert::CertStatus::Valid => "valid",
             crate::devcert::CertStatus::Expired => "expired",
             crate::devcert::CertStatus::BadSignature => "bad_signature",
+            crate::devcert::CertStatus::WrongIdentity => "wrong_identity",
         };
         unsafe {
             emit(

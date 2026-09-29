@@ -193,7 +193,10 @@ def resolve(stonechat_id: str) -> Peer:
     entry = httpx.get(f"{HUB}/v1/directory/{stonechat_id}", timeout=10)
     entry.raise_for_status()
     entry = entry.json()
-    assert stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == entry["stonechat_id"], \
+    # Against the ID that was asked for, never the one in the answer: a
+    # directory returning somebody else's record is internally consistent.
+    assert entry["stonechat_id"] == stonechat_id \
+        and stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == stonechat_id, \
         "directory pubkey does not commit to the Stonechat ID"
     # The identity's X-Wing key is still published and still signature-checked
     # — a directory serving an unsigned one is serving junk — but **nothing

@@ -206,6 +206,8 @@ def verify_devcert(cert: dict, identity_pub: bytes, now: int | None = None,
     This is the check that lets a device exist without the identity secret."""
     VerifyKey(identity_pub).verify(
         DEVCERT_SIG_CONTEXT + devcert_signing_bytes(cert), unb64(cert["sig"]))
+    assert stonechat_id_from_pubkey(identity_pub) == cert["stonechat_id"], \
+        "certificate is signed by a key its Stonechat ID does not commit to"
     assert cert["not_after"] > (now or int(time.time())), "certificate expired"
     if device is not None:
         assert cert["device_id"] == device, \

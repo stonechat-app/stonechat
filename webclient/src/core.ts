@@ -356,10 +356,11 @@ export class StonechatCore {
   /**
    * Check a certificate against its owner's identity key.
    *
-   * Returns `valid`, `expired` or `bad_signature` — the distinction matters:
-   * expiry is routine and heals when the owner renews, a bad signature is
-   * someone claiming a device that is not theirs. `now` is passed in because
-   * the core takes no ambient anything.
+   * Returns `valid`, `expired`, `bad_signature` or `wrong_identity` — the
+   * distinction matters: expiry is routine and heals when the owner renews, a
+   * bad signature is someone claiming a device that is not theirs, and a
+   * wrong identity is a key the certificate's SC- ID does not commit to. `now`
+   * is passed in because the core takes no ambient anything.
    */
   devcertVerify(
     signed: SignedCert,
@@ -714,7 +715,11 @@ export interface SignedCert {
   sig: string;
 }
 
-export type CertStatus = 'valid' | 'expired' | 'bad_signature';
+export type CertStatus =
+  | 'valid'
+  | 'expired'
+  | 'bad_signature'
+  | 'wrong_identity';
 
 /** Mostly opaque — the core owns the ratchet's shape. `pending_x3dh` is the
  * one field a caller reads: it is the handshake block that must ride the first
