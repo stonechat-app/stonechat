@@ -403,25 +403,13 @@ class HubApi {
     await _check(r, (_) => null);
   }
 
-  /// The account's plan — the tier the hub's gate grants it — or null
-  /// (PROTOCOL.md "Gate"). [notice] is the gate's own wording for anything
-  /// the user should act on (a failed payment, say); show it as-is.
-  Future<({String plan, String status, String? until, String? notice})?>
-  getAccess() async {
+  /// What the hub's gate says about this account (PROTOCOL.md "Gate").
+  Future<HubAccess> getAccess() async {
     final r = await http.get(
       Uri.parse('$baseUrl/v1/access'),
       headers: _auth,
     );
-    return _check(r, (j) {
-      final tier = j['tier'] as String?;
-      if (tier == null) return null;
-      return (
-        plan: tier,
-        status: j['status'] as String? ?? 'active',
-        until: j['until'] as String?,
-        notice: j['notice'] as String?,
-      );
-    });
+    return _check(r, HubAccess.fromJson);
   }
 
   /// Redeem an activation code (from a purchase on stonechat.app, or a
@@ -1368,4 +1356,41 @@ class MailboxSocket {
     _channel?.sink.close();
     onStateChange?.call(false);
   }
+}
+
+/// The account's standing on its hub. An open hub (no gate) needs no plan
+/// for anything, so it has nothing to show and nothing to redeem.
+class HubAccess {
+  /// False on a hub without a gate: every provider is free to use.
+  final bool gated;
+
+  /// The tier the gate grants — "mailbox" | "machine" — or null for none.
+  final String? plan;
+  final String status;
+  final String? until;
+
+  /// The gate's own wording for anything to act on (a failed payment, say);
+  /// shown as-is.
+  final String? notice;
+
+  const HubAccess({
+    required this.gated,
+    this.plan,
+    this.status = 'active',
+    this.until,
+    this.notice,
+  });
+
+  /// May this account use managed mailboxes? Always, on an open hub.
+  bool get mayProvision => !gated || plan != null;
+
+  factory HubAccess.fromJson(Map<String, dynamic> j) => HubAccess(
+    // A hub that doesn't say is read as gated: asking for a code is
+    // recoverable, pretending everything is free is not.
+    gated: j['gated'] as bool? ?? true,
+    plan: j['tier'] as String?,
+    status: j['status'] as String? ?? 'active',
+    until: j['until'] as String?,
+    notice: j['notice'] as String?,
+  );
 }

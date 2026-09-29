@@ -73,6 +73,8 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
   List<MailboxCountry>? _countries;
   String? _country; // deliberately null: we never choose a jurisdiction for you
   String? _plan; // "mailbox" | "machine" | null (unknown / no plan yet)
+  // False once the hub says it has no gate: nothing needs a plan there.
+  bool _gated = true;
 
   bool get _usesLocalProvider => _envProvider != '' || kDebugMode;
 
@@ -97,8 +99,13 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
       if (mounted) setState(() => _countries = const []);
     }
     try {
-      final entitlement = await api.getAccess();
-      if (mounted) setState(() => _plan = entitlement?.plan);
+      final access = await api.getAccess();
+      if (mounted) {
+        setState(() {
+          _plan = access.plan;
+          _gated = access.gated;
+        });
+      }
     } catch (_) {/* plan stays null → nothing is greyed out */}
   }
 
@@ -118,14 +125,18 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
     return null;
   }
 
-  /// True once the account has a plan. Countries are placeable per plan, so
+  /// True once the account may provision: it has a plan, or the hub is open
+  /// (no gate, so no plan is needed). Countries are placeable per plan, so
   /// the picker needs this before it can grey anything out.
   Future<bool> _ensurePlan() async {
-    if (_plan != null) return true;
-    final entitlement = await context.read<AppState>().api.getAccess();
+    if (_plan != null || !_gated) return true;
+    final access = await context.read<AppState>().api.getAccess();
     if (!mounted) return false;
-    setState(() => _plan = entitlement?.plan);
-    return entitlement != null;
+    setState(() {
+      _plan = access.plan;
+      _gated = access.gated;
+    });
+    return access.mayProvision;
   }
 
   Future<void> _setupCloud() async {

@@ -43,6 +43,7 @@ from . import gate
 from .countries import UnavailableCountry
 from .countries import catalog as country_catalog
 from .countries import resolve as resolve_country
+from .countries import shared_host_countries
 from .deps import UnbannedUser, User, store
 from .identity import PQ_PK_LEN, PUBKEY_LEN, normalize_stonechat_id, stonechat_id_from_pubkey
 from .ratelimit import RateLimiter
@@ -563,6 +564,13 @@ def create_mailbox(body: MailboxIn, user: UnbannedUser, background: BackgroundTa
         # decides the cloud. Resolve before the gate check so an unplaced
         # country fails with "not available there" rather than a misleading
         # prompt to get a plan.
+        if tier is None and not gate.GATED:
+            # Open hub: nobody holds a tier because nobody needs one. Place on
+            # a shared mailbox host where one declares the country — the
+            # cheap tier, and often the only one a self-hoster runs — and on
+            # a dedicated VM only where none does.
+            tier = ("mailbox" if body.country.upper() in shared_host_countries()
+                    else "machine")
         try:
             provider, machine_dict = resolve_country(body.country, tier or "machine")
         except UnavailableCountry as e:

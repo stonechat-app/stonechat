@@ -81,7 +81,7 @@ class _MailboxScreenState extends State<MailboxScreen> {
   Future<void> _loadPlan() async {
     try {
       final e = await context.read<AppState>().api.getAccess();
-      if (mounted) setState(() => _plan = e?.plan);
+      if (mounted) setState(() => _plan = e.plan);
     } on Exception {
       // best-effort; the invites entry also keys off the provider
     }
@@ -341,12 +341,14 @@ class _MailboxScreenState extends State<MailboxScreen> {
   static const _envProvider = String.fromEnvironment('STONECHAT_PROVIDER');
 
   /// null → no plan on this account yet (caller offers the redeem sheet).
+  /// An open hub needs no plan: it gets the shared tier's provider here, and
+  /// the country form lets the hub choose anyway.
   Future<String?> _resolveProvider() async {
     if (_envProvider != '') return _envProvider;
     if (kDebugMode) return 'local';
-    final entitlement = await context.read<AppState>().api.getAccess();
-    if (entitlement == null) return null;
-    return entitlement.plan == 'machine' ? 'gcp' : 'mailbox_host';
+    final access = await context.read<AppState>().api.getAccess();
+    if (!access.mayProvision) return null;
+    return access.plan == 'machine' ? 'gcp' : 'mailbox_host';
   }
 
   /// The picker, plus the framing that must travel with it.

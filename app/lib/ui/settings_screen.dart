@@ -122,7 +122,6 @@ class SettingsScreen extends StatelessWidget {
             leading: const Icon(Icons.qr_code_2, color: Zn.muted, size: 20),
             onTap: () => Navigator.pushNamed(context, '/identity-export'),
           ),
-          const _SectionLabel('Subscription'),
           const _SubscriptionSection(),
           const _SectionLabel('Account'),
           // The primary deletes the account itself; a linked device holds no
@@ -335,7 +334,9 @@ class _BusyDialog extends StatelessWidget {
       );
 }
 
-/// Current plan (fetched from the hub) + the redeem entry point.
+/// Current plan (fetched from the hub) + the redeem entry point. Absent on
+/// an open hub — one without a gate has no plans, so there is nothing to show
+/// and nothing to redeem (PROTOCOL.md "Gate").
 class _SubscriptionSection extends StatefulWidget {
   const _SubscriptionSection();
 
@@ -344,8 +345,7 @@ class _SubscriptionSection extends StatefulWidget {
 }
 
 class _SubscriptionSectionState extends State<_SubscriptionSection> {
-  late Future<({String plan, String status, String? until, String? notice})?>
-      _entitlement;
+  late Future<HubAccess> _entitlement;
 
   @override
   void initState() {
@@ -361,54 +361,60 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        FutureBuilder(
-          future: _entitlement,
-          builder: (context, snap) {
-            final (label, color, sub) = switch (snap) {
-              AsyncSnapshot(connectionState: ConnectionState.waiting) => (
-                  '···',
-                  Zn.muted,
-                  'Checking your plan',
-                ),
-              AsyncSnapshot(hasError: true) => (
-                  'Unavailable',
-                  Zn.muted,
-                  "Couldn't reach the mailbox",
-                ),
-              AsyncSnapshot(data: final e?) => (
-                  e.plan == 'machine' ? 'Machine' : 'Mailbox',
-                  e.status == 'grace' ? Zn.danger : Zn.ok,
-                  e.notice ?? 'Active',
-                ),
-              _ => (
-                  'No plan',
-                  Zn.muted,
-                  'Plans unlock a managed mailbox — see stonechat.app/pricing',
-                ),
-            };
-            return ListTile(
-              leading:
-                  const Icon(Icons.workspace_premium_outlined, color: Zn.muted, size: 20),
-              title: Text(label, style: TextStyle(color: color)),
-              subtitle: Text(sub,
-                  style: const TextStyle(color: Zn.muted, fontSize: 12)),
-            );
-          },
+    return FutureBuilder(
+      future: _entitlement,
+      builder: (context, snap) {
+        if (snap.data?.gated == false) return const SizedBox.shrink();
+        return Column(
+          children: [
+            const _SectionLabel('Subscription'),
+            _planTile(snap),
+            ListTile(
+              leading: const Icon(Icons.confirmation_number_outlined,
+                  color: Zn.orange, size: 20),
+              title: const Text('Redeem activation code'),
+              subtitle: const Text('From a purchase on stonechat.app',
+                  style: TextStyle(color: Zn.muted, fontSize: 12)),
+              onTap: () async {
+                final activated = await showRedeemSheet(context);
+                if (activated) _refresh();
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _planTile(AsyncSnapshot<HubAccess> snap) {
+    final (label, color, sub) = switch (snap) {
+      AsyncSnapshot(connectionState: ConnectionState.waiting) => (
+          '···',
+          Zn.muted,
+          'Checking your plan',
         ),
-        ListTile(
-          leading: const Icon(Icons.confirmation_number_outlined,
-              color: Zn.orange, size: 20),
-          title: const Text('Redeem activation code'),
-          subtitle: const Text('From a purchase on stonechat.app',
-              style: TextStyle(color: Zn.muted, fontSize: 12)),
-          onTap: () async {
-            final activated = await showRedeemSheet(context);
-            if (activated) _refresh();
-          },
+      AsyncSnapshot(hasError: true) => (
+          'Unavailable',
+          Zn.muted,
+          "Couldn't reach the mailbox",
         ),
-      ],
+      AsyncSnapshot(data: HubAccess(plan: final String plan) && final e) => (
+          plan == 'machine' ? 'Machine' : 'Mailbox',
+          e.status == 'grace' ? Zn.danger : Zn.ok,
+          e.notice ?? 'Active',
+        ),
+      _ => (
+          'No plan',
+          Zn.muted,
+          'Plans unlock a managed mailbox — see stonechat.app/pricing',
+        ),
+    };
+    return ListTile(
+      leading:
+          const Icon(Icons.workspace_premium_outlined, color: Zn.muted, size: 20),
+      title: Text(label, style: TextStyle(color: color)),
+      subtitle: Text(sub,
+          style: const TextStyle(color: Zn.muted, fontSize: 12)),
     );
   }
 }
