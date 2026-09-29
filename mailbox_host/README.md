@@ -14,7 +14,9 @@ service's. Two ways in, one program:
 Managed mode refuses invites outright, so a box has exactly one authority. It
 replaced the `fleet` provider, where the hub reached mailbox hosts by SSH as a
 member of the `docker` group — root there in all but name. The containers are
-the same; what the hub holds is now a token for a four-endpoint API.
+the same; what the hub holds is now a token for this API. That token places,
+lists and destroys mailboxes on the box. It does not install code: a relay
+binary needs a release signature the hub cannot make (below).
 
 > Machine-tier VMs provisioned by the hub come with this service
 > **pre-installed** (see `hub/app/providers/bootstrap.py`) — the app picks up
@@ -122,11 +124,33 @@ ways end at the same artifact:
   is not published yet. It also becomes what new mailboxes are built from.
   `scripts/roll_relay.py` drives this end of it.
 
+A binary given this way has to be **signed by a release key this host trusts**.
+The admin token authorizes placing mailboxes; it does not authorize running
+code in them, and a hub that manages this box holds the admin token. So the
+host checks an Ed25519 signature against the public keys in
+`STONECHAT_RELAY_RELEASE_KEYS`, on upload and again before every roll, and
+refuses anything else. With the variable unset, the host accepts no uploads at
+all — the right setting for a box that only runs the published image.
+
+```bash
+# once, on the machine you release from — never on a server
+hub/.venv/bin/python scripts/release_key.py generate ~/.stonechat/release.key
+# → prints the PUBLIC key: put it in STONECHAT_RELAY_RELEASE_KEYS in .env
+
+hub/.venv/bin/python scripts/roll_relay.py --binary ./stonechat-relay \
+    --release-key ~/.stonechat/release.key
+```
+
+Running someone else's build? Put *their* published release key there instead.
+Rotating? List the new key beside the old one, release with the new one, then
+drop the old. The literal `insecure` turns the check off, for laptop dev.
+
 All the knobs (in `.env`):
 
 | Env | Default | Meaning |
 |---|---|---|
-| `STONECHAT_MAILBOX_HOST_ADMIN_TOKEN` | — (required) | Secret you hold; authorizes minting/eviction |
+| `STONECHAT_MAILBOX_HOST_ADMIN_TOKEN` | — (required) | Secret you hold; authorizes minting/eviction. At least 16 characters — the host refuses to start on an empty or short one |
+| `STONECHAT_RELAY_RELEASE_KEYS` | — | Ed25519 public keys (base64, comma-separated) that may sign a relay uploaded to `POST /v1/relay`. Unset → uploads refused. `insecure` → unchecked (dev) |
 | `STONECHAT_MAILBOX_HOST_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
 | `STONECHAT_MAILBOX_HOST_CAPACITY` | `25` | Max guest mailboxes on this host |
 | `STONECHAT_MAILBOX_HOST_PORT_BASE` | `42000` | First guest mailbox port; guests get `base…base+capacity−1` |
@@ -212,16 +236,18 @@ and the list below shows whether each one was accepted.
 
 ### 5. Bring the friends
 
-Send each friend the `stonechat-host:…` invite string over any channel they trust
-came from you — it carries no secrets, and their app pins the connection to
-your host's certificate, so it can't be intercepted. Each friend: install
+Send each friend the `stonechat-host:…` invite string **privately**. It
+contains the token that redeems it, so anyone who sees it before it is used
+can claim a mailbox on your box with it. The fingerprint inside protects
+something else: their app pins the connection to your host's certificate, so
+the redeem call itself can't be intercepted. Each friend: install
 the app → forge an identity → **Mailbox** screen → **A friend's machine** →
 paste the invite → **Join with invite**. Their mailbox spins up on your box;
 its token stays on their phone.
 
 ### 6. Chat
 
-Exchange Stonechat IDs or handles (QR or text) and message away. Everything is
+Exchange Stonechat IDs (QR or text) and message away. Everything is
 end-to-end encrypted on the phones — your box only ever holds ciphertext,
 deleted on delivery. If your box ever dies, nobody's history is lost: it
 lives on their phones, and they can re-home their mailboxes anywhere.
@@ -258,12 +284,13 @@ Guests never call the admin endpoints; the app does the redeem for them.
 | GET | `/v1/guests` | admin | `{guests, count, capacity, managed}` — occupancy, which is how a hub picks the emptiest host in a country |
 | DELETE | `/v1/guest/{owner_id}` | admin | evict — destroys that guest's container. Idempotent: an unknown guest answers `{"status": "gone"}` |
 | GET | `/v1/relay` | admin | which binary new guests get, and what each running relay reports on its own `/status` — so a half-finished roll shows as one |
-| POST | `/v1/relay` | admin | upload a relay binary (raw `application/octet-stream`); it becomes what new guests are built from. Refuses anything that is not an ELF |
-| POST | `/v1/relay/roll` | admin | `{only?, dry_run?, force?}` — swap the uploaded binary into running mailboxes, one at a time, stopping and rolling back at the first failure |
+| POST | `/v1/relay` | admin + release signature | upload a relay binary (raw `application/octet-stream`) with `X-Stonechat-Release-Sig`; it becomes what new guests are built from. Refuses anything not signed by a key in `STONECHAT_RELAY_RELEASE_KEYS`, and anything that is not an ELF |
+| POST | `/v1/relay/roll` | admin | `{only?, dry_run?, force?}` — swap the pinned binary (uploaded, or taken from the pinned image) into running mailboxes, one at a time, stopping and rolling back at the first failure |
 
 The `invite` string is `stonechat-host:` + base64url(`{u: host-url, f: tls-fp, t:
 token}`). The guest's app pins the connection to `f`, so the redeem can't
-be MITM'd — same trust chain as everything else in Stonechat.
+be MITM'd. `t` is the redeem token: the invite is a bearer secret until it is
+used up or expires.
 
 ## Hosting for a hub (managed mode)
 
@@ -305,8 +332,13 @@ curl -s https://<hub>/v1/countries | jq '.countries[] | {code, plans}'
 Then ship it a relay, which is also what pins the version its mailboxes run:
 
 ```bash
-hub/.venv/bin/python scripts/roll_relay.py --binary ./stonechat-relay
+hub/.venv/bin/python scripts/roll_relay.py --binary ./stonechat-relay \
+    --release-key ~/.stonechat/release.key
 ```
+
+The host must have been started with the matching public key in
+`STONECHAT_RELAY_RELEASE_KEYS` (above). That key is yours, not the hub's: it is
+what keeps a stolen hub from shipping code to this box.
 
 Keep this box's **public IP static**. It is baked into every mailbox address the
 hub hands out and nothing re-resolves it: an ephemeral address works right up

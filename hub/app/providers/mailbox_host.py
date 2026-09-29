@@ -11,8 +11,10 @@ This replaced the `fleet` provider, which ran `docker -H ssh://…` against a
 bare daemon on each host. Same containers in the end, but the authority is
 different, and that was the point: the hub held a key into the `docker` group
 on every mailbox host, which is root there in all but name, so a compromised
-hub owned the whole fleet. Now it holds a bearer token for an API that can do
-four things, none of them "run this container".
+hub owned the whole fleet. Now it holds a bearer token for an API, not a shell.
+That API can also install a relay release, but only one signed by the
+operator's release key (mailbox_host/main.py "Relay releases"), which the hub
+does not hold — so the token is still not "run this container".
 
 Host pool config (env, REQUIRED)::
 
@@ -36,24 +38,17 @@ The address a mailbox is reachable at is decided by the host, not here: it
 knows its own advertise address and which port it published.
 """
 
-import base64
-import hashlib
 import os
-import socket
-import ssl
 from dataclasses import dataclass
-
-import httpx
 
 from ..pushkey import mint_push_key
 from .base import CloudProvider, ProviderError, ProvisionRequest, ProvisionResult
+from .pinned import INSECURE, PinMismatch, pinned_request
 
 # Provisioning waits for a container to start and a relay to open its database
 # and mint a certificate schedule; the host polls for that before answering.
 PROVISION_TIMEOUT_S = 120
 CONTROL_TIMEOUT_S = 15
-
-INSECURE = "insecure"
 
 
 @dataclass
@@ -137,31 +132,6 @@ def configured_countries() -> set[str]:
     return {h.country for h in parse_mailbox_hosts(raw)} if raw else set()
 
 
-def _observed_fingerprint(url: str) -> str:
-    """BLAKE2b-256 of the host's DER certificate, base64 — the same function the
-    mailbox host reports on /health and the app pins a mailbox with.
-
-    Taken from a bare TLS handshake rather than from the HTTP response, because
-    a fingerprint the peer *tells* us is not a pin. httpx offers no hook onto
-    the peer certificate of a verify=False connection, so the handshake happens
-    here and the request below rides on the trust this established.
-    """
-    host, _, port = url.removeprefix("https://").partition(":")
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    try:
-        with socket.create_connection((host, int(port or 443)),
-                                      timeout=CONTROL_TIMEOUT_S) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as tls:
-                der = tls.getpeercert(binary_form=True)
-    except OSError as e:
-        raise ProviderError(f"mailbox host {url} unreachable: {e}") from e
-    if not der:
-        raise ProviderError(f"mailbox host {url} presented no certificate")
-    return base64.b64encode(hashlib.blake2b(der, digest_size=32).digest()).decode()
-
-
 class MailboxHostProvider(CloudProvider):
     name = "mailbox_host"
 
@@ -170,36 +140,23 @@ class MailboxHostProvider(CloudProvider):
 
     # -- talking to a host --------------------------------------------------------
 
-    def _check_pin(self, host: MailboxHost) -> None:
-        if host.tls_fp == INSECURE:
-            return
-        observed = _observed_fingerprint(host.url)
-        if observed != host.tls_fp:
-            raise ProviderError(
-                f"mailbox host {host.name} certificate does not match its pin "
-                f"(expected {host.tls_fp[:12]}…, got {observed[:12]}…); refusing to "
-                "send it an admin token"
-            )
-
     def _request(self, host: MailboxHost, method: str, path: str,
                  json_body: dict | None = None, timeout: float = CONTROL_TIMEOUT_S):
-        """One authenticated call, pin checked first.
-
-        verify=False is not "unverified": _check_pin has just confirmed the
-        certificate by fingerprint, which is the trust anchor everywhere in this
-        system — a self-signed cert has no CA chain to validate and the hostname
-        is an IP. Skipping the pin (dev) is the only unverified case, and it says
-        so in the config.
-        """
-        self._check_pin(host)
+        """One authenticated call, on a connection pinned to the host's
+        certificate (pinned.py) — the pin is checked on the connection that
+        carries the token, before the token is written to it."""
         try:
-            resp = httpx.request(
-                method, f"{host.url}{path}",
+            resp = pinned_request(
+                host.url, host.tls_fp, method, path,
                 headers={"Authorization": f"Bearer {host.admin_token}"},
-                json=json_body, timeout=timeout, verify=False,
+                json_body=json_body, timeout=timeout,
             )
-        except httpx.HTTPError as e:
-            raise ProviderError(f"mailbox host {host.name} unreachable: {e}") from e
+        except PinMismatch as e:
+            raise ProviderError(
+                f"mailbox host {host.name}: {e}; refusing to send it an admin token"
+            ) from e
+        except ProviderError as e:
+            raise ProviderError(f"mailbox host {host.name} {e}") from e
         if resp.status_code == 401:
             raise ProviderError(
                 f"mailbox host {host.name} rejected the admin token in "

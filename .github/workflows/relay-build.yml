@@ -59,6 +59,11 @@ jobs:
         # left out rather than left queued, and the image is amd64-only.
         arch: ${{ fromJSON(github.event.repository.private && '["x86_64"]' || '["x86_64", "aarch64"]') }}
     runs-on: ${{ matrix.arch == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      # For the build attestation below, and used by nothing else.
+      id-token: write
+      attestations: write
     env:
       TARGET: ${{ matrix.arch }}-unknown-linux-musl
     defaults:
@@ -183,6 +188,25 @@ jobs:
             echo "| size | $(stat -c%s "$BIN") bytes |"
             echo "| sha256 | \`${SUM}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # A public record that THIS binary was built by THIS workflow from THIS
+      # commit, which anyone can check:
+      #
+      #   gh attestation verify stonechat-relay --repo stonechat-app/stonechat
+      #
+      # It says where a binary came from. It does not say it may be shipped:
+      # that is the release key's signature (scripts/release_key.py), made by
+      # a person and checked by every mailbox host. The two answer different
+      # questions and neither stands in for the other.
+      #
+      # Public repositories only — the record is public, and while the
+      # repository is private the attestation API is not available to it.
+      # Pinned to a commit: this step holds the job's identity token.
+      - name: Attest the build
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: relay/target/${{ env.TARGET }}/release/stonechat-relay
 
       - uses: actions/upload-artifact@v4
         with:

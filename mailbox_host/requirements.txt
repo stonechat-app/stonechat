@@ -1,5 +1,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.32
 httpx>=0.27
+# Verifies the signature on an uploaded relay binary (POST /v1/relay).
+pynacl>=1.5
 # Also needs the `openssl` and `docker` CLIs on the host (the mailbox host runs
 # directly on the host so it can manage sibling mailbox containers).
