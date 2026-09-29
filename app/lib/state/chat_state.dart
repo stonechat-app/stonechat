@@ -17,6 +17,7 @@ import '../core/db.dart';
 import '../core/device_keys.dart';
 import '../core/links.dart';
 import '../core/session.dart';
+import '../core/wire_ids.dart';
 import '../models.dart';
 import 'app_state.dart';
 
@@ -651,9 +652,10 @@ class ChatState extends ChangeNotifier {
       );
     }
     _identityKeys[stonechatId] = entry.pubkeyB64;
-    // The X-Wing identity key seals every envelope to this peer; it is only
-    // trusted signed by the (commitment-verified) Ed25519 key. Absent or
-    // forged → unusable entry: the protocol has no classical-seal fallback.
+    // Nothing is sealed to the identity's X-Wing key any more — envelopes
+    // go to each device's certified seal key — but a record is still
+    // required to carry one, signed by the (commitment-verified) Ed25519
+    // key. Absent or forged → the entry is treated as unusable.
     final pqOk =
         entry.pqPkB64 != null &&
         entry.pqSigB64 != null &&
@@ -728,15 +730,15 @@ class ChatState extends ChangeNotifier {
   }
 
   /// Transport wrap (PROTOCOL.md "Envelope"): hybrid-seal the whole envelope
-  /// to the recipient's X-Wing identity key (directory `pq_pk`, verified
-  /// against their Ed25519 key on resolve). Their mailbox stores only
-  /// {v, id, to, blob_id} plus an opaque box — it never learns who wrote to
-  /// its owner. [transient] (typing, call ICE), [noPush] (receipts) and
+  /// to the recipient **device's** X-Wing key. Their mailbox stores only
+  /// {v, id, to, device, blob_id} plus an opaque box — the envelope names no
+  /// sender. [transient] (typing, call ICE), [noPush] (receipts) and
   /// [ring] (call offers) are the delivery hints the mailbox is allowed to
   /// see.
-  /// [toSealKeyB64] is the recipient **device's** X-Wing key, taken from its
-  /// verified certificate — not the single identity key the directory holds.
-  /// That change is what lets a device exist without the identity secret.
+  /// [toSealKeyB64] is that device's key, taken from its verified
+  /// certificate — not the identity's `pq_pk` in the directory, which
+  /// nothing is sealed to. That is what lets a device exist without the
+  /// identity secret.
   SealedEnvelope _wireSeal(
     Envelope envelope,
     String toSealKeyB64, {
@@ -1224,15 +1226,15 @@ class ChatState extends ChangeNotifier {
   ) async {
     final host = payload['blob_host'] as String?;
     final tlsFp = payload['blob_tls_fp'] as String?;
-    final blobId = payload['blob_id'] as String?;
+    final blobId = payload['blob_id'];
     final token = payload['fetch_token'] as String? ?? mailboxToken;
-    if (host == null || tlsFp == null || blobId == null || token == null) {
+    if (host == null || tlsFp == null || token == null || !isWireId(blobId)) {
       return null;
     }
     try {
       return await _persistMedia(
         messageId,
-        await downloadBlob(host, blobId, token, tlsFp),
+        await downloadBlob(host, blobId as String, token, tlsFp),
         payload,
       );
     } catch (_) {
@@ -2818,9 +2820,19 @@ class ChatState extends ChangeNotifier {
     // Documents keep their original extension so the OS opens them with the
     // right app; everything else derives it from the mime type.
     final ext = kind == MessageKind.file && name != null
-        ? p.extension(name)
+        ? p.extension(p.basename(name))
         : _extFromMime((payload['mime'] as String?) ?? '');
-    final path = p.join(dir.path, '$messageId$ext');
+    final String path;
+    try {
+      path = mediaFilePath(dir.path, messageId, ext);
+    } on FormatException {
+      return null; // an id that is not one — nothing to file it under
+    }
+    // A message we already hold keeps the file it has. Its id is the file's
+    // name, so writing here would let anyone who learned an id replace the
+    // media of a message somebody else sent.
+    final held = await app.db.messageById(messageId);
+    if (held != null) return held.mediaPath;
     await File(path).writeAsBytes(data);
     return path;
   }
@@ -2841,9 +2853,9 @@ class ChatState extends ChangeNotifier {
   ) async {
     final host = payload['blob_host'] as String?;
     final tlsFp = payload['blob_tls_fp'] as String?;
-    final blobId = payload['blob_id'] as String?;
+    final blobId = payload['blob_id'];
     final token = payload['fetch_token'] as String?;
-    if (host == null || tlsFp == null || blobId == null || token == null) {
+    if (host == null || tlsFp == null || token == null || !isWireId(blobId)) {
       return null;
     }
     // The blob has to be on the sender's *own* mailbox. Without this a group
@@ -2861,7 +2873,7 @@ class ChatState extends ChangeNotifier {
     }
     final List<int> ciphertext;
     try {
-      ciphertext = await downloadBlob(host, blobId, token, tlsFp);
+      ciphertext = await downloadBlob(host, blobId as String, token, tlsFp);
     } on ApiException catch (e) {
       // 404 gone, 401 token no longer accepted: neither improves with time.
       if (e.status == 404 || e.status == 410 || e.status == 401) return null;
@@ -3655,12 +3667,19 @@ class ChatState extends ChangeNotifier {
       return;
     }
     if (envelope.to != app.stonechatId) return;
+    if (envelope.id != wire.id) {
+      // One id names a message everywhere: it is what gets acked, stored and
+      // receipted. An inner id that disagrees with the one on the wire is a
+      // sender trying to be filed under a name the mailbox never saw.
+      debugPrint('stonechat: dropped envelope ${wire.id}: inner id differs');
+      return;
+    }
 
     var contact = contactById(envelope.from);
 
     // Decryption is the authentication: the session (or the x3dh block's
-    // commitment-verified identity key) proves the sender holds the `from`
-    // ID's private key.
+    // device key, vouched for by a certificate the `from` ID's identity key
+    // signed) proves the sender is a device that identity certified.
     final plaintext = await _openEnvelope(envelope);
     if (plaintext == null) return; // forged, corrupted, or no session — drop
 
@@ -3844,9 +3863,16 @@ class ChatState extends ChangeNotifier {
             mailboxTlsFp == null) {
           throw StateError('mailbox info missing'); // don't ack — retry later
         }
+        final blobId = payload['blob_id'];
+        if (!isWireId(blobId)) {
+          // Dropped, not retried: it goes into a URL on our own mailbox with
+          // our own token beside it, and no later attempt makes it a UUID.
+          _dropLog(envelope, 'blob_id is not a UUID');
+          return;
+        }
         final ciphertext = await downloadBlob(
           mailboxAddress!,
-          payload['blob_id'] as String,
+          blobId as String,
           mailboxToken!,
           mailboxTlsFp!,
         );
@@ -3961,8 +3987,9 @@ class ChatState extends ChangeNotifier {
         await _applyReceipt(envelope, payload);
 
       // Self-sync only ever comes from us. The session already proves the
-      // sender holds our identity key, and every one of our devices does —
-      // so this check is what keeps a *peer* from writing our history.
+      // sender is a device the `from` identity certified — so this check,
+      // that `from` is *our* identity, is what keeps a peer from writing our
+      // history.
       case EnvelopeType.syncSent:
         if (envelope.from != app.stonechatId) {
           _dropLog(envelope, 'sync from someone else\'s identity');

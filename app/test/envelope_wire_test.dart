@@ -10,7 +10,7 @@ Envelope inner({
   String? bundleToken,
   String? blobId,
 }) => Envelope(
-  id: 'e-1',
+  id: '11111111-1111-4111-8111-111111111111',
   type: EnvelopeType.msg,
   from: 'SC-ALICE',
   fromDevice: fromDevice,
@@ -58,7 +58,7 @@ void main() {
   group('sealed (wire) envelope', () {
     test('routes on device and keeps everything else sealed', () {
       final wire = SealedEnvelope(
-        id: 'e-1',
+        id: '11111111-1111-4111-8111-111111111111',
         to: 'SC-BOB',
         device: 4,
         sealedB64: 'c2VhbGVk',
@@ -77,7 +77,7 @@ void main() {
 
     test('round-trips the routing device', () {
       final wire = SealedEnvelope(
-        id: 'e-2',
+        id: '22222222-2222-4222-8222-222222222222',
         to: 'SC-BOB',
         device: 7,
         sealedB64: 'eA==',
@@ -87,7 +87,7 @@ void main() {
 
     test('delivery hints stay optional and off by default', () {
       final plain = SealedEnvelope(
-        id: 'e-3',
+        id: '33333333-3333-4333-8333-333333333333',
         to: 'SC-BOB',
         device: 1,
         sealedB64: 'eA==',

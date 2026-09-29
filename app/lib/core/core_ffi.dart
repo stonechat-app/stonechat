@@ -2,8 +2,8 @@
 /// establishment and the double ratchet, behind a C ABI. Session state is
 /// an opaque JSON blob the app persists and hands back; every operation is
 /// state-in/state-out, and all randomness is passed in explicitly by the
-/// caller (session.dart uses libsodium's randombytes, the same CSPRNG as
-/// the rest of the app).
+/// caller (crypto.dart's `randomBytes`, which is `Random.secure()` — the
+/// platform CSPRNG, and the app's only one).
 ///
 /// The compiled artifact also carries pqcore's KEM symbols — one library
 /// serves both this and pqcore.dart (see scripts/build_core.sh).
@@ -775,8 +775,8 @@ class StonechatCore {
     }
   }
 
-  /// The X-Wing identity seed derived from the full 64-byte libsodium
-  /// secret key — the same KDF crypto.dart applies. Exposed so the app
+  /// The X-Wing identity seed derived from the full 64-byte Ed25519
+  /// secret key (seed ‖ public) — the same KDF crypto.dart applies. Exposed so the app
   /// and the notification extension can be proven to agree
   /// (test/core_parity_test.dart); the app itself still derives its own.
   Uint8List pqSeedFromEdSecret(Uint8List edSecret) {

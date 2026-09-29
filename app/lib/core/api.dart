@@ -16,20 +16,69 @@ import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models.dart';
+import 'wire_ids.dart';
 
 /// Set once at startup (app_state wires it to stonechat-core, the same
 /// function the notification extension pins with): BLAKE2b-256 of a DER
 /// certificate.
 String Function(Uint8List der)? certFingerprinter;
 
-HttpClient _pinnedHttpClient(String expectedFpB64) =>
-    HttpClient()
-      ..badCertificateCallback = (X509Certificate cert, _, _) =>
-          certFingerprinter!(Uint8List.fromList(cert.der)) == expectedFpB64;
+/// Opens every mailbox connection itself, so the certificate the peer
+/// actually presented can be read and compared before the socket is handed
+/// over — which is before a single byte of the request (and the token in its
+/// URL) is written.
+///
+/// Not `badCertificateCallback`: that is only consulted for a certificate the
+/// platform has already *rejected*, so one a certificate authority vouches
+/// for never reaches it and the pin is never looked at. Here the platform's
+/// opinion is not asked (no trusted roots, and whatever it thinks of the
+/// handshake is overridden); the fingerprint of the leaf is the whole
+/// decision, as PROTOCOL.md "Transport" requires.
+///
+/// Anything that is not https is refused outright. A relay serves nothing
+/// else, so such an address did not come from one.
+HttpClient _pinnedHttpClient(String expectedFpB64) => HttpClient()
+  // A proxy would be handed the CONNECT and we would pin whatever it chose
+  // to show us. Mailboxes are dialled directly.
+  ..findProxy = ((_) => 'DIRECT')
+  ..connectionFactory = (Uri uri, String? proxyHost, int? proxyPort) async {
+    if (uri.scheme != 'https') {
+      throw SocketException(
+        'mailbox address is ${uri.scheme}, not https — refusing to connect',
+      );
+    }
+    SecureSocket? opened;
+    var cancelled = false;
+    final socket =
+        SecureSocket.connect(
+          uri.host,
+          uri.port,
+          context: SecurityContext(withTrustedRoots: false),
+          onBadCertificate: (_) => true, // decided below, on the leaf
+        ).then((s) {
+          opened = s;
+          final leaf = s.peerCertificate;
+          if (cancelled ||
+              leaf == null ||
+              certFingerprinter!(Uint8List.fromList(leaf.der)) !=
+                  expectedFpB64) {
+            s.destroy();
+            throw const HandshakeException(
+              'mailbox certificate does not match the pinned fingerprint',
+            );
+          }
+          return s;
+        });
+    return ConnectionTask.fromSocket(socket, () {
+      cancelled = true;
+      opened?.destroy();
+    });
+  };
 
 /// An HTTP client that accepts exactly one mailbox certificate: the one whose
 /// fingerprint the mailbox owner signed. Everything else — including
-/// CA-signed certificates — is rejected.
+/// CA-signed certificates, and plain http — is refused before anything is
+/// sent.
 http.Client pinnedClient(String tlsFpB64) =>
     IOClient(_pinnedHttpClient(tlsFpB64));
 
@@ -100,7 +149,7 @@ class ApiException implements Exception {
 class DirectoryEntry {
   final String stonechatId;
   final String pubkeyB64;
-  final String? pqPkB64; // X-Wing identity key (hybrid envelope seal)…
+  final String? pqPkB64; // the identity's X-Wing key (nothing is sealed to it)…
   final String? pqSigB64; // …signed by the Ed25519 identity key
   final String? mailboxAddress; // null → peer's mailbox is off right now
   final String? mailboxTlsFp; // pinned cert fingerprint…
@@ -208,7 +257,8 @@ class HubApi {
   }
 
   /// [pqPkB64]/[pqSigB64]: the X-Wing identity key and its Ed25519
-  /// signature, published in the directory for the hybrid envelope seal.
+  /// signature, which the hub requires and publishes in the directory.
+  /// Envelopes are not sealed to it; they go to device keys.
   Future<({String stonechatId, String accountToken})> register(
     String pubkeyB64,
     String pqPkB64,
@@ -503,8 +553,9 @@ Future<Map<String, dynamic>?> fetchWtCerts(
 }
 
 /// Fetch a peer's prekey bundle from their mailbox (consumes a one-time
-/// prekey mailbox-side). The caller must verify the SPK signature against the
-/// peer's directory identity key.
+/// prekey mailbox-side). The caller must verify the bundle's certificate
+/// against the peer's identity key, and the SPK/KSPK signatures against the
+/// device key that certificate names.
 Future<Map<String, dynamic>> fetchPrekeyBundle(
   String mailboxAddress,
   String tlsFp,
@@ -557,6 +608,13 @@ Future<({int deviceId, String kind, String? expiresAt})> mintDevice(
           }),
         )
         .timeout(const Duration(seconds: 15));
+    if (r.statusCode == 403) {
+      // Only the primary adds devices; the relay refuses anyone else.
+      throw ApiException(
+        'Devices can only be added from your primary device.',
+        r.statusCode,
+      );
+    }
     if (r.statusCode >= 400) {
       throw ApiException('could not add the device (${r.statusCode})', r.statusCode);
     }
@@ -601,8 +659,11 @@ Future<({int devicesV, List<Map<String, dynamic>> devices})> listDevices(
 }
 
 /// Revoke a device. A delivery cut, not a cryptographic excision — the
-/// revoked device still holds the identity secret (MULTIDEVICE.md
-/// "Revocation and threat notes").
+/// revoked device keeps its own keys and its certificate until that expires
+/// (MULTIDEVICE.md "Revocation and threat notes").
+///
+/// The relay lets the primary revoke any linked device and a linked device
+/// revoke only itself; nobody revokes the primary. Anything else is a 403.
 Future<void> revokeDevice(
   String mailboxAddress,
   String token,
@@ -616,6 +677,12 @@ Future<void> revokeDevice(
           queryParameters: {'token': token},
         ))
         .timeout(const Duration(seconds: 10));
+    if (r.statusCode == 403) {
+      throw ApiException(
+        'Only your primary device can remove another device.',
+        r.statusCode,
+      );
+    }
     if (r.statusCode >= 400) {
       throw ApiException('could not revoke (${r.statusCode})', r.statusCode);
     }
@@ -1191,6 +1258,9 @@ Future<List<int>> downloadBlob(
   String token,
   String tlsFp,
 ) async {
+  if (!isWireId(blobId)) {
+    throw const FormatException('blob id is not a UUID');
+  }
   final client = pinnedClient(tlsFp);
   try {
     final r = await client

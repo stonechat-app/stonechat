@@ -10,6 +10,7 @@ import 'dart:async';
 import 'package:provider/provider.dart';
 
 import '../core/api.dart';
+import '../core/db.dart';
 import '../core/linking.dart';
 import '../state/app_state.dart';
 import '../state/chat_state.dart';
@@ -81,9 +82,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
         content: const Text(
           'It stops receiving messages immediately and contacts stop '
           'encrypting to it.\n\n'
-          'It still holds a copy of your identity key. If the device was '
-          'stolen rather than simply retired, removing it here limits what '
-          'arrives next — it does not take back what already did.',
+          'It keeps its own keys and everything it already received, and '
+          'until its certificate expires it can still write to your '
+          'contacts as you. Removing it here stops what arrives next — it '
+          'does not take back what already did.',
           style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.4),
         ),
         actions: [
@@ -233,8 +235,14 @@ class _DevicesScreenState extends State<DevicesScreen> {
     }
   }
 
+  /// The relay lets only the primary add devices or remove another one, so
+  /// a linked device shows the list and offers neither.
+  bool get _isPrimary =>
+      context.read<ChatState>().myDeviceId == ChatDb.primaryDevice;
+
   @override
   Widget build(BuildContext context) {
+    final isPrimary = _isPrimary;
     return Scaffold(
       backgroundColor: Zn.bg,
       appBar: AppBar(
@@ -254,30 +262,38 @@ class _DevicesScreenState extends State<DevicesScreen> {
           if (_devices != null)
             for (final device in _devices!) _tile(device),
           const SizedBox(height: 20),
-          OutlinedButton.icon(
-            onPressed: _busy ? null : _scanToLink,
-            icon: const Icon(Icons.qr_code_scanner, size: 18),
-            label: const Text('Link a device'),
-          ),
-          const SizedBox(height: 8),
-          // Cameras fail: glare, a cracked lens, a screen too dim, a code on
-          // the same phone. The code is short enough to paste, so there is no
-          // reason for a scanner to be the only way in.
-          TextButton.icon(
-            onPressed: _busy ? null : _pasteToLink,
-            icon: const Icon(Icons.content_paste, size: 16),
-            label: const Text('Paste a code instead'),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'On the new device, choose "Link to a device I already have" and '
-            'scan the code it shows — or paste it, if the camera will not '
-            'cooperate.\n\n'
-            'Every linked device receives and sends independently — none is a '
-            'proxy for another. They share your identity, so a linked device '
-            'can do anything this one can.',
-            style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
-          ),
+          if (isPrimary) ...[
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _scanToLink,
+              icon: const Icon(Icons.qr_code_scanner, size: 18),
+              label: const Text('Link a device'),
+            ),
+            const SizedBox(height: 8),
+            // Cameras fail: glare, a cracked lens, a screen too dim, a code
+            // on the same phone. The code is short enough to paste, so there
+            // is no reason for a scanner to be the only way in.
+            TextButton.icon(
+              onPressed: _busy ? null : _pasteToLink,
+              icon: const Icon(Icons.content_paste, size: 16),
+              label: const Text('Paste a code instead'),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'On the new device, choose "Link to a device I already have" '
+              'and scan the code it shows — or paste it, if the camera will '
+              'not cooperate.\n\n'
+              'Every linked device receives and sends independently — none is '
+              'a proxy for another. They share your identity, so a linked '
+              'device can read and send everything this one can. Only this '
+              'device can add or remove devices.',
+              style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
+            ),
+          ] else
+            const Text(
+              'Devices are added and removed from your primary device — the '
+              'one that set up this mailbox.',
+              style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
+            ),
         ],
       ),
     );
@@ -309,7 +325,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
         ].join(' · '),
         style: Zn.mono(size: 10),
       ),
-      trailing: isThisDevice
+      // The primary removes linked devices; nobody removes the primary.
+      trailing: isThisDevice || !_isPrimary || id == ChatDb.primaryDevice
           ? null
           : IconButton(
               icon: const Icon(Icons.close, size: 18, color: Zn.danger),

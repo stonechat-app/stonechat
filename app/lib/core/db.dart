@@ -1,7 +1,9 @@
 /// Local history. This phone is the only place messages live — by design.
 /// The file itself is SQLCipher-encrypted; the key lives in the platform
 /// keystore next to the identity key, so a lifted filesystem image (or a
-/// device backup) yields ciphertext, not conversations.
+/// device backup) yields ciphertext for everything in this database.
+/// Media is not in it: received and sent media files are plain files in the
+/// app's documents directory, unencrypted.
 library;
 
 import 'dart:convert';

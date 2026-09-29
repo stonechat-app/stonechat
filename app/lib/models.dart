@@ -4,6 +4,8 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'core/wire_ids.dart';
+
 class ContactStatus {
   static const pendingOut = 'pending_out'; // we sent a request, waiting
   static const pendingIn = 'pending_in'; // they sent us a request
@@ -14,7 +16,7 @@ class Contact {
   final String stonechatId;
   String displayName;
   final String pubkeyB64;
-  String? pqPkB64; // X-Wing identity key (envelope seal), sig-verified on resolve
+  String? pqPkB64; // directory pq_pk, sig-verified on resolve; nothing is sealed to it
   String status;
   String? mailboxAddress; // last known, refreshed from directory on demand
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
@@ -461,7 +463,7 @@ class GroupMember {
   final String groupId;
   final String stonechatId;
   final String pubkeyB64;
-  String? pqPkB64; // X-Wing identity key (envelope seal), sig-verified on resolve
+  String? pqPkB64; // directory pq_pk, sig-verified on resolve; nothing is sealed to it
   String displayName;
   String? mailboxAddress; // cached, refreshed on delivery failure
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
@@ -513,10 +515,10 @@ class Envelope {
   final String id;
   final String type;
   final String from;
-  /// Which of the sender's devices wrote this. Under shared identity every
-  /// one of their devices carries the same identity key and the same SC- ID,
-  /// so this is the *only* thing distinguishing "their phone said it" from
-  /// "their laptop said it" — which is why the AEAD binds it.
+  /// Which of the sender's devices wrote this. All of a user's devices
+  /// send under the same SC- ID, so this number is what names the ratchet —
+  /// and the device certificate — the message belongs to, which is why the
+  /// AEAD binds it.
   final int fromDevice;
   final String to;
   /// Which of *our* devices it was addressed to. Also AEAD-bound: the pair
@@ -524,7 +526,7 @@ class Envelope {
   final int device;
   final String sentAt; // ISO-8601 UTC
   final Map<String, Object?> ratchet; // {dh, pn, n}
-  final Map<String, Object?>? x3dh; // {ik, ek, spk_id, opk_id?}
+  final Map<String, Object?>? x3dh; // {ik, cert, ek, spk_id, opk_id?, kct, kem_id, kem_one_time}
   final String nonceB64;
   final String ciphertextB64;
   final String? blobId;
@@ -573,9 +575,11 @@ class Envelope {
         if (bundleToken != null) 'bundle_token': bundleToken,
       };
 
+  /// Throws on anything malformed, ids included: `id` names the media file
+  /// and `blob_id` is put in a URL, so neither is taken on trust.
   factory Envelope.fromJson(Map<String, dynamic> j) => Envelope(
         v: j['v'] as int,
-        id: j['id'] as String,
+        id: _wireId(j['id'], 'id'),
         type: j['type'] as String,
         from: j['from'] as String,
         fromDevice: j['from_device'] as int,
@@ -586,17 +590,22 @@ class Envelope {
         x3dh: (j['x3dh'] as Map?)?.cast<String, Object?>(),
         nonceB64: j['nonce'] as String,
         ciphertextB64: j['ciphertext'] as String,
-        blobId: j['blob_id'] as String?,
+        blobId: j['blob_id'] == null ? null : _wireId(j['blob_id'], 'blob_id'),
         bundleToken: j['bundle_token'] as String?,
       );
+
+  static String _wireId(Object? value, String field) => isWireId(value)
+      ? value as String
+      : throw FormatException('envelope $field is not a UUID');
 }
 
-/// The wire format (PROTOCOL.md "Envelope"). The recipient is the only
-/// cleartext routing fact; sender, type and session header ride inside
-/// `sealed` — an anonymous box only the recipient's identity key opens, so
-/// the mailbox never learns who wrote. `blobId` (media envelopes) is the one
-/// other cleartext hint, used by the mailbox purely to garbage-collect the
-/// blob on ack. Three optional delivery hints (PROTOCOL.md "Envelope"):
+/// The wire format (PROTOCOL.md "Envelope"). The recipient and the
+/// recipient device are the only cleartext routing facts; sender, type and
+/// session header ride inside `sealed` — an anonymous box only the
+/// addressed device's seal key opens, so the envelope names no sender (the
+/// mailbox still sees the sender's network address). `blobId` (media
+/// envelopes) is the one other cleartext hint, used by the mailbox purely
+/// to garbage-collect the blob once no queued envelope names it. Three optional delivery hints (PROTOCOL.md "Envelope"):
 /// `transient` — deliver only if the owner is connected right now, never
 /// queue, never push (typing, call ICE); `push: false` — queue and deliver
 /// normally but never wake the owner's phone (receipts); `ring: true` —
