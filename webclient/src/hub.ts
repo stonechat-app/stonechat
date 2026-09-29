@@ -1,15 +1,12 @@
 /**
  * The hub, over ordinary HTTPS.
  *
- * The hub is the *only* Stonechat service a browser can currently reach: it
+ * The hub is the only Stonechat service a browser can reach with `fetch`: it
  * has a domain and a CA certificate. Relays do not — they are self-signed
- * certs on bare IPs, validated by fingerprint against the directory, and no
- * browser API can accept that (WEB_CLIENT.md blocker 1). Reaching a relay
- * needs WebTransport with `serverCertificateHashes`, which is not built.
+ * certs on bare IPs — and are reached over WebTransport with
+ * `serverCertificateHashes` instead (`transport.ts`, `mailbox.ts`).
  *
- * So this file is the whole of the client's network surface today, and it is
- * enough to *get linked* — which is the half of the flow that runs against
- * the hub by design.
+ * What runs against the hub is the link dead drop and directory lookups.
  */
 
 import type { WtCert } from './core.js';

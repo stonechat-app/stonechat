@@ -17,6 +17,7 @@ import { certExpiry } from './device.js';
 import {
   MAX_MESSAGES_PER_CONVERSATION,
   store,
+  threadKey,
   type Contact,
 } from './store.js';
 
@@ -99,6 +100,18 @@ function brandBar(status: HTMLElement): HTMLElement {
 
 type Section = 'chats' | 'groups';
 
+/**
+ * The conversation on screen: its type, then its id.
+ *
+ * The type is set by which list the row was clicked in and decides everything
+ * downstream — the thread shown, the title, the send path. It is never worked
+ * out from the id, which for a group is a string somebody else chose.
+ */
+interface Open {
+  group: boolean;
+  id: string;
+}
+
 export class App {
   private readonly shell = el('div', 'shell');
   private readonly listBody = el('div', 'sidebar__list');
@@ -111,15 +124,17 @@ export class App {
   /** Loaded from storage on mount and written through on every change, so a
    * refresh resumes rather than forgetting. */
   private readonly threads = new Map<string, Message[]>();
-  private open: string | null = null;
+  private open: Open | null = null;
   private section: Section = 'chats';
   private readonly railButtons = new Map<string, HTMLButtonElement>();
 
   constructor(private readonly protocol: Protocol) {}
 
   mount(into: HTMLElement): void {
-    for (const [peerId, messages] of Object.entries(store.messages())) {
-      this.threads.set(peerId, messages);
+    // Keyed as stored (`threadKey`), so a group's thread and a peer's stay
+    // apart in memory exactly as they do on disk.
+    for (const [key, messages] of Object.entries(store.messages())) {
+      this.threads.set(key, messages);
     }
     this.shell.append(this.railEl(), this.sidebarEl(), this.pane);
 
@@ -187,11 +202,8 @@ export class App {
     this.sidebarTitle.textContent = section === 'chats' ? 'Chats' : 'Groups';
     // Close whatever is open only if it does not belong to the section being
     // shown — otherwise entering Groups would close the group you just picked.
-    // A conversation is a DM exactly when we hold a contact for it; anything
-    // else keyed in a thread is a group, named or not.
-    if (this.open !== null) {
-      const isDm = this.open in store.contacts();
-      if ((section === 'chats') !== isDm) this.open = null;
+    if (this.open !== null && (section === 'groups') !== this.open.group) {
+      this.open = null;
     }
     this.render();
   }
@@ -259,7 +271,7 @@ export class App {
         // the public key is filled in when the directory is resolved.
         store.setContact({ stonechatId: id, pubkey: '' });
         this.section = 'chats';
-        this.open = id;
+        this.open = { group: false, id };
         close();
         this.render();
       };
@@ -346,12 +358,13 @@ export class App {
   // -- running ------------------------------------------------------------
 
   private push(message: Message): void {
-    const thread = this.threads.get(message.peerId) ?? [];
+    const key = threadKey(message.peerId, message.group === true);
+    const thread = this.threads.get(key) ?? [];
     // Redelivery is normal — the relay re-sends anything unacked when a socket
     // reconnects — so the same message can arrive twice across a refresh.
     if (thread.some((m) => m.id === message.id)) return;
     thread.push(message);
-    this.threads.set(message.peerId, thread);
+    this.threads.set(key, thread);
     store.appendMessage(message);
     this.render();
   }
@@ -370,11 +383,11 @@ export class App {
       // A clear performed on the phone has to empty the view here too, or the
       // browser goes on showing history the user believes they deleted — the
       // one outcome that makes "clear chat" untrustworthy.
-      // A roster can arrive long after the first message from a group, so the
-      // list has to be able to turn an id into a name without a reload.
+      // A roster arriving is what makes a group exist here at all, and one
+      // changing can rename it or end our part in it.
       this.protocol.onGroupsChanged = () => this.render();
-      this.protocol.onConversationCleared = (peerId) => {
-        this.threads.set(peerId, []);
+      this.protocol.onConversationCleared = (peerId, group) => {
+        this.threads.set(threadKey(peerId, group), []);
         this.render();
       };
       for await (const message of this.protocol.receive()) {
@@ -413,14 +426,11 @@ export class App {
     this.listBody.replaceChildren();
 
     if (this.section === 'groups') {
+      // Only groups we hold a roster for. One we were linked too late to hear
+      // about has no row and no messages until its admin next changes it:
+      // without a roster there is no telling a member from anyone else.
       const known = store.groups();
-      // A group we hold messages for but no roster: linked after it was
-      // formed, so nobody has told us who is in it. Listed anyway — hiding it
-      // would look exactly like its messages never arriving.
-      const unknown = [...this.threads.keys()].filter(
-        (id) => !(id in known) && !(id in store.contacts()),
-      );
-      if (Object.keys(known).length === 0 && unknown.length === 0) {
+      if (Object.keys(known).length === 0) {
         const note = el('div', 'mono');
         note.style.padding = 'var(--gutter)';
         note.style.color = 'var(--faint)';
@@ -429,10 +439,9 @@ export class App {
         return;
       }
       for (const group of Object.values(known)) {
-        this.listBody.append(this.groupRow(group.id, group.name, false));
-      }
-      for (const id of unknown) {
-        this.listBody.append(this.groupRow(id, shortId(id), true));
+        this.listBody.append(
+          this.groupRow(group.id, group.name, group.removed === true),
+        );
       }
       return;
     }
@@ -468,7 +477,9 @@ export class App {
     const last = thread[thread.length - 1];
     const row = el(
       'div',
-      contact.stonechatId === this.open ? 'row row--active' : 'row',
+      this.open !== null && !this.open.group && contact.stonechatId === this.open.id
+        ? 'row row--active'
+        : 'row',
     );
     row.style.cursor = 'pointer';
     row.style.borderBottom = '1px solid var(--line)';
@@ -477,12 +488,9 @@ export class App {
     const main = el('div');
     main.style.minWidth = '0';
     const meta = el('div', 'row__meta');
-    const group = store.groups()[contact.stonechatId];
-    // Groups share the thread key space with peers, so the id alone cannot say
-    // which this is — a known roster is what turns an id into a name.
-    const who = group
-      ? el('span', 'row__who', group.name)
-      : el('span', 'row__who mono--id', shortId(contact.stonechatId));
+    // Always the ID. A contact row is never named from a roster: a group's
+    // name is its admin's choice, and this row is somebody else.
+    const who = el('span', 'row__who mono--id', shortId(contact.stonechatId));
     who.style.color = idColor(contact.stonechatId);
     meta.append(who);
     if (last) meta.append(el('span', undefined, time(last.sentAt)));
@@ -494,7 +502,7 @@ export class App {
     main.append(meta, preview);
     row.append(rail, main);
     row.addEventListener('click', () => {
-      this.open = contact.stonechatId;
+      this.open = { group: false, id: contact.stonechatId };
       this.render();
     });
     return row;
@@ -503,25 +511,23 @@ export class App {
   /**
    * One group in the list.
    *
-   * `rosterless` groups are the ones this browser was linked too late to hear
-   * about. They are readable and not sendable, and the label says which —
-   * "no roster" is a fact about us, not about the group.
+   * A group we were `removed` from stays listed: what was said while we were
+   * in it is still ours to read. It is readable and not sendable, and the
+   * label says so.
    */
-  private groupRow(id: string, label: string, rosterless: boolean): HTMLElement {
+  private groupRow(id: string, label: string, removed: boolean): HTMLElement {
     const row = el('button', 'conv');
-    if (id === this.open) row.classList.add('conv--open');
+    if (this.open?.group && id === this.open.id) row.classList.add('conv--open');
     const name = el('span', 'row__who', label);
     row.append(name);
-    if (rosterless) {
+    if (removed) {
       const hint = el('span', 'mono', ' · read-only');
       hint.style.color = 'var(--faint)';
-      hint.title =
-        'Linked after this group was formed, so this browser has not been ' +
-        'told who is in it. It will be, next time the group changes.';
+      hint.title = 'You were removed from this group.';
       row.append(hint);
     }
     row.addEventListener('click', () => {
-      this.open = id;
+      this.open = { group: true, id };
       this.render();
     });
     return row;
@@ -545,13 +551,14 @@ export class App {
       this.open = null;
       this.render();
     });
-    const openGroup = store.groups()[this.open];
+    const open = this.open;
+    const openGroup = open.group ? store.groups()[open.id] : undefined;
     const title = openGroup
       ? el('span', undefined, openGroup.name)
-      : el('span', 'mono mono--id', shortId(this.open));
-    title.style.color = idColor(this.open);
+      : el('span', 'mono mono--id', shortId(open.id));
+    title.style.color = idColor(open.id);
     title.style.fontSize = '13px';
-    const full = el('span', 'mono', this.open);
+    const full = el('span', 'mono', open.id);
     full.style.color = 'var(--faint)';
     full.style.marginLeft = 'auto';
     full.style.overflow = 'hidden';
@@ -560,7 +567,7 @@ export class App {
     head.append(back, title, full);
 
     const ledger = el('div', 'ledger');
-    const thread = this.threads.get(this.open) ?? [];
+    const thread = this.threads.get(threadKey(open.id, open.group)) ?? [];
     if (thread.length === 0) {
       const empty = el('div', 'mono');
       empty.style.padding = 'var(--gutter)';
@@ -570,7 +577,7 @@ export class App {
     }
     for (const message of thread) ledger.append(this.messageRow(message));
 
-    this.pane.append(head, ledger, this.composerRow());
+    this.pane.append(head, ledger, this.composerRow(open));
     ledger.scrollTop = ledger.scrollHeight;
   }
 
@@ -592,7 +599,7 @@ export class App {
     return row;
   }
 
-  private composerRow(): HTMLElement {
+  private composerRow(open: Open): HTMLElement {
     const row = el('div', 'composer');
     const input = el('input');
     input.type = 'text';
@@ -609,14 +616,20 @@ export class App {
     picker.addEventListener('change', async () => {
       const file = picker.files?.[0];
       picker.value = ''; // so the same file can be picked twice in a row
-      if (!file || !this.open) return;
+      if (!file) return;
+      if (open.group) {
+        // There is no group media send here, and the DM one must not be
+        // handed a group's id as if it were a person.
+        this.setStatus('warn', 'Attachments to a group are sent from your phone.');
+        return;
+      }
       attach.disabled = true;
       const previous = attach.textContent;
       // Encrypting and uploading a photo is slow enough to look broken
       // without this, and there is no outbox to show progress anywhere else.
       attach.textContent = 'Sending…';
       try {
-        this.push(await this.protocol.sendMedia(this.open, file));
+        this.push(await this.protocol.sendMedia(open.id, file));
       } catch (e) {
         this.setStatus('down', (e as Error).message);
       } finally {
@@ -626,14 +639,17 @@ export class App {
     });
     const submit = async () => {
       const text = input.value.trim();
-      if (!text || !this.open) return;
+      if (!text) return;
       input.value = '';
       send.disabled = true;
       try {
+        // By the conversation's type, never by whether a roster happens to
+        // exist under its id: that lookup is what let a roster carrying a
+        // contact's SC- ID redirect what was typed to them.
         this.push(
-          this.protocol.knowsGroup(this.open)
-            ? await this.protocol.sendGroup(this.open, text)
-            : await this.protocol.send(this.open, text),
+          open.group
+            ? await this.protocol.sendGroup(open.id, text)
+            : await this.protocol.send(open.id, text),
         );
       } catch (e) {
         this.setStatus('down', (e as Error).message);

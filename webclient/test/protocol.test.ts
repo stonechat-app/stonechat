@@ -591,3 +591,542 @@ test('a synced message is marked as ours, not as theirs', async () => {
   assert.equal(messages.length, 1);
   assert.equal(messages[0]!.mine, true);
 });
+
+// -- groups ------------------------------------------------------------------
+
+/**
+ * Any number of identities, one device each, each with its own storage.
+ *
+ * Groups need at least three people to say anything: an admin, a member, and
+ * somebody who is neither.
+ */
+async function world<N extends string>(...names: N[]) {
+  const worlds = new Map<string, Record<string, string>>();
+  let active: string = names[0]!;
+  (globalThis as { localStorage?: Storage }).localStorage = {
+    getItem: (k) => worlds.get(active)![k] ?? null,
+    setItem: (k, v) => {
+      worlds.get(active)![k] = v;
+    },
+    removeItem: (k) => {
+      delete worlds.get(active)![k];
+    },
+    clear: () => worlds.set(active, {}),
+    key: () => null,
+    length: 0,
+  } as Storage;
+
+  const relays: Record<string, FakeRelay> = {};
+  const entries: Record<string, DirectoryEntry> = {};
+  const hub = { directory: async (id: string) => entries[id]! } as unknown as Hub;
+  const who = {} as Record<
+    N,
+    { id: string; pub: string; relay: FakeRelay; protocol: Protocol }
+  >;
+  names.forEach((name, i) => {
+    worlds.set(name, {});
+    const owner = phone(21 + i);
+    const keys = DeviceKeys.generate(core);
+    const relay = new FakeRelay();
+    relays[owner.id] = relay;
+    entries[owner.id] = { stonechat_id: owner.id, pubkey: owner.pub };
+    who[name] = {
+      id: owner.id,
+      pub: owner.pub,
+      relay,
+      protocol: new Protocol(
+        core,
+        hub,
+        keys,
+        grantFor(owner, owner.certify(keys, 1), 1),
+        async (entry: DirectoryEntry) => fakeMailbox(relays[entry.stonechat_id]!, 1),
+      ),
+    };
+  });
+  const as = <T>(name: N, fn: () => Promise<T>): Promise<T> => {
+    active = name;
+    return fn();
+  };
+  for (const name of names) await as(name, () => who[name].protocol.publishPrekeys());
+  return { who, as };
+}
+
+/**
+ * Send an envelope of any type, with any payload.
+ *
+ * `sendTo` is private because the client only ever sends what it means to. An
+ * attacker is not so limited, and neither is the phone, which sends types this
+ * client has no send path for — so the tests reach past the visibility.
+ */
+function raw(
+  from: Protocol,
+  to: string,
+  type: string,
+  payload: Record<string, unknown>,
+  device = 1,
+): Promise<void> {
+  return (
+    from as unknown as {
+      sendTo(
+        peer: string, device: number, id: string, sentAt: string,
+        type: string, payload: Record<string, unknown>,
+      ): Promise<void>;
+    }
+  ).sendTo(to, device, crypto.randomUUID(), new Date().toISOString(), type, payload);
+}
+
+async function drainAll(p: Protocol) {
+  const out = [];
+  for await (const m of p.receive()) out.push(m);
+  return out;
+}
+
+const entryOf = (p: { id: string; pub: string }, name?: string) => ({
+  stonechat_id: p.id,
+  pubkey: p.pub,
+  ...(name ? { display_name: name } : {}),
+});
+
+const GROUP = '3f0e6c1a-8f7e-4a53-9b6e-0d6f2f6f5a11';
+
+test('a group works end to end: create, talk both ways, add and remove', async () => {
+  const { who, as } = await world('admin', 'bea', 'cal', 'dee');
+  const { admin, bea, cal, dee } = who;
+  const v1 = {
+    group_id: GROUP, name: 'Trip', version: 1, admin: admin.id,
+    members: [entryOf(admin), entryOf(bea, 'Bea'), entryOf(cal)],
+  };
+  await as('admin', async () => {
+    // The admin's own copy is local on a phone; here it holds one the same
+    // way every member does, so it can send.
+    store.upsertGroup({
+      id: GROUP, name: 'Trip', admin: admin.id, version: 1,
+      members: v1.members.map((m) => ({ stonechatId: m.stonechat_id, pubkey: m.pubkey })),
+    });
+    await raw(admin.protocol, bea.id, 'group_create', v1);
+    await raw(admin.protocol, cal.id, 'group_create', v1);
+  });
+  assert.deepEqual(await as('bea', () => drainAll(bea.protocol)), []);
+  assert.deepEqual(await as('cal', () => drainAll(cal.protocol)), []);
+  const held = await as('bea', async () => store.groups()[GROUP]);
+  assert.equal(held?.name, 'Trip');
+  assert.equal(held?.admin, admin.id);
+  assert.equal(held?.members[1]?.displayName, 'Bea');
+
+  // A member speaks; the admin and the other member both hear it.
+  const sent = await as('bea', () => bea.protocol.sendGroup(GROUP, 'hello all'));
+  assert.equal(sent.group, true);
+  for (const name of ['admin', 'cal'] as const) {
+    const got = await as(name, () => drainAll(who[name].protocol));
+    assert.equal(got.length, 1, `${name} hears bea`);
+    assert.equal(got[0]!.text, 'hello all');
+    assert.equal(got[0]!.peerId, GROUP);
+    assert.equal(got[0]!.group, true);
+    assert.equal(got[0]!.sender, bea.id);
+  }
+  // And the other way.
+  await as('admin', () => admin.protocol.sendGroup(GROUP, 'hello back'));
+  const back = await as('bea', () => drainAll(bea.protocol));
+  assert.deepEqual(back.map((m) => [m.text, m.sender]), [['hello back', admin.id]]);
+  await as('cal', () => drainAll(cal.protocol));
+
+  // v2: dee in, cal out. Everyone affected is told, including the one removed.
+  const v2 = {
+    ...v1, version: 2,
+    members: [entryOf(admin), entryOf(bea), entryOf(dee)],
+  };
+  await as('admin', async () => {
+    for (const to of [bea, cal, dee]) await raw(admin.protocol, to.id, 'group_update', v2);
+  });
+  for (const name of ['bea', 'cal', 'dee'] as const) {
+    await as(name, () => drainAll(who[name].protocol));
+  }
+  assert.deepEqual(
+    (await as('dee', async () => store.groups()[GROUP]))?.members.map((m) => m.stonechatId),
+    [admin.id, bea.id, dee.id],
+  );
+
+  await as('bea', () => bea.protocol.sendGroup(GROUP, 'welcome dee'));
+  assert.deepEqual(
+    (await as('dee', () => drainAll(dee.protocol))).map((m) => m.text),
+    ['welcome dee'],
+  );
+  assert.equal(cal.relay.queues.get(1)?.length ?? 0, 0, 'nothing goes to a removed member');
+
+  // The removed member still holds the old roster's sessions, and is ignored.
+  await as('cal', () => raw(cal.protocol, bea.id, 'group_msg', { group_id: GROUP, text: 'still here?' }));
+  assert.deepEqual(await as('bea', () => drainAll(bea.protocol)), []);
+});
+
+test('a roster from anyone but the admin it names is ignored', async () => {
+  // First sight: the payload's admin has to be the authenticated sender.
+  const { who, as } = await world('alice', 'bob', 'mallory');
+  const { alice, bob, mallory } = who;
+  await as('mallory', () =>
+    raw(mallory.protocol, alice.id, 'group_create', {
+      group_id: GROUP, name: 'Trip', version: 1, admin: bob.id,
+      members: [entryOf(bob), entryOf(alice), entryOf(mallory)],
+    }),
+  );
+  assert.deepEqual(await as('alice', () => drainAll(alice.protocol)), []);
+  assert.deepEqual(await as('alice', async () => store.groups()), {});
+});
+
+test('a member cannot update a group, or make themselves its admin', async () => {
+  const { who, as } = await world('alice', 'bob', 'mallory');
+  const { alice, bob, mallory } = who;
+  const members = [entryOf(bob), entryOf(alice), entryOf(mallory)];
+  await as('bob', () =>
+    raw(bob.protocol, alice.id, 'group_create', {
+      group_id: GROUP, name: 'Trip', version: 1, admin: bob.id, members,
+    }),
+  );
+  await as('mallory', async () => {
+    // Naming the real admin: refused because she is not him.
+    await raw(mallory.protocol, alice.id, 'group_update', {
+      group_id: GROUP, name: 'Mine', version: 2, admin: bob.id,
+      members: [entryOf(alice), entryOf(mallory)],
+    });
+    // Naming herself: consistent with its sender, and not the stored admin.
+    await raw(mallory.protocol, alice.id, 'group_update', {
+      group_id: GROUP, name: 'Mine', version: 3, admin: mallory.id,
+      members: [entryOf(alice), entryOf(mallory)],
+    });
+  });
+  await as('alice', () => drainAll(alice.protocol));
+  const held = await as('alice', async () => store.groups()[GROUP]!);
+  assert.equal(held.name, 'Trip');
+  assert.equal(held.admin, bob.id);
+  assert.equal(held.version, 1);
+  assert.equal(held.members.length, 3);
+
+  // Nor can the admin hand the group to someone: a roster naming another
+  // admin is not from the admin it names.
+  await as('bob', () =>
+    raw(bob.protocol, alice.id, 'group_update', {
+      group_id: GROUP, name: 'Trip', version: 4, admin: mallory.id, members,
+    }),
+  );
+  await as('alice', () => drainAll(alice.protocol));
+  const after = await as('alice', async () => store.groups()[GROUP]!);
+  assert.equal(after.admin, bob.id);
+  assert.equal(after.version, 1);
+});
+
+test('a stale or repeated roster version is ignored', async () => {
+  const { who, as } = await world('alice', 'bob', 'carol');
+  const { alice, bob, carol } = who;
+  const roster = (version: number, name: string, members: unknown[]) => ({
+    group_id: GROUP, name, version, admin: bob.id, members,
+  });
+  await as('bob', async () => {
+    await raw(bob.protocol, alice.id, 'group_create',
+      roster(2, 'Two', [entryOf(bob), entryOf(alice)]));
+    await raw(bob.protocol, alice.id, 'group_update',
+      roster(1, 'One', [entryOf(bob), entryOf(alice), entryOf(carol)]));
+    await raw(bob.protocol, alice.id, 'group_update',
+      roster(2, 'Two again', [entryOf(bob), entryOf(alice), entryOf(carol)]));
+  });
+  await as('alice', () => drainAll(alice.protocol));
+  const held = await as('alice', async () => store.groups()[GROUP]!);
+  assert.equal(held.name, 'Two');
+  assert.equal(held.members.length, 2, 'the removed member stays removed');
+});
+
+test('one forged member key rejects the whole roster', async () => {
+  const { who, as } = await world('alice', 'bob', 'carol', 'mallory');
+  const { alice, bob, carol, mallory } = who;
+  await as('bob', async () => {
+    await raw(bob.protocol, alice.id, 'group_create', {
+      group_id: GROUP, name: 'Trip', version: 1, admin: bob.id,
+      members: [
+        entryOf(bob),
+        entryOf(alice),
+        // Carol's name on Mallory's key.
+        { stonechat_id: carol.id, pubkey: mallory.pub },
+      ],
+    });
+    // Not a key at all.
+    await raw(bob.protocol, alice.id, 'group_create', {
+      group_id: GROUP, name: 'Trip', version: 2, admin: bob.id,
+      members: [entryOf(bob), entryOf(alice), { stonechat_id: carol.id, pubkey: 'AA==' }],
+    });
+  });
+  assert.deepEqual(await as('alice', () => drainAll(alice.protocol)), []);
+  assert.deepEqual(await as('alice', async () => store.groups()), {});
+
+  // Against a roster already held, the bad update changes nothing.
+  await as('bob', async () => {
+    await raw(bob.protocol, alice.id, 'group_create', {
+      group_id: GROUP, name: 'Trip', version: 3, admin: bob.id,
+      members: [entryOf(bob), entryOf(alice)],
+    });
+    await raw(bob.protocol, alice.id, 'group_update', {
+      group_id: GROUP, name: 'Trip', version: 4, admin: bob.id,
+      members: [entryOf(bob), entryOf(alice), { stonechat_id: carol.id, pubkey: mallory.pub }],
+    });
+  });
+  await as('alice', () => drainAll(alice.protocol));
+  const held = await as('alice', async () => store.groups()[GROUP]!);
+  assert.equal(held.version, 3);
+  assert.equal(held.members.length, 2);
+});
+
+test('a roster that never included us is not kept', async () => {
+  const { who, as } = await world('alice', 'bob', 'carol');
+  const { alice, bob, carol } = who;
+  await as('bob', () =>
+    raw(bob.protocol, alice.id, 'group_create', {
+      group_id: GROUP, name: 'Not yours', version: 1, admin: bob.id,
+      members: [entryOf(bob), entryOf(carol)],
+    }),
+  );
+  await as('alice', () => drainAll(alice.protocol));
+  assert.deepEqual(await as('alice', async () => store.groups()), {});
+});
+
+test('being removed ends the group here, and an old roster cannot undo it', async () => {
+  const { who, as } = await world('alice', 'bob', 'carol');
+  const { alice, bob, carol } = who;
+  const roster = (version: number, members: unknown[]) => ({
+    group_id: GROUP, name: 'Trip', version, admin: bob.id, members,
+  });
+  const everyone = [entryOf(bob), entryOf(alice), entryOf(carol)];
+  await as('bob', async () => {
+    await raw(bob.protocol, alice.id, 'group_create', roster(1, everyone));
+    await raw(bob.protocol, alice.id, 'group_msg', { group_id: GROUP, text: 'before' });
+    await raw(bob.protocol, alice.id, 'group_update', roster(5, [entryOf(bob), entryOf(carol)]));
+    await raw(bob.protocol, alice.id, 'group_msg', { group_id: GROUP, text: 'after' });
+    // Redelivered late: newer than what she held when she was removed, older
+    // than the removal.
+    await raw(bob.protocol, alice.id, 'group_update', roster(3, everyone));
+  });
+  const got = await as('alice', () => drainAll(alice.protocol));
+  assert.deepEqual(got.map((m) => m.text), ['before']);
+  const held = await as('alice', async () => store.groups()[GROUP]!);
+  assert.equal(held.removed, true);
+  assert.deepEqual(held.members, []);
+  assert.equal(held.version, 5);
+  assert.equal(await as('alice', async () => alice.protocol.knowsGroup(GROUP)), false);
+  await assert.rejects(
+    as('alice', () => alice.protocol.sendGroup(GROUP, 'hello?')),
+    /no longer in that group/,
+  );
+  assert.equal(bob.relay.queues.get(1)?.length ?? 0, 0);
+  assert.equal(carol.relay.queues.get(1)?.length ?? 0, 0);
+
+  // The admin can put her back, and only the admin.
+  await as('bob', () => raw(bob.protocol, alice.id, 'group_update', roster(6, everyone)));
+  await as('alice', () => drainAll(alice.protocol));
+  const again = await as('alice', async () => store.groups()[GROUP]!);
+  assert.equal(again.removed, undefined);
+  assert.equal(again.members.length, 3);
+});
+
+test('a group message from a non-member is dropped', async () => {
+  const { who, as } = await world('alice', 'bob', 'mallory');
+  const { alice, bob, mallory } = who;
+  await as('bob', () =>
+    raw(bob.protocol, alice.id, 'group_create', {
+      group_id: GROUP, name: 'Trip', version: 1, admin: bob.id,
+      members: [entryOf(bob), entryOf(alice)],
+    }),
+  );
+  await as('mallory', async () => {
+    await raw(mallory.protocol, alice.id, 'group_msg', { group_id: GROUP, text: 'psst' });
+    // Dropped before anything is fetched: the mock's `request` throws, so a
+    // fetch from the sender's mailbox would fail this drain rather than
+    // return nothing.
+    await raw(mallory.protocol, alice.id, 'group_media', {
+      group_id: GROUP, blob_id: crypto.randomUUID(), fetch_token: 't',
+      key: 'AA==', blob_nonce: 'AA==',
+    });
+  });
+  assert.deepEqual(await as('alice', () => drainAll(alice.protocol)), []);
+});
+
+test('a message for a group we were never told about is dropped', async () => {
+  const { who, as } = await world('alice', 'mallory');
+  const { alice, mallory } = who;
+  await as('mallory', async () => {
+    await raw(mallory.protocol, alice.id, 'group_msg', { group_id: GROUP, text: 'psst' });
+    await raw(mallory.protocol, alice.id, 'group_media', {
+      group_id: GROUP, blob_id: crypto.randomUUID(), fetch_token: 't',
+      key: 'AA==', blob_nonce: 'AA==',
+    });
+    await raw(mallory.protocol, alice.id, 'group_msg', { text: 'no group at all' });
+  });
+  assert.deepEqual(await as('alice', () => drainAll(alice.protocol)), []);
+  assert.deepEqual(await as('alice', async () => store.messages()), {});
+});
+
+test('a group id that is a Stonechat ID is refused', async () => {
+  const { who, as } = await world('alice', 'bob', 'mallory');
+  const { alice, bob, mallory } = who;
+  assert.equal(core.normalizeId(GROUP), null, 'a real group id is not an SC- ID');
+  await as('mallory', async () => {
+    for (const id of [bob.id, bob.id.toLowerCase(), ` ${bob.id}`, 'SC-ANYTHING']) {
+      await raw(mallory.protocol, alice.id, 'group_create', {
+        group_id: id, name: 'bob', version: 1, admin: mallory.id,
+        members: [entryOf(mallory), entryOf(alice)],
+      });
+    }
+  });
+  assert.deepEqual(await as('alice', () => drainAll(alice.protocol)), []);
+  assert.deepEqual(await as('alice', async () => store.groups()), {});
+});
+
+test('a roster wearing a contact\'s ID does not redirect their conversation', async () => {
+  // The attack: Mallory sends a well-formed roster, hers to send, whose
+  // group_id is Bob's SC- ID and whose only other member is herself. The send
+  // path used to ask "is there a roster under this id?", so what Alice typed
+  // to Bob was fanned out to the roster instead — to Mallory.
+  const { who, as } = await world('alice', 'bob', 'mallory');
+  const { alice, bob, mallory } = who;
+  await as('bob', () => bob.protocol.send(alice.id, 'hi alice'));
+  await as('alice', () => drainAll(alice.protocol));
+
+  await as('mallory', async () => {
+    await raw(mallory.protocol, alice.id, 'group_create', {
+      group_id: bob.id, name: 'Bob', version: 1, admin: mallory.id,
+      members: [entryOf(mallory), entryOf(alice)],
+    });
+    await raw(mallory.protocol, alice.id, 'group_msg', {
+      group_id: bob.id, text: 'it is me, bob',
+    });
+  });
+  const injected = await as('alice', () => drainAll(alice.protocol));
+  assert.deepEqual(injected, [], 'nothing is filed in the conversation with bob');
+  assert.equal(await as('alice', async () => alice.protocol.knowsGroup(bob.id)), false);
+  assert.deepEqual(
+    (await as('alice', async () => store.messages()[bob.id] ?? [])).map((m) => m.text),
+    [],
+  );
+  await assert.rejects(as('alice', () => alice.protocol.sendGroup(bob.id, 'x')));
+
+  const before = mallory.relay.queues.get(1)?.length ?? 0;
+  await as('alice', () => alice.protocol.send(bob.id, 'for bob only'));
+  assert.equal(mallory.relay.queues.get(1)?.length ?? 0, before, 'nothing reaches mallory');
+  const got = await as('bob', () => drainAll(bob.protocol));
+  assert.deepEqual(got.map((m) => [m.text, m.peerId]), [['for bob only', alice.id]]);
+});
+
+test('a group\'s thread and a peer\'s are filed apart', async () => {
+  // Whatever the ids are. Separate keys are what holds if a group id ever
+  // does collide with a peer's, by a rule that was missed rather than broken.
+  const { as } = await world('alice');
+  await as('alice', async () => {
+    const at = new Date(0).toISOString();
+    store.appendMessage({ id: 'd', peerId: 'X', mine: false, text: 'direct', sentAt: at });
+    store.appendMessage({ id: 'g', peerId: 'X', mine: false, text: 'group', sentAt: at, group: true });
+    const all = store.messages();
+    assert.deepEqual(Object.keys(all).sort(), ['X', 'group:X']);
+    assert.deepEqual(all['X']!.map((m) => m.text), ['direct']);
+    store.clearConversation('X', true);
+    assert.deepEqual(Object.keys(store.messages()), ['X']);
+  });
+});
+
+test('our own phone\'s roster and group messages reach a linked browser', async () => {
+  // The phone is the admin of what it creates, and mirrors the roster to its
+  // siblings from our own identity — so it passes the admin check as itself.
+  const { me, them, themProtocol, phone: myPhone, browser, as } = await ownDevices();
+  await as('them', () => themProtocol.publishPrekeys());
+  await as('phone', () => myPhone.publishPrekeys());
+  await as('browser', () => browser.publishPrekeys());
+
+  const other = '9a1c0b52-5d0e-4a0b-8a54-0f6f0c1d2e3f';
+  await as('phone', async () => {
+    await raw(myPhone, me.id, 'group_create', {
+      group_id: GROUP, name: 'Mine', version: 1, admin: me.id,
+      members: [entryOf(me), entryOf(them)],
+    }, 2);
+    const mirror = (group_id: string, text: string) =>
+      raw(myPhone, me.id, 'sync_sent', {
+        group_id, type: 'group_msg', payload: { group_id, text },
+        id: crypto.randomUUID(), sent_at: Date.now(),
+      }, 2);
+    await mirror(GROUP, 'from the phone');
+    // A group this browser holds no roster for: not shown.
+    await mirror(other, 'into a group the browser never heard of');
+    // A kind of message that does not match the kind of conversation.
+    await raw(myPhone, me.id, 'sync_sent', {
+      peer: them.id, type: 'group_msg', payload: { text: 'confused' },
+      id: crypto.randomUUID(), sent_at: Date.now(),
+    }, 2);
+  });
+  const got = await as('browser', () => drainAll(browser));
+  assert.deepEqual(
+    got.map((m) => [m.text, m.peerId, m.group, m.mine]),
+    [['from the phone', GROUP, true, true]],
+  );
+  assert.equal((await as('browser', async () => store.groups()[GROUP]))?.admin, me.id);
+
+  // And the browser can now send into it; the phone sees that as a group
+  // message too.
+  await as('browser', async () => {
+    await browser.sendGroup(GROUP, 'from the tab');
+    await browser.whenSynced();
+  });
+  assert.deepEqual(
+    (await as('them', () => drainAll(themProtocol))).map((m) => [m.text, m.group]),
+    [],
+    'they hold no roster, so they drop it — the same rule, from the other side',
+  );
+  await as('phone', async () => {
+    store.upsertGroup({
+      id: GROUP, name: 'Mine', admin: me.id, version: 1,
+      members: [
+        { stonechatId: me.id, pubkey: me.pub },
+        { stonechatId: them.id, pubkey: them.pub },
+      ],
+    });
+  });
+  assert.deepEqual(
+    (await as('phone', () => drainAll(myPhone))).map((m) => [m.text, m.peerId, m.group]),
+    [['from the tab', GROUP, true]],
+  );
+});
+
+test('a peer cannot write our history through self-sync', async () => {
+  const { who, as } = await world('alice', 'bob', 'mallory');
+  const { alice, bob, mallory } = who;
+  const cleared: string[] = [];
+  alice.protocol.onConversationCleared = (id) => cleared.push(id);
+  await as('bob', () => bob.protocol.send(alice.id, 'keep me'));
+  const kept = await as('alice', () => drainAll(alice.protocol));
+  await as('alice', async () => kept.forEach((m) => store.appendMessage(m)));
+
+  await as('mallory', async () => {
+    await raw(mallory.protocol, alice.id, 'sync_sent', {
+      peer: bob.id, type: 'msg', payload: { text: 'words in your mouth' },
+      id: crypto.randomUUID(), sent_at: Date.now(),
+    });
+    await raw(mallory.protocol, alice.id, 'sync_clear', { peer: bob.id });
+  });
+  assert.deepEqual(await as('alice', () => drainAll(alice.protocol)), []);
+  assert.deepEqual(cleared, []);
+  assert.equal((await as('alice', async () => store.messages()[bob.id]))?.length, 1);
+});
+
+test('a clear from our own device clears the kind of conversation it names', async () => {
+  const { me, them, phone: myPhone, browser, as } = await ownDevices();
+  await as('phone', () => myPhone.publishPrekeys());
+  await as('browser', () => browser.publishPrekeys());
+  const cleared: Array<[string, boolean]> = [];
+  browser.onConversationCleared = (id, group) => cleared.push([id, group]);
+  await as('browser', async () => {
+    const at = new Date(0).toISOString();
+    store.appendMessage({ id: 'd', peerId: them.id, mine: true, text: 'direct', sentAt: at });
+    store.appendMessage({ id: 'g', peerId: GROUP, mine: true, text: 'group', sentAt: at, group: true });
+  });
+  await as('phone', () => raw(myPhone, me.id, 'sync_clear', { group_id: GROUP }, 2));
+  await as('browser', () => drainAll(browser));
+  assert.deepEqual(cleared, [[GROUP, true]]);
+  assert.deepEqual(await as('browser', async () => Object.keys(store.messages())), [them.id]);
+
+  await as('phone', () => raw(myPhone, me.id, 'sync_clear', { peer: them.id }, 2));
+  await as('browser', () => drainAll(browser));
+  assert.deepEqual(cleared, [[GROUP, true], [them.id, false]]);
+  assert.deepEqual(await as('browser', async () => store.messages()), {});
+});

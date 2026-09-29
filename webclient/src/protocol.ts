@@ -1,10 +1,11 @@
 /**
- * Sending and receiving text, and nothing else.
+ * Sending and receiving, slimly.
  *
  * The slim counterpart of `app/lib/state/chat_state.dart`. That file is 4,000
- * lines because it handles groups, media, receipts, edits, reactions, calls,
- * self-sync, retry and disappearing messages. This handles `msg`, so it is
- * about 300 — but the *protocol* parts are the same and must stay the same:
+ * lines because it also handles receipts, edits, reactions, calls, retry and
+ * disappearing messages. This handles `msg`, `media`, `group_msg`,
+ * `group_media`, rosters and the `sync_sent` / `sync_clear` self-sync types
+ * — but the *protocol* parts are the same and must stay the same:
  *
  * - envelopes are sealed to a **device's certified key**, never the identity's;
  * - the AEAD binds both device numbers, one form, always;
@@ -12,13 +13,14 @@
  *   commits to, before anything is encrypted to it;
  * - prekeys are signed by this device and published with its certificate.
  *
- * ## What is deliberately missing
+ * ## What is missing
  *
- * Fan-out to a peer's *other* devices. Reaching them needs their bundle token,
- * which rides every envelope they send us — so a first outbound message goes to
- * their primary only, exactly as a stranger's contact request does. Once they
- * reply, the token is stored and the gap closes for that contact. Groups,
- * media, receipts and self-sync are simply not here.
+ * A first outbound message goes to a peer's primary only: reaching their
+ * other devices needs their bundle token, which rides every envelope they
+ * send us. Receipts, typing, calls, edits, reactions, contact requests and
+ * retry are not here. Nor are several receive-side checks PROTOCOL.md
+ * requires (UUID ids, inner id == outer id, inner `to`) — see README.md
+ * "Still missing".
  */
 import {
   type SessionState,
@@ -33,7 +35,7 @@ import { Hub, type DirectoryEntry } from './hub.js';
 import type { LinkGrant } from './linking.js';
 import { Mailbox } from './mailbox.js';
 import { PinRefused, routeFor } from './transport.js';
-import { store, type Contact } from './store.js';
+import { store, type Contact, type Group } from './store.js';
 
 const PRIMARY_DEVICE = 1;
 const OPK_TARGET = 20;
@@ -46,6 +48,14 @@ export interface Message {
   text: string;
   sentAt: string;
   media?: MediaAttachment;
+  /**
+   * Set when `peerId` is a group's id rather than a peer's.
+   *
+   * The conversation's type travels with the message instead of being guessed
+   * from the id: the id is whatever the sender wrote, and a thread chosen by
+   * looking it up is a thread the sender chose.
+   */
+  group?: true;
   /**
    * Who actually sent it, when that is not the same as the conversation.
    *
@@ -93,7 +103,7 @@ export class Protocol {
    * A cleared conversation is not a message, so it cannot come back through
    * `receive()` — this is how the view learns to drop what it is showing.
    */
-  onConversationCleared?: (peerId: string) => void;
+  onConversationCleared?: (peerId: string, group: boolean) => void;
 
   /** A roster arrived or changed — the conversation list has new names. */
   onGroupsChanged?: () => void;
@@ -408,7 +418,7 @@ export class Protocol {
    * cannot reach is an ordinary partial failure rather than a broken send.
    *
    * Needs the roster, so it only works for a group we have been told about —
-   * see `sendableGroup`.
+   * see `knowsGroup`.
    */
   async sendGroup(groupId: string, text: string): Promise<Message> {
     const group = store.groups()[groupId];
@@ -416,6 +426,9 @@ export class Protocol {
       throw new Error(
         'This browser has not been told who is in that group — send from your phone.',
       );
+    }
+    if (group.removed) {
+      throw new Error('You are no longer in that group.');
     }
     const id = crypto.randomUUID();
     const sentAt = new Date().toISOString();
@@ -447,7 +460,7 @@ export class Protocol {
     // Our own devices see it as a group message, keyed by group rather than
     // peer — the same shape the phone's _applySyncSent reads.
     this.syncing = this.syncSentGroup(groupId, id, sentAt, payload);
-    return { id, peerId: groupId, mine: true, text, sentAt };
+    return { id, peerId: groupId, mine: true, text, sentAt, group: true };
   }
 
   private async syncSentGroup(
@@ -471,9 +484,103 @@ export class Protocol {
     }
   }
 
-  /** Whether this browser knows enough about a group to send into it. */
+  /** Whether this browser knows enough about a group to send into it. Says
+   * nothing about what kind of conversation an id names — that is the
+   * conversation's own type, never a lookup. */
   knowsGroup(groupId: string): boolean {
-    return groupId in store.groups();
+    const group = store.groups()[groupId];
+    return group !== undefined && !group.removed;
+  }
+
+  /**
+   * The group a group-scoped envelope may be applied to, or null.
+   *
+   * One rule for every group type: the group is one we hold a roster for, and
+   * the authenticated sender is in that roster now (PROTOCOL.md "Groups").
+   * Anything else is dropped — an id we were never told about is an id the
+   * sender made up, and filing under it lets them open conversations here.
+   */
+  private groupFor(groupId: unknown, from: string): Group | null {
+    if (typeof groupId !== 'string') return null;
+    const group = store.groups()[groupId];
+    if (!group || group.removed) return null;
+    return group.members.some((m) => m.stonechatId === from) ? group : null;
+  }
+
+  /**
+   * `group_create` / `group_update`: full-state replacement of a roster.
+   *
+   * Only the admin's word counts, the admin is whoever it was at first sight,
+   * versions only move forward, and every member key must hash to the ID it
+   * is listed under — one that does not rejects the roster whole, since a
+   * roster applied in part is one nobody sent.
+   */
+  private applyMembership(from: string, body: Record<string, unknown>): void {
+    const id = body['group_id'];
+    const admin = body['admin'];
+    const name = body['name'];
+    const version = body['version'];
+    const members = body['members'];
+    if (
+      typeof id !== 'string' || id === '' ||
+      typeof admin !== 'string' ||
+      typeof name !== 'string' ||
+      typeof version !== 'number' || !Number.isSafeInteger(version) ||
+      !Array.isArray(members)
+    ) {
+      return;
+    }
+    // A group id that reads as an SC- ID is refused outright. Threads are
+    // keyed apart as well, so this is the second lock rather than the only
+    // one: nothing legitimate mints such an id, and a roster wearing a
+    // contact's name is an attack on that contact's conversation.
+    if (/^\s*SC-/i.test(id) || this.core.normalizeId(id) !== null) return;
+
+    if (from !== admin) return;
+    const held = store.groups()[id];
+    if (held) {
+      // The stored admin, not the payload's: the first check alone would let
+      // any member take a group over by naming themselves.
+      if (from !== held.admin) return;
+      if (version <= held.version) return; // stale or replayed
+    }
+
+    const roster: Group['members'] = [];
+    let includesUs = false;
+    for (const raw of members as unknown[]) {
+      if (typeof raw !== 'object' || raw === null) return;
+      const m = raw as Record<string, unknown>;
+      const stonechatId = m['stonechat_id'];
+      const pubkey = m['pubkey'];
+      if (typeof stonechatId !== 'string' || typeof pubkey !== 'string') return;
+      try {
+        if (this.core.stonechatId(b64decode(pubkey)) !== stonechatId) return;
+      } catch {
+        return; // not a key at all
+      }
+      if (stonechatId === this.stonechatId) includesUs = true;
+      roster.push({
+        stonechatId,
+        pubkey,
+        ...(typeof m['display_name'] === 'string'
+          ? { displayName: m['display_name'] }
+          : {}),
+      });
+    }
+
+    if (!includesUs) {
+      // A roster without us is either a group we were never in, which is
+      // nothing to us, or our removal. Removal keeps the record and empties
+      // it: the history stays readable, nothing more is accepted or sent, and
+      // the version moves on so an older roster cannot put us back.
+      if (!held) return;
+      store.upsertGroup({ ...held, version, members: [], removed: true });
+      this.onGroupsChanged?.();
+      return;
+    }
+    if (store.upsertGroup({ id, name, admin: held?.admin ?? admin, version, members: roster })) {
+      this.onGroupsChanged?.();
+    }
   }
 
   /**
@@ -894,11 +1001,11 @@ export class Protocol {
   // -- receiving ----------------------------------------------------------
 
   /**
-   * Drain and stay connected. Yields decrypted text messages.
+   * Drain and stay connected. Yields decrypted messages.
    *
-   * Anything that is not a `msg` is acked and dropped: a slim client that
-   * left receipts and typing indicators queued would grow its own mailbox
-   * forever.
+   * Anything this client does not handle is acked and dropped: a slim client
+   * that left receipts and typing indicators queued would grow its own
+   * mailbox forever.
    */
   async *receive(): AsyncGenerator<Message, void, void> {
     const mailbox = await this.ownMailbox();
@@ -979,41 +1086,29 @@ export class Protocol {
     }
     if (type === 'group_create' || type === 'group_update') {
       // The only way this browser ever learns a roster: nothing server-side
-      // knows groups exist, so there is nothing to ask.
-      const id = body['group_id'];
-      if (typeof id !== 'string') return null;
-      const members = Array.isArray(body['members']) ? body['members'] : [];
-      const changed = store.upsertGroup({
-        id,
-        name: typeof body['name'] === 'string' ? body['name'] : id.slice(0, 8),
-        admin: typeof body['admin'] === 'string' ? body['admin'] : '',
-        version: Number(body['version'] ?? 0),
-        members: members.map((m: Record<string, unknown>) => ({
-          stonechatId: String(m['stonechat_id']),
-          pubkey: String(m['pubkey']),
-          ...(typeof m['display_name'] === 'string'
-            ? { displayName: m['display_name'] }
-            : {}),
-        })),
-      });
-      if (changed) this.onGroupsChanged?.();
+      // knows groups exist, so there is nothing to ask. Our own phone's
+      // rosters arrive here too, from our own identity, and pass the same
+      // check — it is the admin of the groups it mirrors to us.
+      this.applyMembership(from, body);
       return null;
     }
     if (type === 'group_msg' || type === 'group_media') {
-      const groupId = body['group_id'];
-      if (typeof groupId !== 'string') return null;
-      // A group we have never been told about: still worth showing. The
-      // alternative is silently dropping messages because we were linked after
-      // the group was formed, which looks exactly like delivery being broken.
+      // A group we have never been told about is dropped, which costs a
+      // browser linked after the group formed its messages until the admin
+      // next changes the roster. Showing them instead meant rendering
+      // whatever anyone sent, filed under whatever id they chose.
+      const group = this.groupFor(body['group_id'], from);
+      if (!group) return null;
       const media =
         type === 'group_media' ? await this.fetchGroupMedia(body, from) : undefined;
       if (type === 'group_media' && !media) return null;
       return {
         id: String(inner['id']),
-        peerId: groupId,
+        peerId: group.id,
         mine: false,
         text: typeof body['text'] === 'string' ? body['text'] : '',
         sentAt: String(inner['sent_at'] ?? new Date().toISOString()),
+        group: true,
         sender: from,
         ...(media ? { media } : {}),
       };
@@ -1022,10 +1117,13 @@ export class Protocol {
       // Only ever from ourselves — the session already authenticates that, and
       // a peer must never be able to erase our history.
       if (from !== this.stonechatId) return null;
-      const peer = (body['group_id'] ?? body['peer']) as string | undefined;
-      if (peer) {
-        store.clearConversation(peer);
-        this.onConversationCleared?.(peer);
+      // Which field names the conversation is what says which kind it is.
+      const groupId = body['group_id'];
+      const peer = groupId ?? body['peer'];
+      if (typeof peer === 'string' && peer !== '') {
+        const group = groupId !== undefined && groupId !== null;
+        store.clearConversation(peer, group);
+        this.onConversationCleared?.(peer, group);
       }
       return null;
     }
@@ -1049,11 +1147,21 @@ export class Protocol {
     // are ours to render: this used to drop anything with a group_id, from
     // when groups were not implemented here, which silently threw away every
     // group message sent from the phone.
-    const peerId = (payload['group_id'] ?? payload['peer']) as string | undefined;
+    const groupId = payload['group_id'];
+    const inGroup = groupId !== undefined && groupId !== null;
+    const peerId = inGroup ? groupId : payload['peer'];
     const inner = payload['payload'] as Record<string, unknown> | undefined;
     const id = payload['id'] as string | undefined;
-    if (!peerId || !inner || !id) return null;
+    if (typeof peerId !== 'string' || !peerId || !inner || !id) return null;
     const type = String(payload['type'] ?? 'msg');
+    // The kind of conversation and the kind of message have to agree, and a
+    // group has to be one we hold a roster for — the same rule a member's
+    // message meets, so a thread never exists for a group the list cannot
+    // show.
+    const groupType = type === 'group_msg' || type === 'group_media';
+    if (groupType !== inGroup) return null;
+    if (inGroup && !this.groupFor(peerId, this.stonechatId)) return null;
+    const kind = inGroup ? { group: true as const } : {};
     const sentAt =
       typeof payload['sent_at'] === 'number'
         ? new Date(payload['sent_at']).toISOString()
@@ -1065,11 +1173,11 @@ export class Protocol {
       // opens (chat_state.dart `_syncSentMedia`).
       const media = await this.fetchGroupMedia(inner, this.stonechatId);
       if (!media) return null;
-      return { id, peerId, mine: true, text: '', sentAt, media };
+      return { id, peerId, mine: true, text: '', sentAt, media, ...kind };
     }
     if (type !== 'msg' && type !== 'group_msg') return null;
     if (typeof inner['text'] !== 'string') return null;
-    return { id, peerId, mine: true, text: inner['text'], sentAt };
+    return { id, peerId, mine: true, text: inner['text'], sentAt, ...kind };
   }
 
   /**

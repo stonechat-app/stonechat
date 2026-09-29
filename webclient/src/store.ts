@@ -78,9 +78,32 @@ export const MAX_MESSAGES_PER_CONVERSATION = 200;
 export interface Group {
   id: string;
   name: string;
+  /** Fixed at first sight. Only this identity's rosters are ever applied, and
+   * no roster can name a successor (PROTOCOL.md "Groups"). */
   admin: string;
   version: number;
   members: { stonechatId: string; pubkey: string; displayName?: string }[];
+  /**
+   * The admin's latest roster no longer includes us.
+   *
+   * Kept rather than deleted so the history stays readable and so the version
+   * we were removed at is remembered — deleting the record would let a replay
+   * of any older roster look like first sight and put us back.
+   */
+  removed?: true;
+}
+
+/**
+ * Where a conversation's messages are filed.
+ *
+ * A direct conversation is keyed by the peer's SC- ID and a group by its id
+ * behind a prefix no SC- ID can carry, so the two can never name the same
+ * thread whatever a sender puts in `group_id`. Sharing one key space is what
+ * let a roster whose id was a contact's SC- ID take over that contact's
+ * conversation.
+ */
+export function threadKey(id: string, group: boolean): string {
+  return group ? `group:${id}` : id;
 }
 
 export interface Contact {
@@ -178,7 +201,8 @@ export const store = {
    */
   appendMessage(message: Message): void {
     const all = store.messages();
-    const thread = all[message.peerId] ?? [];
+    const key = threadKey(message.peerId, message.group === true);
+    const thread = all[key] ?? [];
     if (thread.some((m) => m.id === message.id)) return;
     thread.push(message);
     // Trim from the front: the oldest go first, and the cap is per
@@ -186,7 +210,7 @@ export const store = {
     if (thread.length > MAX_MESSAGES_PER_CONVERSATION) {
       thread.splice(0, thread.length - MAX_MESSAGES_PER_CONVERSATION);
     }
-    all[message.peerId] = thread;
+    all[key] = thread;
     write(MESSAGES, all);
   },
 
@@ -198,8 +222,15 @@ export const store = {
    * Returns whether anything changed, so the view only re-renders on real
    * news. A same-version repeat is ordinary: `group_create` goes to every
    * device independently and any of them can be redelivered.
+   *
+   * Versions only: *whose* roster this is, and whether its keys are genuine,
+   * is decided by the protocol layer before anything reaches here.
    */
   upsertGroup(group: Group): boolean {
+    // An SC- ID is never a group id. The protocol layer refuses these with the
+    // core's normaliser; this is the same rule at the last door, for a caller
+    // that forgot.
+    if (/^\s*SC-/i.test(group.id)) return false;
     const all = store.groups();
     const held = all[group.id];
     if (held && held.version >= group.version) return false;
@@ -216,10 +247,11 @@ export const store = {
    * conversation instead of starting a handshake. Clearing history must not
    * cost the relationship.
    */
-  clearConversation(peerId: string): void {
+  clearConversation(peerId: string, group = false): void {
     const all = store.messages();
-    if (!(peerId in all)) return;
-    delete all[peerId];
+    const key = threadKey(peerId, group);
+    if (!(key in all)) return;
+    delete all[key];
     write(MESSAGES, all);
   },
 

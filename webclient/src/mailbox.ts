@@ -13,9 +13,10 @@
  * the HTTP one: the relay answers `{"status":101}` and the stream then carries
  * the owner socket — newline-delimited envelopes down, `{"ack": id}` up.
  *
- * The session is authenticated **once**, at CONNECT, by the device token in
- * the URL. A stream carries no token of its own, so opening many is cheap and
- * they run concurrently.
+ * The session itself is **not authenticated**: most of a relay's surface is
+ * open by design, and a sender holds no token for the recipient's relay. Each
+ * request carries its own token in its `path`, exactly as over HTTPS, and
+ * streams run concurrently.
  */
 import { fromUtf8, utf8 } from './bytes.js';
 import type { MailboxRoute } from './transport.js';

@@ -184,3 +184,15 @@ test('unlink leaves nothing of ours behind', () => {
   }
   assert.deepEqual(ours, [], `left behind: ${ours.join(', ')}`);
 });
+
+test('a roster filed under a Stonechat ID is refused', () => {
+  // The protocol layer refuses these first, with the core's normaliser. This
+  // is the last door: a group must never be reachable by a contact's key.
+  for (const id of ['SC-ABCD-EFGH', 'sc-abcd-efgh', ' SC-ABCD-EFGH']) {
+    assert.equal(
+      store.upsertGroup({ id, name: 'x', admin: 'SC-A', version: 1, members: [] }),
+      false,
+    );
+  }
+  assert.deepEqual(store.groups(), {});
+});

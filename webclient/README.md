@@ -3,13 +3,17 @@
 Design and threat analysis: [`docs/WEB_CLIENT.md`](../docs/WEB_CLIENT.md). This
 README is the build record and the open decisions.
 
-Status: **linking works; messaging does not.** A browser session can be
-linked — generate its own keys, show the offer, collect the grant, verify the
-certificate. It cannot talk to a relay yet (see "Blocked on").
+Status: **linking and messaging work; there is no deploy target yet.** A
+browser session can be linked — generate its own keys, show the offer,
+collect the grant, verify the certificate — and then talks to relays over
+WebTransport: text and attachments in direct conversations, text and
+attachments in groups it has been told about, and its own outgoing messages
+mirrored to and from the user's other devices. What it does not do is listed
+under "Still missing".
 
 ```bash
 cd ../core && cargo build --release --target wasm32-unknown-unknown
-cd ../webclient && npm ci && npm run check     # typecheck, 27 tests, build
+cd ../webclient && npm ci && npm run check     # typecheck, tests, build, smoke
 ```
 
 ## Layout
@@ -19,7 +23,12 @@ cd ../webclient && npm ci && npm run check     # typecheck, 27 tests, build
 | `src/core.ts` | the WASM binding — counterpart of `app/lib/core/core_ffi.dart` |
 | `src/device.ts` | this session's keys and certificate — counterpart of `device_keys.dart` |
 | `src/linking.ts` | the new device's half of the link flow — counterpart of `linking.dart` |
-| `src/hub.ts` | the hub over ordinary HTTPS: the only Stonechat service a browser can reach |
+| `src/hub.ts` | the hub over ordinary HTTPS: the link dead drop and the directory |
+| `src/transport.ts` | the owner-signed certificate schedule → WebTransport pins; refuses anything unsigned |
+| `src/mailbox.ts` | a relay's HTTP surface and owner socket over WebTransport streams |
+| `src/protocol.ts` | sessions, per-device fan-out, sending and receiving — the slim counterpart of `chat_state.dart` |
+| `src/store.ts` | what the browser keeps: device keys, grant, ratchets, peer certificates, capped history |
+| `src/ui.ts`, `src/app.ts` | the screens |
 | `src/theme.css` | the visual identity, lifted value-for-value from `app/lib/ui/theme.dart` |
 | `build.mjs` | bundle → hash → SRI-pinned index.html → **hash root** |
 
@@ -126,10 +135,13 @@ can use it:
 
 ## The slim client
 
-`src/protocol.ts` + `src/ui.ts`: a conversations list, a chat screen, and text
-messages in both directions. Nothing else — no groups, media, receipts, calls,
-edits or self-sync. About 400 lines against `chat_state.dart`'s 4,000, but the
-protocol parts are identical and have to stay identical: envelopes sealed to a
+`src/protocol.ts` + `src/ui.ts`: a conversations list and a chat screen.
+It handles `msg`, `media`, `group_msg`, `group_media`, `group_create` /
+`group_update` (rosters), and the self-sync types `sync_sent` and
+`sync_clear`. No receipts, typing, calls, edits, reactions, disappearing
+messages, contact requests or profiles. Far smaller than `chat_state.dart`,
+but the protocol parts are identical and have to stay identical: envelopes
+sealed to a
 device's certified key, the AEAD binding both device numbers in one form, a
 peer's certificate checked against the identity key their SC- ID commits to,
 prekeys signed by the device and published with its certificate.
@@ -163,9 +175,27 @@ makes it untestable, which makes it undeployable.
 
 ## Still missing
 
-**Message types.** Groups, media, receipts, typing, calls, edits, reactions,
-disappearing messages. Anything that is not `msg` is decrypted (to keep the
-ratchet current) and then dropped.
+**Message types.** Receipts, typing, calls, edits, reactions, disappearing
+messages, contact requests, profile updates, `sync_read` and `sync_block`.
+Anything it does not handle is decrypted (to keep the ratchet current),
+acked and dropped. It sends no receipts, so a message read only in the
+browser never shows as delivered or read to its sender. Groups can be sent
+to only once a roster has arrived (`group_create` / `group_update`); group
+attachments can be received but not sent.
+
+**Receive-side checks the app makes and this client does not yet.** It does
+not require envelope ids to be UUIDs or the inner id to equal the outer one,
+does not check the inner `to`, and resolves every sender through the
+directory once per session rather than from a key it already holds. It does
+not replace a session when a fresh handshake arrives over one that no longer
+decrypts, and has no tie-break for simultaneous handshakes. PROTOCOL.md is
+the contract; these are gaps against it.
+
+**Starting a session with a device other than device 1.** The bundle is
+requested as `/prekeys/bundle?device=N` without the bundle token, which the
+relay refuses. Device 1 — a peer's primary, or the user's own phone — is
+served without a token, so that works; a session with any other device
+exists only once that device has started it.
 
 **Retry.** A send that fails reports the error and puts the text back in the
 composer. There is no outbox and no backoff, so a message typed while the
@@ -176,9 +206,12 @@ relay is briefly unreachable is lost rather than queued — the app has
 passes through it (capped), but never fetches the phone's backlog —
 `sync_history` in MULTIDEVICE.md is designed and unbuilt on both sides.
 
-**Certificate renewal.** The 7-day certificate cannot be renewed from here by
+**Certificate renewal.** A certificate cannot be renewed from here by
 design, and nothing yet asks the phone to reissue one, so a browser session
-simply stops working after a week and must be re-linked.
+stops working when its certificate expires and must be re-linked. The
+intended lifetime for a browser is 7 days (`web` kind); the phone's link
+dialog does not offer that kind yet, so a browser linked today is certified
+as a `linked` device, for 180 days.
 
 **Contact names.** Conversations are labelled with a truncated SC- ID. Display
 names arrive in `contact_request`/`contact_accept`, which this client does not
@@ -194,8 +227,9 @@ browser smoke test".
 Resolved by building it. Device certificates landed across the core, relay and
 client, and all three roles the identity used to play (unsealing, prekey
 signing, PQXDH) now run on per-device keys. Linking hands over a certificate,
-not the root. A browser session is a `web`-kind device with a **7-day**
-certificate it cannot renew.
+not the root. A browser session is meant to be a `web`-kind device with a
+**7-day** certificate it cannot renew (see "Certificate renewal" for where
+that stands).
 
 Everything below is the reasoning as it stood before, kept because the
 argument is what made the cost worth paying. The last paragraph turned out to
@@ -246,16 +280,11 @@ security argument that justifies the whole project.
 
 ## Not started
 
-- **WebTransport endpoint on the relay** (`serverCertificateHashes`, option B
-  in WEB_CLIENT.md) — the largest remaining unknown, and relay work rather
-  than client work.
-- **Silent cert rotation** — WebTransport caps certificate validity at 14
-  days, which makes the batch pre-signing scheme load-bearing rather than
-  optional.
-- **Storage** — no SQLCipher in a browser. The tethered shape says no history
-  at all, which makes this smaller than it looks.
-- **CORS on the relay** (there is none) and moving `?token=` out of the query
-  string.
+- **A deploy target.** Nothing serves this client yet.
+- **A transparency log** of release hash roots, which is what makes the hash
+  root checkable by someone other than us.
+- **Moving `?token=` out of the query string.** A WebTransport request
+  carries no headers a client can set, so tokens ride in the framed `path`.
 
 ## The browser smoke test
 
