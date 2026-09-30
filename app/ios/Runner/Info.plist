@@ -10,12 +10,16 @@
 	<false/>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
-	<!-- Non-exempt: the app implements its own end-to-end encryption and a
-	     post-quantum KEM (core/, pqcore/), not just the OS's TLS. App Store
-	     Connect asks the export-compliance questions for each build until an
-	     ITSEncryptionExportComplianceCode is added here. -->
+	<!-- The app implements its own end-to-end encryption and a post-quantum
+	     KEM (core/, pqcore/), but only with standard algorithms. App Store
+	     Connect's App Encryption Documentation flow (2026-09-30: standard
+	     algorithms in addition to the OS's, not distributed in France)
+	     concluded no documentation is needed and to declare false here.
+	     Declaring true without an ITSEncryptionExportComplianceCode fails
+	     upload with error 90592. Revisit if France is added as a storefront
+	     or a non-standard algorithm is introduced. -->
 	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
+	<false/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
