@@ -247,10 +247,7 @@ id=$(docker create --platform linux/amd64 stonechat-relay-build) && \
 That covers mailboxes created *after* the release. Mailboxes already running
 are upgraded in place — `scripts/roll_relay.py` copies the binary over the
 entrypoint and restarts each container — because their data lives in the
-container itself and recreating one would reset a user's mailbox. A mailbox
-host installs only a binary signed by its operator's release key
-(`scripts/release_key.py`, mailbox_host/README.md), so the roll needs
-`--release-key`. See
+container itself and recreating one would reset a user's mailbox. See
 deploy/README.md "Upgrading the relay without destroying mailboxes".
 
 `/status` reports `build`: BLAKE2b-256 of the executable the process is

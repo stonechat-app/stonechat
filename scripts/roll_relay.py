@@ -33,15 +33,9 @@ used to be a separate "remember to restart the hub" footnote: the host stores th
 binary, wraps it in a `FROM scratch` image tagged by content, and launches every
 later guest from it.
 
-A host installs only a binary **signed by its operator's release key**
-(scripts/release_key.py) — the admin token alone does not ship code. Pass the
-key with ``--release-key``, or a signature made on another machine with
-``--signature``.
-
 Usage::
 
-    hub/.venv/bin/python scripts/roll_relay.py --binary relay/target/release/stonechat-relay \
-        --release-key ~/.stonechat/release.key
+    hub/.venv/bin/python scripts/roll_relay.py --binary relay/target/release/stonechat-relay
     hub/.venv/bin/python scripts/roll_relay.py --binary <path> --dry-run
     hub/.venv/bin/python scripts/roll_relay.py --binary <path> --host de1 --only SC-…
 
@@ -64,12 +58,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hub"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import release_key  # noqa: E402
 from app.providers.base import ProviderError  # noqa: E402
 from app.providers.mailbox_host import MailboxHost, _parse_hosts  # noqa: E402
 from app.providers.pinned import pinned_request  # noqa: E402
-
-RELEASE_SIG_HEADER = "X-Stonechat-Release-Sig"
 
 # Uploading a few MB and then rolling every mailbox on the host, one at a time,
 # each with its own health wait. Generous: the failure this must not produce is a
@@ -87,8 +78,7 @@ def build_id(path: Path) -> str:
 
 
 def call(host: MailboxHost, method: str, path: str, *, timeout: float,
-         json_body: dict | None = None, content: bytes | None = None,
-         signature: str | None = None) -> dict:
+         json_body: dict | None = None, content: bytes | None = None) -> dict:
     """One authenticated request to a mailbox host, on a pinned connection.
 
     The pin is the whole trust anchor — these hosts self-sign — and it is
@@ -98,8 +88,6 @@ def call(host: MailboxHost, method: str, path: str, *, timeout: float,
     headers = {"Authorization": f"Bearer {host.admin_token}"}
     if content is not None:
         headers["Content-Type"] = "application/octet-stream"
-    if signature is not None:
-        headers[RELEASE_SIG_HEADER] = signature
     try:
         resp = pinned_request(host.url, host.tls_fp, method, path, headers=headers,
                               json_body=json_body, content=content, timeout=timeout)
@@ -124,8 +112,7 @@ def show(result: dict) -> None:
             print(f"{label} rolled back to {result['rolled_back_to']}")
 
 
-def roll_host(host: MailboxHost, binary: Path, want: str, args,
-              signature: str | None) -> bool:
+def roll_host(host: MailboxHost, binary: Path, want: str, args) -> bool:
     """Returns True when this host ended up wholly on `want`."""
     if args.dry_run:
         state = call(host, "GET", "/v1/relay", timeout=UPLOAD_TIMEOUT)
@@ -142,7 +129,7 @@ def roll_host(host: MailboxHost, binary: Path, want: str, args,
         return True
 
     installed = call(host, "POST", "/v1/relay", timeout=UPLOAD_TIMEOUT,
-                     content=binary.read_bytes(), signature=signature)
+                     content=binary.read_bytes())
     if installed.get("build") != want:
         # The host hashed the bytes it received; a mismatch means they are not
         # the bytes we sent, and rolling that would ship an unknown binary.
@@ -170,12 +157,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--binary", required=True, type=Path,
                     help="the new relay binary (musl static)")
-    ap.add_argument("--release-key", type=Path,
-                    help="the release key to sign the binary with "
-                         "(scripts/release_key.py generate)")
-    ap.add_argument("--signature", type=Path,
-                    help="a signature made elsewhere (scripts/release_key.py "
-                         "sign), instead of --release-key")
     ap.add_argument("--host", help="roll just this mailbox host (pool name)")
     ap.add_argument("--only", help="roll just this mailbox (Stonechat ID)")
     ap.add_argument("--dry-run", action="store_true",
@@ -192,25 +173,7 @@ def main() -> int:
         return 2
 
     want = build_id(args.binary)
-    print(f"new build: {want}  ({args.binary}, {args.binary.stat().st_size:,} bytes)")
-
-    # A host refuses a binary its operator's release key has not signed, so an
-    # unsigned roll fails on the first host. Saying so here, before anything is
-    # uploaded, is kinder than a 403 from the far end.
-    signature = None
-    if args.release_key and args.signature:
-        print("--release-key and --signature are alternatives", file=sys.stderr)
-        return 2
-    if args.release_key:
-        key = release_key.load_key(args.release_key)
-        signature = release_key.sign(key, args.binary.read_bytes())
-        print(f"signed by: {release_key.public_b64(key)}")
-    elif args.signature:
-        signature = args.signature.read_text().strip()
-    elif not args.dry_run:
-        print("unsigned: hosts will refuse this unless they run with "
-              "STONECHAT_RELAY_RELEASE_KEYS=insecure", file=sys.stderr)
-    print()
+    print(f"new build: {want}  ({args.binary}, {args.binary.stat().st_size:,} bytes)\n")
 
     try:
         hosts = _parse_hosts()
@@ -227,7 +190,7 @@ def main() -> int:
 
     for host in hosts:
         try:
-            if not roll_host(host, args.binary, want, args, signature):
+            if not roll_host(host, args.binary, want, args):
                 return 1
         except ProviderError as e:
             # Stop at the first host that misbehaves rather than marching on: the

@@ -199,12 +199,6 @@ def assert_pinned(phone: "Phone") -> None:
 # -- session crypto (PROTOCOL.md) ----------------------------------------------
 
 import pqcore  # noqa: E402  (scripts/pqcore.py — ctypes over the Rust core)
-import release_key  # noqa: E402  (scripts/release_key.py — relay release signing)
-
-# A release key for this run only. The mailbox host under test is told its
-# public half, so the roll below exercises the signature check for real rather
-# than switching it off.
-RELEASE_KEY = SigningKey.generate()
 
 X3DH_KDF_KEY = b"stonechat-v1-pqxdh-kdf"
 SPK_SIG_CONTEXT = b"stonechat-v1-spk"
@@ -428,7 +422,6 @@ class MailboxHostUnderTest:
             # customers run), so name the image the local provider already built
             # from this checkout.
             "STONECHAT_MAILBOX_HOST_IMAGE": image_tag(),
-            "STONECHAT_RELAY_RELEASE_KEYS": release_key.public_b64(RELEASE_KEY),
         }
         cls.proc = subprocess.Popen(
             [sys.executable, str(MAILBOX_HOST_MAIN)], env=env,
@@ -449,11 +442,11 @@ class MailboxHostUnderTest:
         raise SystemExit(f"mailbox host never answered on {MAILBOX_HOST_URL}")
 
     @classmethod
-    def admin(cls, method: str, path: str, release_sig: str | None = None, **kw):
-        headers = {"Authorization": f"Bearer {MAILBOX_HOST_TOKEN}"}
-        if release_sig is not None:
-            headers["X-Stonechat-Release-Sig"] = release_sig
-        return MX.request(method, f"{MAILBOX_HOST_URL}{path}", headers=headers, **kw)
+    def admin(cls, method: str, path: str, **kw):
+        return MX.request(
+            method, f"{MAILBOX_HOST_URL}{path}",
+            headers={"Authorization": f"Bearer {MAILBOX_HOST_TOKEN}"}, **kw,
+        )
 
     @classmethod
     def stop(cls) -> None:
@@ -1217,18 +1210,7 @@ def main():
                        capture_output=True, check=True)
         payload = pathlib.Path(local).read_bytes()
     want_build = hashlib.blake2b(payload, digest_size=32).hexdigest()[:16]
-    # The admin token places mailboxes; it does not ship code. Unsigned, or
-    # signed by a key this host was not told about, the upload is refused.
     r = MailboxHostUnderTest.admin("POST", "/v1/relay", content=payload, timeout=180)
-    assert r.status_code == 403, f"an unsigned relay must be refused: {r.status_code}"
-    r = MailboxHostUnderTest.admin(
-        "POST", "/v1/relay", content=payload, timeout=180,
-        release_sig=release_key.sign(SigningKey.generate(), payload))
-    assert r.status_code == 403, f"a stranger's signature must be refused: {r.status_code}"
-    assert MailboxHostUnderTest.admin("GET", "/v1/relay").json()["installed_build"] is None
-    r = MailboxHostUnderTest.admin(
-        "POST", "/v1/relay", content=payload, timeout=180,
-        release_sig=release_key.sign(RELEASE_KEY, payload))
     r.raise_for_status()
     assert r.json()["build"] == want_build, r.json()
     state = MailboxHostUnderTest.admin("GET", "/v1/relay").json()

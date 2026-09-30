@@ -68,7 +68,6 @@ Domain-separation strings, all ASCII, no terminator:
 | `stonechat-v1-recover` | account-token recovery at the hub (identity key) |
 | `stonechat-v1-delete` | account deletion at the hub (identity key) |
 | `stonechat-v1-report` | abuse report (identity key) |
-| `stonechat-v1-relay-release` | relay binary release signature (release key) |
 | `stonechat-link-offer` | prefix of the link-offer commitment hash |
 | `stonechat-device-token\|` | prefix of the relay's stored device-token hash |
 | `\|stonechat-bundle\|` | derivation of the bundle token |
@@ -1676,31 +1675,25 @@ mailboxes on that host. Its holder can:
   mailboxes onto the release the host is already pinned to;
 - in invite mode, mint and list invites.
 
-What it cannot do is **run code**: installing a relay binary needs a release
-signature made with a key the token's holder — the hub included — does not
-have (below). And no route returns an existing mailbox's owner token; the
-host process reads it from the container's own configuration to query the
-relay, and keeps it to itself.
+It can also install a relay binary (`POST /v1/relay`), which the host
+then runs in every mailbox it rolls. Nothing on the wire yet lets the host
+tell an operator's release from anyone else's: whoever holds the token can
+ship code to that box. Release signing is a known open gap ("Threat notes").
+No route returns an existing mailbox's owner token; the host process reads it
+from the container's own configuration to query the relay, and keeps it to
+itself.
 
 For mailboxes the hub *provisions*, the hub is the party that chose the
 owner token and it stores that token; "Threat notes" says what a hub can do
 with it. An invite host-owner's admin token never touches the hub.
 
 **Relay releases.** `POST /v1/relay` takes the relay binary as a raw body
-and requires the header
-
-```
-X-Stonechat-Release-Sig: base64( Ed25519 signature over
-    "stonechat-v1-relay-release" || BLAKE2b-256(binary) )
-```
-
-verified against the public keys in `STONECHAT_RELAY_RELEASE_KEYS` (base64,
-comma-separated; more than one is for rotation). With the variable unset the
-host accepts **no** uploads; the literal `insecure` disables the check and
-is for laptop development. The signature is stored beside the binary and
-checked again, together with the binary's hash, immediately before every
-roll. A host pinned to a container image instead takes the binary out of
-that image, and needs no upload.
+(≤ 64 MiB, must be an ELF). The host stores it under its build id, hashes it
+again immediately before every roll and refuses to roll a file that no longer
+matches, and launches new mailboxes from it. The upload carries no signature:
+the admin token alone authorises it (see "What the admin token is worth"). A
+host pinned to a container image instead takes the binary out of that image,
+and needs no upload.
 
 Upgrading a relay is a binary swap inside the running container, never a
 container recreate: a mailbox's data lives in the container's writable layer
@@ -1729,7 +1722,7 @@ Invites are single-use by default (`uses` 1–100) and expire (`ttl_hours`
 | GET  | `/v1/guests` | admin | `{guests: [{owner_id, container_id, port, created_at}], count, capacity, managed}` — occupancy, which is how a hub picks the emptiest host in a country |
 | DELETE | `/v1/guest/{owner_id}` | admin | evict — destroy that guest's container. Idempotent: an unknown guest is `{"status": "gone"}` |
 | GET  | `/v1/relay` | admin | `{installed_build, image, managed, guests: [{owner_id, build}]}` — each `build` read from that relay's own `/status` |
-| POST | `/v1/relay` | admin **and** release signature | the relay binary (≤ 64 MiB) → `{build, bytes, image}`. 403 unsigned, wrongly signed, or no keys configured; 400 not an ELF |
+| POST | `/v1/relay` | admin | the relay binary (≤ 64 MiB) → `{build, bytes, image}`. 400 not an ELF; 413 too large |
 | POST | `/v1/relay/roll` | admin | `{only?, dry_run?, force?}` → `{build, rolled: [...], stopped}` — swap the pinned binary into running mailboxes, one at a time, verifying each reports the new build and rolling that one back if it does not; stops at the first failure |
 
 After redeeming, the guest connects the returned mailbox exactly like a
@@ -2099,6 +2092,11 @@ Accepted for now, not fixed.
    compromised one: the remedy for a stolen identity key is a new identity
    and telling one's contacts.
 8. **Media files are stored unencrypted on the device** (above).
+9. **Relay releases are unsigned.** A mailbox host installs whatever binary
+   its admin token's holder uploads, and the hub holds that token for every
+   host it manages. A compromised hub, or a stolen token, can ship code to
+   every mailbox on those hosts. The published image and release binary are
+   likewise protected only by where they are downloaded from.
 
 ---
 

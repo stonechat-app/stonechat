@@ -54,12 +54,6 @@ Config (env):
     STONECHAT_PUSH_GATEWAY                 passed through to guest mailboxes (optional)
     STONECHAT_PUSH_MINT_SECRET             mints a per-mailbox push key when the
                                            caller supplies none (optional)
-    STONECHAT_RELAY_RELEASE_KEYS           Ed25519 public keys (base64, comma-
-                                           separated) a relay binary uploaded to
-                                           POST /v1/relay must be signed by. Unset,
-                                           uploads are refused; `insecure` accepts
-                                           unsigned ones (laptop dev). See "Relay
-                                           releases" below.
 """
 
 import asyncio
@@ -115,42 +109,11 @@ IMAGE = os.environ.get("STONECHAT_MAILBOX_HOST_IMAGE", DEFAULT_IMAGE)
 RUNTIME = os.environ.get("STONECHAT_MAILBOX_HOST_RUNTIME", "")
 PUSH_GATEWAY = os.environ.get("STONECHAT_PUSH_GATEWAY", "")
 PUSH_MINT_SECRET = os.environ.get("STONECHAT_PUSH_MINT_SECRET", "")
-INSECURE = "insecure"
-# What is signed is a digest of the binary under a context of its own, so a
-# signature made for this can never be replayed as one made for anything else.
-RELEASE_SIG_CONTEXT = b"stonechat-v1-relay-release"
-RELEASE_SIG_HEADER = "X-Stonechat-Release-Sig"
 # A relay is a few megabytes. The cap is what stops an upload from being read
 # into memory without limit; it is not a statement about how big one may get.
 MAX_RELAY_BYTES = 64 * 1024 * 1024
 
 
-def _parse_release_keys(raw: str) -> list[bytes] | None:
-    """Public keys a release may be signed by; [] when none are configured (so
-    uploads are refused), None for the literal `insecure` (so they are not
-    checked). More than one key is for rotation: add the new one, release with
-    it, then drop the old."""
-    raw = raw.strip()
-    if raw == INSECURE:
-        return None
-    keys = []
-    for part in raw.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        try:
-            key = base64.b64decode(part, validate=True)
-        except Exception:
-            key = b""
-        if len(key) != 32:
-            raise SystemExit(
-                "STONECHAT_RELAY_RELEASE_KEYS: every entry must be a base64 "
-                f"Ed25519 public key (32 bytes); {part[:12]!r}… is not")
-        keys.append(key)
-    return keys
-
-
-RELEASE_KEYS = _parse_release_keys(os.environ.get("STONECHAT_RELAY_RELEASE_KEYS", ""))
 SERVER_PORT = 8080
 # The browser transport (QUIC, so UDP — relay/src/wt.rs). Published on the SAME
 # host port number as the mailbox's TCP port: one number per guest, so the
@@ -404,51 +367,6 @@ def _mint_push_key() -> str:
     return f"{key_id}:{tag}"
 
 
-def _release_message(data: bytes) -> bytes:
-    return RELEASE_SIG_CONTEXT + hashlib.blake2b(data, digest_size=32).digest()
-
-
-def _verify_release(data: bytes, signature_b64: str | None) -> None:
-    """Refuse a relay binary the operator's release key has not signed.
-
-    The admin token authorises *placing mailboxes*. Without this it also
-    authorised running any code in every one of them, because the only check
-    on an upload was a hash the uploader computed and the uploaded binary then
-    reported about itself. A signature is made by a key the hub never holds, so
-    a stolen admin token — or a stolen hub — can no longer ship a relay.
-    """
-    if RELEASE_KEYS is None:
-        return  # `insecure`: laptop dev, and it says so in the config
-    if not RELEASE_KEYS:
-        raise HTTPException(
-            403, "this host accepts no relay uploads: STONECHAT_RELAY_RELEASE_KEYS "
-                 "is not set")
-    try:
-        signature = base64.b64decode(signature_b64 or "", validate=True)
-    except Exception:
-        signature = b""
-    if len(signature) != 64:
-        raise HTTPException(
-            403, f"relay binary is not signed (send {RELEASE_SIG_HEADER}: the "
-                 "base64 Ed25519 signature from scripts/release_key.py)")
-    try:
-        from nacl.exceptions import BadSignatureError
-        from nacl.signing import VerifyKey
-    except ImportError:
-        raise HTTPException(
-            500, "cannot verify release signatures: PyNaCl is not installed on "
-                 "this host")
-    message = _release_message(data)
-    for key in RELEASE_KEYS:
-        try:
-            VerifyKey(key).verify(message, signature)
-            return
-        except BadSignatureError:
-            continue
-    raise HTTPException(
-        403, "relay binary is not signed by a release key this host trusts")
-
-
 def _installed_relay() -> tuple[str, str] | None:
     """(build id, binary path) of the relay uploaded through POST /v1/relay, or
     None. The file is checked, not just the row: a state directory restored
@@ -505,18 +423,15 @@ def _roll_source() -> tuple[str, str]:
 
 
 def _recheck_installed(build: str, path: str) -> None:
-    """The uploaded binary, checked again at the moment it is about to be
+    """The uploaded binary, hashed again at the moment it is about to be
     copied into mailboxes — not trusted because its file name says what it is.
-    The upload was verified once; this is what notices a file changed on disk
-    since, before it runs anywhere rather than after the first mailbox reports
-    an unexpected build."""
-    data = Path(path).read_bytes()
-    if _build_id(data) != build:
+    This is what notices a file changed on disk since the upload, before it
+    runs anywhere rather than after the first mailbox reports an unexpected
+    build."""
+    if _build_id(Path(path).read_bytes()) != build:
         raise HTTPException(
             409, f"the installed relay no longer hashes to {build}; upload it "
                  "again")
-    sig = Path(path + ".sig")
-    _verify_release(data, sig.read_text().strip() if sig.is_file() else None)
 
 
 def _build_relay_image(binary: Path, build: str) -> str:
@@ -1051,8 +966,6 @@ async def install_relay(request: Request):
     data = bytes(data)
     if not data:
         raise HTTPException(400, "empty body; POST the relay binary itself")
-    signature_b64 = request.headers.get(RELEASE_SIG_HEADER)
-    _verify_release(data, signature_b64)
     # A static musl ELF, because the image is FROM scratch — no loader, no libc.
     # Checked here rather than at launch: a wrong artifact caught on upload is a
     # 400, and caught on launch is a mailbox that cannot exec.
@@ -1067,12 +980,6 @@ async def install_relay(request: Request):
     tmp.write_bytes(data)
     tmp.chmod(0o755)
     tmp.replace(path)
-    # Kept beside the binary so a roll can check it again (_recheck_installed).
-    sig_path = Path(str(path) + ".sig")
-    if signature_b64:
-        sig_path.write_text(signature_b64.strip())
-    else:
-        sig_path.unlink(missing_ok=True)
     await asyncio.to_thread(_build_relay_image, path, build)
     store.set_setting("relay_build", build)
     return {"build": build, "bytes": len(data), "image": f"stonechat-relay:{build}"}

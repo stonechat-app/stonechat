@@ -12,9 +12,9 @@ bare daemon on each host. Same containers in the end, but the authority is
 different, and that was the point: the hub held a key into the `docker` group
 on every mailbox host, which is root there in all but name, so a compromised
 hub owned the whole fleet. Now it holds a bearer token for an API, not a shell.
-That API can also install a relay release, but only one signed by the
-operator's release key (mailbox_host/main.py "Relay releases"), which the hub
-does not hold — so the token is still not "run this container".
+That API can still install the relay binary every mailbox on the host runs
+(``POST /v1/relay``), so the token is worth more than "place a mailbox";
+signing releases so that it is not is planned.
 
 Host pool config (env, REQUIRED)::
 

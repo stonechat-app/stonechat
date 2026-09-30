@@ -38,7 +38,6 @@ import gzip
 import hashlib
 import os
 import random
-import re
 from pathlib import Path
 
 from ..pushkey import mint_push_key
@@ -207,7 +206,7 @@ systemctl enable --now docker
 docker build -t stonechat-relay:dev /opt/stonechat/relay
 
 python3 -m venv /opt/stonechat/venv
-/opt/stonechat/venv/bin/pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.32" "httpx>=0.27" "pynacl>=1.5"
+/opt/stonechat/venv/bin/pip install --no-cache-dir "fastapi>=0.115" "uvicorn[standard]>=0.32" "httpx>=0.27"
 
 cat > /etc/systemd/system/stonechat-mailbox-host.service <<UNIT_EOF
 [Unit]
@@ -223,7 +222,6 @@ Environment=STONECHAT_MAILBOX_HOST_DB=/var/lib/stonechat/mailbox_host.db
 Environment=STONECHAT_MAILBOX_HOST_TLS_DIR=/var/lib/stonechat
 Environment=STONECHAT_MAILBOX_HOST_IMAGE=stonechat-relay:dev
 Environment=STONECHAT_PUSH_GATEWAY={push_gateway}
-Environment=STONECHAT_RELAY_RELEASE_KEYS={release_keys}
 ExecStart=/opt/stonechat/venv/bin/python /opt/stonechat/mailbox_host.py
 Restart=always
 RestartSec=2
@@ -368,19 +366,6 @@ def _gz_b64(data: bytes) -> str:
     return _b64_wrap(gzip.compress(data, mtime=0))
 
 
-def _release_keys() -> str:
-    """The PUBLIC release keys a dedicated VM's mailbox host will accept a relay
-    from (STONECHAT_RELAY_RELEASE_KEYS, passed through). Empty means that host
-    refuses uploads, which is the safe reading of "nobody said". Validated here
-    because it is written into a systemd unit inside a shell heredoc."""
-    raw = os.environ.get("STONECHAT_RELAY_RELEASE_KEYS", "").strip()
-    if raw and not re.fullmatch(r"[A-Za-z0-9+/=,]+", raw):
-        raise ProviderError(
-            "STONECHAT_RELAY_RELEASE_KEYS must be base64 public keys separated "
-            "by commas")
-    return raw
-
-
 def build_startup_script(
     owner_id: str, owner_token: str, mailbox_host_token: str | None = None
 ) -> str:
@@ -393,7 +378,6 @@ def build_startup_script(
             mailbox_host_token=mailbox_host_token,
             mailbox_host_port=MAILBOX_HOST_PORT,
             push_gateway=push_gateway,
-            release_keys=_release_keys(),
         )
     # Hub-served downloads authenticate with the mailbox_token this script
     # already carries (egress gate — main.py relay_binary). An external
