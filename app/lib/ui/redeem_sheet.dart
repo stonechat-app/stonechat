@@ -1,5 +1,5 @@
-/// Bottom sheet for redeeming a STONECHAT-XXXX-XXXX activation code — the moment
-/// a landing-page purchase (or a comp grant) gets bound to this Stonechat ID.
+/// Bottom sheet for redeeming a STONECHAT-XXXX-XXXX invite code — the moment
+/// the gate's grant gets bound to this Stonechat ID.
 library;
 
 import 'package:flutter/material.dart';
@@ -56,7 +56,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
       if (!mounted) return;
       Navigator.pop(context, true);
       final plan = result.plan == 'machine' ? 'Machine' : 'Mailbox';
-      showZnSnack(context, '$plan plan activated');
+      showZnSnack(context, '$plan access unlocked');
     } on ApiException catch (e) {
       setState(() {
         _busy = false;
@@ -83,12 +83,11 @@ class _RedeemSheetState extends State<_RedeemSheet> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('REDEEM ACTIVATION CODE',
+          Text('ENTER INVITE CODE',
               style: Zn.mono(size: 10, letterSpacing: 2)),
           const SizedBox(height: 12),
           const Text(
-            'Bought a plan on stonechat.app? Enter the code from the '
-            'success page or your receipt.',
+            'Got an invite code? Enter it to unlock a managed mailbox.',
             style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.4),
           ),
           const SizedBox(height: 16),
@@ -120,7 +119,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('Activate'),
+                  : const Text('Unlock'),
             ),
           ),
         ],

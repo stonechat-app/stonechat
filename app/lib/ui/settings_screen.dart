@@ -82,16 +82,6 @@ class SettingsScreen extends StatelessWidget {
                 style: TextStyle(color: Zn.muted, fontSize: 12)),
           ),
           ListTile(
-            title: const Text('Message history'),
-            subtitle: const Text(
-                'Stored only on this phone, in an encrypted database. '
-                'There is no cloud copy — losing the phone loses the history '
-                'unless you export a backup.',
-                style: TextStyle(color: Zn.muted, fontSize: 12)),
-            leading: const Icon(Icons.enhanced_encryption_outlined,
-                color: Zn.muted, size: 20),
-          ),
-          ListTile(
             title: const Text('Chat backup'),
             subtitle: const Text(
                 'Export an encrypted file of your text messages, '
@@ -122,7 +112,7 @@ class SettingsScreen extends StatelessWidget {
             leading: const Icon(Icons.qr_code_2, color: Zn.muted, size: 20),
             onTap: () => Navigator.pushNamed(context, '/identity-export'),
           ),
-          const _SubscriptionSection(),
+          const _AccessSection(),
           const _SectionLabel('Account'),
           // The primary deletes the account itself; a linked device holds no
           // identity key, so all it can do is forget itself locally.
@@ -133,8 +123,8 @@ class SettingsScreen extends StatelessWidget {
               title: const Text('Delete account',
                   style: TextStyle(color: Zn.danger)),
               subtitle: const Text(
-                  'Permanently delete your Stonechat ID, your mailbox and any '
-                  'subscription, and erase everything on this phone.',
+                  'Permanently delete your Stonechat ID and your mailbox, and '
+                  'erase everything on this phone.',
                   style: TextStyle(color: Zn.muted, fontSize: 12)),
               onTap: () => _deleteAccount(context, app),
             )
@@ -182,9 +172,8 @@ class SettingsScreen extends StatelessWidget {
         title: const Text('Delete your account?'),
         content: const Text(
             'Your Stonechat ID is removed from the directory, your mailbox is '
-            'destroyed along with any messages waiting in it, and a paid '
-            'subscription is cancelled. Everything on this phone is erased, '
-            'including your message history.\n\n'
+            'destroyed along with any messages waiting in it. Everything on '
+            'this phone is erased, including your message history.\n\n'
             'Contacts keep only what they already received. This cannot be '
             'undone.'),
         actions: [
@@ -337,14 +326,14 @@ class _BusyDialog extends StatelessWidget {
 /// Current plan (fetched from the hub) + the redeem entry point. Absent on
 /// an open hub — one without a gate has no plans, so there is nothing to show
 /// and nothing to redeem (PROTOCOL.md "Gate").
-class _SubscriptionSection extends StatefulWidget {
-  const _SubscriptionSection();
+class _AccessSection extends StatefulWidget {
+  const _AccessSection();
 
   @override
-  State<_SubscriptionSection> createState() => _SubscriptionSectionState();
+  State<_AccessSection> createState() => _AccessSectionState();
 }
 
-class _SubscriptionSectionState extends State<_SubscriptionSection> {
+class _AccessSectionState extends State<_AccessSection> {
   late Future<HubAccess> _entitlement;
 
   @override
@@ -366,14 +355,15 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
       builder: (context, snap) {
         if (snap.data?.gated == false) return const SizedBox.shrink();
         return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const _SectionLabel('Subscription'),
+            const _SectionLabel('Access'),
             _planTile(snap),
             ListTile(
               leading: const Icon(Icons.confirmation_number_outlined,
                   color: Zn.orange, size: 20),
-              title: const Text('Redeem activation code'),
-              subtitle: const Text('From a purchase on stonechat.app',
+              title: const Text('Enter invite code'),
+              subtitle: const Text('If you were given one',
                   style: TextStyle(color: Zn.muted, fontSize: 12)),
               onTap: () async {
                 final activated = await showRedeemSheet(context);
@@ -391,7 +381,7 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
       AsyncSnapshot(connectionState: ConnectionState.waiting) => (
           '···',
           Zn.muted,
-          'Checking your plan',
+          'Checking your access',
         ),
       AsyncSnapshot(hasError: true) => (
           'Unavailable',
@@ -404,9 +394,9 @@ class _SubscriptionSectionState extends State<_SubscriptionSection> {
           e.notice ?? 'Active',
         ),
       _ => (
-          'No plan',
+          'Not invited yet',
           Zn.muted,
-          'Plans unlock a managed mailbox — see stonechat.app/pricing',
+          'An invite code unlocks a managed mailbox',
         ),
     };
     return ListTile(
