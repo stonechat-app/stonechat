@@ -40,8 +40,16 @@ class MailboxState extends ChangeNotifier {
   bool socketConnected = false;
   bool busy = false;
 
+  /// The last [refresh] got no answer from the hub (down, or we're offline).
+  bool hubUnreachable = false;
+
+  /// The hub has answered at least once since launch. Until then [record] is
+  /// a placeholder — 'none' means "don't know yet", not "no mailbox".
+  bool recordKnown = false;
+
   MailboxSocket? _socket;
   Timer? _pollTimer;
+  Timer? _hubRetryTimer;
   Timer? _unreachableTimer;
   DateTime? _downSince; // socket down continuously since — null when up
   String? _vouchedTlsFp; // fingerprint we already signed + published
@@ -52,6 +60,9 @@ class MailboxState extends ChangeNotifier {
   /// How long the socket must stay down before we stop calling it a blip.
   /// The socket's own backoff caps at 30s, so by now we've failed ~5 attempts.
   static const _unreachableAfter = Duration(seconds: 30);
+
+  /// How soon to ask the hub again after it didn't answer.
+  static const _hubRetryAfter = Duration(seconds: 15);
 
   /// How long a confirmed outage must last before we interrupt the user. A
   /// rebooting VM or a provider migration is back inside a few minutes;
@@ -178,8 +189,18 @@ class MailboxState extends ChangeNotifier {
     try {
       record = await app.api.getMailbox();
     } on Exception {
-      return; // hub unreachable — keep last known state
+      // Hub unreachable — keep last known state, say so, and try again
+      // shortly so the app recovers on its own once the hub is back.
+      hubUnreachable = true;
+      _hubRetryTimer?.cancel();
+      _hubRetryTimer = Timer(_hubRetryAfter, refresh);
+      notifyListeners();
+      return;
     }
+    hubUnreachable = false;
+    recordKnown = true;
+    _hubRetryTimer?.cancel();
+    _hubRetryTimer = null;
 
     if (wasProvisioning && (isRunning || record.status == 'error')) {
       onProvisioningDone?.call(isRunning);
@@ -416,6 +437,8 @@ class MailboxState extends ChangeNotifier {
   /// app keeps its TCP connection open but never reads it — the relay's
   /// live delivery "succeeds" and nothing wakes the phone.
   void onBackground() {
+    _hubRetryTimer?.cancel(); // resume calls refresh() anyway
+    _hubRetryTimer = null;
     _dropSocket();
     notifyListeners();
   }
@@ -497,6 +520,7 @@ class MailboxState extends ChangeNotifier {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _hubRetryTimer?.cancel();
     _unreachableTimer?.cancel();
     _dropSocket();
     super.dispose();

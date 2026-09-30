@@ -23,7 +23,7 @@ import 'app_state.dart';
 
 const _uuid = Uuid();
 
-// -- send-retry policy (TODO.md §11 "Message reliability") --------------------
+// -- send-retry policy --------------------------------------------------------
 // Top-level and pure so the policy can be pinned by tests without standing up
 // a ChatState: these three numbers are the difference between "still trying"
 // and "gave up", and they are a product decision, not an implementation
@@ -66,10 +66,10 @@ String? sendAgeLabel(int ms) {
 ///
 /// A group message is N independent HTTPS posts to N different mailboxes,
 /// and they were serial: a 25-member group costs 25 round trips end to end.
-/// Multi-device multiplies that by the recipient's device count
-/// (MULTIDEVICE.md), which is why this had to stop being a loop before
-/// per-device fan-out lands. Bounded rather than unbounded so a large group
-/// can't open dozens of sockets at once on a phone radio.
+/// Multi-device multiplies that by the recipient's device count, which is
+/// why this had to stop being a loop before per-device fan-out lands.
+/// Bounded rather than unbounded so a large group can't open dozens of
+/// sockets at once on a phone radio.
 const fanOutConcurrency = 6;
 
 /// Serializes async work per key: two operations sharing a key never overlap,
@@ -137,6 +137,23 @@ class ChatState extends ChangeNotifier {
   void Function(String title, String body)? onNotice;
 
   List<Contact> contacts = [];
+
+  /// "Notes to self": the one conversation with nobody on the other end.
+  ///
+  /// It is keyed by our own Stonechat ID, so its messages sit in the ordinary
+  /// messages table and reach our other devices over self-sync unchanged — a
+  /// sync_sent naming our own ID as the peer lands here. It is deliberately
+  /// neither in [contacts] nor a contacts row: everything that walks contacts
+  /// sends to them, and [contactById] answering null for our own ID is what
+  /// keeps every network path (receipts, typing, edits, retries) from ever
+  /// addressing it. Its few settings live in kv. Null until [load].
+  Contact? notesToSelf;
+
+  static const notesToSelfName = 'Notes to self';
+  static const _notesToSelfKey = 'notes_to_self';
+
+  bool isNotesToSelf(String conversationId) =>
+      conversationId == app.stonechatId;
 
   /// Who this user has blocked, by Stonechat ID → ms epoch. Contacts, group
   /// members and strangers alike; local-only (mirrored to our own devices by
@@ -299,7 +316,11 @@ class ChatState extends ChangeNotifier {
 
   Future<void> togglePinContact(Contact c) async {
     c.pinnedAt = c.isPinned ? null : DateTime.now().millisecondsSinceEpoch;
-    await app.db.setContactPinned(c.stonechatId, c.pinnedAt);
+    if (identical(c, notesToSelf)) {
+      await _saveNotesToSelf();
+    } else {
+      await app.db.setContactPinned(c.stonechatId, c.pinnedAt);
+    }
     notifyListeners();
   }
 
@@ -367,9 +388,13 @@ class ChatState extends ChangeNotifier {
     final now = DateTime.now().millisecondsSinceEpoch;
     final group = groupById(conversationId);
     final contact = group == null ? contactById(conversationId) : null;
+    final notes = notesToSelf;
     if (group != null) {
       group.archivedAt = group.isArchived ? null : now;
       await app.db.upsertGroup(group);
+    } else if (notes != null && isNotesToSelf(conversationId)) {
+      notes.archivedAt = notes.isArchived ? null : now;
+      await _saveNotesToSelf();
     } else if (contact != null) {
       contact.archivedAt = contact.isArchived ? null : now;
       await app.db.upsertContact(contact);
@@ -397,6 +422,7 @@ class ChatState extends ChangeNotifier {
       groupMembers[g.id] = await app.db.membersOf(g.id);
       lastMessage[g.id] = await app.db.lastMessageFor(g.id);
     }
+    await _loadNotesToSelf();
     // Partial-delivery counts before the first frame: a group message stuck
     // owing two members should say so on a cold start, not only after the
     // first retry sweep runs.
@@ -427,6 +453,11 @@ class ChatState extends ChangeNotifier {
     for (final g in groups) {
       lastMessage[g.id] = await app.db.lastMessageFor(g.id);
     }
+    final notes = notesToSelf;
+    if (notes != null) {
+      lastMessage[notes.stonechatId] =
+          await app.db.lastMessageFor(notes.stonechatId);
+    }
     notifyListeners();
   }
 
@@ -449,6 +480,7 @@ class ChatState extends ChangeNotifier {
   /// identity — and re-registers when the next identity gets a mailbox.
   void reset() {
     contacts = [];
+    notesToSelf = null;
     blocked.clear();
     groups = [];
     groupMembers.clear();
@@ -467,6 +499,89 @@ class ChatState extends ChangeNotifier {
     _expirySweep?.cancel();
     _expirySweep = null;
     _registeredPushToken = null;
+    notifyListeners();
+  }
+
+  // -- notes to self -------------------------------------------------------------
+
+  static const _welcomeNote =
+      'Welcome to Stonechat 👋\n\n'
+      'This is your Notes to self: a private place for notes, links, photos '
+      'and files. Nobody else can read it, and what you add here also shows '
+      'up on any devices you link.';
+
+  /// Build the self conversation for the current identity, and seed it with
+  /// the welcome note the first time this device ever sees it. The note is
+  /// written once per device and never again — deleting it, or clearing the
+  /// chat, is the user's answer, not something to undo on the next launch.
+  Future<void> _loadNotesToSelf() async {
+    final id = app.stonechatId;
+    if (id == null) {
+      notesToSelf = null;
+      return;
+    }
+    final raw = await app.db.kvGet(_notesToSelfKey);
+    final saved = raw == null
+        ? const <String, dynamic>{}
+        : (jsonDecode(utf8.decode(raw)) as Map).cast<String, dynamic>();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    notesToSelf = Contact(
+      stonechatId: id,
+      displayName: notesToSelfName,
+      pubkeyB64: '', // never resolved, never sealed to
+      status: ContactStatus.accepted,
+      createdAt: saved['created_at'] as int? ?? now,
+      pinnedAt: saved['pinned_at'] as int?,
+      archivedAt: saved['archived_at'] as int?,
+    );
+    if (saved['welcomed'] != true) {
+      // Incoming and already read: it is ours to show, not a message owed a
+      // receipt, and it must not light up the conversation as unread.
+      await app.db.insertMessage(Message(
+        id: _uuid.v4(),
+        contactId: id,
+        outgoing: false,
+        text: _welcomeNote,
+        sentAt: now,
+        status: MessageStatus.read,
+      ));
+      await _saveNotesToSelf();
+    }
+    lastMessage[id] = await app.db.lastMessageFor(id);
+  }
+
+  Future<void> _saveNotesToSelf() async {
+    final notes = notesToSelf;
+    if (notes == null) return;
+    await app.db.kvPut(
+      _notesToSelfKey,
+      Uint8List.fromList(utf8.encode(jsonEncode({
+        'created_at': notes.createdAt,
+        'pinned_at': notes.pinnedAt,
+        'archived_at': notes.archivedAt,
+        'welcomed': true,
+      }))),
+    );
+  }
+
+  /// A note leaves nothing to deliver: it is stored, marked sent, and copied
+  /// to our other devices the same way any message we send is.
+  Future<void> _saveNote(Message message, {String? mime}) async {
+    await _recordSendSuccess(message);
+    if (message.kind == MessageKind.text) {
+      unawaited(_syncSent(message, EnvelopeType.msg, _textPayload(message)));
+    } else {
+      final path = message.mediaPath!;
+      unawaited(_syncSentMedia(message, EnvelopeType.media, {
+        'mime': mime ?? _mimeFromPath(path),
+        'kind': message.kind,
+        'size': await File(path).length(),
+        if (message.durationMs != null) 'duration_ms': message.durationMs,
+        if (message.fileName != null) 'name': message.fileName,
+        if (_replyPayloadOf(message) != null)
+          'reply_to': _replyPayloadOf(message),
+      }));
+    }
     notifyListeners();
   }
 
@@ -1047,7 +1162,7 @@ class ChatState extends ChangeNotifier {
     }
   }
 
-  // -- self-sync (MULTIDEVICE.md "Self-sync") ---------------------------------
+  // -- self-sync --------------------------------------------------------------
 
   /// Our own other devices. Empty until something is linked, which is why
   /// every sync path below costs nothing today.
@@ -1284,7 +1399,7 @@ class ChatState extends ChangeNotifier {
   /// The ratchet cache key. Sessions are per (peer, device) because a double
   /// ratchet is mutable state that advances on every message — two devices
   /// cannot share one, which is the constraint the entire multi-device design
-  /// is built around (MULTIDEVICE.md).
+  /// is built around.
   static String _sessionKey(String peerId, int deviceId) => '$peerId#$deviceId';
 
   Future<RatchetSession?> _loadSession(String peerId, int deviceId) async {
@@ -1424,7 +1539,7 @@ class ChatState extends ChangeNotifier {
         mailboxTlsFp: mailboxTlsFp,
       );
       // Both device numbers are bound, on every message, single-device or
-      // not (MULTIDEVICE.md "Associated data"). One form, no conditional:
+      // not. One form, no conditional:
       // this is the one place where a second code path would mean silent
       // decryption failure.
       final adPrefix =
@@ -2477,7 +2592,11 @@ class ChatState extends ChangeNotifier {
     if (message.expiresAt != null) _scheduleExpirySweep();
     notifyListeners();
 
-    await _trySend(contact, message);
+    if (isNotesToSelf(contact.stonechatId)) {
+      await _saveNote(message);
+    } else {
+      await _trySend(contact, message);
+    }
     return message;
   }
 
@@ -2559,7 +2678,11 @@ class ChatState extends ChangeNotifier {
     if (message.expiresAt != null) _scheduleExpirySweep();
     notifyListeners();
 
-    await _trySend(contact, message, mime: mime);
+    if (isNotesToSelf(contact.stonechatId)) {
+      await _saveNote(message, mime: mime);
+    } else {
+      await _trySend(contact, message, mime: mime);
+    }
     return message;
   }
 
@@ -2606,7 +2729,7 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // -- send outcomes (TODO.md §11 "Message reliability") -----------------------
+  // -- send outcomes -----------------------------------------------------------
 
   Timer? _retrySweep;
 
@@ -3260,6 +3383,8 @@ class ChatState extends ChangeNotifier {
     }
     notifyListeners();
     if (stillPending && group == null) return true;
+    // Nobody else holds a note; there is no one to tell.
+    if (isNotesToSelf(message.contactId)) return true;
 
     var reachedEveryone = true;
     if (group == null) {
@@ -3292,7 +3417,7 @@ class ChatState extends ChangeNotifier {
     await _tombstone(message);
     await app.db.clearOutboxMessage(message.id); // stop owing group copies
     notifyListeners();
-    if (neverLeft) return true;
+    if (neverLeft || isNotesToSelf(message.contactId)) return true;
 
     var reachedEveryone = true;
     if (group == null) {

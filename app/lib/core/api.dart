@@ -370,7 +370,9 @@ class HubApi {
   }
 
   Future<MailboxRecord> getMailbox() async {
-    final r = await http.get(Uri.parse('$baseUrl/v1/mailbox'), headers: _auth);
+    final r = await http
+        .get(Uri.parse('$baseUrl/v1/mailbox'), headers: _auth)
+        .timeout(const Duration(seconds: 10));
     return _check(r, (j) {
       final mailboxHost = j['mailbox_host'] as Map<String, dynamic>?;
       return MailboxRecord(
@@ -393,7 +395,7 @@ class HubApi {
       Uri.parse('$baseUrl/v1/mailbox/tls'),
       headers: _auth,
       body: jsonEncode({'tls_fp': tlsFp, 'tls_sig': tlsSig}),
-    );
+    ).timeout(const Duration(seconds: 10));
     await _check(r, (_) => null);
   }
 
@@ -409,7 +411,7 @@ class HubApi {
       Uri.parse('$baseUrl/v1/mailbox/wt'),
       headers: _auth,
       body: jsonEncode({'certs': certs, 'wt_sig': wtSig}),
-    );
+    ).timeout(const Duration(seconds: 10));
     await _check(r, (_) => null);
   }
 
@@ -579,7 +581,7 @@ Future<Map<String, dynamic>> fetchPrekeyBundle(
 
 /// Mint a device on our own mailbox for one being linked. The caller supplies
 /// the token it is about to seal into the grant; the relay stores only its
-/// hash (MULTIDEVICE.md "Device model").
+/// hash.
 ///
 /// [expiresInSeconds] bounds the new device's authority — set for a browser
 /// session, whose whole defence is that it ends on its own.
@@ -659,8 +661,7 @@ Future<({int devicesV, List<Map<String, dynamic>> devices})> listDevices(
 }
 
 /// Revoke a device. A delivery cut, not a cryptographic excision — the
-/// revoked device keeps its own keys and its certificate until that expires
-/// (MULTIDEVICE.md "Revocation and threat notes").
+/// revoked device keeps its own keys and its certificate until that expires.
 ///
 /// The relay lets the primary revoke any linked device and a linked device
 /// revoke only itself; nobody revokes the primary. Anything else is a 403.
@@ -767,8 +768,8 @@ Future<String?> takeLinkGrant(String hubUrl, String key) async {
 /// A peer's device list plus their current `devices_v`, from their mailbox.
 ///
 /// Consumes **no** one-time prekeys — listing and consuming are separate
-/// calls precisely so no single request can burn a prekey per device
-/// (MULTIDEVICE.md "Why the device list is gated"). Needs the peer's bundle
+/// calls precisely so no single request can burn a prekey per device. Needs
+/// the peer's bundle
 /// token; without it a sender can only reach their primary device, which is
 /// what a stranger sending a contact request gets.
 Future<({int devicesV, List<int> devices, Map<int, Map<String, dynamic>> certs})>
@@ -1312,9 +1313,8 @@ class MailboxLink {
   MailboxLink(this.address, String tlsFp) : _client = pinnedClient(tlsFp);
 
   /// Post one envelope. Returns the mailbox's current `devices_v` when it
-  /// reports one, so a sender can notice a device-set change without polling
-  /// (MULTIDEVICE.md "Sending: per-device envelopes"). Null from a relay that
-  /// predates the device model.
+  /// reports one, so a sender can notice a device-set change without polling.
+  /// Null from a relay that predates the device model.
   ///
   /// A 410 means the addressed device is revoked or never existed: permanent
   /// for this copy, not something a retry fixes. It is thrown with the parsed

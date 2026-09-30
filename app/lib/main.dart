@@ -79,7 +79,6 @@ Future<void> main() async {
   if (app.hasIdentity) {
     await chat.load();
     await mailbox.loadOutage();
-    await mailbox.refresh();
   }
 
   // Optional content-free push wake-ups. No Firebase config → stays disabled,
@@ -111,6 +110,11 @@ Future<void> main() async {
       child: const StonechatApp(),
     ),
   );
+
+  // Asking the hub about our mailbox is network: never hold the first frame
+  // on it. The status strip says "connecting" meanwhile, and says so plainly
+  // if the hub doesn't answer.
+  if (app.hasIdentity) unawaited(mailbox.refresh());
 }
 
 class StonechatApp extends StatefulWidget {

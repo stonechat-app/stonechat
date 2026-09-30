@@ -17,8 +17,7 @@ class OnboardingScreen extends StatefulWidget {
 
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final _name = TextEditingController();
-  late final _url =
-      TextEditingController(text: AppState.defaultHubUrl);
+  late final _url = TextEditingController(text: AppState.defaultHubUrl);
   bool _showAdvanced = false;
   bool _working = false;
 
@@ -67,12 +66,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Spacer(),
-                    Text('STONECHAT',
-                        style: Zn.mono(
-                            size: 42,
-                            color: Zn.orange,
-                            weight: FontWeight.w700,
-                            letterSpacing: 10)),
+                    Text(
+                      'STONECHAT',
+                      style: Zn.mono(
+                        size: 42,
+                        color: Zn.orange,
+                        weight: FontWeight.w700,
+                        letterSpacing: 10,
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     const Text(
                       'Private messaging through a mailbox only you own.\n'
@@ -80,16 +82,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       style: TextStyle(color: Zn.muted, height: 1.5),
                     ),
                     const SizedBox(height: 40),
-                    const Text('Your name',
-                        style: TextStyle(
-                            color: Zn.text, fontSize: 13, fontWeight: FontWeight.w600)),
+                    const Text(
+                      'Your name',
+                      style: TextStyle(
+                        color: Zn.text,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                     const SizedBox(height: 8),
                     TextField(
                       controller: _name,
                       maxLength: 32,
                       decoration: const InputDecoration(
-                          hintText: 'Only your friends will ever see it',
-                          counterText: ''),
+                        hintText: 'Only your friends will ever see it',
+                        counterText: '',
+                      ),
                     ),
                     const SizedBox(height: 28),
                     SizedBox(
@@ -101,7 +109,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                             ? const SizedBox(
                                 width: 18,
                                 height: 18,
-                                child: CircularProgressIndicator(strokeWidth: 2))
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
                             : const Text('Create account'),
                       ),
                     ),
@@ -109,7 +120,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     const Text(
                       'No sign-up form. Your account is an encryption key created '
                       'on this phone — we never learn who you are.',
-                      style: TextStyle(color: Zn.muted, fontSize: 12, height: 1.4),
+                      style: TextStyle(
+                        color: Zn.muted,
+                        fontSize: 12,
+                        height: 1.4,
+                      ),
                     ),
                     const Spacer(flex: 2),
                     Center(
@@ -117,14 +132,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         onPressed: _working
                             ? null
                             : () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => LinkDeviceScreen(
-                                        hubUrl: _url.text.trim()),
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => LinkDeviceScreen(
+                                    hubUrl: _url.text.trim(),
                                   ),
                                 ),
-                        child: const Text('Link to a device I already have',
-                            style: TextStyle(color: Zn.muted, fontSize: 12)),
+                              ),
+                        child: const Text(
+                          'Link to a device I already have',
+                          style: TextStyle(color: Zn.muted, fontSize: 12),
+                        ),
                       ),
                     ),
                     Center(
@@ -132,32 +150,41 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         onPressed: _working
                             ? null
                             : () => Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => IdentityRestoreScreen(
-                                        hubUrl: _url.text.trim()),
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => IdentityRestoreScreen(
+                                    hubUrl: _url.text.trim(),
                                   ),
                                 ),
-                        child: const Text('Restore an exported identity',
-                            style: TextStyle(color: Zn.muted, fontSize: 12)),
+                              ),
+                        child: const Text(
+                          'Restore an exported identity',
+                          style: TextStyle(color: Zn.muted, fontSize: 12),
+                        ),
                       ),
                     ),
                     Center(
                       child: TextButton(
-                        onPressed: () => setState(() => _showAdvanced = !_showAdvanced),
-                        child: Text('Advanced',
-                            style: Zn.mono(size: 10, letterSpacing: 2)),
+                        onPressed: () =>
+                            setState(() => _showAdvanced = !_showAdvanced),
+                        child: Text(
+                          'Change Hub',
+                          style: Zn.mono(size: 10, letterSpacing: 2),
+                        ),
                       ),
                     ),
                     if (_showAdvanced) ...[
-                      Text('Service address (self-hosters only)',
-                          style: Zn.mono(size: 10, letterSpacing: 1)),
+                      Text(
+                        'Hub address',
+                        style: Zn.mono(size: 10, letterSpacing: 1),
+                      ),
                       const SizedBox(height: 6),
                       TextField(
                         controller: _url,
                         style: Zn.mono(size: 13, color: Zn.text),
                         decoration: InputDecoration(
-                            hintText: AppState.hostedHubUrl),
+                          hintText: AppState.hostedHubUrl,
+                        ),
                       ),
                       const SizedBox(height: 12),
                     ],
@@ -185,20 +212,23 @@ class _CodeRevealDialog extends StatelessWidget {
         borderRadius: BorderRadius.circular(Zn.radius),
         side: const BorderSide(color: Zn.line),
       ),
-      title: const Text('Your Stonechat code',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+      title: const Text(
+        'Your Stonechat ID',
+        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+      ),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SelectableText(stonechatId,
-              style:
-                  Zn.mono(size: 14, color: Zn.orange, weight: FontWeight.w700)),
+          SelectableText(
+            stonechatId,
+            style: Zn.mono(size: 14, color: Zn.orange, weight: FontWeight.w700),
+          ),
           const SizedBox(height: 12),
           const Text(
-            'This is your code — friends add you by scanning your QR or '
-            'tapping your invite link. Share it freely: it says nothing '
-            'about who you are.',
+            'This is your identity — contacts add you by scanning your QR, '
+            'tapping your invite link, or pasting your ID. You can copy it '
+            'anytime in your account settings.',
             style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.4),
           ),
         ],

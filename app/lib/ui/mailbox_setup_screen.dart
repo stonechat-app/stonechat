@@ -76,7 +76,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
   // False once the hub says it has no gate: nothing needs a plan there.
   bool _gated = true;
 
-  bool get _usesLocalProvider => _envProvider != '' || kDebugMode;
+  bool get _usesLocalProvider => _localProvider() != null;
 
   /// Whether to render the picker at all — a superset of "we will act on it",
   /// so a debug build can display it without pretending to place a mailbox
@@ -106,7 +106,9 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
           _gated = access.gated;
         });
       }
-    } catch (_) {/* plan stays null → nothing is greyed out */}
+    } catch (_) {
+      /* plan stays null → nothing is greyed out */
+    }
   }
 
   @override
@@ -119,7 +121,12 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
 
   /// The escape-hatch provider for debug/dart-define builds. Release builds
   /// send a country and never reach this.
+  ///
+  /// `mailbox_host` is not an escape hatch: a shared host serves a country,
+  /// and the hub picks the host by the country it is sent. A bare provider
+  /// request carries none, so it takes the release path — picker included.
   String? _localProvider() {
+    if (_envProvider == 'mailbox_host') return null;
     if (_envProvider != '') return _envProvider;
     if (kDebugMode) return 'local';
     return null;
@@ -198,7 +205,8 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         showZnSnack(context, "Couldn't start setup: $e", error: true);
       }
     } catch (e) {
-      if (mounted) showZnSnack(context, "Couldn't start setup: $e", error: true);
+      if (mounted)
+        showZnSnack(context, "Couldn't start setup: $e", error: true);
     } finally {
       if (mounted) setState(() => _pending = null);
     }
@@ -244,20 +252,25 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
 
   Widget _spinnerOr(String pendingLabel, String label, _Choice choice) =>
       _pending == choice
-          ? Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2)),
-                const SizedBox(width: 10),
-                Flexible(
-                    child: Text(pendingLabel,
-                        maxLines: 1, overflow: TextOverflow.ellipsis)),
-              ],
-            )
-          : Text(label);
+      ? Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                pendingLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        )
+      : Text(label);
 
   @override
   Widget build(BuildContext context) {
@@ -265,9 +278,7 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
     final ready = mailbox.isRunning;
 
     return Scaffold(
-      body: SafeArea(
-        child: ready ? _readyView(context) : _chooseView(mailbox),
-      ),
+      body: SafeArea(child: ready ? _readyView(context) : _chooseView(mailbox)),
     );
   }
 
@@ -282,9 +293,10 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         Row(
           children: [
             const SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(strokeWidth: 1.5)),
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 1.5),
+            ),
             const SizedBox(width: 10),
             Text('Loading locations…', style: Zn.mono(size: 11.5)),
           ],
@@ -297,7 +309,10 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
       const Text(
         'Which country?',
         style: TextStyle(
-            color: Zn.text, fontSize: 13.5, fontWeight: FontWeight.w600),
+          color: Zn.text,
+          fontSize: 13.5,
+          fontWeight: FontWeight.w600,
+        ),
       ),
       const SizedBox(height: 6),
       // The honest frame, stated once rather than repeated per country: the
@@ -318,9 +333,11 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         onSelect: (code) => setState(() => _country = code),
       ),
       const SizedBox(height: 6),
-      Text('You can move your mailbox later by destroying it and setting up '
-          'a new one.',
-          style: Zn.mono(size: 11, color: Zn.muted)),
+      Text(
+        'You can move your mailbox later by destroying it and setting up '
+        'a new one.',
+        style: Zn.mono(size: 11, color: Zn.muted),
+      ),
       const SizedBox(height: 14),
     ];
   }
@@ -332,9 +349,14 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
       children: [
         Text('⌂', style: Zn.mono(size: 40, color: Zn.orange)),
         const SizedBox(height: 16),
-        const Text('Your mailbox',
-            style: TextStyle(
-                color: Zn.text, fontSize: 22, fontWeight: FontWeight.w700)),
+        const Text(
+          'Your mailbox',
+          style: TextStyle(
+            color: Zn.text,
+            fontSize: 22,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
         const SizedBox(height: 12),
         const Text(
           'Messages sent to you arrive at your mailbox and wait there, '
@@ -346,12 +368,16 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         const Text(
           'Where should your mailbox live?',
           style: TextStyle(
-              color: Zn.text, fontSize: 15, fontWeight: FontWeight.w600),
+            color: Zn.text,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 16),
         ZnOptionCard(
           title: 'Stonechat Cloud',
-          subtitle: 'An isolated container on our machines that only you can '
+          subtitle:
+              'An isolated container on our machines that only you can '
               'use — destroy it and start fresh whenever you want.',
           selected: _choice == _Choice.cloud,
           onTap: _select(_Choice.cloud),
@@ -367,13 +393,17 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           const SizedBox(
-                              width: 16,
-                              height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2)),
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
                           const SizedBox(width: 12),
-                          Text('Setting up — about 2 minutes',
-                              style: TextStyle(
-                                  color: Zn.bg.withValues(alpha: 0.7))),
+                          Text(
+                            'Setting up — about 2 minutes',
+                            style: TextStyle(
+                              color: Zn.bg.withValues(alpha: 0.7),
+                            ),
+                          ),
                         ],
                       )
                     : const Text('Set up my mailbox'),
@@ -383,8 +413,9 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         ),
         const SizedBox(height: 10),
         ZnOptionCard(
-          title: "A friend's machine",
-          subtitle: 'Your mailbox lives on the machine of someone you trust. '
+          title: "A mailbox host",
+          subtitle:
+              'Your mailbox lives on the machine of someone you trust. '
               'All you need is their invite.',
           selected: _choice == _Choice.friend,
           onTap: _select(_Choice.friend),
@@ -396,30 +427,36 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
               style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
             ),
             const SizedBox(height: 12),
-            ZnLabeledField(label: 'Paste the invite here', controller: _inviteInput),
+            ZnLabeledField(
+              label: 'Paste the invite here',
+              controller: _inviteInput,
+            ),
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               height: 44,
               child: FilledButton(
                 onPressed: mailbox.busy ? null : _joinHost,
-                child: _spinnerOr("Setting up on your friend's machine…",
-                    'Join with invite', _Choice.friend),
+                child: _spinnerOr(
+                  "Setting up on your friend's machine…",
+                  'Join with invite',
+                  _Choice.friend,
+                ),
               ),
             ),
           ],
         ),
         const SizedBox(height: 10),
         ZnOptionCard(
-          title: 'Self-host',
-          subtitle: 'Your mailbox runs on your own machine. Free, forever.',
+          title: 'Self-host mailbox',
+          subtitle: 'Your mailbox runs on your own machine.',
           selected: _choice == _Choice.selfHost,
           onTap: _select(_Choice.selfHost),
           children: [
             const Text(
               'Run the Stonechat mailbox anywhere you like, then connect it here. '
               'Its access token stays on this phone — we only list the '
-              'address so friends can find you.',
+              'address so contacts can find you.',
               style: TextStyle(color: Zn.muted, fontSize: 12.5, height: 1.45),
             ),
             const SizedBox(height: 12),
@@ -433,7 +470,10 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
               child: FilledButton(
                 onPressed: mailbox.busy ? null : _connectExternal,
                 child: _spinnerOr(
-                    'Connecting…', 'Connect my mailbox', _Choice.selfHost),
+                  'Connecting…',
+                  'Connect my mailbox',
+                  _Choice.selfHost,
+                ),
               ),
             ),
           ],
@@ -452,8 +492,10 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         Center(
           child: TextButton(
             onPressed: () => Navigator.pushReplacementNamed(context, '/home'),
-            child: Text(mailbox.isProvisioning ? 'Continue' : 'Skip for now',
-                style: const TextStyle(color: Zn.muted)),
+            child: Text(
+              mailbox.isProvisioning ? 'Continue' : 'Skip for now',
+              style: const TextStyle(color: Zn.muted),
+            ),
           ),
         ),
       ],
@@ -469,9 +511,14 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
           const Spacer(),
           Text('✓', style: Zn.mono(size: 40, color: Zn.ok)),
           const SizedBox(height: 16),
-          const Text("You're all set",
-              style: TextStyle(
-                  color: Zn.text, fontSize: 22, fontWeight: FontWeight.w700)),
+          const Text(
+            "You're all set",
+            style: TextStyle(
+              color: Zn.text,
+              fontSize: 22,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
           const SizedBox(height: 12),
           const Text(
             'Your mailbox is running. Friends can reach you now — messages '

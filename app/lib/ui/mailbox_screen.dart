@@ -528,6 +528,12 @@ class _StatusCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final r = mailbox.record;
     final (color, headline) = switch (r.status) {
+      // Nothing heard from the hub this launch: the record is a placeholder.
+      _ when !mailbox.recordKnown && mailbox.hubUnreachable => (
+          Zn.danger,
+          "Can't reach the Stonechat hub"
+        ),
+      _ when !mailbox.recordKnown => (Zn.amber, 'Checking…'),
       // busy while running can only be the teardown call — surface it.
       'running' when mailbox.busy => (
           Zn.amber,
@@ -573,6 +579,15 @@ class _StatusCard extends StatelessWidget {
                       fontSize: 15, color: color, fontWeight: FontWeight.w700)),
             ],
           ),
+          if (!mailbox.recordKnown && mailbox.hubUnreachable) ...[
+            const SizedBox(height: 12),
+            const Text(
+              "The hub didn't answer, so this phone can't tell what state "
+              'your mailbox is in. Check your connection — Stonechat keeps '
+              'trying on its own.',
+              style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
+            ),
+          ],
           if (r.status != 'none') ...[
             const SizedBox(height: 12),
             if (r.provider != null)

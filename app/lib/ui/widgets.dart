@@ -27,6 +27,18 @@ class RelayStrip extends StatelessWidget {
       mailbox.record.status,
       mailbox.socketConnected,
     )) {
+      // A live socket means mail flows whether the hub answers or not.
+      (_, false) when mailbox.hubUnreachable => (
+        '✕',
+        "Can't reach the Stonechat hub — retrying",
+        Zn.danger,
+      ),
+      // First launch answer still on its way: 'none' isn't the hub's word yet.
+      (_, false) when !mailbox.recordKnown => (
+        '◐',
+        'Checking your mailbox…',
+        Zn.amber,
+      ),
       ('running', true) => ('●', "You're reachable", Zn.ok),
       ('running', false) when down != null => (
         '✕',
@@ -245,6 +257,26 @@ class StonechatAvatar extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The "Notes to self" avatar: the same frame as [StonechatAvatar], with a
+/// bookmark instead of initials, so it never reads as a person.
+class NotesAvatar extends StatelessWidget {
+  final double size;
+  const NotesAvatar({super.key, this.size = 42});
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          color: Zn.orange.withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(Zn.radius),
+          border: Border.all(color: Zn.orange.withValues(alpha: 0.55)),
+        ),
+        alignment: Alignment.center,
+        child: Icon(Icons.bookmark_outline, size: size * 0.5, color: Zn.orange),
+      );
 }
 
 /// A bottom tab in [ZnTabBar]. `dot` marks the tab with a small ion dot —

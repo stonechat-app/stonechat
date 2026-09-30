@@ -38,8 +38,10 @@ class _HomeScreenState extends State<HomeScreen> {
       return activityB.compareTo(activityA);
     }
 
-    final allContacts = [...chat.acceptedContacts]
-      ..sort(
+    final allContacts = [
+      ...chat.acceptedContacts,
+      ?chat.notesToSelf,
+    ]..sort(
         (a, b) => compare(
           a.pinnedAt,
           b.pinnedAt,
@@ -325,7 +327,7 @@ void _showConversationSheet(
   required bool muted,
   required bool archived,
   required Future<void> Function() onTogglePin,
-  required Future<void> Function(int? untilMs) onMute,
+  required Future<void> Function(int? untilMs)? onMute, // null: notes to self
   required Future<void> Function() onToggleArchive,
   bool blocked = false,
   Future<void> Function()? onToggleBlock, // null for groups
@@ -352,23 +354,24 @@ void _showConversationSheet(
               onTogglePin();
             },
           ),
-          ListTile(
-            leading: Icon(
-              muted
-                  ? Icons.notifications_active_outlined
-                  : Icons.notifications_off_outlined,
-              color: Zn.muted,
+          if (onMute != null)
+            ListTile(
+              leading: Icon(
+                muted
+                    ? Icons.notifications_active_outlined
+                    : Icons.notifications_off_outlined,
+                color: Zn.muted,
+              ),
+              title: Text(muted ? 'Unmute' : 'Mute'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                if (muted) {
+                  onMute(null);
+                } else {
+                  _showMuteSheet(context, onMute);
+                }
+              },
             ),
-            title: Text(muted ? 'Unmute' : 'Mute'),
-            onTap: () {
-              Navigator.pop(sheetContext);
-              if (muted) {
-                onMute(null);
-              } else {
-                _showMuteSheet(context, onMute);
-              }
-            },
-          ),
           ListTile(
             leading: Icon(
               archived ? Icons.unarchive_outlined : Icons.archive_outlined,
@@ -623,19 +626,25 @@ class _ConversationTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final chat = context.watch<ChatState>();
     final last = chat.lastMessage[contact.stonechatId];
+    final notes = chat.isNotesToSelf(contact.stonechatId);
 
     return ListTile(
-      leading: StonechatAvatar(
-        stonechatId: contact.stonechatId,
-        name: contact.displayName,
-        image: contact.avatar,
-      ),
+      leading: notes
+          ? const NotesAvatar()
+          : StonechatAvatar(
+              stonechatId: contact.stonechatId,
+              name: contact.displayName,
+              image: contact.avatar,
+            ),
       title: Text(
         contact.displayName,
         style: const TextStyle(fontWeight: FontWeight.w600),
       ),
       subtitle: last == null
-          ? Text('say hello', style: Zn.mono(size: 11))
+          ? Text(
+              notes ? 'only you can see this' : 'say hello',
+              style: Zn.mono(size: 11),
+            )
           : Text(
               '${last.outgoing ? '› ' : ''}${last.preview}',
               maxLines: 1,
@@ -652,6 +661,8 @@ class _ConversationTile extends StatelessWidget {
         context,
         MaterialPageRoute(builder: (_) => ChatScreen(contact: contact)),
       ),
+      // Notes to self: pin and archive only. Nothing arrives there to mute,
+      // there is nobody to block or report, and it cannot be deleted.
       onLongPress: () => _showConversationSheet(
         context,
         pinned: contact.isPinned,
@@ -659,10 +670,12 @@ class _ConversationTile extends StatelessWidget {
         archived: contact.isArchived,
         blocked: chat.isBlocked(contact.stonechatId),
         onTogglePin: () => chat.togglePinContact(contact),
-        onMute: (until) => chat.setMute(contact.stonechatId, until),
+        onMute: notes
+            ? null
+            : (until) => chat.setMute(contact.stonechatId, until),
         onToggleArchive: () => chat.toggleArchive(contact.stonechatId),
-        onToggleBlock: () => chat.toggleBlock(contact),
-        onReport: () => _reportContact(context, chat, contact),
+        onToggleBlock: notes ? null : () => chat.toggleBlock(contact),
+        onReport: notes ? null : () => _reportContact(context, chat, contact),
       ),
     );
   }

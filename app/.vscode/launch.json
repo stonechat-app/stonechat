@@ -27,8 +27,9 @@
       // Debug against PRODUCTION. STONECHAT_PROVIDER=mailbox_host matters:
       // without it a debug build defaults to the `local` provider, which would
       // ask the hub to run the mailbox container on the hub VM itself — breaking
-      // the "mailboxes never on the hub box" rule. The shared tier needs an
-      // active plan (redeem the tester code first).
+      // the "mailboxes never on the hub box" rule. With it, setup runs the
+      // release flow: pick a country, and redeem a Mailbox tester code when
+      // asked.
       "name": "app — PRODUCTION hub",
       "request": "launch",
       "type": "dart",

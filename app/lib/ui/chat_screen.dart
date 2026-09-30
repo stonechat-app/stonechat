@@ -95,6 +95,11 @@ class _ChatScreenState extends State<ChatScreen> {
   bool get isGroup => widget.group != null;
   String get conversationId => widget.contact?.stonechatId ?? widget.group!.id;
 
+  /// Notes to self: a direct chat with nobody on the other end, so everything
+  /// that would reach a peer — calls, block, report, the disappearing timer,
+  /// delete-for-everyone — is left out.
+  bool get isNotes => !isGroup && _chat.isNotesToSelf(conversationId);
+
   @override
   void initState() {
     super.initState();
@@ -375,7 +380,10 @@ class _ChatScreenState extends State<ChatScreen> {
                   _startEdit(m);
                 },
               ),
-            if (chat.canDeleteForEveryone(m) && !isLocalRow && !blocked)
+            if (chat.canDeleteForEveryone(m) &&
+                !isLocalRow &&
+                !blocked &&
+                !isNotes)
               ListTile(
                 leading: const Icon(Icons.delete_outline, color: Zn.danger),
                 title: const Text(
@@ -400,7 +408,7 @@ class _ChatScreenState extends State<ChatScreen> {
               _blockSenderTile(chat, m, sheetContext),
             ListTile(
               leading: const Icon(Icons.delete_sweep_outlined, color: Zn.muted),
-              title: const Text('Delete for me'),
+              title: Text(isNotes ? 'Delete' : 'Delete for me'),
               onTap: () {
                 Navigator.pop(sheetContext);
                 chat.deleteMessageForMe(m);
@@ -490,7 +498,12 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     // No forwarding to blocked contacts — the composer is closed to them too.
-    final contacts = chat.acceptedContacts.where((c) => !chat.isBlocked(c.stonechatId)).toList();
+    final contacts = [
+      // Saving something to your own notes is the most common forward there
+      // is, so it leads — except from inside the notes themselves.
+      if (!isNotes) ?chat.notesToSelf,
+      ...chat.acceptedContacts.where((c) => !chat.isBlocked(c.stonechatId)),
+    ];
     final groups = isMedia ? const <Group>[] : chat.groups;
     if (contacts.isEmpty && groups.isEmpty) {
       showZnSnack(context, 'No one to forward to yet');
@@ -547,12 +560,14 @@ class _ChatScreenState extends State<ChatScreen> {
                   children: [
                     for (final c in contacts)
                       ListTile(
-                        leading: StonechatAvatar(
-                          stonechatId: c.stonechatId,
-                          name: c.displayName,
-                          size: 34,
-                          image: c.avatar,
-                        ),
+                        leading: chat.isNotesToSelf(c.stonechatId)
+                            ? const NotesAvatar(size: 34)
+                            : StonechatAvatar(
+                                stonechatId: c.stonechatId,
+                                name: c.displayName,
+                                size: 34,
+                                image: c.avatar,
+                              ),
                         title: Text(c.displayName),
                         onTap: () {
                           Navigator.pop(sheetContext);
@@ -594,11 +609,15 @@ class _ChatScreenState extends State<ChatScreen> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: Zn.surface,
-        title: const Text('Clear this chat?'),
-        content: const Text(
-          'Every message and attachment here is deleted from your devices. '
-          'The conversation and the contact stay, so you can keep talking.\n\n'
-          "The other person keeps their copy — nothing here can reach it.",
+        title: Text(isNotes ? 'Clear your notes?' : 'Clear this chat?'),
+        content: Text(
+          isNotes
+              ? 'Every note and attachment here is deleted from your devices. '
+                    'Notes to self stays, ready for the next one.'
+              : 'Every message and attachment here is deleted from your devices. '
+                    'The conversation and the contact stay, so you can keep '
+                    'talking.\n\n'
+                    "The other person keeps their copy — nothing here can reach it.",
         ),
         actions: [
           TextButton(
@@ -1117,12 +1136,15 @@ class _ChatScreenState extends State<ChatScreen> {
                     : null,
                 child: Row(
                   children: [
-                    StonechatAvatar(
-                      stonechatId: conversationId,
-                      name: isGroup ? '◈ ${widget.group!.name}' : title,
-                      size: 32,
-                      image: widget.contact?.avatar,
-                    ),
+                    if (isNotes)
+                      const NotesAvatar(size: 32)
+                    else
+                      StonechatAvatar(
+                        stonechatId: conversationId,
+                        name: isGroup ? '◈ ${widget.group!.name}' : title,
+                        size: 32,
+                        image: widget.contact?.avatar,
+                      ),
                     const SizedBox(width: 10),
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1142,6 +1164,8 @@ class _ChatScreenState extends State<ChatScreen> {
                             Text(
                               isGroup
                                   ? '$memberCount members'
+                                  : isNotes
+                                  ? 'ONLY YOU'
                                   : widget.contact!.stonechatId.substring(
                                       0,
                                       12,
@@ -1156,7 +1180,9 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
               actions: [
-                if (!isGroup && !chat.isBlocked(widget.contact!.stonechatId)) ...[
+                if (!isGroup &&
+                    !isNotes &&
+                    !chat.isBlocked(widget.contact!.stonechatId)) ...[
                   IconButton(
                     icon: const Icon(
                       Icons.call_outlined,
@@ -1238,15 +1264,16 @@ class _ChatScreenState extends State<ChatScreen> {
                         child: Text('Group info'),
                       ),
                     const PopupMenuItem(value: 'search', child: Text('Search')),
-                    const PopupMenuItem(
-                      value: 'timer',
-                      child: Text('Disappearing messages'),
-                    ),
+                    if (!isNotes)
+                      const PopupMenuItem(
+                        value: 'timer',
+                        child: Text('Disappearing messages'),
+                      ),
                     const PopupMenuItem(
                       value: 'clear',
                       child: Text('Clear chat'),
                     ),
-                    if (!isGroup)
+                    if (!isGroup && !isNotes)
                       PopupMenuItem(
                         value: 'block',
                         child: chat.isBlocked(widget.contact!.stonechatId)
@@ -1256,7 +1283,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 style: TextStyle(color: Zn.danger),
                               ),
                       ),
-                    if (!isGroup)
+                    if (!isGroup && !isNotes)
                       const PopupMenuItem(
                         value: 'report',
                         child: Text(
