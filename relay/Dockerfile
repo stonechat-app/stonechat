@@ -1,6 +1,6 @@
 # Multi-stage: build a static musl binary, ship it alone (~10 MB image).
 # In production a mailbox host wraps a PREBUILT binary, uploaded to it by the
-# hub (RUST_PORT.md "Packaging") — this self-building Dockerfile is for dev/e2e
+# hub — this self-building Dockerfile is for dev/e2e
 # where no CI artifact exists.
 FROM rust:1-alpine AS build
 RUN apk add --no-cache musl-dev

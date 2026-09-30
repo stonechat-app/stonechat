@@ -136,8 +136,7 @@ class CryptoService {
     final key = _secretKey;
     if (key == null) {
       throw StateError(
-        'This device holds no identity secret — that is the primary\'s job '
-        '(MULTIDEVICE.md "Linking a device").',
+        'This device holds no identity secret — that is the primary\'s job.',
       );
     }
     return key;
@@ -155,8 +154,7 @@ class CryptoService {
   ///
   /// Its one remaining job is signing device certificates: since those exist,
   /// nothing else derives from it at message time, and only the primary
-  /// device holds it at all (MULTIDEVICE_IMPLEMENTATION.md "How device
-  /// certificates work").
+  /// device holds it at all.
   Uint8List get identitySeed => Uint8List.sublistView(_root, 0, 32);
   Uint8List exportSecretKey() => Uint8List.fromList(_root);
 
@@ -184,7 +182,7 @@ class CryptoService {
   ///
   /// [deviceSealSeed] is our own X-Wing seed. It used to be the identity's
   /// (`_pqSeed`), which is why every device needed the identity secret to
-  /// read anything — see MULTIDEVICE_IMPLEMENTATION.md.
+  /// read anything.
   Uint8List? unseal(Uint8List deviceSealSeed, Uint8List sealed) =>
       core.unseal(deviceSealSeed, sealed);
 

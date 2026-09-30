@@ -1,4 +1,4 @@
-// The send-outcome contract (TODO.md §11 "Message reliability"): a message
+// The send-outcome contract: a message
 // that didn't land has to be able to say so, and the retry policy behind it
 // is a product decision worth pinning against a casual edit.
 import 'package:flutter_test/flutter_test.dart';

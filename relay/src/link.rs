@@ -3,7 +3,7 @@
 //! Was one per mailbox: a second connection kicked the first, which is
 //! correct for one drainer and fatal for several — two devices sharing one
 //! queue would race, and whichever acked first destroyed the envelope for the
-//! other (MULTIDEVICE.md "Why the current architecture is single-device").
+//! other.
 //! The kick rule survives, scoped down: a second socket for the *same* device
 //! still replaces the first, which was never the problem.
 //!

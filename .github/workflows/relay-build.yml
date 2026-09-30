@@ -133,8 +133,8 @@ jobs:
             echo "::error::binary depends on shared libraries — it cannot start in a FROM scratch container"; exit 1
           fi
 
-      # The relay's behavioural contract is the recorded corpus, not the code
-      # (CLAUDE.md). The corpus is stateful and order-dependent, so this needs
+      # The relay's behavioural contract is the recorded corpus, not the code.
+      # The corpus is stateful and order-dependent, so this needs
       # a fresh relay with an empty data dir and the fixed test identity.
       # A release tag always replays it: `inputs` is empty on a tag push.
       - name: Golden corpus and WebSocket suite

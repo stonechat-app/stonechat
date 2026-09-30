@@ -8,8 +8,8 @@
 //!
 //! The relay has **replace semantics** per device (`db.rs::set_prekeys` drops
 //! the pool and reinserts), so a restock uploads the *full remaining stock*,
-//! not just the newly minted keys — MULTIDEVICE.md "Prekeys per device". A
-//! partial upload silently retires every unused key we had.
+//! not just the newly minted keys. A partial upload silently retires every
+//! unused key we had.
 
 use serde_json::{Value, json};
 use stonechat_core::pqcore;

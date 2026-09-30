@@ -1,5 +1,5 @@
 /**
- * Getting linked (MULTIDEVICE.md "Linking a device").
+ * Getting linked.
  *
  * Counterpart of `app/lib/core/linking.dart`, but only the **new device's**
  * half: a browser can be linked, and can never link anything else, because

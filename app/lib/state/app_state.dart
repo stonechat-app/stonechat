@@ -435,7 +435,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  // -- this device's own keys (MULTIDEVICE_IMPLEMENTATION.md) -----------------
+  // -- this device's own keys -------------------------------------------------
 
   /// This device's own signing and seal keys. Never leave this device — not
   /// in a link grant, not anywhere. What travels is the certificate over
@@ -491,7 +491,7 @@ class AppState extends ChangeNotifier {
     await _storage.write(key: 'sc_device_cert', value: jsonEncode(signed));
   }
 
-  // -- device linking (MULTIDEVICE.md "Linking a device") ---------------------
+  // -- device linking ---------------------------------------------------------
 
   /// BLAKE2b-256 hex — the parking key derivation, shared by both sides.
   /// The core exposes the hash under its TLS-fingerprint symbol (its first
@@ -609,7 +609,7 @@ class AppState extends ChangeNotifier {
     }
     api.baseUrl = grant.hubUrl;
     // Deliberately no account token: mailbox management and billing stay with
-    // the primary device (MULTIDEVICE.md "Decided").
+    // the primary device.
     api.accountToken = null;
 
     // No `sc_secret`: this device never holds the identity root. Its absence

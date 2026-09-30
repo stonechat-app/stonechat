@@ -1,5 +1,4 @@
-/// The new device's side of linking: show a code, wait to be authorised
-/// (MULTIDEVICE.md "Linking a device").
+/// The new device's side of linking: show a code, wait to be authorised.
 ///
 /// Reached from onboarding, because this runs on a device with no identity
 /// yet — that is the whole point.

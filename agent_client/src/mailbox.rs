@@ -85,8 +85,7 @@ impl Mailbox {
     }
 
     /// Which devices a peer has. Gated by their bundle token, and separate
-    /// from fetching a bundle precisely so that *listing* costs no prekeys
-    /// (MULTIDEVICE.md "Why the device list is gated").
+    /// from fetching a bundle precisely so that *listing* costs no prekeys.
     pub async fn devices(&self, bundle_token: &str) -> Result<Vec<u32>> {
         let r = self
             .http

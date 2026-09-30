@@ -1,7 +1,7 @@
 //! Self-signed cert, generated once and kept for the mailbox's lifetime.
 //! fingerprint = BLAKE2b-256 of the DER certificate (what clients pin).
 //!
-//! Parity-critical (RUST_PORT.md "TLS"): if PEM files already exist —
+//! Parity-critical: if PEM files already exist —
 //! including openssl-CLI ones the retired Python relay generated — they are
 //! loaded unchanged, so the pinned fingerprint survives a relay swap on the
 //! same volume. Only a fresh volume generates a new keypair.

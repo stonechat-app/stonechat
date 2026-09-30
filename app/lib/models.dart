@@ -31,7 +31,7 @@ class Contact {
   int profileAt; // sent_at ms of the last applied profile (last-writer-wins)
   /// The peer's device-set version, as last seen on an /inbox response. A bump
   /// means re-fetch their device list, X3DH to anything new, and drop sessions
-  /// for anything gone (MULTIDEVICE.md "Sending: per-device envelopes").
+  /// for anything gone.
   /// 0 = never observed, so the first send learns it.
   int devicesV;
   /// The capability that lets us list their devices at all. Handed to us in
@@ -381,7 +381,7 @@ class EnvelopeType {
   static const callIce = 'call_ice'; // transient, like typing
   static const callEnd = 'call_end';
 
-  // Self-sync (MULTIDEVICE.md "Self-sync"): state mirrored between one
+  // Self-sync: state mirrored between one
   // user's own devices over ordinary pairwise sessions. Applied only when
   // `from` is our own identity, which the session already authenticates.
   static const syncSent = 'sync_sent'; // a copy of an outgoing message
@@ -536,7 +536,7 @@ class Envelope {
   /// Rides every envelope rather than a dedicated announcement: it is inside
   /// the seal, so only the recipient reads it; it is ~64 bytes against a
   /// 64 KB cap; and it makes the audience exactly "people who have received
-  /// something from us", which is the boundary MULTIDEVICE.md already
+  /// something from us", which is a boundary the multi-device design already
   /// accepts. A dedicated distribution would have needed one mechanism for
   /// contacts and another for group members who were never contacts.
   final String? bundleToken;

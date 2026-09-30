@@ -1,9 +1,9 @@
 """AWS EC2 provider.
 
-⚠️ KNOWN-BROKEN for dedicated-VM provisioning (see TODO.md "AWS provider is
-dead code"): EC2's 1:1 NAT breaks the mailbox host's from-inside guest health
-checks (no hairpin to the instance's own public IP), so every invite
-redemption times out. Needs the localhost health-check fix before it can work.
+⚠️ KNOWN-BROKEN for dedicated-VM provisioning: EC2's 1:1 NAT breaks the
+mailbox host's from-inside guest health checks (no hairpin to the instance's
+own public IP), so every invite redemption times out. Needs the localhost
+health-check fix before it can work.
 
 The *size* blocker is gone: EC2 caps user-data at 16 KiB and the dedicated
 script was ~30 KB when it embedded the relay, but the fetch-stub rewrite

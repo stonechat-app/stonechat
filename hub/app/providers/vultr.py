@@ -11,7 +11,7 @@ MachineSpec mapping: machine_type = plan id ("vc2-1c-1gb"), region = region id
 ("sao", "scl", "mex", "sgp", "nrt", "icn"). disk_gb is ignored — the disk is
 fixed by the plan.
 
-Why Vultr (notes/docs/providers.md): it is the LatAm *and* Asia answer in one
+Why Vultr: it is the LatAm *and* Asia answer in one
 adapter — São Paulo, Santiago, Mexico City, Tokyo, Osaka, Seoul, Singapore,
 Mumbai. `vc2-1c-1gb` is the cheapest plan available in all of them.
 

@@ -1,7 +1,6 @@
 /// This device's own keys, and the certificate that says they are ours.
 ///
-/// See MULTIDEVICE_IMPLEMENTATION.md "How device certificates work". The
-/// short version: the identity key is no longer a messaging key. It is a root
+/// The identity key is no longer a messaging key. It is a root
 /// that signs a short public statement per device —
 ///
 ///     stonechat_id · device_id · sig_pub · seal_pub · not_after

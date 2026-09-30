@@ -3,7 +3,7 @@ sequence and diff status codes + JSON bodies against the golden expectations
 in fixtures/golden.json.
 
 The corpus began life as a live diff between the Python relay and this Rust
-port; the Python relay is gone (cutover 2026-07, notes/docs/RUST_PORT.md), so the
+port; the Python relay is gone (cutover 2026-07), so the
 recorded behavior IS the contract now. The corpus is stateful and
 order-dependent — always run it against a FRESH relay (empty DB/blob dir)
 started with OWNER_ID=SC-TEST-OWNER, OWNER_TOKEN=tok-secret.
@@ -54,7 +54,7 @@ def _body(raw):
 ENV_OK = {"v": 1, "id": "e-0001", "to": OWNER, "sealed": "aGVsbG8=", "device": 1}
 
 # A second device's token, and the derived bundle token that gates the device
-# list (MULTIDEVICE.md "Why the device list is gated"). Derived here rather
+# list. Derived here rather
 # than hardcoded so the corpus pins the derivation, not just a constant.
 DEV2 = "dev2-token-0123456789abcdef0123456789"
 DEV3 = "dev3-token-0123456789abcdef0123456789"
@@ -170,7 +170,7 @@ CORPUS = [
     ("blob-shared-get-after-delete", "GET",
      lambda r: f"/blob/{r['blob-shared-ok']['blob_id']}?token={r['blob-shared-ok']['fetch_token']}",
      None, None),
-    # -- devices (MULTIDEVICE.md phase 1) -------------------------------------
+    # -- devices ---------------------------------------------------------------
     # Device 1's token IS the owner token, which is what lets every
     # expectation above stay byte-identical through this change.
     ("devices-noauth", "GET", "/devices", None, None),

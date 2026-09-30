@@ -49,21 +49,23 @@ from nacl.utils import random as nacl_random
 
 import os
 HUB = os.environ.get("STONECHAT_HUB", "http://127.0.0.1:8477")
-# must match the STONECHAT_ADMIN_TOKEN the hub was started with (CLAUDE.md)
+# must match the STONECHAT_ADMIN_TOKEN the hub was started with
 ADMIN_TOKEN = os.environ.get("STONECHAT_ADMIN_TOKEN", "test-admin")
 # The gate the hub asks about tiers (hub/app/gate.py). This script runs a stub
 # one in-process (scripts/stub_gate.py); the hub must be started pointing at
-# it — STONECHAT_GATE_URL / STONECHAT_GATE_TOKEN, see the command in CLAUDE.md.
+# it: STONECHAT_GATE_URL=http://127.0.0.1:<GATE_PORT> and STONECHAT_GATE_TOKEN
+# set to GATE_TOKEN below.
 GATE_PORT = int(os.environ.get("STONECHAT_TEST_GATE_PORT", "8478"))
 GATE_TOKEN = os.environ.get("STONECHAT_TEST_GATE_TOKEN", "e2e-gate")
 GATE_CODE = "E2E-MAILBOX"
 
 # The shared tier under test is a real mailbox host, started by this script (see
 # MailboxHostUnderTest). The hub must already be pointed at it, which means these
-# three values have to agree with the hub's STONECHAT_MAILBOX_HOSTS — see the
-# command in CLAUDE.md. `insecure` there skips the certificate pin, which is
-# exactly what laptop dev is for: the host mints a fresh self-signed cert in a
-# temp directory on every run, so there is no stable fingerprint to pin.
+# three values have to agree with the hub's STONECHAT_MAILBOX_HOSTS entry (this
+# URL and admin token, `insecure` as the fingerprint). `insecure` skips the
+# certificate pin, which is exactly what laptop dev is for: the host mints a
+# fresh self-signed cert in a temp directory on every run, so there is no
+# stable fingerprint to pin.
 MAILBOX_HOST_PORT = int(os.environ.get("STONECHAT_TEST_MAILBOX_HOST_PORT", "8201"))
 MAILBOX_HOST_TOKEN = os.environ.get(
     "STONECHAT_TEST_MAILBOX_HOST_TOKEN", "e2e-mailbox-host-admin")
@@ -269,7 +271,7 @@ def verify_devcert(cert: dict, identity_pub: bytes, now: int | None = None,
 
 
 def ad_for(envelope: dict) -> bytes:
-    """Both device numbers are bound (MULTIDEVICE.md "Associated data") — one
+    """Both device numbers are bound — one
     form, always, so a relabelled envelope simply fails to decrypt."""
     r = envelope["ratchet"]
     return (
@@ -395,7 +397,7 @@ class MailboxHostUnderTest:
 
     The hub under test must already list it in STONECHAT_MAILBOX_HOSTS; only the
     hub's own env can do that, so the values here are fixed rather than
-    negotiated (see the command in CLAUDE.md).
+    negotiated.
     """
 
     proc: subprocess.Popen | None = None
@@ -471,8 +473,8 @@ class Phone:
         self.mailbox = None
         # (peer stonechat_id, device) -> ratchet state. Keyed by device
         # because a double ratchet is mutable state that advances on every
-        # message: two of a peer's devices cannot share one
-        # (MULTIDEVICE.md). Everything defaults to device 1, so single-device
+        # message: two of a peer's devices cannot share one.
+        # Everything defaults to device 1, so single-device
         # flows read exactly as before.
         # Which device of its owner this Phone is. make_envelope stamps it
         # into from_device and the AEAD binds it, so a Phone cannot claim to
@@ -494,8 +496,7 @@ class Phone:
         self.pq_seed = H(sk64, PQID_SEED_KEY, 32)
         self.pq_pk = pqcore.xwing_pk_from_seed(self.pq_seed)
         self.pq_pk_b64 = b64(self.pq_pk)
-        # This device's OWN keys (MULTIDEVICE_IMPLEMENTATION.md "How device
-        # certificates work"). Envelopes are sealed to dev_seal_pk and this
+        # This device's OWN keys. Envelopes are sealed to dev_seal_pk and this
         # device's prekeys are signed by dev_sig — neither is the identity,
         # which now only signs the certificate tying them to this SC- ID.
         if not hasattr(self, "dev_sig"):
@@ -1690,7 +1691,7 @@ def main():
         asyncio.run(bob.receive_one(
             process=lambda e: bob.open_envelope(e, alice)))  # drain before teardown
 
-    print("8b) abuse actions: whois → destroy → ban (notes/docs/abuse_reply_template.md, internal)")
+    print("8b) abuse actions: whois → destroy → ban")
     # The abuse-desk reply templates promise "we can destroy any individual
     # customer's machine immediately". This is that promise, exercised against
     # a real container — an abuse report carries an IP and nothing else, so the

@@ -1,5 +1,4 @@
-// This device's own keys and certificate lifecycle
-// (MULTIDEVICE_IMPLEMENTATION.md "How device certificates work").
+// This device's own keys and certificate lifecycle.
 import 'dart:convert';
 import 'dart:typed_data';
 

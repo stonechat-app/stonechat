@@ -8,7 +8,7 @@ MachineSpec mapping: machine_type = droplet size slug ("s-1vcpu-1gb"),
 region = DO region slug ("fra1", "nyc1"). disk_gb is ignored — droplet disk
 is fixed by the size slug.
 
-Networking notes, and why DO is a good fit (BUSINESS.md):
+Networking notes, and why DO is a good fit:
 - The public IPv4 sits directly on the droplet's interface — no 1:1 NAT, so
   the mailbox host's from-inside health checks of guest mailboxes just work.
 - New droplets have NO default cloud firewall: every port is reachable, which

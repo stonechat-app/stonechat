@@ -1,5 +1,5 @@
 /// Linked devices: what is attached to this mailbox, and how to add or
-/// remove one (MULTIDEVICE.md "Device model", "Revocation and threat notes").
+/// remove one.
 library;
 
 import 'package:flutter/material.dart';
@@ -76,8 +76,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
       builder: (dialogContext) => AlertDialog(
         backgroundColor: Zn.surface,
         title: const Text('Remove this device?'),
-        // The honest statement, not a comforting one. MULTIDEVICE.md is
-        // explicit that revocation is a delivery cut, not a cryptographic
+        // The honest statement, not a comforting one. Revocation is a delivery
+        // cut, not a cryptographic
         // excision, and the UI is where that stops being a footnote.
         content: const Text(
           'It stops receiving messages immediately and contacts stop '

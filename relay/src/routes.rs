@@ -29,7 +29,7 @@ fn detail(status: StatusCode, msg: &str) -> Response {
 
 /// Which device is calling. Any device token authenticates; device 1's token
 /// is `STONECHAT_OWNER_TOKEN`, so every existing client keeps working
-/// unchanged (MULTIDEVICE.md "Device model"). The 401 body is the historical
+/// unchanged. The 401 body is the historical
 /// "owner only" either way — a caller holding no valid token learns nothing
 /// about how many devices exist.
 ///
@@ -57,8 +57,7 @@ fn auth_primary(state: &AppState, q: &HashMap<String, String>) -> Result<(), Res
 
 /// The derived per-mailbox capability that lets an established contact list
 /// devices without being able to do anything else here. Not the owner token,
-/// and it consumes no prekeys — see MULTIDEVICE.md "Why the device list is
-/// gated".
+/// and it consumes no prekeys.
 fn bundle_token(owner_token: &str) -> String {
     let mut h = blake2::Blake2b::<blake2::digest::consts::U32>::new();
     h.update(owner_token.as_bytes());
@@ -231,7 +230,7 @@ fn parse_prekey_upload(body: &Value) -> Option<PrekeyUpload> {
 /// Unauthenticated it serves **device 1 only**, in exactly the shape and at
 /// exactly the cost it always did — one request, one OPK. `?device=` selects
 /// a sibling and requires the bundle token, so no single open call can burn a
-/// prekey per device (MULTIDEVICE.md "Why the device list is gated").
+/// prekey per device.
 pub async fn prekey_bundle(
     State(state): State<Arc<AppState>>,
     Query(q): Query<HashMap<String, String>>,
@@ -366,7 +365,7 @@ pub async fn inbox(State(state): State<Arc<AppState>>, body: Bytes) -> Response 
     Json(json!({"status": "queued", "devices_v": devices_v})).into_response()
 }
 
-// -- devices (MULTIDEVICE.md "Device model") ----------------------------------
+// -- devices ------------------------------------------------------------------
 
 /// List this mailbox's devices. Any device token: a linked desktop should be
 /// able to show the same device list the phone shows. Showing is all — what
@@ -471,7 +470,7 @@ pub async fn mint_device(
 /// its token is the mailbox's own, and the way to retire it is to move the
 /// mailbox.
 ///
-/// Honest limit, restated from MULTIDEVICE.md: this is a delivery cut, not a
+/// Honest limit: this is a delivery cut, not a
 /// cryptographic excision. The revoked device keeps its device keys and its
 /// certificate until that expires, and everything it already received.
 pub async fn revoke_device(

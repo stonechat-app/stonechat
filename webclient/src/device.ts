@@ -1,9 +1,8 @@
 /**
  * This browser session's own keys, and the certificate that says they are ours.
  *
- * Counterpart of `app/lib/core/device_keys.dart`; the reasoning lives in
- * MULTIDEVICE_IMPLEMENTATION.md "How device certificates work". The short
- * version: the identity key is not a messaging key. It is a root that signs a
+ * Counterpart of `app/lib/core/device_keys.dart`. The short version: the
+ * identity key is not a messaging key. It is a root that signs a
  * short public statement per device —
  *
  *     stonechat_id · device_id · sig_pub · seal_pub · not_after

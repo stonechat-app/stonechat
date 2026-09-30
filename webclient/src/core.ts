@@ -495,8 +495,7 @@ export class StonechatCore {
    * PQXDH as the initiator, device to device.
    *
    * `edSeed` is this device's signing seed and `peerEdPk` the peer device's
-   * signing key from its certificate — neither is an identity key. See
-   * MULTIDEVICE_IMPLEMENTATION.md "Why X3DH was the awkward one".
+   * signing key from its certificate — neither is an identity key.
    */
   sessionInitiate(args: {
     edSeed: Uint8Array;

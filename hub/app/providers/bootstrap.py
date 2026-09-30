@@ -1,6 +1,6 @@
 """Builds the startup script that turns a bare VM into a Stonechat routing server.
 
-The relay is a static Rust binary (relay/ — see notes/docs/RUST_PORT.md), far too
+The relay is a static Rust binary (relay/), far too
 big to inline in a startup script (clouds cap them: GCP 256 KB, DigitalOcean
 64 KB, AWS 16 KB — the old gzip+base64-embedded Python relay already broke
 AWS). So the script is a **fetch-stub**: it downloads the binary and verifies

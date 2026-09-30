@@ -9,8 +9,7 @@
 //! Two rules from the wider design govern most of the code below:
 //!
 //! - **One message to a peer with k devices is k envelopes**, each on its own
-//!   ratchet. There is no fan-out at the relay (MULTIDEVICE.md "Why not let
-//!   the relay fan out?").
+//!   ratchet. There is no fan-out at the relay.
 //! - **Both device numbers are bound into the AEAD**, always, in one form. A
 //!   relabelled envelope simply fails to decrypt.
 

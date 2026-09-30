@@ -67,10 +67,10 @@ class Store:
             -- machine per user (that PRIMARY KEY is the one-per-user claim), so
             -- a tombstone kept there would lock a wrongly-hit user out of
             -- re-provisioning. Here it can be preserved indefinitely — abuse
-            -- cases carry evidence-preservation duties (ABUSE.md §5) and the
+            -- cases carry evidence-preservation duties and the
             -- second report from a provider is only easy to answer if the
             -- first one was written down.
-            -- Link grants in flight (MULTIDEVICE.md "Linking a device").
+            -- Link grants in flight.
             --
             -- The hub is the dead drop for one reason: a device being linked
             -- has no identity, no account and no idea which relay to poll —
@@ -186,7 +186,7 @@ class Store:
                 "ALTER TABLE server_tombstones RENAME TO mailbox_tombstones"
             )
 
-    # -- link grants (MULTIDEVICE.md "Linking a device") ----------------------
+    # -- link grants -----------------------------------------------------------
 
     LINK_TTL_S = 600
     MAX_PENDING_LINKS = 8
@@ -370,7 +370,7 @@ class Store:
         resolves in the directory. Making "banned" indistinguishable from
         "never existed" would hand the hub a censorship lever it should not
         have, and identities are cheap to regenerate anyway: this is a cost on
-        paying abusers, a speed bump on everyone else (notes/docs/ABUSE.md, internal)."""
+        paying abusers, a speed bump on everyone else."""
         cur = self._db.execute(
             "UPDATE users SET banned_at = ?, ban_reason = ? WHERE stonechat_id = ?",
             (_now() if reason else None, reason, stonechat_id),
@@ -389,7 +389,7 @@ class Store:
         Order is the safety argument (each statement autocommits): the users
         row goes last, because its token is what lets a half-finished deletion
         be retried. Kept on purpose: abuse records (mailbox_tombstones, reports), which carry their
-        own retention (ABUSE.md)."""
+        own retention."""
         self._db.execute("DELETE FROM mailboxes WHERE stonechat_id = ?", (stonechat_id,))
         self._db.execute("DELETE FROM users WHERE stonechat_id = ?", (stonechat_id,))
 

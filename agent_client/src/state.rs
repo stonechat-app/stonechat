@@ -5,7 +5,7 @@
 //! What bounds it is scope: **there is no identity secret in here.** The
 //! worst this file can do if stolen is act as one device until the owner
 //! revokes it, which is exactly the bound device certificates were built to
-//! give (MULTIDEVICE_IMPLEMENTATION.md "What a linked device cannot do").
+//! give.
 //!
 //! The double ratchet is mutable state that advances on every message, so
 //! this is written **before** an envelope is allowed to leave and after every
@@ -90,7 +90,7 @@ pub struct State {
 
     // -- conversations -------------------------------------------------------
     /// `"<peer>|<device>"` → ratchet. Keyed by device because two devices of
-    /// one peer cannot share a ratchet (MULTIDEVICE.md "Device model").
+    /// one peer cannot share a ratchet.
     #[serde(default)]
     pub sessions: BTreeMap<String, SessionState>,
     /// `"<peer>|<device>"` → their device certificate. Cached because every

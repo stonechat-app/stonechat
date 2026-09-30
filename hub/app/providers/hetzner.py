@@ -19,7 +19,7 @@ this table):
     ash   Ashburn, US      cpx11
     hil   Hillsboro, US    cpx11
 
-Why Hetzner (notes/docs/providers.md): the cheapest RAM in the industry, which
+Why Hetzner: the cheapest RAM in the industry, which
 is where the Mailbox tier's margin is actually decided, plus cheap IPv4 for the
 Machine tier — the only provider that wins both. DE, FI and SG in one adapter.
 

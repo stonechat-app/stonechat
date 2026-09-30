@@ -262,8 +262,7 @@ def relay_binary(authorization: str | None = Header(default=None)):
 
 
 # Registration is once per install, so 10/min/IP is roomy even for a NAT'd
-# office — while a scripted loop dies on its first second (ABUSE.md
-# "Scripted registration").
+# office — while a scripted loop dies on its first second.
 #
 # Overridable only because scripts/e2e.py creates a dozen identities from one
 # address in seconds and would otherwise trip a limit that exists for humans.
@@ -373,7 +372,7 @@ def recover(body: RecoverIn, request: Request):
 _directory_limiter = RateLimiter(limit=120, window_s=60.0)
 
 
-# -- device linking (MULTIDEVICE.md "Linking a device") ------------------------
+# -- device linking ------------------------------------------------------------
 #
 # The hub is the dead drop, not the relay. A device being linked has no
 # identity, no account, and no way to know which relay to poll — the hub URL

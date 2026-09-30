@@ -62,8 +62,8 @@ The relay is one small program with one job. Run it on your own hardware and sti
 Subscriptions are optional, and exist only for people who would rather not administer a server."""
 
 # NOTE: the previous "OPEN SOURCE — read every line" section comes back the
-# day the repo actually flips public (notes/todo-rebrand.md "Before
-# open-sourcing"). Until then the claim would be false and App Review checks.
+# day the repo actually flips public. Until then the claim would be false and
+# App Review checks.
 
 # <= 4000. Only meaningful on an update; Apple rejects it on a first version,
 # so the script skips it while the app has never been released.

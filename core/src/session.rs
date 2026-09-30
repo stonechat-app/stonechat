@@ -10,7 +10,7 @@
 //!
 //! A session is a value. Nothing here talks to the network or storage, and
 //! all randomness is caller-supplied. Sessions carry no owner/peer id:
-//! hosts key persistence by (peer, device) per MULTIDEVICE.md.
+//! hosts key persistence by (peer, device).
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;

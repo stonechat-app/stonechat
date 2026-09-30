@@ -1,4 +1,4 @@
-//! Stonechat protocol core (notes/docs/ROADMAP.md "stonechat-core").
+//! Stonechat protocol core.
 //!
 //! The single implementation of the Stonechat session protocol — PQXDH
 //! establishment, double ratchet, X-Wing hybrid envelope seal — shared by
@@ -23,7 +23,7 @@
 //!   the reference vectors in tests/, generated with hashlib.blake2b and
 //!   PyNaCl against the constants in PROTOCOL.md).
 //! - Sessions are values with no owner id inside — hosts key storage by
-//!   (peer, device) per MULTIDEVICE.md so the multi-device migration
+//!   (peer, device) so the multi-device migration
 //!   never touches this crate's state shape.
 //!
 //! The C ABI (src/ffi.rs) is the session surface every host calls:

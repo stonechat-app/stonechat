@@ -8,8 +8,8 @@ body), real response parsing, real polling loop, fake wire. It catches the
 class of bug an adapter is actually made of — a wrong field name, a status
 value that never arrives, an error body read as success — and catches nothing
 about whether the cloud behaves as documented. **A live-token provision is
-still required before either provider serves a country** (TODO.md §20: "test
-hairpin NAT first on every new provider").
+still required before either provider serves a country** — and it should
+test hairpin NAT first, as on every new provider.
 
 The transport is injected by shimming the module's `httpx`, so the client the
 adapter builds is the client under test rather than one this script hands it.

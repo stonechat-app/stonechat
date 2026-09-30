@@ -1,8 +1,7 @@
 //! Stonechat relay — the program behind a single user's encrypted mailbox.
 //!
-//! The relay implementation (ported from the retired Python relay —
-//! notes/docs/RUST_PORT.md is the port record; PROTOCOL.md "Mailbox API"
-//! is the wire contract). Runs on a VM the user owns.
+//! The relay implementation (ported from the retired Python relay;
+//! PROTOCOL.md "Mailbox API" is the wire contract). Runs on a VM the user owns.
 //! Stores only sealed envelopes addressed to its owner and deletes each one
 //! the moment the owner's device acks it. Plaintext never exists here, and
 //! neither does sender identity: everything beyond the recipient rides inside
@@ -125,7 +124,6 @@ impl AppState {
     /// Refcounted rather than deleted outright: with per-device fan-out the
     /// same `blob_id` is referenced by one envelope per device, and the first
     /// device to ack must not pull the file out from under its siblings
-    /// (MULTIDEVICE.md "Sending: per-device envelopes").
     ///
     /// Blobs with *no* referencing envelope are untouched here — that is the
     /// token-shared mode group media uses, where the ciphertext sits on the
@@ -295,8 +293,8 @@ async fn main() {
         cfg,
     });
 
-    // Blob GC on a timer instead of inline on every upload (RUST_PORT.md
-    // "Permitted improvements"); put() still GCs on demand when the cap hits.
+    // Blob GC on a timer instead of inline on every upload; put() still GCs
+    // on demand when the cap hits.
     {
         let st = state.clone();
         tokio::spawn(async move {

@@ -19,7 +19,7 @@ line, and the UI is required to show both. A country picker that prints only
 the flattering half is marketing, and this product does not get to do that:
 `SG` is on the list for reach and says so.
 
-Opening set is deliberately five (BUSINESS.md): each country is one idle machine
+Opening set is deliberately five: each country is one idle machine
 host until it fills, so coverage is added when demand proves it, not upfront.
 
 All five currently resolve to **GCP**, the one adapter that has ever
@@ -27,7 +27,7 @@ provisioned for real. `hetzner`, `vultr` and `digitalocean` all exist and are
 mock-tested only (`hub/scripts/check_providers.py`); `aws` is dead code on
 hairpin NAT. Each `Hosting(...)` below therefore names the cheaper home it
 should move to and what that move is still waiting on — one live provision per
-provider, per TODO.md §20 — because a country picker that places a mailbox
+provider — because a country picker that places a mailbox
 somewhere untested is the one failure this file exists to prevent.
 """
 

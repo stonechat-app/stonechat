@@ -48,7 +48,7 @@ pub async fn ping_gateway_if_unacked(
 /// The addressed device is offline — ask the push gateway to wake it. Only
 /// the device the envelope was routed to is woken: a desktop that registered
 /// no token simply drains on next launch, and a sibling phone is not lit up
-/// for mail it was never sent (MULTIDEVICE.md "Relay changes").
+/// for mail it was never sent.
 ///
 /// ring=true marks a call offer: debounced on a window short enough that a
 /// second call is never swallowed, and flagged to the gateway so it can

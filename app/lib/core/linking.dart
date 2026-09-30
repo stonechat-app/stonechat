@@ -1,4 +1,4 @@
-/// Device linking (MULTIDEVICE.md "Linking a device").
+/// Device linking.
 ///
 /// The new device generates its own keys, shows their public halves, and gets
 /// back a **certificate** over them plus the addressing it needs: hub URL,

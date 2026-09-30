@@ -1,7 +1,7 @@
 //! SQLite-backed envelope queue + prekey/push-config store. Rows die on ack.
 //!
 //! The device dimension runs through almost every table: one queue, one
-//! prekey pool and one push registration per device (MULTIDEVICE.md).
+//! prekey pool and one push registration per device.
 //! Pre-launch, so there is no schema migration — the tables are created as
 //! they are meant to be, and an older volume is wiped rather than upgraded.
 
@@ -214,7 +214,7 @@ impl Mailbox {
         rows.map(|r| r.unwrap()).collect()
     }
 
-    // -- devices (MULTIDEVICE.md "Device model") ------------------------------
+    // -- devices -------------------------------------------------------------
 
     /// Which device is presenting this token, if any. The only authentication
     /// the relay has: possession of a device token is being that device.
@@ -505,7 +505,7 @@ impl Mailbox {
     }
 
     /// Every device's SPK/KSPK, no one-time keys consumed — the free listing
-    /// half of the bundle split (MULTIDEVICE.md "Prekeys per device"). A
+    /// half of the bundle split. A
     /// device with no published signed prekeys is omitted: a sender has
     /// nothing to X3DH against there.
     pub fn device_prekeys(&self) -> Vec<Value> {
@@ -583,7 +583,7 @@ impl Mailbox {
     }
 
     /// Queue an envelope for one device. The caps meter *delivery*, so they
-    /// are per device (MULTIDEVICE.md "Relay changes") — one device that
+    /// are per device — one device that
     /// stops draining must not stop the others receiving mail.
     ///
     /// Two caps, because rows alone bound nothing: 10,000 envelopes of 64 KiB

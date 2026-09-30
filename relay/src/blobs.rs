@@ -2,11 +2,10 @@
 //! Plain files on disk; the server can't decrypt them (secretbox key travels
 //! inside the envelope ciphertext).
 //!
-//! Differences from the retired Python relay, per RUST_PORT.md "Permitted
-//! improvements": used-bytes is tracked incrementally (one scan at boot)
-//! instead of re-stat()ing the whole directory on every upload, and TTL GC
-//! runs on a timer plus on-demand when the cap would reject an upload —
-//! same limits, same status codes.
+//! Differences from the retired Python relay: used-bytes is tracked
+//! incrementally (one scan at boot) instead of re-stat()ing the whole
+//! directory on every upload, and TTL GC runs on a timer plus on-demand when
+//! the cap would reject an upload — same limits, same status codes.
 //!
 //! **Blobs stream; they are never held whole in memory.** A blob is up to
 //! MAX_BLOB_BYTES (64 MiB) and a mailbox container runs under a cgroup cap, so

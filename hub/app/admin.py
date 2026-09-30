@@ -1,9 +1,9 @@
 """Operator-only abuse actions.
 
 Every managed mailbox lives in GazelleLabs' provider accounts, so a report
-about one customer's machine is a threat to every customer's machine
-(notes/docs/ABUSE.md, internal). These routes are what turn "we can act on a credible report"
-from a claim in an abuse-desk reply into something doable at 3am:
+about one customer's machine is a threat to every customer's machine. These
+routes are what turn "we can act on a credible report" from a claim in an
+abuse-desk reply into something doable at 3am:
 
     whois   — an abuse report carries an IP; this turns it into a Stonechat ID
     destroy — the machine is gone, the record of it is kept
@@ -19,8 +19,6 @@ account. That makes it safe to do fast, on the balance of probabilities,
 which is the posture an abuse desk needs. Banning says someone is not a
 customer any more — a slower, colder decision that should not ride along with
 an urgent one.
-
-Runbook and the reply templates these routes back up: notes/docs/abuse_reply_template.md.
 
 Disabled entirely unless STONECHAT_ADMIN_TOKEN is set.
 """
@@ -62,7 +60,7 @@ def whois(host: str, _: Admin):
     history. Step 1 of every abuse report.
 
     An empty `mailboxes` result usually means the IP is not ours *any more*:
-    recycled provider IPs arrive carrying someone else's history (ABUSE.md §9),
+    recycled provider IPs arrive carrying someone else's history,
     and that is an answer worth sending quickly rather than investigating."""
     mailboxes = store.mailboxes_by_host(host)
     out = []

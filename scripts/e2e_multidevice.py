@@ -1,4 +1,4 @@
-"""Multi-device end to end, without Docker (MULTIDEVICE.md).
+"""Multi-device end to end, without Docker.
 
 e2e.py provisions relays through the hub, which needs Docker. This one runs
 relays directly and registers them as external mailboxes, so the whole

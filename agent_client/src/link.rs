@@ -1,4 +1,4 @@
-//! The new device's side of linking (MULTIDEVICE.md "Linking a device").
+//! The new device's side of linking.
 //!
 //! The phone shows nothing and scans nothing here: **we** display the code and
 //! the phone reads it. That direction is what makes a headless agent possible
@@ -147,8 +147,7 @@ pub async fn link(hub_url: &str, no_qr: bool) -> Result<()> {
     Ok(())
 }
 
-/// The three checks, each closing a different substitution
-/// (MULTIDEVICE_IMPLEMENTATION.md "The new device makes three checks").
+/// The three checks, each closing a different substitution.
 fn adopt(
     grant: &Value,
     dev_sig_seed: &[u8; 32],

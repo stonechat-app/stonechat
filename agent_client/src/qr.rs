@@ -40,9 +40,9 @@ pub fn wanted(suppressed: bool) -> bool {
 /// code should never happen — but a link flow that dies because its decoration
 /// failed would be an absurd way to lose.
 pub fn render(data: &str) -> Option<String> {
-    // Error correction Q, matching what MULTIDEVICE.md specifies the link code
-    // is designed for. Higher than a URL would need, because this is being
-    // photographed off a screen at an angle, in whatever light.
+    // Error correction Q, what the link code is designed for. Higher than a
+    // URL would need, because this is being photographed off a screen at an
+    // angle, in whatever light.
     let code = QrCode::with_error_correction_level(data, EcLevel::Q).ok()?;
     let art = code
         .render::<unicode::Dense1x2>()

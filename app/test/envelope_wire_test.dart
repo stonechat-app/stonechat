@@ -1,5 +1,5 @@
 // The wire format is the contract with every other client and with the relay
-// (PROTOCOL.md "Envelope", MULTIDEVICE.md). These pin the parts multi-device
+// (PROTOCOL.md "Envelope"). These pin the parts multi-device
 // added: both device numbers, and the bundle token that rides inside the seal.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:stonechat/models.dart';

@@ -1,4 +1,4 @@
-// Device linking (MULTIDEVICE.md "Linking a device"). The QR is the trust
+// Device linking. The QR is the trust
 // anchor of the whole flow — the user carries it between two screens — so
 // what it encodes, and what the scanner refuses, is worth pinning.
 import 'dart:convert';

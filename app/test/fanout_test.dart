@@ -1,5 +1,4 @@
-// Fan-out concurrency (TODO.md §1, MULTIDEVICE.md "Why not let the relay fan
-// out?"). Group sends were one round trip per member end to end; multi-device
+// Fan-out concurrency. Group sends were one round trip per member end to end; multi-device
 // multiplies that by the recipient's device count, so the loop had to go.
 //
 // These two primitives are where the correctness lives: runBounded must not
