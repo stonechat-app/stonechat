@@ -53,7 +53,7 @@ export const ED_SIGNATURE = 64;
 export const SHA256 = 32;
 
 /** The ABI this binding was written against. */
-export const EXPECTED_ABI = 1;
+export const EXPECTED_ABI = 2;
 
 interface CoreExports {
   memory: WebAssembly.Memory;
@@ -582,9 +582,12 @@ export class StonechatCore {
     ciphertext: Uint8Array;
     ad: Uint8Array;
     freshRatchetSk: Uint8Array;
+    /** 64 fresh bytes for the post-quantum ratchet, drawn separately. */
+    pqRandom: Uint8Array;
   }): DecryptResult | null {
     fixed(args.nonce, 24, 'nonce');
     fixed(args.freshRatchetSk, 32, 'fresh ratchet secret');
+    fixed(args.pqRandom, 64, 'post-quantum ratchet randomness');
     const stateJson = enc.encode(JSON.stringify(args.state));
     const headerJson = enc.encode(JSON.stringify(args.header));
     const out = this.callOut(
@@ -600,6 +603,7 @@ export class StonechatCore {
         a(args.ad),
         args.ad.length,
         a(args.freshRatchetSk),
+        a(args.pqRandom),
       ],
       { allowRefused: true },
     );

@@ -1,5 +1,5 @@
 //! Forward-secret pairwise sessions: PQXDH establishment + double ratchet
-//! (PROTOCOL.md "Session crypto"). The serialized JSON form keeps the shape
+//! + the sparse post-quantum ratchet (PROTOCOL.md "Session crypto"). The serialized JSON form keeps the shape
 //! of the retired Dart `RatchetSession.toJson`.
 //!
 //! Sessions are **device to device**. The long-term Ed25519 keys this
@@ -19,14 +19,24 @@ use serde::{Deserialize, Serialize};
 use crate::envelope::X3dhBlock;
 use crate::primitives::{
     AEAD_NONCE_BYTES, aead_open, aead_seal, bytes_eq, dh, ed25519_pk_from_seed,
-    ed25519_pk_to_x25519, ed25519_seed_to_x25519_sk, kdf_chain, kdf_root, x3dh_shared_key,
-    x25519_pk,
+    ed25519_pk_to_x25519, ed25519_seed_to_x25519_sk, kdf_chain, kdf_pq, kdf_root,
+    x3dh_shared_key, x25519_pk,
 };
 
 /// Per-chain gap tolerance.
 pub const MAX_SKIP: u64 = 256;
 /// Skipped message keys stored per session; oldest evicted.
 pub const MAX_SKIPPED_KEYS: usize = 512;
+
+/// Ratchet messages (sent + received) between two post-quantum ratchet
+/// steps: once this many have passed since the last KEM secret was mixed in,
+/// the initiator advertises a fresh ML-KEM key at its next sending chain.
+pub const PQ_INTERVAL: u64 = 50;
+/// How many messages at the start of a sending chain carry the pending KEM
+/// key or ciphertext. More than one so a reordered or lost first message
+/// does not cost a whole round trip; bounded so a monologue does not pay
+/// for it on every message.
+pub const PQ_ATTACH: u64 = 3;
 
 /// This device's long-term handshake key, expanded from an Ed25519 seed.
 /// Hosts pass the **device signing key's** seed. The type keeps its name
@@ -108,6 +118,38 @@ impl PrekeyBundle {
     }
 }
 
+/// An ML-KEM-768 encapsulation key the session's initiator advertises.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqKey {
+    pub id: u64,
+    /// Base64, 1184 bytes.
+    #[serde(rename = "pub")]
+    pub public: String,
+}
+
+/// The responder's encapsulation to the key named by `id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqCiphertext {
+    pub id: u64,
+    /// Base64, 1088 bytes.
+    pub ct: String,
+}
+
+/// Post-quantum ratchet fields of a header (`ratchet.pq`). Absent on most
+/// messages; every field is optional.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqHeader {
+    /// Id of the KEM secret mixed into the root key when this sending chain
+    /// began. Repeated on every message of the chain: whichever arrives
+    /// first has to say so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mix: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ek: Option<PqKey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ct: Option<PqCiphertext>,
+}
+
 /// Double-ratchet message header (`ratchet` in the inner envelope).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RatchetHeader {
@@ -115,6 +157,8 @@ pub struct RatchetHeader {
     pub dh: String,
     pub pn: u64,
     pub n: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pq: Option<PqHeader>,
 }
 
 /// Caller-supplied CSPRNG bytes for [`SessionState::initiate`].
@@ -202,9 +246,74 @@ pub struct SkippedKey {
     pub mk: [u8; 32],
 }
 
+/// Initiator: the KEM key it is advertising, until a ciphertext answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqLocal {
+    pub id: u64,
+    /// Base64 ML-KEM-768 seed (64 bytes). Deleted on decapsulation.
+    pub seed: String,
+}
+
+/// Initiator: a decapsulated secret waiting for the next sending chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqInbound {
+    pub id: u64,
+    #[serde(with = "b64_arr")]
+    pub ss: [u8; 32],
+}
+
+/// Responder: its encapsulation, kept until the initiator mixes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqOutbound {
+    pub id: u64,
+    /// Base64 ciphertext, re-sent until acknowledged by a `mix`.
+    pub ct: String,
+    #[serde(with = "b64_arr")]
+    pub ss: [u8; 32],
+}
+
+/// Post-quantum ratchet state (PROTOCOL.md "Post-quantum ratchet"). The
+/// session's initiator generates KEM keys, the responder encapsulates, and
+/// the initiator mixes the shared secret into the root key at the start of
+/// a sending chain. All defaults on a session that has not needed it yet,
+/// in which case it is left out of the serialized form.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PqState {
+    /// Messages sent + received since the last mix (or since PQXDH).
+    #[serde(default)]
+    pub count: u64,
+    /// Highest key id this side has advertised (initiator).
+    #[serde(default)]
+    pub issued: u64,
+    /// Highest key id mixed into the root key.
+    #[serde(default)]
+    pub mixed: u64,
+    /// Messages of the current sending chain that will still carry the
+    /// pending key or ciphertext.
+    #[serde(default)]
+    pub attach: u64,
+    /// The id mixed in when the current sending chain began, if one was.
+    #[serde(default)]
+    pub mix: Option<u64>,
+    #[serde(default)]
+    pub local: Option<PqLocal>,
+    #[serde(default)]
+    pub inbound: Option<PqInbound>,
+    #[serde(default)]
+    pub outbound: Option<PqOutbound>,
+}
+
+impl PqState {
+    fn is_idle(&self) -> bool {
+        *self == PqState::default()
+    }
+}
+
 /// The full ratchet state. Serializes to the exact JSON shape of the Dart
 /// `RatchetSession.toJson` (insertion-ordered `skipped`, base64 fields,
-/// nulls present for absent chain keys).
+/// nulls present for absent chain keys). `pq` is this crate's addition and
+/// is omitted while it holds nothing, so a Dart-written row still round
+/// trips unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionState {
     pub initiated_by_us: bool,
@@ -227,6 +336,8 @@ pub struct SessionState {
     pub pending_x3dh: Option<X3dhBlock>,
     #[serde(default)]
     pub skipped: Vec<SkippedKey>,
+    #[serde(default, skip_serializing_if = "PqState::is_idle")]
+    pub pq: PqState,
 }
 
 impl SessionState {
@@ -290,6 +401,7 @@ impl SessionState {
                 kem_one_time,
             }),
             skipped: Vec::new(),
+            pq: PqState::default(),
         })
     }
 
@@ -349,6 +461,7 @@ impl SessionState {
             pn: 0,
             pending_x3dh: None,
             skipped: Vec::new(),
+            pq: PqState::default(),
         })
     }
 
@@ -356,8 +469,96 @@ impl SessionState {
         self.cks.is_some()
     }
 
-    fn ad(ad_prefix: &str, dh_b64: &str, pn: u64, n: u64) -> Vec<u8> {
-        format!("{ad_prefix}|{dh_b64}|{pn}|{n}").into_bytes()
+    /// `{prefix}|{dh}|{pn}|{n}`, and when the header carries a `pq` block,
+    /// `|pq|{mix}|{ek.id}|{ek.pub}|{ct.id}|{ct.ct}` after it (absent fields
+    /// empty) — so the KEM material is authenticated by the message key.
+    fn ad(ad_prefix: &str, header: &RatchetHeader) -> Vec<u8> {
+        let mut ad = format!("{ad_prefix}|{}|{}|{}", header.dh, header.pn, header.n);
+        if let Some(pq) = &header.pq {
+            let num = |v: Option<u64>| v.map(|v| v.to_string()).unwrap_or_default();
+            ad.push_str(&format!(
+                "|pq|{}|{}|{}|{}|{}",
+                num(pq.mix),
+                num(pq.ek.as_ref().map(|k| k.id)),
+                pq.ek.as_ref().map(|k| k.public.as_str()).unwrap_or(""),
+                num(pq.ct.as_ref().map(|c| c.id)),
+                pq.ct.as_ref().map(|c| c.ct.as_str()).unwrap_or(""),
+            ));
+        }
+        ad.into_bytes()
+    }
+
+    /// The `pq` block for the next outgoing message, if it needs one.
+    fn pq_header_for_send(&mut self) -> Option<PqHeader> {
+        let mut pq = PqHeader {
+            mix: self.pq.mix,
+            ek: None,
+            ct: None,
+        };
+        if self.pq.attach > 0 {
+            if let Some(local) = &self.pq.local {
+                let seed: Option<[u8; pqcore::MLKEM_SEED_BYTES]> =
+                    B64.decode(&local.seed).ok().and_then(|s| s.try_into().ok());
+                pq.ek = seed.map(|seed| PqKey {
+                    id: local.id,
+                    public: B64.encode(pqcore::mlkem_pk_from_seed(&seed)),
+                });
+            }
+            if let Some(out) = &self.pq.outbound {
+                pq.ct = Some(PqCiphertext {
+                    id: out.id,
+                    ct: out.ct.clone(),
+                });
+            }
+            if pq.ek.is_some() || pq.ct.is_some() {
+                self.pq.attach -= 1;
+            }
+        }
+        (pq != PqHeader::default()).then_some(pq)
+    }
+
+    /// Take in the KEM material of a header whose message just
+    /// authenticated. The responder encapsulates to a new key; the
+    /// initiator decapsulates the answer to the key it is advertising.
+    /// Anything stale, repeated or malformed is ignored — the message
+    /// itself was genuine and still decrypts.
+    fn absorb_pq(&mut self, header: &RatchetHeader, pq_random: &[u8; 64]) {
+        let Some(pq) = &header.pq else { return };
+        if let (false, Some(ek)) = (self.initiated_by_us, &pq.ek) {
+            let newer = self.pq.outbound.as_ref().is_none_or(|o| o.id < ek.id);
+            let key: Option<[u8; pqcore::MLKEM_PUBLIC_BYTES]> =
+                B64.decode(&ek.public).ok().and_then(|k| k.try_into().ok());
+            if let (true, true, Some(key)) = (ek.id > self.pq.mixed, newer, key) {
+                let random: &[u8; pqcore::MLKEM_ENCAPS_RANDOM_BYTES] =
+                    pq_random[..pqcore::MLKEM_ENCAPS_RANDOM_BYTES].try_into().unwrap();
+                if let Some((ct, ss)) = pqcore::mlkem_encaps(&key, random) {
+                    self.pq.outbound = Some(PqOutbound {
+                        id: ek.id,
+                        ct: B64.encode(ct),
+                        ss,
+                    });
+                    self.pq.attach = PQ_ATTACH;
+                }
+            }
+        }
+        if let (true, Some(ct)) = (self.initiated_by_us, &pq.ct) {
+            let seed: Option<[u8; pqcore::MLKEM_SEED_BYTES]> = self
+                .pq
+                .local
+                .as_ref()
+                .filter(|l| l.id == ct.id)
+                .and_then(|l| B64.decode(&l.seed).ok())
+                .and_then(|s| s.try_into().ok());
+            let ct_bytes: Option<[u8; pqcore::MLKEM_CIPHERTEXT_BYTES]> =
+                B64.decode(&ct.ct).ok().and_then(|c| c.try_into().ok());
+            if let (Some(seed), Some(ct_bytes)) = (seed, ct_bytes) {
+                self.pq.inbound = Some(PqInbound {
+                    id: ct.id,
+                    ss: pqcore::mlkem_decaps(&seed, &ct_bytes),
+                });
+                self.pq.local = None; // the private half is done with
+            }
+        }
     }
 
     /// Encrypt one message. `ad_prefix` is
@@ -376,15 +577,16 @@ impl SessionState {
         let send_chain = self.cks.ok_or(SessionError::NotReadyToSend)?;
         let (mk, ck_next) = kdf_chain(&send_chain);
         self.cks = Some(ck_next);
-        let dh_b64 = B64.encode(self.dhs_pub);
-        let ad = Self::ad(ad_prefix, &dh_b64, self.pn, self.ns);
-        let ciphertext = aead_seal(&mk, nonce, plaintext, &ad);
         let header = RatchetHeader {
-            dh: dh_b64,
+            dh: B64.encode(self.dhs_pub),
             pn: self.pn,
             n: self.ns,
+            pq: self.pq_header_for_send(),
         };
+        let ad = Self::ad(ad_prefix, &header);
+        let ciphertext = aead_seal(&mk, nonce, plaintext, &ad);
         self.ns += 1;
+        self.pq.count += 1;
         Ok((header, ciphertext))
     }
 
@@ -392,6 +594,10 @@ impl SessionState {
     /// session state is untouched. On success the state has advanced —
     /// persist it. `fresh_ratchet_sk` must be fresh CSPRNG output; it is
     /// consumed only when the header carries a new remote ratchet key.
+    /// `pq_random` is 64 more bytes of fresh CSPRNG output, **independent
+    /// of `fresh_ratchet_sk`** (whose public half goes on the wire): the
+    /// post-quantum ratchet draws a KEM key or an encapsulation from it
+    /// when this message calls for one.
     pub fn decrypt(
         &mut self,
         header: &RatchetHeader,
@@ -399,8 +605,9 @@ impl SessionState {
         ciphertext: &[u8],
         ad_prefix: &str,
         fresh_ratchet_sk: &[u8; 32],
+        pq_random: &[u8; 64],
     ) -> Option<Vec<u8>> {
-        let ad = Self::ad(ad_prefix, &header.dh, header.pn, header.n);
+        let ad = Self::ad(ad_prefix, header);
 
         // Skipped key from an earlier out-of-order message?
         let skipped_key = format!("{}/{}", header.dh, header.n);
@@ -410,6 +617,8 @@ impl SessionState {
                 Some(plain) => {
                     self.confirmed = true;
                     self.pending_x3dh = None;
+                    self.pq.count += 1;
+                    self.absorb_pq(header, pq_random);
                     return Some(plain);
                 }
                 None => {
@@ -430,7 +639,13 @@ impl SessionState {
             if !trial.skip_receive_keys(header.pn) {
                 return None;
             }
-            trial.dh_ratchet(&header_dh, fresh_ratchet_sk);
+            // A chain that says a KEM secret was mixed in when it began: it
+            // has to be the one we encapsulated, or we cannot follow.
+            let mixed = match header.pq.as_ref().and_then(|pq| pq.mix) {
+                Some(id) => Some(trial.pq.outbound.take().filter(|o| o.id == id)?),
+                None => None,
+            };
+            trial.dh_ratchet(&header_dh, fresh_ratchet_sk, mixed.as_ref(), pq_random);
         }
         if !trial.skip_receive_keys(header.n) {
             return None;
@@ -442,6 +657,8 @@ impl SessionState {
         let plain = aead_open(&mk, nonce, ciphertext, &ad)?;
         trial.confirmed = true;
         trial.pending_x3dh = None;
+        trial.pq.count += 1;
+        trial.absorb_pq(header, pq_random);
         *self = trial;
         Some(plain)
     }
@@ -472,18 +689,53 @@ impl SessionState {
         true
     }
 
-    fn dh_ratchet(&mut self, header_dh: &[u8; 32], fresh_ratchet_sk: &[u8; 32]) {
+    /// The DH-ratchet step, with the post-quantum ratchet's two hooks: a
+    /// KEM secret is mixed into the root key immediately before the chain
+    /// its initiator-side owner sends on is derived — `peer_mixed` when
+    /// that is the chain we are about to receive, our own `inbound` when it
+    /// is the one we are about to send on.
+    fn dh_ratchet(
+        &mut self,
+        header_dh: &[u8; 32],
+        fresh_ratchet_sk: &[u8; 32],
+        peer_mixed: Option<&PqOutbound>,
+        pq_random: &[u8; 64],
+    ) {
         self.pn = self.ns;
         self.ns = 0;
         self.nr = 0;
         self.dhr = Some(*header_dh);
+        if let Some(out) = peer_mixed {
+            self.rk = kdf_pq(&self.rk, &out.ss);
+            self.pq.mixed = out.id;
+            self.pq.count = 0;
+        }
         let (rk1, ckr_new) = kdf_root(&self.rk, &dh(&self.dhs_sec, header_dh));
         self.rk = rk1;
         self.ckr = Some(ckr_new);
         self.dhs_sec = *fresh_ratchet_sk;
         self.dhs_pub = x25519_pk(fresh_ratchet_sk);
+        self.pq.mix = None;
+        if let Some(inbound) = self.pq.inbound.take() {
+            self.rk = kdf_pq(&self.rk, &inbound.ss);
+            self.pq.mix = Some(inbound.id);
+            self.pq.mixed = inbound.id;
+            self.pq.count = 0;
+        }
         let (rk2, cks_new) = kdf_root(&self.rk, &dh(&self.dhs_sec, header_dh));
         self.rk = rk2;
         self.cks = Some(cks_new);
+
+        // A new sending chain re-offers whatever is still unanswered, and
+        // is where the initiator starts the next KEM exchange once enough
+        // traffic has passed since the last.
+        self.pq.attach = PQ_ATTACH;
+        if self.initiated_by_us && self.pq.local.is_none() && self.pq.count >= PQ_INTERVAL {
+            self.pq.issued += 1;
+            self.pq.local = Some(PqLocal {
+                id: self.pq.issued,
+                seed: B64.encode(pq_random),
+            });
+        }
     }
 }

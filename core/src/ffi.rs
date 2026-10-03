@@ -493,8 +493,10 @@ pub unsafe extern "C" fn stonechat_session_encrypt(
 /// # Safety
 /// `state_json`/`header_json`/`ciphertext`/`ad`: readable per their lens.
 /// `nonce`: 24 readable bytes. `fresh_ratchet_sk`: 32 readable bytes of
-/// fresh CSPRNG output (consumed only on a DH-ratchet step). `out_*`
-/// writable.
+/// fresh CSPRNG output (consumed only on a DH-ratchet step). `pq_random`:
+/// 64 readable bytes of fresh CSPRNG output, independent of
+/// `fresh_ratchet_sk` (consumed only when the post-quantum ratchet needs a
+/// KEM key or an encapsulation). `out_*` writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stonechat_session_decrypt(
     state_json: *const u8,
@@ -507,6 +509,7 @@ pub unsafe extern "C" fn stonechat_session_decrypt(
     ad: *const u8,
     ad_len: usize,
     fresh_ratchet_sk: *const u8,
+    pq_random: *const u8,
     out_ptr: *mut *mut u8,
     out_len: *mut usize,
 ) -> i32 {
@@ -524,6 +527,9 @@ pub unsafe extern "C" fn stonechat_session_decrypt(
         }) else {
             return ERR_INPUT;
         };
+        let Some(pq_random) = (unsafe { arr::<64>(pq_random) }) else {
+            return ERR_INPUT;
+        };
         let Some(mut state) = state_from(state_bytes) else {
             return ERR_INPUT;
         };
@@ -533,7 +539,7 @@ pub unsafe extern "C" fn stonechat_session_decrypt(
         let Ok(ad_str) = std::str::from_utf8(ad_bytes) else {
             return ERR_INPUT;
         };
-        match state.decrypt(&header, nonce, ct, ad_str, fresh) {
+        match state.decrypt(&header, nonce, ct, ad_str, fresh, pq_random) {
             Some(plain) => {
                 let v = json!({
                     "state": state,

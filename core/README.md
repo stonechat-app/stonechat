@@ -52,10 +52,13 @@ grow a dependency on protocol code.
   the identity-export string: Argon2id whose parameters ride inside the
   container and are authenticated as the AEAD's associated data.
 - `src/session.rs` — PQXDH initiate/respond + double ratchet (MAX_SKIP=256,
-  at most 512 stored skipped keys, trial-then-commit decrypt). The
+  at most 512 stored skipped keys, trial-then-commit decrypt) + the sparse
+  post-quantum ratchet (an ML-KEM secret mixed into the root key at most
+  once per 50 messages; `decrypt` takes 64 bytes of randomness for it). The
   long-term keys in the handshake are the two *devices'* signing keys; the
   caller verifies the certificates that tie them to identities.
-- `src/envelope.rs` — X-Wing hybrid seal/unseal, `x3dh` block codec.
+- `src/envelope.rs` — X-Wing hybrid seal/unseal over content padded to a
+  size bucket, `x3dh` block codec.
 - `src/devcert.rs` — device certificates: the length-prefixed signing bytes,
   signing with the identity key, and verification (signature, commitment to
   the named SC- ID, expiry).

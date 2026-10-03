@@ -1070,6 +1070,7 @@ export class Protocol {
       ciphertext: b64decode(String(inner['ciphertext'])),
       ad,
       freshRatchetSk: randomBytes(32),
+      pqRandom: randomBytes(64),
     });
     if (result === null) return null;
     store.setSession(from, fromDevice, result.state);

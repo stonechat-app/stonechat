@@ -86,6 +86,7 @@ fn decrypt(
             ad.as_ptr(),
             ad.len(),
             fresh.as_ptr(),
+            [0x51u8; 64].as_ptr(),
             &mut out.ptr,
             &mut out.len,
         )

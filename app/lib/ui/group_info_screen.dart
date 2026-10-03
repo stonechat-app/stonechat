@@ -6,6 +6,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../core/group_rules.dart';
 import '../models.dart';
 import '../state/chat_state.dart';
 import 'report_sheet.dart';
@@ -22,7 +23,7 @@ class GroupInfoScreen extends StatefulWidget {
 
 class _GroupInfoScreenState extends State<GroupInfoScreen> {
   // Fan-out is O(N) per message — PROTOCOL.md's practical group cap.
-  static const _memberCap = 25;
+  static const _memberCap = groupMemberCap;
 
   @override
   Widget build(BuildContext context) {
@@ -180,8 +181,34 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
 
   /// Long-press on a member: block/unblock and report. Any member can be
   /// blocked, contact or not — the block is keyed by Stonechat ID.
+  Future<void> _confirmMakeAdmin(ChatState chat, GroupMember m) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Zn.surface,
+        title: Text('Make ${m.displayName} the admin?'),
+        content: const Text(
+            'Only they will be able to add, remove or rename from then on. '
+            "You stay in the group, and you can't take it back."),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Make admin'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await chat.transferAdmin(widget.group, m.stonechatId);
+  }
+
   void _memberActions(ChatState chat, GroupMember m) {
     final blocked = chat.isBlocked(m.stonechatId);
+    final isAdmin = widget.group.adminId == chat.app.stonechatId;
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Zn.surface,
@@ -192,6 +219,15 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (isAdmin)
+              ListTile(
+                leading: const Icon(Icons.shield_outlined, color: Zn.orange),
+                title: Text('Make ${m.displayName} the admin'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _confirmMakeAdmin(chat, m);
+                },
+              ),
             ListTile(
               leading: Icon(
                 blocked ? Icons.lock_open_outlined : Icons.block,

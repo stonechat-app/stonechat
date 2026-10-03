@@ -20,7 +20,8 @@ The shared contract between the components:
 Sessions are **forward-secret and post-quantum hybrid**: PQXDH key agreement
 (X3DH + ML-KEM-768, docs/POST_QUANTUM.md) bootstrapped from prekeys served
 by the recipient's own mailbox, then a double ratchet deriving a fresh key
-for every message. Recorded traffic is opened neither by a future quantum
+for every message, with a fresh ML-KEM secret mixed into it every so often
+("Post-quantum ratchet"). Recorded traffic is opened neither by a future quantum
 computer nor by later theft of a device's keys, within the limits in
 "Threat notes". Every envelope is additionally **sealed to the recipient
 device** with a hybrid KEM ("Envelope"), so it names no sender on the wire.
@@ -870,6 +871,73 @@ KDF_CK(ck):      mk  = H(0x01, key = ck, 32);  ck' = H(0x02, key = ck, 32)
   replaced.
 - A failed decryption leaves the session state untouched.
 
+### Post-quantum ratchet
+
+The DH ratchet heals a compromised session with X25519 alone. On top of it,
+a session periodically runs an ML-KEM-768 exchange and folds the result
+into the root key, so that healing also holds against an attacker who can
+break X25519 (docs/POST_QUANTUM.md). It is sparse: most messages carry
+nothing for it.
+
+The roles are fixed by the handshake. The session's **initiator** generates
+KEM keys and mixes; the **responder** encapsulates. The material travels in
+an optional `pq` object in the ratchet header:
+
+```json
+"ratchet": {
+  "dh": "…", "pn": 0, "n": 3,
+  "pq": {
+    "mix": 4,
+    "ek": {"id": 5, "pub": "<base64, 1184 bytes>"},
+    "ct": {"id": 5, "ct": "<base64, 1088 bytes>"}
+  }
+}
+```
+
+Every field of `pq` is optional, and `pq` is absent when it would be empty.
+Key ids count up from 1 within a session.
+
+1. **Advertise.** When the initiator performs a DH-ratchet step (it has
+   received a new remote ratchet key and starts a new sending chain), and at
+   least `PQ_INTERVAL = 50` messages have been sent or received on the
+   session since the last mix (or since PQXDH), and it has no key
+   outstanding, it generates an ML-KEM-768 keypair with the next id and
+   sends the public half as `ek`.
+2. **Encapsulate.** The responder, on an authenticated message carrying an
+   `ek` whose id is greater than the last id mixed and than the id it is
+   already answering, encapsulates to it and sends the ciphertext as `ct`
+   with the same id. It keeps the shared secret.
+3. **Decapsulate.** The initiator, on an authenticated message carrying a
+   `ct` for the id it is advertising, decapsulates, **deletes the KEM
+   private key**, and holds the shared secret for its next sending chain.
+4. **Mix.** At its next DH-ratchet step the initiator folds the secret into
+   the root key immediately before deriving the new sending chain, and puts
+   the id in `mix` on **every** message of that chain:
+
+   ```
+   KDF_PQ(rk, ss):  rk' = H("stonechat-v1-pqratchet" || ss, key = rk, 32)
+
+   initiator, new sending chain:   rk = KDF_PQ(rk, ss);  rk, CKs = KDF_RK(rk, dh)
+   responder, receiving that chain: rk = KDF_PQ(rk, ss);  rk, CKr = KDF_RK(rk, dh)
+   ```
+
+   The responder, on a header with a new ratchet key and a `mix`, MUST hold
+   the secret for that id — otherwise the message does not decrypt — and
+   discards it once mixed. `mix` on a later message of the same chain needs
+   no action. Both sides then count the interval from zero.
+
+`ek` and `ct` are large, so they are not sent on every message: each is
+attached to the first `PQ_ATTACH = 3` messages sent after it becomes
+pending, and again to the first three of every later sending chain, until it
+is answered (`ek` by a `ct`, `ct` by a `mix`). A key or ciphertext that is
+lost entirely is therefore offered again a round trip later. Repeats, stale
+ids and malformed keys are ignored; they never fail a message that
+otherwise decrypts.
+
+The exchange takes two and a half round trips and only advances when the
+conversation alternates, like the DH ratchet itself. The interval is counted
+in messages because the session layer has no clock.
+
 ### Message encryption
 
 ```
@@ -877,6 +945,7 @@ ciphertext = crypto_aead_xchacha20poly1305_ietf_encrypt(
     plaintext, ad, nonce = random 24 bytes, key = mk)
 
 ad = "stonechat/v1|{from}|{from_device}|{to}|{device}|{type}|{ratchet.dh}|{ratchet.pn}|{ratchet.n}"
+     [ "|pq|{mix}|{ek.id}|{ek.pub}|{ct.id}|{ct.ct}" ]      # only when the header has a pq object
 ```
 
 The associated data is that string in UTF-8: nine fields joined by `|`.
@@ -885,6 +954,13 @@ and `n` are decimal integers without padding; `type` is the envelope type;
 `ratchet.dh` is the base64 text exactly as it appears in the header. There
 is one form, used on every message whether or not either side has more than
 one device.
+
+When the header carries a `pq` object, six more fields follow: the literal
+`pq`, then `mix`, `ek.id`, `ek.pub`, `ct.id` and `ct.ct` — numbers in
+decimal, base64 exactly as in the header, and an absent field as the empty
+string. This is what authenticates the KEM material: a `pq` object that is
+stripped, added or altered changes the associated data and the message does
+not decrypt.
 
 Binding both device numbers ties a ciphertext to one ratchet: an envelope
 relabelled as coming from, or going to, another device fails to decrypt.
@@ -938,8 +1014,25 @@ kem_ct, kem_ss = XWing.Encaps(seal_pub_of_recipient_device)   # 64 bytes of rand
 key    = H(kem_ss, key = "stonechat-v1-hsealkdf", 32)
 nonce  = random 24 bytes
 sealed = kem_ct (1120) || nonce (24) || crypto_aead_xchacha20poly1305_ietf_encrypt(
-             inner_envelope_json, ad = "stonechat-v1-hseal", nonce, key)
+             pad(inner_envelope_json), ad = "stonechat-v1-hseal", nonce, key)
 ```
+
+**Padding.** What is sealed is padded to a size bucket, so that a mailbox
+cannot tell a receipt from a message from a roster by length:
+
+```
+pad(m)  = m || 0x80 || 0x00 … 0x00          up to bucket(len(m))
+bucket(n) = the smallest of 2048, 4096, 8192, 16384, 32768 that is ≥ n + 1,
+            else n + 1 rounded up to a multiple of 1024
+```
+
+The `0x80` marker is always present, so the padded form is always longer
+than the content. A recipient strips the trailing zeros and the marker, and
+MUST drop a seal whose content does not end that way or is not exactly the
+bucket its content pads to. Everything short — receipts, typing, text, a
+group message — is one size on the wire (2048 bytes of content, 3208 sealed);
+what the remaining buckets still tell apart is in "Threat notes". Blobs are
+not padded.
 
 X-Wing is draft-connolly-cfrg-xwing-kem, revision 06. The seal is
 *anonymous* and *hybrid* — a fresh encapsulation per envelope, no sender key
@@ -965,7 +1058,7 @@ with its own seal seed:
   "to": "<recipient Stonechat ID>",
   "device": 2,
   "sent_at": "<ISO-8601 UTC>",
-  "ratchet": {"dh": "<base64 ratchet pubkey>", "pn": 0, "n": 3},
+  "ratchet": {"dh": "<base64 ratchet pubkey>", "pn": 0, "n": 3, "pq": { …optional, see "Post-quantum ratchet"… }},
   "x3dh": { …see "PQXDH"… },
   "nonce": "<base64, 24 bytes>",
   "ciphertext": "<base64>",
@@ -988,7 +1081,8 @@ are lower-case.
 **What a recipient checks**, dropping the envelope silently on any failure:
 
 1. the outer `to` is itself;
-2. `sealed` opens with its own seal seed;
+2. `sealed` opens with its own seal seed, and what it holds is padded as
+   above;
 3. the inner envelope parses, with `id` (and `blob_id`) a UUID;
 4. the inner `to` is itself;
 5. the inner `id` **equals the outer `id`**. One id names a message
@@ -1063,7 +1157,9 @@ with `payload` rewritten to point at it (`blob_id`, `key`, `blob_nonce`,
 
 The admin of a group also sends `group_create` / `group_update` to its own
 sibling devices, which are not members and would otherwise never learn the
-roster. All self-sync is best-effort: no durable retry.
+roster; a device that finds itself behind asks its siblings with a
+`group_sync` ("Keeping the roster in step"). All self-sync is best-effort:
+no durable retry.
 
 ### Plaintext payloads (JSON, encrypted)
 
@@ -1075,7 +1171,8 @@ roster. All self-sync is best-effort: no durable retry.
 | `contact_accept`  | `{"display_name": "...", "avatar"?, "hub"?}` |
 | `profile_update`  | `{"display_name"?, "avatar"?: {"data": "<base64>", "mime"} \| null}` — wire form SHOULD set `push: false` |
 | `group_create` / `group_update` | `{"group_id", "name", "version", "admin", "members": [{"stonechat_id", "pubkey", "display_name"}], "expire_ms"?}` |
-| `group_msg`       | `{"group_id", "text", "expire_after_ms"?, "reply_to"?}` |
+| `group_sync`      | `{"group_id", "version"}` — "send me the roster"; `version` is the one the asker holds (0 for none). Wire form MUST set `push: false` |
+| `group_msg`       | `{"group_id", "text", "roster"?, "salt"?, "seen"?, "expire_after_ms"?, "reply_to"?}` — `roster`, `salt` and `seen` are described under "Groups" |
 | `group_media`     | `group_msg`'s fields minus `text`, plus `media`'s, plus `{"fetch_token", "blob_host", "blob_tls_fp"}` — see "Group media" |
 | `group_leave`     | `{"group_id"}`                         |
 | `receipt`         | `{"kind": "delivered"\|"read", "ids": ["<message id>", …]}` |
@@ -1308,22 +1405,123 @@ own mailbox. Group traffic is therefore exactly as forward-secret as DMs.
 
 - **The creator is the admin.** `group_create` and every `group_update` carry
   the *full* member list (including the admin and the recipient) and a
-  `version` that increments on every change. Clients MUST ignore
-  `group_create`/`group_update` envelopes whose `from` is not the payload's
-  `admin`, and — for a group they already hold — whose `from` is not the
-  admin **they recorded when they first learned of the group**, and ignore
-  versions ≤ the one they hold. The first check alone would let any member
-  take a group over by naming themselves admin.
-- **Member keys verify offline**: each member entry's `pubkey` must hash to
-  its `stonechat_id` (same commitment check as the directory), so a malicious
-  admin cannot silently substitute keys. One bad entry rejects the whole
-  roster.
+  `version` that increases on every change. The two types are applied
+  identically.
+- **Which roster a client accepts.** A client MUST ignore a roster:
+  - whose `group_id` is not a UUID ("Envelope" — the id becomes a
+    conversation key beside contacts' Stonechat IDs, and a "group" named
+    after a contact would capture what is typed to them);
+  - with more than **100** members, with a member listed twice, or whose
+    `admin` is not among its members;
+  - with a member entry whose `pubkey` does not hash to its `stonechat_id`
+    (same commitment check as the directory), so a malicious admin cannot
+    silently substitute keys. One bad entry rejects the whole roster;
+  - **for a group it does not hold:** whose `from` is not the payload's
+    `admin`, or whose `from` is not one of its **accepted contacts** (or
+    its own identity, mirroring a group between its devices). Fellow
+    members may be strangers; the person who adds you may not;
+  - **for a group it holds:** whose `from` is not the admin **it has on
+    record**, or whose `version` is ≤ the one it holds. Checking `from`
+    against the payload's own `admin` instead would let any member take a
+    group over by naming themselves.
+- **Handing over the admin role.** A roster from the admin on record that
+  names a *different* member as `admin` is a handover: the client records the
+  new admin, and from then on listens only to them. The former admin stays a
+  member. A member who never held the group cannot learn of it from the
+  handover roster (it is not from the admin it names); it learns of it from
+  the new admin's next roster.
 - A roster that no longer lists the recipient is its removal.
 - `group_msg` / `group_media` are only rendered if `from` is a current member
   of a group the client holds a roster for.
 - `group_leave` is a courtesy announcement; removal becomes authoritative
   with the admin's next `group_update`.
-- Practical cap ~25 members (fan-out is O(members × devices) per message).
+- The app builds groups of up to 25 members (fan-out is O(members × devices)
+  per message); the 100 above is only what a receiver tolerates.
+
+#### Keeping the roster in step
+
+A member who misses a roster change keeps writing to people who were removed
+and drops messages from people who were added, so rosters are not
+best-effort.
+
+- **Delivery.** The admin owes each roster to everyone it was addressed to —
+  the members and anyone it just removed — until **every device** of each has
+  accepted it, retrying with the same backoff and seven-day limit as a
+  message. A retry sends the roster as it stands *then*, so someone removed
+  in the meantime receives the roster that no longer lists them.
+- **`roster` in every message.** `group_msg` and `group_media` carry the
+  sender's view:
+
+  ```json
+  "roster": {"v": 7, "h": "<base64 roster hash>", "admin": "<Stonechat ID>"}
+  ```
+
+  ```
+  h = BLAKE2b-256("stonechat-v1-roster|{group_id}|{version}|{admin}|{ids}")
+  ```
+
+  where `ids` is the roster's Stonechat IDs sorted and joined with `,`. The
+  hash is over the roster **as the admin issued it**: applying a
+  `group_leave` locally does not change it. `h` is omitted by a client that
+  does not hold one (a group restored from a backup).
+- **What a receiver does with it**, for a message from a current member:
+  - `v` above its own: it is behind. It still renders the message, and sends
+    the admin on record a `group_sync`.
+  - `v` below its own: the sender is behind. If the receiver is the admin, it
+    sends that member the current roster.
+  - same `v`, different `h`: the admin issued two rosters under one version.
+    The client tells the user that member lists differ.
+  - no `roster`: nothing is concluded.
+- **Messages that arrive ahead of their roster.** A message from someone not
+  in the roster held, whose `roster.v` is above the version held — or for a
+  group not held at all, whose `roster.admin` is an accepted contact — is
+  **kept rather than dropped**: the client parks it (at most 200 in total,
+  for at most seven days), sends that admin a `group_sync`, and processes it
+  when the roster arrives. Anything else from a non-member is dropped.
+- **`group_sync`.** Whoever receives one holds the group and is the admin on
+  the asker's record. If the asker is in the roster it holds, and that roster
+  is newer than the `version` asked about, it answers with the current roster
+  as a `group_update`. A former admin answers too: for a member that missed
+  the handover, it is the only sender whose roster will be accepted, and the
+  roster it sends is the handover. Requests and answers are rate-limited by
+  the clients (one request per group and version per ten minutes; one answer
+  per member per minute).
+- **An admin behind its own group.** An admin that sees a member's `v` above
+  its own version (it was restored from an older backup, or another of its
+  devices issued the roster) numbers its next roster past the highest `v` it
+  has seen, so that members accept it, and asks its own devices for the
+  roster with a `group_sync`.
+
+#### Transcript consistency
+
+Fan-out means a sender chooses what each member receives. Nothing can stop a
+member from sending two members different text under one message id, but the
+others can notice.
+
+- Every `group_msg` and `group_media` carries a random 16-byte `salt`
+  (base64). A receiver records, for each message it stores:
+
+  ```
+  content hash = BLAKE2b-256("stonechat-v1-gmsg|{group_id}|{from}|{id}|{salt}|{body}")
+  body         = "text|{text}"                          for group_msg
+                 "media|{blob_id}|{key}|{blob_nonce}"   for group_media
+  ```
+
+  The hash is of the message as it first arrived; edits do not change it.
+- Every `group_msg` and `group_media` also carries `seen`: up to **4**
+  `{"id", "h"}` pairs — the other members' messages that reached the sender
+  since it last wrote to the group, newest first, with the content hashes it
+  recorded.
+- A receiver that holds a message named in `seen`, from a third member, with
+  a **different** hash, tells the user: the two of them were sent different
+  versions. It cannot tell whether the author sent two versions or the
+  reporting member misreports; it reports the disagreement, not a culprit.
+- The salt exists so that a member who was never sent a message cannot test
+  guesses of its text against a hash that reaches them in `seen`.
+
+A message that one member was simply never sent is **not** detected: `seen`
+entries for ids the receiver does not hold are ignored, because delivery is
+asynchronous and a missing message is usually only late.
 
 #### Group media
 
@@ -1965,13 +2163,20 @@ What the design gives, and where it stops.
   messages that never arrived) are kept until used or evicted, so a message
   withheld by the network stays decryptable by whoever later steals the
   session state.
-- **Post-compromise security and signatures are classical.** The KEM is
-  mixed into the root key once, at session establishment. The ratchet heals
-  with X25519 alone, and everything that authenticates — identity, device
-  certificates, prekey signatures, TLS and WebTransport pins — is Ed25519.
-  A quantum attacker who holds a device's state can follow its ratchet
-  forward; one who exists at the time of an attack can forge signatures.
-  Neither harms what was recorded before.
+- **Post-compromise security is hybrid but sparse; signatures are
+  classical.** A KEM secret is mixed into the root key at session
+  establishment and again by the post-quantum ratchet, at most once per 50
+  messages and only while the conversation alternates. Between two mixes the
+  ratchet heals with X25519 alone: a quantum attacker who holds a device's
+  state can follow its ratchet forward until the next exchange completes
+  with a key generated after the theft — and indefinitely on a session
+  where only one side ever writes, which the DH ratchet does not heal
+  either. The exchange is authenticated only by the session's own keys, so
+  it does not stop an attacker who holds the state *and* is actively in the
+  path. Everything that authenticates — identity, device certificates,
+  prekey signatures, TLS and WebTransport pins — is Ed25519: an attacker
+  with a quantum computer at the time of an attack can forge signatures.
+  None of this harms what was recorded before.
 - **Sealed sender, and what it does not hide.** The wire envelope names
   only the recipient and the recipient device. A mailbox does not learn the
   sender's *identity* from an envelope. It does see the **sender's network
@@ -1985,10 +2190,30 @@ What the design gives, and where it stops.
   on the recipient device's long-lived key, so a recorded backlog plus a
   later theft of that key reveals historical sender and type (never
   content).
-- **No padding.** Envelope and blob sizes are those of their contents plus
-  fixed overhead. A mailbox, and anyone on the path, can tell a receipt from
-  a message from a call setup from a photo by size and timing, and sees how
-  many devices a recipient has from the fan-out.
+- **What padding hides, and what it does not.** Sealed envelopes come in
+  size buckets ("Envelope"), and everything short is the smallest one: a
+  mailbox cannot tell a receipt from a typing notice from a text, or a
+  direct message from a group one, by length. Larger things still stand
+  out by bucket: a session's first envelopes (they carry the handshake), a
+  message carrying post-quantum ratchet material, a roster, a call offer, a
+  profile photo. **Blobs are not padded**, so a media file's size is that of
+  its content. And **timing is untouched**: a group message is a burst of
+  deposits from one address to each member's mailbox, a receipt follows a
+  message, and the fan-out shows how many devices a recipient has. An
+  operator who runs several members' mailboxes can infer a group from the
+  bursts alone.
+- **What a group member can do.** Group traffic is pairwise, so a member
+  decides what each other member receives. Sending two members different
+  content under one message id is **detected, not prevented**, and only
+  once a third member who received it writes to the group ("Transcript
+  consistency"); leaving a member out of a message is not detected. An
+  admin can remove anyone, and can hand the role to any member without
+  their agreement. An admin that issues two different rosters under one
+  version is detected by the roster hash, again only when the affected
+  members hear from each other. A removed member stops receiving from each
+  remaining member as that member learns of the removal — promptly when
+  their mailbox is reachable, and never, for a member whose every device
+  stays unreachable for the seven days a roster is owed.
 - **What the directory can and cannot do.** A hub cannot substitute an
   identity key: the answer is checked against the ID that was asked for. It
   cannot forge a TLS or WebTransport signature. It can **deny service**
@@ -2085,8 +2310,9 @@ Accepted for now, not fixed.
    it re-creates **replaces** the live one. The old message is processed
    again and the peer's subsequent messages fail until a new handshake.
    Nothing is disclosed; a conversation is disrupted.
-5. **Post-compromise security and signatures are classical** (above).
-6. **No padding** (above).
+5. **Signatures are classical, and post-compromise security is
+   post-quantum only once per interval** (above).
+6. **Blobs are unpadded and timing is visible** (above).
 7. **No identity rotation.** A Stonechat ID is a hash of one key. There is
    no way to move an identity to a new key, and no way to revoke a
    compromised one: the remedy for a stolen identity key is a new identity

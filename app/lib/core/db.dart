@@ -67,7 +67,10 @@ class ChatDb {
       // (deleteDatabaseFiles) rather than upgraded.
       version: 1,
       onCreate: (db, _) => createSchema(db),
-      onOpen: ensureBlocked,
+      onOpen: (db) async {
+        await ensureBlocked(db);
+        await ensureGroupIntegrity(db);
+      },
     );
     return ChatDb._(db);
   }
@@ -116,6 +119,8 @@ class ChatDb {
         reply_to_id      TEXT,
         reply_to_sender  TEXT,
         reply_to_preview TEXT,
+        salt             TEXT,
+        content_hash     TEXT,
         blob             TEXT,
         fail_reason      TEXT,
         attempts         INTEGER NOT NULL DEFAULT 0,
@@ -131,6 +136,8 @@ class ChatDb {
     await db.execute(_createGroups);
     await db.execute(_createGroupMembers);
     await db.execute(_createGroupOutbox);
+    await db.execute(_createRosterOwed);
+    await db.execute(_createGroupParked);
     await db.execute(_createSessions);
     await db.execute(_createPrekeys);
     await db.execute(_createReceipts);
@@ -159,6 +166,29 @@ class ChatDb {
       );
       await tx.execute('UPDATE contacts SET blocked_at = NULL');
     });
+  }
+
+  /// Roster versions in messages, transcript hashes and reliable roster
+  /// delivery arrived after the schema above was first shipped to test
+  /// devices. Same approach as [ensureBlocked]: a database created before
+  /// them gets the columns and tables here, with nothing to copy.
+  @visibleForTesting
+  static Future<void> ensureGroupIntegrity(Database db) async {
+    Future<void> addColumn(String table, String column, String type) async {
+      final cols = await db.rawQuery('PRAGMA table_info($table)');
+      if (cols.any((c) => c['name'] == column)) return;
+      await db.execute('ALTER TABLE $table ADD COLUMN $column $type');
+    }
+
+    await addColumn('groups', 'roster_hash', 'TEXT');
+    await addColumn('groups', 'seen_version', 'INTEGER NOT NULL DEFAULT 0');
+    await addColumn('messages', 'salt', 'TEXT');
+    await addColumn('messages', 'content_hash', 'TEXT');
+    for (final create in [_createRosterOwed, _createGroupParked]) {
+      await db.execute(
+        create.replaceFirst('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
+      );
+    }
   }
 
   // Who this user has blocked — contacts, group members, strangers alike.
@@ -199,6 +229,8 @@ class ChatDb {
       name       TEXT NOT NULL,
       admin_id   TEXT NOT NULL,
       version    INTEGER NOT NULL,
+      roster_hash TEXT,
+      seen_version INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       pinned_at  INTEGER,
       expire_timer_ms INTEGER NOT NULL DEFAULT 0,
@@ -231,6 +263,35 @@ class ChatDb {
       member_id  TEXT NOT NULL,
       device_id  INTEGER NOT NULL DEFAULT $primaryDevice,
       PRIMARY KEY (message_id, member_id, device_id)
+    )
+  ''';
+
+  // People still owed the group's current roster, and since when. Which of
+  // their *devices* are owed is tracked in group_outbox, under
+  // [rosterOutboxId] in place of a message id.
+  static const _createRosterOwed = '''
+    CREATE TABLE roster_owed (
+      group_id  TEXT NOT NULL,
+      member_id TEXT NOT NULL,
+      since     INTEGER NOT NULL,
+      PRIMARY KEY (group_id, member_id)
+    )
+  ''';
+
+  /// The group_outbox key under which a group's roster deliveries are
+  /// tracked. Not a UUID, so it can never collide with a message id.
+  static String rosterOutboxId(String groupId) => 'roster:$groupId';
+
+  // Group messages that arrived ahead of the roster that makes sense of
+  // them — from a member we have not heard of yet, or for a group whose
+  // group_create is still on its way. Replayed when the roster lands.
+  static const _createGroupParked = '''
+    CREATE TABLE group_parked (
+      id          TEXT PRIMARY KEY,
+      group_id    TEXT NOT NULL,
+      envelope    TEXT NOT NULL,
+      payload     TEXT NOT NULL,
+      received_at INTEGER NOT NULL
     )
   ''';
 
@@ -714,7 +775,155 @@ class ChatDb {
       where: 'group_id = ?',
       whereArgs: [groupId],
     );
+    await _db.delete('roster_owed', where: 'group_id = ?', whereArgs: [groupId]);
+    await _db.delete('group_parked', where: 'group_id = ?', whereArgs: [groupId]);
     await _db.delete('groups', where: 'id = ?', whereArgs: [groupId]);
+  }
+
+  // -- roster delivery ------------------------------------------------------------
+
+  /// These people are owed the group's current roster from now. Seeds the
+  /// per-device rows against the primary device, as [addOutbox] does; the
+  /// fan-out reconciles them.
+  Future<void> oweRoster(
+    String groupId,
+    Iterable<String> memberIds,
+    int nowMs,
+  ) async {
+    final ids = memberIds.toList();
+    await _db.transaction((tx) async {
+      for (final memberId in ids) {
+        await tx.insert('roster_owed', {
+          'group_id': groupId,
+          'member_id': memberId,
+          'since': nowMs,
+        }, conflictAlgorithm: ConflictAlgorithm.replace);
+      }
+    });
+    await addOutbox(rosterOutboxId(groupId), groupId, ids);
+  }
+
+  /// Who is still owed a roster: (group, member, since).
+  Future<List<({String groupId, String memberId, int since})>>
+  rosterOwed() async {
+    final rows = await _db.query('roster_owed', orderBy: 'since');
+    return [
+      for (final r in rows)
+        (
+          groupId: r['group_id'] as String,
+          memberId: r['member_id'] as String,
+          since: r['since'] as int,
+        ),
+    ];
+  }
+
+  /// Stop owing [memberId] the roster — delivered to every device, or given
+  /// up on.
+  Future<void> settleRoster(String groupId, String memberId) async {
+    await _db.delete(
+      'roster_owed',
+      where: 'group_id = ? AND member_id = ?',
+      whereArgs: [groupId, memberId],
+    );
+    await _db.delete(
+      'group_outbox',
+      where: 'message_id = ? AND member_id = ?',
+      whereArgs: [rosterOutboxId(groupId), memberId],
+    );
+  }
+
+  /// Devices of [memberId] that have not yet taken the roster.
+  Future<int> rosterDevicesOwed(String groupId, String memberId) async {
+    final rows = await _db.query(
+      'group_outbox',
+      where: 'message_id = ? AND member_id = ?',
+      whereArgs: [rosterOutboxId(groupId), memberId],
+    );
+    return rows.length;
+  }
+
+  // -- parked group messages ------------------------------------------------------
+
+  /// At most this many messages wait for a roster, across all groups; the
+  /// oldest go first. A bound on what a stream of messages for groups we
+  /// never join can make us keep.
+  static const parkedMax = 200;
+
+  Future<void> parkGroupMessage({
+    required String id,
+    required String groupId,
+    required String envelopeJson,
+    required String payloadJson,
+    required int nowMs,
+  }) async {
+    await _db.insert('group_parked', {
+      'id': id,
+      'group_id': groupId,
+      'envelope': envelopeJson,
+      'payload': payloadJson,
+      'received_at': nowMs,
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    await _db.rawDelete(
+      'DELETE FROM group_parked WHERE id NOT IN '
+      '(SELECT id FROM group_parked ORDER BY received_at DESC LIMIT ?)',
+      [parkedMax],
+    );
+  }
+
+  /// Remove and return what is parked for [groupId], oldest first.
+  Future<List<({String envelopeJson, String payloadJson})>> takeParked(
+    String groupId,
+  ) async {
+    final rows = await _db.query(
+      'group_parked',
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+      orderBy: 'received_at',
+    );
+    await _db.delete('group_parked', where: 'group_id = ?', whereArgs: [groupId]);
+    return [
+      for (final r in rows)
+        (
+          envelopeJson: r['envelope'] as String,
+          payloadJson: r['payload'] as String,
+        ),
+    ];
+  }
+
+  Future<void> dropParkedBefore(int cutoffMs) async {
+    await _db.delete(
+      'group_parked',
+      where: 'received_at < ?',
+      whereArgs: [cutoffMs],
+    );
+  }
+
+  // -- group transcript ------------------------------------------------------------
+
+  /// What message [messageId] (ours, in [groupId]) vouches for: the other
+  /// members' messages that arrived since we last spoke there, newest first.
+  /// Ordered by arrival (rowid), not by `sent_at`, which is each sender's
+  /// own clock; and bounded by this message's own row, so a retry builds the
+  /// same list.
+  Future<List<({String id, String hash})>> seenBefore(
+    String groupId,
+    String messageId,
+    int limit,
+  ) async {
+    final rows = await _db.rawQuery(
+      'SELECT id, content_hash FROM messages '
+      'WHERE contact_id = ?1 AND outgoing = 0 AND content_hash IS NOT NULL '
+      'AND rowid < (SELECT rowid FROM messages WHERE id = ?2) '
+      'AND rowid > COALESCE((SELECT MAX(rowid) FROM messages '
+      '  WHERE contact_id = ?1 AND outgoing = 1 '
+      '  AND rowid < (SELECT rowid FROM messages WHERE id = ?2)), 0) '
+      'ORDER BY rowid DESC LIMIT ?3',
+      [groupId, messageId, limit],
+    );
+    return [
+      for (final r in rows)
+        (id: r['id'] as String, hash: r['content_hash'] as String),
+    ];
   }
 
   // -- group outbox ---------------------------------------------------------------
@@ -1012,6 +1221,7 @@ class ChatDb {
       'name',
       'admin_id',
       'version',
+      'roster_hash',
       'created_at',
       'pinned_at',
       'expire_timer_ms',

@@ -81,10 +81,15 @@ enum Core {
     stateJson: Data, headerJson: Data, nonce: Data, ciphertext: Data, ad: String
   ) -> (state: Data, plaintext: Data)? {
     var fresh = Data(count: 32)
+    // The post-quantum ratchet's own draw (core ABI 2): never derived from
+    // `fresh`, whose public half goes on the wire.
+    var pqRandom = Data(count: 64)
     let ok = fresh.withUnsafeMutableBytes {
       SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) == errSecSuccess
+    } && pqRandom.withUnsafeMutableBytes {
+      SecRandomCopyBytes(kSecRandomDefault, 64, $0.baseAddress!) == errSecSuccess
     }
-    guard ok else { return nil }
+    guard ok, stonechat_core_abi_version() == 2 else { return nil }
     let adBytes = Data(ad.utf8)
     var ptr: UnsafeMutablePointer<UInt8>?
     var len = 0
@@ -94,14 +99,17 @@ enum Core {
           ciphertext.withUnsafeBytes { ct in
             adBytes.withUnsafeBytes { a in
               fresh.withUnsafeBytes { f in
-                stonechat_session_decrypt(
-                  state.bindMemory(to: UInt8.self).baseAddress, stateJson.count,
-                  header.bindMemory(to: UInt8.self).baseAddress, headerJson.count,
-                  n.bindMemory(to: UInt8.self).baseAddress,
-                  ct.bindMemory(to: UInt8.self).baseAddress, ciphertext.count,
-                  a.bindMemory(to: UInt8.self).baseAddress, adBytes.count,
-                  f.bindMemory(to: UInt8.self).baseAddress,
-                  &ptr, &len)
+                pqRandom.withUnsafeBytes { q in
+                  stonechat_session_decrypt(
+                    state.bindMemory(to: UInt8.self).baseAddress, stateJson.count,
+                    header.bindMemory(to: UInt8.self).baseAddress, headerJson.count,
+                    n.bindMemory(to: UInt8.self).baseAddress,
+                    ct.bindMemory(to: UInt8.self).baseAddress, ciphertext.count,
+                    a.bindMemory(to: UInt8.self).baseAddress, adBytes.count,
+                    f.bindMemory(to: UInt8.self).baseAddress,
+                    q.bindMemory(to: UInt8.self).baseAddress,
+                    &ptr, &len)
+                }
               }
             }
           }

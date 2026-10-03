@@ -315,6 +315,10 @@ class CryptoService {
   /// What clients pin: BLAKE2b-256 of the relay's DER certificate.
   String certFingerprint(Uint8List certDer) => core.tlsFingerprintB64(certDer);
 
+  /// BLAKE2b-256 of arbitrary bytes, base64 — the keyless hash behind roster
+  /// and group-message hashes (group_rules.dart). Same symbol as below.
+  String hashB64(Uint8List data) => core.tlsFingerprintB64(data);
+
   /// BLAKE2b-256 of arbitrary bytes, lowercase hex.
   ///
   /// The core exposes this under the TLS-fingerprint symbol because that was

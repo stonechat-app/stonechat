@@ -45,7 +45,7 @@ fn deliver(
     let nonce: [u8; 24] = b64_arr(&envelope["nonce"]);
     let ct = b64_vec(&envelope["ciphertext"]);
     state
-        .decrypt(&header, &nonce, &ct, ad, fresh)
+        .decrypt(&header, &nonce, &ct, ad, fresh, &[0x51; 64])
         .map(|p| String::from_utf8(p).unwrap())
 }
 

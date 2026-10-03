@@ -13,8 +13,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/api.dart';
+import '../core/crypto.dart' show randomBytes;
 import '../core/db.dart';
 import '../core/device_keys.dart';
+import '../core/group_rules.dart';
 import '../core/links.dart';
 import '../core/session.dart';
 import '../core/wire_ids.dart';
@@ -1882,6 +1884,9 @@ class ChatState extends ChangeNotifier {
     bool transient = false,
     bool noPush = false,
     ({String messageId, String conversationId})? outbox,
+    // False for someone who is no longer in the roster (a removed member
+    // being told so): writing them back to group_members would re-add them.
+    bool persist = true,
   }) async {
     Future<String> resolve() async {
       final entry = await _resolve(member.stonechatId);
@@ -1891,7 +1896,7 @@ class ChatState extends ChangeNotifier {
       member.mailboxAddress = entry.mailboxAddress;
       member.tlsFp = entry.mailboxTlsFp;
       member.pqPkB64 = entry.pqPkB64; // sig-verified in _resolve
-      await app.db.updateMember(member);
+      if (persist) await app.db.updateMember(member);
       return entry.mailboxAddress!;
     }
 
@@ -2117,6 +2122,7 @@ class ChatState extends ChangeNotifier {
           tlsFp: c.tlsFp,
         ),
     ];
+    group.rosterHash = _rosterHashOf(group, members);
     await app.db.upsertGroup(group);
     await app.db.replaceMembers(group.id, members);
     groups.add(group);
@@ -2124,11 +2130,10 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
 
     final payload = _membershipPayload(group, members);
-    // An unreachable member hears about the group via the next groupUpdate or
-    // message retry; eventual delivery is accepted.
-    await _fanOutToMembers(
+    await _publishRoster(
+      group,
       members.where((m) => m.stonechatId != app.stonechatId),
-      (m) async => _deliverToMember(m, EnvelopeType.groupCreate, payload),
+      type: EnvelopeType.groupCreate,
     );
     // Our own other devices are not members, so the fan-out above skips them
     // — and a linked browser was therefore never told a group existed, even
@@ -2179,8 +2184,8 @@ class ChatState extends ChangeNotifier {
   /// Admin-only: change the member set and/or rename, bump the version, and
   /// fan the new full state to everyone — including just-removed members,
   /// whose clients clear their membership on seeing a list without them
-  /// (PROTOCOL.md "Groups"). Best-effort like group_create: an unreachable
-  /// member hears about it on the next update.
+  /// (PROTOCOL.md "Groups"). Everyone it is sent to is owed it until every
+  /// one of their devices has taken it ([_publishRoster]).
   Future<void> updateGroupMembership(
     Group group, {
     String? name,
@@ -2216,7 +2221,8 @@ class ChatState extends ChangeNotifier {
     ];
     final oldName = group.name;
     if (renamed) group.name = newName;
-    group.version += 1;
+    group.version = _nextRosterVersion(group);
+    group.rosterHash = _rosterHashOf(group, members);
     await app.db.upsertGroup(group);
     await app.db.replaceMembers(group.id, members);
     groupMembers[group.id] = members;
@@ -2233,18 +2239,187 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
 
     final payload = _membershipPayload(group, members);
-    final recipients = [
+    await _publishRoster(group, [
       ...members.where((m) => m.stonechatId != app.stonechatId),
       ...removed,
-    ];
-    // An unreachable member keeps the old view until the next update.
-    await _fanOutToMembers(
-      recipients,
-      (m) async => _deliverToMember(m, EnvelopeType.groupUpdate, payload),
-    );
+    ]);
     // Same reasoning as create: a roster change our own devices never hear
     // about leaves them holding a membership list that is quietly wrong.
     unawaited(_syncToSiblings(EnvelopeType.groupUpdate, payload));
+  }
+
+  /// Hand the admin role to another member (PROTOCOL.md "Groups"): a roster
+  /// from us, the admin on record, that names them. We stay a member. There
+  /// is no taking it back — from here on only they can change the roster.
+  Future<void> transferAdmin(Group group, String newAdminId) async {
+    if (group.adminId != app.stonechatId) return;
+    if (newAdminId == app.stonechatId) return;
+    final members = groupMembers[group.id] ?? const <GroupMember>[];
+    final to = memberOf(group.id, newAdminId);
+    if (to == null) return;
+
+    group.version = _nextRosterVersion(group);
+    group.adminId = newAdminId;
+    group.rosterHash = _rosterHashOf(group, members);
+    await app.db.upsertGroup(group);
+    await _insertNotice(group.id, 'You made ${to.displayName} the group admin');
+
+    // Still ours to deliver: until a member has this roster, we are the only
+    // admin they will listen to.
+    await _publishRoster(
+      group,
+      members.where((m) => m.stonechatId != app.stonechatId),
+    );
+    unawaited(
+      _syncToSiblings(
+        EnvelopeType.groupUpdate,
+        _membershipPayload(group, members),
+      ),
+    );
+  }
+
+  String _rosterHashOf(Group group, List<GroupMember> members) => rosterHash(
+    app.crypto.hashB64,
+    groupId: group.id,
+    version: group.version,
+    admin: group.adminId,
+    memberIds: members.map((m) => m.stonechatId),
+  );
+
+  /// The version our next roster carries: past our own, and past any a member
+  /// has shown us — a device restored from a backup can be behind the group
+  /// it administers, and a roster numbered below what members hold is one
+  /// they ignore.
+  int _nextRosterVersion(Group group) =>
+      (group.seenVersion > group.version ? group.seenVersion : group.version) +
+      1;
+
+  // -- roster delivery ---------------------------------------------------------
+
+  /// Retry state for owed rosters, by "group|member": attempts so far and
+  /// when the last one was. In memory only — a restart simply tries again.
+  final Map<String, ({int attempts, int lastAt})> _rosterTries = {};
+
+  /// When we last asked for a group's roster, and for which version; and
+  /// when we last answered a member's request. Both keep a burst of group
+  /// messages from becoming a burst of roster traffic.
+  final Map<String, ({int version, int at})> _rosterAsked = {};
+  final Map<String, int> _rosterAnswered = {};
+  static const _rosterAskEveryMs = 10 * 60 * 1000;
+  static const _rosterAnswerEveryMs = 60 * 1000;
+
+  /// Send the group's current roster to [recipients] and keep owing it to
+  /// each of them until every one of their devices has accepted it. A member
+  /// who never hears of a change keeps writing to people who were removed,
+  /// and drops messages from people who were added, so this is delivered
+  /// with the same persistence as a message — not best-effort.
+  Future<void> _publishRoster(
+    Group group,
+    Iterable<GroupMember> recipients, {
+    String type = EnvelopeType.groupUpdate,
+  }) async {
+    final list = recipients.toList();
+    if (list.isEmpty) return;
+    await app.db.oweRoster(
+      group.id,
+      [for (final m in list) m.stonechatId],
+      DateTime.now().millisecondsSinceEpoch,
+    );
+    await _fanOutToMembers(list, (m) => _sendRoster(group, m, type: type));
+    if (await _hasPendingWork()) _scheduleRetrySweep();
+  }
+
+  /// One attempt at handing [member] the roster as it stands **now** — a
+  /// retry after a further change sends the newer one, and someone removed
+  /// since gets the roster that no longer lists them. Throws if no device of
+  /// theirs took it.
+  Future<void> _sendRoster(
+    Group group,
+    GroupMember member, {
+    String type = EnvelopeType.groupUpdate,
+  }) async {
+    await _deliverToMember(
+      member,
+      type,
+      _membershipPayload(group, groupMembers[group.id] ?? const []),
+      outbox: (
+        messageId: ChatDb.rosterOutboxId(group.id),
+        conversationId: group.id,
+      ),
+      persist: memberOf(group.id, member.stonechatId) != null,
+    );
+    if (await app.db.rosterDevicesOwed(group.id, member.stonechatId) == 0) {
+      await app.db.settleRoster(group.id, member.stonechatId);
+    }
+  }
+
+  /// Rosters still owed (the mailbox was unreachable, or one device of
+  /// several missed it). Same give-up window and backoff as messages.
+  Future<void> _retryRosters() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final owed in await app.db.rosterOwed()) {
+      final group = groupById(owed.groupId);
+      if (group == null || now - owed.since >= sendGiveUpAfterMs) {
+        await app.db.settleRoster(owed.groupId, owed.memberId);
+        continue;
+      }
+      final key = '${owed.groupId}|${owed.memberId}';
+      final tries = _rosterTries[key];
+      if (tries != null && now - tries.lastAt < sendBackoffMs(tries.attempts)) {
+        continue;
+      }
+      try {
+        final member =
+            memberOf(group.id, owed.memberId) ??
+            GroupMember(
+              groupId: group.id,
+              stonechatId: owed.memberId,
+              pubkeyB64: await _identityKeyFor(owed.memberId),
+              displayName: owed.memberId,
+            );
+        await _sendRoster(group, member);
+        _rosterTries.remove(key);
+      } catch (_) {
+        _rosterTries[key] = (attempts: (tries?.attempts ?? 0) + 1, lastAt: now);
+      }
+    }
+  }
+
+  /// Ask [adminId] for the roster of a group we are behind on. At most once
+  /// per version every ten minutes; best-effort, since the next message that
+  /// shows we are behind asks again.
+  Future<void> _askForRoster(
+    String groupId,
+    String adminId, {
+    required int held,
+    required int wanted,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final asked = _rosterAsked[groupId];
+    if (asked != null &&
+        asked.version >= wanted &&
+        now - asked.at < _rosterAskEveryMs) {
+      return;
+    }
+    _rosterAsked[groupId] = (version: wanted, at: now);
+    try {
+      await _sendToPeer(adminId, EnvelopeType.groupSync, {
+        'group_id': groupId,
+        'version': held,
+      }, noPush: true);
+    } catch (_) {
+      _rosterAsked.remove(groupId); // not asked after all
+    }
+  }
+
+  /// Hand [member] the current roster because they asked, or because their
+  /// own message showed they hold an older one.
+  Future<void> _answerRosterRequest(Group group, GroupMember member) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final key = '${group.id}|${member.stonechatId}';
+    if (now - (_rosterAnswered[key] ?? 0) < _rosterAnswerEveryMs) return;
+    _rosterAnswered[key] = now;
+    await _publishRoster(group, [member]);
   }
 
   Future<Message> sendGroupMessage(
@@ -2268,6 +2443,7 @@ class ChatState extends ChangeNotifier {
       replyToId: replyTo?.id,
       replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
+      salt: base64Encode(randomBytes(16)),
     );
     await app.db.insertMessage(message);
     await app.db.addOutbox(message.id, group.id, [
@@ -2321,6 +2497,7 @@ class ChatState extends ChangeNotifier {
       replyToId: replyTo?.id,
       replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
+      salt: base64Encode(randomBytes(16)),
     );
     await app.db.insertMessage(message);
     await app.db.addOutbox(message.id, group.id, [
@@ -2357,10 +2534,25 @@ class ChatState extends ChangeNotifier {
         return;
       }
     }
+    // What we have seen the others say since we last spoke here, so anyone
+    // who was shown something else can tell (PROTOCOL.md "Transcript
+    // consistency").
+    final seen = await app.db.seenBefore(group.id, message.id, groupSeenMax);
     // Expiry rides the message itself, not the current setting: a retry after
     // a timer change must still carry the TTL this message was sent under.
     final payload = {
       'group_id': group.id,
+      // Our view of the membership, so a member holding another can tell.
+      'roster': {
+        'v': group.version,
+        'h': ?group.rosterHash,
+        'admin': group.adminId,
+      },
+      'salt': ?message.salt,
+      if (seen.isNotEmpty)
+        'seen': [
+          for (final s in seen) {'id': s.id, 'h': s.hash},
+        ],
       if (!isMedia) 'text': message.text,
       if (isMedia) ...{
         'blob_id': blob!.id,
@@ -3078,6 +3270,10 @@ class ChatState extends ChangeNotifier {
       }
     }
     await _reloadGroupOwed();
+    await _retryRosters();
+    await app.db.dropParkedBefore(
+      DateTime.now().millisecondsSinceEpoch - sendGiveUpAfterMs,
+    );
     if (await _hasPendingWork()) _scheduleRetrySweep();
   }
 
@@ -4027,66 +4223,28 @@ class ChatState extends ChangeNotifier {
       case EnvelopeType.groupCreate || EnvelopeType.groupUpdate:
         await _applyMembership(envelope, payload);
 
-      case EnvelopeType.groupMsg:
-        final group = groupById(payload['group_id'] as String? ?? '');
-        if (group == null) return; // unknown group — drop (create not seen yet)
-        if (memberOf(group.id, envelope.from) == null) return; // non-member
-        final (replyId, replySender, replyPreview) = _replyFrom(payload);
-        await _storeIncomingConversation(
-          group.id,
-          Message(
-            id: envelope.id,
-            contactId: group.id,
-            senderId: envelope.from,
-            outgoing: false,
-            text: (payload['text'] as String?) ?? '',
-            sentAt: _sentAtMs(envelope),
-            status: MessageStatus.sent,
-            expiresAt: _expiresAtFrom(envelope, payload),
-            replyToId: replyId,
-            replyToSender: replySender,
-            replyToPreview: replyPreview,
-          ),
-        );
+      case EnvelopeType.groupMsg || EnvelopeType.groupMedia:
+        await _receiveGroupMessage(envelope, payload);
 
-      case EnvelopeType.groupMedia:
+      case EnvelopeType.groupSync:
         final group = groupById(payload['group_id'] as String? ?? '');
-        if (group == null) return; // unknown group — drop (create not seen yet)
-        final sender = memberOf(group.id, envelope.from);
-        if (sender == null) return; // non-member
-        // Fetch from the *sender's* mailbox with the capability token in the
-        // payload, and persist BEFORE returning: returning acks the envelope.
-        // A null path means the blob is provably gone — store the message
-        // anyway (the bubble renders "unavailable") rather than refuse to ack
-        // an envelope that can never succeed. Anything transient throws
-        // instead, leaving it queued for the next drain.
-        // Blocked sender: don't fetch. The blob sits on *their* mailbox, and
-        // fetching would tell it we are still reading; the bubble renders
-        // collapsed, then "unavailable" if revealed.
-        final path = isBlocked(envelope.from)
-            ? null
-            : await _fetchSharedMedia(envelope, sender, payload);
-        final (replyId, replySender, replyPreview) = _replyFrom(payload);
-        await _storeIncomingConversation(
-          group.id,
-          Message(
-            id: envelope.id,
-            contactId: group.id,
-            senderId: envelope.from,
-            outgoing: false,
-            text: '',
-            kind: _mediaKindOf(payload),
-            mediaPath: path,
-            durationMs: payload['duration_ms'] as int?,
-            fileName: _mediaNameOf(payload),
-            sentAt: _sentAtMs(envelope),
-            status: MessageStatus.sent,
-            expiresAt: _expiresAtFrom(envelope, payload),
-            replyToId: replyId,
-            replyToSender: replySender,
-            replyToPreview: replyPreview,
-          ),
-        );
+        if (group == null) return;
+        final held = payload['version'];
+        if (held is int && held >= group.version) return; // nothing newer
+        if (envelope.from == app.stonechatId) {
+          // One of our own devices is behind on a group we administer.
+          await _syncToSiblings(
+            EnvelopeType.groupUpdate,
+            _membershipPayload(group, groupMembers[group.id] ?? const []),
+          );
+          return;
+        }
+        // Whoever asks us holds us as the admin on record — true of the
+        // admin, and of a former one for members who missed the handover,
+        // who will accept the current roster from nobody else.
+        final member = memberOf(group.id, envelope.from);
+        if (member == null) return; // not in the roster: nothing to tell them
+        await _answerRosterRequest(group, member);
 
       case EnvelopeType.groupLeave:
         final group = groupById(payload['group_id'] as String? ?? '');
@@ -4229,14 +4387,12 @@ class ChatState extends ChangeNotifier {
         rawMembers == null) {
       return;
     }
-    if (envelope.from != admin) return; // only the admin defines membership
+    // The id becomes a conversation key beside contacts' Stonechat IDs: a
+    // "group" named after a contact would capture what is typed to them.
+    if (!isWireId(groupId)) return;
+    if (rawMembers.length > groupRosterMax) return; // before any key work
 
     final existing = groupById(groupId);
-    if (existing != null) {
-      if (envelope.from != existing.adminId) return;
-      if (version <= existing.version) return; // stale or replayed
-    }
-
     final members = <GroupMember>[];
     var includesUs = false;
     for (final raw in rawMembers) {
@@ -4258,10 +4414,42 @@ class ChatState extends ChangeNotifier {
         ),
       );
     }
+    final sender = contactById(envelope.from);
+    final verdict = checkMembership(
+      from: envelope.from,
+      payloadAdmin: admin,
+      version: version,
+      memberIds: [for (final m in members) m.stonechatId],
+      held: existing == null
+          ? null
+          : (adminId: existing.adminId, version: existing.version),
+      senderIsContact:
+          envelope.from == app.stonechatId ||
+          (sender != null && sender.isAccepted),
+    );
+    if (!verdict.accepted) {
+      _dropLog(envelope, 'roster refused: ${verdict.rejected}');
+      return;
+    }
+    final hash = rosterHash(
+      app.crypto.hashB64,
+      groupId: groupId,
+      version: version,
+      admin: admin,
+      memberIds: members.map((m) => m.stonechatId),
+    );
+
     if (!includesUs) {
       // we were removed — drop the group locally, keep history? for now: keep
       // nothing mailbox-side to worry about; just delete membership records
       if (existing != null) {
+        // Remember which roster removed us, so a later message from someone
+        // still on an older one is not mistaken for news.
+        existing
+          ..version = version
+          ..adminId = admin
+          ..rosterHash = hash;
+        await app.db.upsertGroup(existing);
         groupMembers[groupId] = [];
         await app.db.replaceMembers(groupId, const []);
         await _insertNotice(
@@ -4283,6 +4471,8 @@ class ChatState extends ChangeNotifier {
       name: name,
       adminId: admin,
       version: version,
+      rosterHash: hash,
+      seenVersion: existing?.seenVersion ?? 0,
       createdAt: existing?.createdAt ?? DateTime.now().millisecondsSinceEpoch,
       pinnedAt: existing?.pinnedAt, // upsert REPLACEs the row — keep the pin
       expireTimerMs: existing?.expireTimerMs ?? (bootstrapTimer ? expireMs : 0),
@@ -4298,10 +4488,23 @@ class ChatState extends ChangeNotifier {
     if (existing == null) {
       groups.add(group);
     } else {
-      existing.name = name;
-      existing.version = version;
+      existing
+        ..name = name
+        ..version = version
+        ..adminId = admin
+        ..rosterHash = hash;
     }
     groupMembers[groupId] = members;
+    if (verdict.handover) {
+      await _insertNotice(
+        groupId,
+        admin == app.stonechatId
+            ? 'You are now the group admin'
+            : '${members.firstWhere((m) => m.stonechatId == admin).displayName} '
+                  'is now the group admin',
+        id: '${envelope.id}-admin',
+      );
+    }
 
     // Surface what changed (idempotent per envelope: notice ids derive from
     // it). First sight of the group renders no diff — it just appears.
@@ -4333,6 +4536,236 @@ class ChatState extends ChangeNotifier {
           );
         }
       }
+    }
+
+    // Messages that arrived ahead of this roster can be read now.
+    for (final parked in await app.db.takeParked(groupId)) {
+      try {
+        await _receiveGroupMessage(
+          Envelope.fromJson(
+            jsonDecode(parked.envelopeJson) as Map<String, dynamic>,
+          ),
+          jsonDecode(parked.payloadJson) as Map<String, dynamic>,
+          replayed: true,
+        );
+      } catch (_) {
+        // Its media could not be fetched just now: wait for the next roster
+        // rather than lose it.
+        final id = (jsonDecode(parked.envelopeJson) as Map)['id'] as String;
+        await app.db.parkGroupMessage(
+          id: id,
+          groupId: groupId,
+          envelopeJson: parked.envelopeJson,
+          payloadJson: parked.payloadJson,
+          nowMs: DateTime.now().millisecondsSinceEpoch,
+        );
+      }
+    }
+  }
+
+  /// group_msg / group_media: rendered only from a current member of a group
+  /// we hold. What the sender says about the roster and about the messages
+  /// it has seen is checked against our own on the way.
+  Future<void> _receiveGroupMessage(
+    Envelope envelope,
+    Map<String, dynamic> payload, {
+    bool replayed = false,
+  }) async {
+    final groupId = payload['group_id'] as String? ?? '';
+    final group = groupById(groupId);
+    final claim = RosterClaim.from(payload);
+    final sender = group == null ? null : memberOf(group.id, envelope.from);
+    if (group == null || sender == null) {
+      if (!replayed) await _parkIfAhead(envelope, payload, group, claim);
+      return;
+    }
+    await _noteRosterView(group, sender, claim);
+
+    final isMedia = envelope.type == EnvelopeType.groupMedia;
+    // Fetch from the *sender's* mailbox with the capability token in the
+    // payload, and persist BEFORE returning: returning acks the envelope.
+    // A null path means the blob is provably gone — store the message
+    // anyway (the bubble renders "unavailable") rather than refuse to ack
+    // an envelope that can never succeed. Anything transient throws
+    // instead, leaving it queued for the next drain.
+    // Blocked sender: don't fetch. The blob sits on *their* mailbox, and
+    // fetching would tell it we are still reading; the bubble renders
+    // collapsed, then "unavailable" if revealed.
+    final path = !isMedia || isBlocked(envelope.from)
+        ? null
+        : await _fetchSharedMedia(envelope, sender, payload);
+    final salt = payload['salt'];
+    final body = groupMessageBody(payload);
+    final (replyId, replySender, replyPreview) = _replyFrom(payload);
+    await _storeIncomingConversation(
+      group.id,
+      Message(
+        id: envelope.id,
+        contactId: group.id,
+        senderId: envelope.from,
+        outgoing: false,
+        text: isMedia ? '' : (payload['text'] as String?) ?? '',
+        kind: isMedia ? _mediaKindOf(payload) : MessageKind.text,
+        mediaPath: path,
+        durationMs: isMedia ? payload['duration_ms'] as int? : null,
+        fileName: isMedia ? _mediaNameOf(payload) : null,
+        sentAt: _sentAtMs(envelope),
+        status: MessageStatus.sent,
+        expiresAt: _expiresAtFrom(envelope, payload),
+        replyToId: replyId,
+        replyToSender: replySender,
+        replyToPreview: replyPreview,
+        contentHash: salt is String && body != null
+            ? groupMessageHash(
+                app.crypto.hashB64,
+                groupId: group.id,
+                senderId: envelope.from,
+                id: envelope.id,
+                salt: salt,
+                body: body,
+              )
+            : null,
+      ),
+    );
+    await _checkSeen(group, sender, payload);
+  }
+
+  /// A group message we cannot place: for a group we do not hold, or from
+  /// someone not in the roster we hold. If it says the sender is on a newer
+  /// roster than ours, it is early rather than wrong — keep it and ask the
+  /// admin for the roster. Otherwise it is dropped, as it always was.
+  Future<void> _parkIfAhead(
+    Envelope envelope,
+    Map<String, dynamic> payload,
+    Group? group,
+    RosterClaim? claim,
+  ) async {
+    final groupId = payload['group_id'];
+    if (claim == null || groupId is! String || !isWireId(groupId)) return;
+    final String adminId;
+    if (group == null) {
+      // Never heard of it. Worth waiting only if the admin it names is
+      // someone whose invitation we would accept.
+      final named = claim.admin;
+      final contact = named == null ? null : contactById(named);
+      if (contact == null || !contact.isAccepted || isBlocked(named!)) return;
+      adminId = named;
+    } else {
+      if (claim.version <= group.version) return; // not news: not a member
+      // We issue this group's rosters: there is nobody to ask, and someone
+      // outside ours has no say in what the next one is numbered.
+      if (group.adminId == app.stonechatId) return;
+      adminId = group.adminId;
+    }
+    await app.db.parkGroupMessage(
+      id: envelope.id,
+      groupId: groupId,
+      envelopeJson: jsonEncode(envelope.toJson()),
+      payloadJson: jsonEncode(payload),
+      nowMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    await _askForRoster(
+      groupId,
+      adminId,
+      held: group?.version ?? 0,
+      wanted: claim.version,
+    );
+  }
+
+  /// Compare a member's stated view of the roster with ours and act on a
+  /// difference: catch up, help them catch up, or say that the lists differ.
+  Future<void> _noteRosterView(
+    Group group,
+    GroupMember sender,
+    RosterClaim? claim,
+  ) async {
+    final weAreAdmin = group.adminId == app.stonechatId;
+    switch (compareRoster(
+      heldVersion: group.version,
+      heldHash: group.rosterHash,
+      claim: claim,
+    )) {
+      case RosterView.same || RosterView.unknown:
+        break;
+      case RosterView.peerAhead:
+        if (!weAreAdmin) {
+          await _askForRoster(
+            group.id,
+            group.adminId,
+            held: group.version,
+            wanted: claim!.version,
+          );
+        } else if (claim!.version > group.seenVersion) {
+          // Only we issue rosters, yet a member holds a newer one: this
+          // device is behind the group it administers. Number the next
+          // roster past theirs, and ask our other devices — one of them
+          // may have issued it.
+          group.seenVersion = claim.version;
+          await app.db.upsertGroup(group);
+          if ((await _siblingDevices()).isEmpty) {
+            await _insertNotice(
+              group.id,
+              "This device's member list is older than the one members hold "
+              '(restored from a backup?). Check the members, then save a '
+              'change to send everyone the current list.',
+              id: 'roster-behind-${group.id}',
+            );
+          } else {
+            unawaited(
+              _syncToSiblings(EnvelopeType.groupSync, {
+                'group_id': group.id,
+                'version': group.version,
+              }),
+            );
+          }
+        }
+      case RosterView.peerBehind:
+        // They missed an update. Ours to repair if we issued it; otherwise
+        // the admin's own retry is already on its way to them.
+        if (weAreAdmin) await _answerRosterRequest(group, sender);
+      case RosterView.diverged:
+        await _insertNotice(
+          group.id,
+          '${sender.displayName} holds a different member list for this group '
+          'than this device does. Ask the admin to send the list again.',
+          id: 'roster-differs-${group.id}-${group.version}',
+        );
+    }
+  }
+
+  /// `seen`: the sender's hashes of messages it received before this one.
+  /// Where we hold the same message with a different hash, the two of us
+  /// were sent different things under one id — which only the message's
+  /// author can have done, unless the sender of this one is lying about it.
+  Future<void> _checkSeen(
+    Group group,
+    GroupMember sender,
+    Map<String, dynamic> payload,
+  ) async {
+    final seen = payload['seen'];
+    if (seen is! List) return;
+    for (final entry in seen.take(groupSeenMax * 4)) {
+      if (entry is! Map) continue;
+      final id = entry['id'];
+      final theirs = entry['h'];
+      if (id is! String || theirs is! String) continue;
+      final ours = await app.db.messageById(id);
+      if (ours == null ||
+          ours.outgoing ||
+          ours.contactId != group.id ||
+          ours.contentHash == null ||
+          ours.contentHash == theirs ||
+          ours.senderId == sender.stonechatId) {
+        continue;
+      }
+      final author =
+          memberOf(group.id, ours.senderId ?? '')?.displayName ?? 'a member';
+      await _insertNotice(
+        group.id,
+        '${sender.displayName} received a different version of a message '
+        'from $author than this device did.',
+        id: '$id-differs-${sender.stonechatId}',
+      );
     }
   }
 

@@ -429,6 +429,7 @@ typedef _DecryptNative =
       Pointer<Uint8>,
       Size,
       Pointer<Uint8>,
+      Pointer<Uint8>,
       Pointer<Pointer<Uint8>>,
       Pointer<Size>,
     );
@@ -444,9 +445,15 @@ typedef _Decrypt =
       Pointer<Uint8>,
       int,
       Pointer<Uint8>,
+      Pointer<Uint8>,
       Pointer<Pointer<Uint8>>,
       Pointer<Size>,
     );
+
+/// The core ABI this binding was written against (core/src/lib.rs
+/// `ABI_VERSION`). A library built from an older core takes a different
+/// argument list, and calling it anyway reads garbage instead of failing.
+const coreAbiVersion = 2;
 
 class StonechatCore {
   final _Free _free;
@@ -542,7 +549,20 @@ class StonechatCore {
 
   static StonechatCore? _instance;
 
-  factory StonechatCore() => _instance ??= StonechatCore._(openCoreLibrary());
+  factory StonechatCore() => _instance ??= _checked(openCoreLibrary());
+
+  static StonechatCore _checked(DynamicLibrary lib) {
+    final abi = lib.lookupFunction<Uint32 Function(), int Function()>(
+      'stonechat_core_abi_version',
+    )();
+    if (abi != coreAbiVersion) {
+      throw StateError(
+        'stonechat-core ABI $abi, this build speaks $coreAbiVersion — '
+        'rebuild the core library (scripts/build_core.sh)',
+      );
+    }
+    return StonechatCore._(lib);
+  }
 
   static Pointer<Uint8> _in(Uint8List bytes, String name, {int? expected}) {
     if (expected != null && bytes.length != expected) {
@@ -732,6 +752,7 @@ class StonechatCore {
     required Uint8List ciphertext,
     required String adPrefix,
     required Uint8List freshRatchetSk,
+    required Uint8List pqRandom,
   }) {
     final state = utf8.encode(stateJson);
     final stateP = _in(state, 'stateJson');
@@ -742,6 +763,7 @@ class StonechatCore {
     final ad = utf8.encode(adPrefix);
     final adP = _in(ad, 'adPrefix');
     final fresh = _in(freshRatchetSk, 'freshRatchetSk', expected: 32);
+    final pq = _in(pqRandom, 'pqRandom', expected: 64);
     try {
       final result = _call(
         'decrypt',
@@ -756,6 +778,7 @@ class StonechatCore {
           adP,
           ad.length,
           fresh,
+          pq,
           outPtr,
           outLen,
         ),
@@ -766,6 +789,7 @@ class StonechatCore {
         plaintext: base64Decode(result['plaintext'] as String),
       );
     } finally {
+      calloc.free(pq);
       calloc.free(stateP);
       calloc.free(headerP);
       calloc.free(nonceP);

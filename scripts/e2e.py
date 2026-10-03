@@ -210,6 +210,13 @@ PQID_SEED_KEY = b"stonechat-v1-pqidseed"
 HSEAL_KDF_KEY = b"stonechat-v1-hsealkdf"
 HSEAL_AD = b"stonechat-v1-hseal"
 MAX_SKIP = 256
+# Post-quantum ratchet (PROTOCOL.md "Post-quantum ratchet"), as in
+# core/src/session.rs.
+PQ_RATCHET_KDF_INFO = b"stonechat-v1-pqratchet"
+PQ_INTERVAL = 50
+PQ_ATTACH = 3
+# Seal padding buckets (PROTOCOL.md "Envelope").
+PAD_MIN, PAD_DOUBLING_MAX, PAD_STEP = 2048, 32768, 1024
 
 
 def H(msg: bytes, key: bytes, n: int) -> bytes:
@@ -225,8 +232,58 @@ def kdf_ck(ck: bytes) -> tuple[bytes, bytes]:
     return H(b"\x01", ck, 32), H(b"\x02", ck, 32)  # (mk, ck')
 
 
+def kdf_pq(rk: bytes, kem_ss: bytes) -> bytes:
+    return H(PQ_RATCHET_KDF_INFO + kem_ss, rk, 32)
+
+
+def padded_len(n: int) -> int:
+    need = n + 1
+    if need > PAD_DOUBLING_MAX:
+        return -(-need // PAD_STEP) * PAD_STEP
+    bucket = PAD_MIN
+    while bucket < need:
+        bucket *= 2
+    return bucket
+
+
+def pad(message: bytes) -> bytes:
+    return (message + b"\x80").ljust(padded_len(len(message)), b"\x00")
+
+
+def unpad(padded: bytes) -> bytes:
+    """Raises unless the bytes are padded exactly as pad() pads."""
+    body = padded.rstrip(b"\x00")
+    if not body.endswith(b"\x80") or padded_len(len(body) - 1) != len(padded):
+        raise Rejected("sealed content is not padded to its bucket")
+    return body[:-1]
+
+
 def b64(b: bytes) -> str:
     return base64.b64encode(b).decode()
+
+
+def roster_hash(group_id: str, version: int, admin: str, member_ids) -> str:
+    """What a roster commits to (PROTOCOL.md "Keeping the roster in step"):
+    unkeyed BLAKE2b-256, base64."""
+    ids = ",".join(sorted(member_ids))
+    return b64(hashlib.blake2b(
+        f"stonechat-v1-roster|{group_id}|{version}|{admin}|{ids}".encode(),
+        digest_size=32).digest())
+
+
+def group_message_hash(group_id: str, sender: str, message_id: str,
+                       salt: str, payload: dict) -> str | None:
+    """What one member received as a group message (PROTOCOL.md "Transcript
+    consistency"). None for a payload that is neither text nor media."""
+    if isinstance(payload.get("text"), str):
+        body = f"text|{payload['text']}"
+    elif all(isinstance(payload.get(k), str) for k in ("blob_id", "key", "blob_nonce")):
+        body = f"media|{payload['blob_id']}|{payload['key']}|{payload['blob_nonce']}"
+    else:
+        return None
+    return b64(hashlib.blake2b(
+        f"stonechat-v1-gmsg|{group_id}|{sender}|{message_id}|{salt}|{body}".encode(),
+        digest_size=32).digest())
 
 
 def unb64(s: str) -> bytes:
@@ -274,11 +331,68 @@ def ad_for(envelope: dict) -> bytes:
     """Both device numbers are bound — one
     form, always, so a relabelled envelope simply fails to decrypt."""
     r = envelope["ratchet"]
-    return (
+    ad = (
         f"stonechat/v1|{envelope['from']}|{envelope['from_device']}"
         f"|{envelope['to']}|{envelope['device']}|{envelope['type']}"
         f"|{r['dh']}|{r['pn']}|{r['n']}"
-    ).encode()
+    )
+    pq = r.get("pq")
+    if pq is not None:
+        # The KEM material is authenticated by being part of the AD.
+        def num(v):
+            return "" if v is None else str(v)
+        ek, ct = pq.get("ek") or {}, pq.get("ct") or {}
+        ad += (f"|pq|{num(pq.get('mix'))}|{num(ek.get('id'))}|{ek.get('pub', '')}"
+               f"|{num(ct.get('id'))}|{ct.get('ct', '')}")
+    return ad.encode()
+
+
+def _pq(state: dict) -> dict:
+    """The session's post-quantum ratchet state, created on first use (a
+    session pickled before it existed has none)."""
+    return state.setdefault("pq", {
+        "count": 0, "issued": 0, "mixed": 0, "attach": 0, "mix": None,
+        "local": None, "inbound": None, "outbound": None})
+
+
+def _pq_header(state: dict) -> dict | None:
+    pq = _pq(state)
+    out = {}
+    if pq["mix"] is not None:
+        out["mix"] = pq["mix"]
+    if pq["attach"] > 0:
+        if pq["local"]:
+            out["ek"] = {"id": pq["local"]["id"],
+                         "pub": b64(pqcore.mlkem_pk_from_seed(pq["local"]["seed"]))}
+        if pq["outbound"]:
+            out["ct"] = {"id": pq["outbound"]["id"], "ct": b64(pq["outbound"]["ct"])}
+        if "ek" in out or "ct" in out:
+            pq["attach"] -= 1
+    return out or None
+
+
+def _pq_absorb(state: dict, header: dict) -> None:
+    """Take in an authenticated header's KEM material: the responder
+    encapsulates to a new key, the initiator decapsulates the answer."""
+    block, pq = header.get("pq"), _pq(state)
+    if not block:
+        return
+    ek, ct = block.get("ek"), block.get("ct")
+    if ek and not state.get("initiated") and ek["id"] > pq["mixed"] \
+            and (pq["outbound"] is None or pq["outbound"]["id"] < ek["id"]):
+        try:
+            kct, ss = pqcore.mlkem_encaps(unb64(ek["pub"]))
+        except ValueError:
+            pass
+        else:
+            pq["outbound"] = {"id": ek["id"], "ct": kct, "ss": ss}
+            pq["attach"] = PQ_ATTACH
+    if ct and state.get("initiated") and pq["local"] and pq["local"]["id"] == ct["id"]:
+        raw = unb64(ct["ct"])
+        if len(raw) == pqcore.MLKEM_CT:
+            pq["inbound"] = {"id": ct["id"],
+                             "ss": pqcore.mlkem_decaps(pq["local"]["seed"], raw)}
+            pq["local"] = None
 
 
 def session_encrypt(state: dict, plaintext: bytes, meta: dict) -> dict:
@@ -287,7 +401,11 @@ def session_encrypt(state: dict, plaintext: bytes, meta: dict) -> dict:
     form, both device numbers bound."""
     mk, state["cks"] = kdf_ck(state["cks"])
     header = {"dh": b64(state["dhs_pub"]), "pn": state["pn"], "n": state["ns"]}
+    pq = _pq_header(state)
+    if pq:
+        header["pq"] = pq
     state["ns"] += 1
+    _pq(state)["count"] += 1
     nonce = nacl_random(24)
     ad = ad_for({**meta, "ratchet": header})
     ct = crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, ad, nonce, mk)
@@ -308,15 +426,33 @@ def _skip_keys(state: dict, until: int) -> None:
         state["nr"] += 1
 
 
-def _dh_ratchet(state: dict, header_dh: bytes) -> None:
+def _dh_ratchet(state: dict, header_dh: bytes, peer_mixed: dict | None = None) -> None:
+    """A KEM secret is mixed into the root immediately before the chain its
+    initiator-side owner sends on: `peer_mixed` (our encapsulation, which the
+    header said was mixed) before the receive chain, our own `inbound` before
+    the send chain."""
+    pq = _pq(state)
     state["pn"], state["ns"], state["nr"] = state["ns"], 0, 0
     state["dhr"] = header_dh
+    if peer_mixed:
+        state["rk"] = kdf_pq(state["rk"], peer_mixed["ss"])
+        pq["mixed"], pq["count"] = peer_mixed["id"], 0
     state["rk"], state["ckr"] = kdf_rk(
         state["rk"], crypto_scalarmult(state["dhs_priv"], header_dh))
     fresh = PrivateKey.generate()
     state["dhs_priv"], state["dhs_pub"] = bytes(fresh), bytes(fresh.public_key)
+    pq["mix"] = None
+    if pq["inbound"]:
+        inbound, pq["inbound"] = pq["inbound"], None
+        state["rk"] = kdf_pq(state["rk"], inbound["ss"])
+        pq["mix"] = pq["mixed"] = inbound["id"]
+        pq["count"] = 0
     state["rk"], state["cks"] = kdf_rk(
         state["rk"], crypto_scalarmult(state["dhs_priv"], header_dh))
+    pq["attach"] = PQ_ATTACH
+    if state.get("initiated") and pq["local"] is None and pq["count"] >= PQ_INTERVAL:
+        pq["issued"] += 1
+        pq["local"] = {"id": pq["issued"], "seed": pqcore.mlkem_keygen()[0]}
 
 
 def session_decrypt(state: dict, envelope: dict) -> bytes:
@@ -331,13 +467,21 @@ def session_decrypt(state: dict, envelope: dict) -> bytes:
         header_dh = unb64(header["dh"])
         if state["dhr"] is None or header_dh != state["dhr"]:
             _skip_keys(state, header["pn"])
-            _dh_ratchet(state, header_dh)
+            mix_id = (header.get("pq") or {}).get("mix")
+            mixed = None
+            if mix_id is not None:
+                mixed, _pq(state)["outbound"] = _pq(state)["outbound"], None
+                if mixed is None or mixed["id"] != mix_id:
+                    raise ValueError("chain mixes a KEM secret we do not hold")
+            _dh_ratchet(state, header_dh, mixed)
         _skip_keys(state, header["n"])
         mk, state["ckr"] = kdf_ck(state["ckr"])
         state["nr"] += 1
         plain = crypto_aead_xchacha20poly1305_ietf_decrypt(ct, ad, nonce, mk)
     state["confirmed"] = True
     state["pending_x3dh"] = None
+    _pq(state)["count"] += 1
+    _pq_absorb(state, header)
     return plain
 
 
@@ -749,6 +893,7 @@ class Phone:
             "rk": rk, "dhs_priv": bytes(ratchet), "dhs_pub": bytes(ratchet.public_key),
             "dhr": spk_pub, "cks": cks, "ckr": None,
             "ns": 0, "nr": 0, "pn": 0, "skipped": {}, "confirmed": False,
+            "initiated": True,
             "pending_x3dh": {
                 # Our DEVICE key, plus the certificate that vouches for it —
                 # the responder cannot check a device key against an SC- ID,
@@ -802,6 +947,7 @@ class Phone:
             "rk": sk, "dhs_priv": self.spk["priv"], "dhs_pub": self.spk["pub"],
             "dhr": None, "cks": None, "ckr": None,
             "ns": 0, "nr": 0, "pn": 0, "skipped": {}, "confirmed": True,
+            "initiated": False,
             "pending_x3dh": None,
         }
         kopk_id = block["kem_id"] if block["kem_one_time"] else None
@@ -848,13 +994,14 @@ class Phone:
         (X-Wing) to the recipient DEVICE's certified seal key — not to the
         one identity key in the directory, which nothing seals to since
         device certificates. The mailbox sees only the recipient.
-        Wire: kem_ct || nonce || aead_ct."""
+        Wire: kem_ct || nonce || aead_ct, over the inner envelope padded
+        to its size bucket."""
         seal_pk = unb64(to.cert["seal_pub"]) if to.cert else to.dev_seal_pk
         kct, ss = pqcore.xwing_encaps(seal_pk)
         key = H(ss, HSEAL_KDF_KEY, 32)
         nonce = nacl_random(24)
         box = crypto_aead_xchacha20poly1305_ietf_encrypt(
-            json.dumps(inner).encode(), HSEAL_AD, nonce, key)
+            pad(json.dumps(inner).encode()), HSEAL_AD, nonce, key)
         outer = {
             "v": 1,
             "id": inner["id"],
@@ -883,8 +1030,8 @@ class Phone:
         # Opened with THIS DEVICE's seal seed. It used to be the identity's,
         # which is why every device needed the identity secret to read.
         key = H(pqcore.xwing_decaps(self.dev_seal_seed, kct), HSEAL_KDF_KEY, 32)
-        return json.loads(
-            crypto_aead_xchacha20poly1305_ietf_decrypt(box, HSEAL_AD, nonce, key))
+        return json.loads(unpad(
+            crypto_aead_xchacha20poly1305_ietf_decrypt(box, HSEAL_AD, nonce, key)))
 
     def check_envelope(self, inner: dict, wire: dict | None) -> None:
         """What a recipient checks before an envelope touches a session

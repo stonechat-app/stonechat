@@ -202,6 +202,12 @@ class Message {
   final String? replyToId;
   final String? replyToSender;
   final String? replyToPreview;
+  // Group transcript checks (PROTOCOL.md "Transcript consistency"). An
+  // outgoing group message keeps the random [salt] it was sent with, so a
+  // retry sends the same one; an incoming one keeps the [contentHash] of
+  // what arrived, which later edits do not change.
+  final String? salt;
+  final String? contentHash;
   /// Outgoing group media only: the one shared blob this message's fan-out
   /// points at (PROTOCOL.md "Group media"). Persisted because a retry to a
   /// member we couldn't reach must reference the *same* upload — re-encrypting
@@ -236,6 +242,8 @@ class Message {
     this.replyToId,
     this.replyToSender,
     this.replyToPreview,
+    this.salt,
+    this.contentHash,
     this.blob,
     this.failReason,
     this.attempts = 0,
@@ -260,6 +268,8 @@ class Message {
         'reply_to_id': replyToId,
         'reply_to_sender': replyToSender,
         'reply_to_preview': replyToPreview,
+        'salt': salt,
+        'content_hash': contentHash,
         'blob': blob == null ? null : jsonEncode(blob!.toJson()),
         'fail_reason': failReason,
         'attempts': attempts,
@@ -284,6 +294,8 @@ class Message {
         replyToId: r['reply_to_id'] as String?,
         replyToSender: r['reply_to_sender'] as String?,
         replyToPreview: r['reply_to_preview'] as String?,
+        salt: r['salt'] as String?,
+        contentHash: r['content_hash'] as String?,
         blob: r['blob'] == null
             ? null
             : SharedBlob.fromJson(
@@ -366,6 +378,9 @@ class EnvelopeType {
   static const groupMsg = 'group_msg';
   static const groupMedia = 'group_media'; // one shared blob on the sender's box
   static const groupLeave = 'group_leave';
+  /// "Send me the roster": to the admin, from a member who has seen a newer
+  /// version than it holds.
+  static const groupSync = 'group_sync';
   static const receipt = 'receipt'; // delivered/read, batched message ids
   static const typing = 'typing'; // transient, never queued or pushed
   static const msgEdit = 'msg_edit';
@@ -405,8 +420,16 @@ class ReceiptKind {
 class Group {
   final String id;
   String name;
-  final String adminId;
+  String adminId; // changes only by a handover from the admin on record
   int version;
+  /// Hash of the roster as the admin issued it at [version]
+  /// (group_rules.dart `rosterHash`). Null for a group restored from an
+  /// older backup, until the next roster arrives.
+  String? rosterHash;
+  /// Admin only: the highest version a member has shown us. Above [version]
+  /// when this device's copy is older than theirs (a restored backup); the
+  /// next roster is numbered past it so members accept it.
+  int seenVersion;
   final int createdAt;
   int? pinnedAt; // ms epoch when the user pinned this conversation
   int expireTimerMs; // disappearing-messages TTL, 0 = off
@@ -419,6 +442,8 @@ class Group {
     required this.name,
     required this.adminId,
     required this.version,
+    this.rosterHash,
+    this.seenVersion = 0,
     required this.createdAt,
     this.pinnedAt,
     this.expireTimerMs = 0,
@@ -437,6 +462,8 @@ class Group {
         'name': name,
         'admin_id': adminId,
         'version': version,
+        'roster_hash': rosterHash,
+        'seen_version': seenVersion,
         'created_at': createdAt,
         'pinned_at': pinnedAt,
         'expire_timer_ms': expireTimerMs,
@@ -450,6 +477,8 @@ class Group {
         name: r['name'] as String,
         adminId: r['admin_id'] as String,
         version: r['version'] as int,
+        rosterHash: r['roster_hash'] as String?,
+        seenVersion: (r['seen_version'] as int?) ?? 0,
         createdAt: r['created_at'] as int,
         pinnedAt: r['pinned_at'] as int?,
         expireTimerMs: r['expire_timer_ms'] as int,

@@ -249,6 +249,9 @@ class RatchetSession {
       ciphertext: ciphertext,
       adPrefix: adPrefix,
       freshRatchetSk: _random(32),
+      // Separate draws: the ratchet key's public half goes on the wire, and
+      // the post-quantum ratchet's KEM material must not be derivable from it.
+      pqRandom: _random(64),
     );
     if (result == null) return null;
     _state = result.state;

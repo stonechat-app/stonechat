@@ -118,7 +118,7 @@ pub async fn open(st: &mut State, hub: &Hub, outer: &Value) -> Result<Incoming> 
     // An established session, tried on a copy.
     if let Some(existing) = st.sessions.get(&key) {
         let mut trial = existing.clone();
-        if let Some(plain) = trial.decrypt(&header, &nonce, &ciphertext, &prefix, &random::<32>()) {
+        if let Some(plain) = trial.decrypt(&header, &nonce, &ciphertext, &prefix, &random::<32>(), &random::<64>()) {
             st.sessions.insert(key, trial);
             return Ok(Incoming {
                 from,
@@ -140,7 +140,7 @@ pub async fn open(st: &mut State, hub: &Hub, outer: &Value) -> Result<Incoming> 
 
     let (mut fresh, consumed) = respond(st, hub, &inner, &from, from_device).await?;
     let plain = fresh
-        .decrypt(&header, &nonce, &ciphertext, &prefix, &random::<32>())
+        .decrypt(&header, &nonce, &ciphertext, &prefix, &random::<32>(), &random::<64>())
         .ok_or_else(|| {
             err!("handshake from {from} device {from_device} verified but its first message did not decrypt")
         })?;

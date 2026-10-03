@@ -45,7 +45,7 @@ pub mod wtcerts;
 pub use pqcore;
 
 /// Bumped whenever the exported C ABI changes shape.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stonechat_core_abi_version() -> u32 {

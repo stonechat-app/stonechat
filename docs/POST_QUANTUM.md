@@ -3,8 +3,8 @@
 This document describes what Stonechat's post-quantum protection actually
 consists of today: which parts of the protocol use a post-quantum KEM, which
 parts are still classical, and where the code lives. The wire format is
-specified in PROTOCOL.md ("Identity", "Prekeys", "PQXDH", "Envelope"); this
-document explains why it looks the way it does.
+specified in PROTOCOL.md ("Identity", "Prekeys", "PQXDH", "Post-quantum
+ratchet", "Envelope"); this document explains why it looks the way it does.
 
 ## Summary
 
@@ -15,8 +15,12 @@ document explains why it looks the way it does.
 | Envelope seal (sealed sender) | **X-Wing** (X25519 + ML-KEM-768) to the recipient **device's** certified key | Hybrid, resists harvest-now-decrypt-later |
 | Symmetric crypto | XChaCha20-Poly1305, BLAKE2b, Argon2id | Already PQ-adequate (256-bit keys) |
 | Signatures | Ed25519 (identity, prekeys, device certs, TLS pins) | **Classical**, forgeable by a future quantum computer |
-| Ratchet healing (PCS) | X25519 DH ratchet | **Classical** |
+| Ratchet healing (PCS) | X25519 DH ratchet on every turn, plus an ML-KEM-768 secret mixed into the root at most once per 50 messages | Hybrid, but **sparse**: classical between two KEM exchanges |
 | Transport | rustls with the `ring` provider; WebTransport | **Classical** key exchange |
+
+Group messages are ordinary pairwise sessions, one per member device
+(PROTOCOL.md "Groups"), so everything in this table applies to them
+unchanged: there is no separate group key to protect.
 
 Post-quantum protection is not an optional mode. Every session is hybrid, and
 so is every sealed envelope. There's no classical fallback, no negotiation and
@@ -31,6 +35,10 @@ as classical X3DH/X25519.
   decrypts it once a cryptographically relevant quantum computer exists. This
   attacks X25519 retroactively, so it is what the implementation defends
   against: key agreement and the envelope seal are hybrid.
+- **Following a stolen session.** An adversary who steals a device's session
+  state, and can break X25519, could otherwise read that session for as long
+  as it lives: the DH ratchet's fresh keys would not shut them out. The
+  post-quantum ratchet bounds this for a *passive* adversary.
 - **Forgery.** Breaking Ed25519 would allow someone to impersonate an
   identity. That requires a quantum computer at the time of the attack and
   does no retroactive harm, so signatures are still classical (see "Not yet
@@ -118,6 +126,60 @@ key reveal historical sender/type metadata, but never content.
 Code: `core/src/envelope.rs` (`seal_to` / `unseal`), `core/src/devcert.rs`;
 `core/src/identity.rs` (`pq_public`, `sign_pq_pk`) for `pq_pk`.
 
+### 3. Post-quantum ratchet (hybrid healing)
+
+PQXDH makes the root key quantum-resistant, which protects content against a
+recording adversary. It does nothing for a session whose state has been
+stolen: from then on the only fresh secrets entering the ratchet are X25519
+outputs. The post-quantum ratchet adds ML-KEM-768 secrets to the same root.
+
+```
+initiator                                responder
+---------                                ---------
+ek = ML-KEM keygen     --- ek(id) --->
+                       <--- ct(id) ---   ct, ss = Encaps(ek)
+ss = Decaps(ct); delete the private key
+new sending chain:     --- mix(id) -->   same step, before the chain key
+  rk = BLAKE2b("stonechat-v1-pqratchet" || ss, key = rk, 32)
+```
+
+Why it looks like this:
+
+- **Tied to the DH ratchet, not beside it.** The secret is folded into the
+  root key at the one moment both sides already agree on — the start of a
+  sending chain — and the chain says so in every header (`mix`). There is no
+  second ratchet to keep in step and no new failure mode for reordered
+  messages: a chain either decrypts with the secret or does not decrypt.
+- **Sparse.** A key is 1184 bytes and a ciphertext 1088, against a few
+  hundred for a message. An exchange starts only after 50 messages have
+  passed on the session since the last, and its key and ciphertext ride on
+  the first three messages of a sending chain rather than on all of them,
+  re-offered on the next chain until answered. Signal's SPQR spreads the
+  same bytes over many messages with erasure codes; this sends them whole,
+  rarely. It costs bandwidth in bursts and saves a great deal of machinery.
+- **Counted in messages, not time.** `stonechat-core` takes no clock, so the
+  interval is a message count. A session that is quiet for a month does not
+  rekey until it speaks again — and has had nothing to protect meanwhile.
+- **Fixed roles.** The session's initiator always generates the key and the
+  responder always encapsulates. Both contribute fresh randomness either
+  way, and one direction is one state machine instead of two that can cross.
+- **Authenticated by the session.** `ek`, `ct` and `mix` are bound into the
+  message's associated data, so they cannot be stripped or swapped by anyone
+  who cannot already forge a message on that session.
+- **Its own randomness.** The KEM key and the encapsulation are drawn from
+  bytes the host supplies separately from the DH ratchet's. The ratchet
+  key's public half goes on the wire, and anything derivable from its
+  private half would fall with X25519.
+
+What it gives: once an exchange completes with a key generated *after* a
+compromise, an adversary who only listens — quantum computer or not — no
+longer holds the root key. What it does not give is in "Not yet
+post-quantum" below.
+
+Code: `core/src/session.rs` (`PqState`, `absorb_pq`, `dh_ratchet`),
+`core/src/primitives.rs` (`kdf_pq`). `scripts/e2e.py` carries an independent
+implementation, and the two are checked against each other.
+
 ### Where the code lives
 
 - **`pqcore/`**: the only KEM implementation. It is a thin wrapper around
@@ -153,17 +215,30 @@ Code: `core/src/envelope.rs` (`seal_to` / `unseal`), `core/src/devcert.rs`;
 | ML-KEM-768 ciphertext (`kct`, initial messages only) | 1088 |
 | X-Wing public key (`pq_pk`, device `seal_pub`) | 1216 |
 | X-Wing ciphertext (every sealed envelope) | 1120 |
+| ML-KEM-768 public key (ratchet `ek`, up to 3 messages per sending chain while unanswered) | 1184 |
+| ML-KEM-768 ciphertext (ratchet `ct`, likewise) | 1088 |
+
+Sealed envelopes are padded to size buckets (PROTOCOL.md "Envelope"), the
+smallest holding 2048 bytes. An ordinary message fits it; one carrying
+handshake or ratchet KEM material lands in the next bucket up, which is how
+a mailbox could tell that such a message passed, though not which session
+it belongs to.
 
 ## Not yet post-quantum
 
 These gaps are known and intentional for now, listed from most to least
 likely to be addressed next.
 
-1. **Ratchet healing.** The double ratchet still heals from compromise with
-   X25519 alone. If a device's state leaks, a quantum attacker can follow the
-   classical ratchet forward, so post-compromise security is classical.
-   Options are Signal's SPQR once its spec settles, or a PQ3-style periodic
-   hybrid rekey. Either would be layered on top of the existing sessions.
+1. **Ratchet healing between exchanges.** The post-quantum ratchet runs at
+   most once per 50 messages and takes two and a half round trips. Between
+   two exchanges the ratchet heals with X25519 alone, so a quantum attacker
+   who holds a device's state can follow it until the next exchange
+   completes. A session on which only one side writes never exchanges at
+   all (nor does its DH ratchet turn). And the exchange is authenticated by
+   the session's own keys, so it shuts out a listener, not an attacker who
+   holds the state and can also alter traffic. A shorter interval, a
+   time-based trigger supplied by the host, or SPQR-style chunking to run
+   it continuously would each narrow the first of these.
 2. **Transport.** The relay's TLS uses rustls' `ring` provider
    (`relay/src/main.rs`), which doesn't offer X25519MLKEM768, and neither does
    WebTransport. This only exposes metadata (the owner token, sealed

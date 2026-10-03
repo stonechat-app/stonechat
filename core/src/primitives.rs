@@ -17,6 +17,7 @@ pub const AEAD_TAG_BYTES: usize = 16;
 // Domain-separation constants — must match crypto.dart, scripts/e2e.py and
 // PROTOCOL.md.
 pub const X3DH_KDF_KEY: &[u8] = b"stonechat-v1-pqxdh-kdf";
+pub const PQ_RATCHET_KDF_INFO: &[u8] = b"stonechat-v1-pqratchet";
 pub const HSEAL_KDF_KEY: &[u8] = b"stonechat-v1-hsealkdf";
 pub const HSEAL_AD: &[u8] = b"stonechat-v1-hseal";
 pub const PQID_SEED_KEY: &[u8] = b"stonechat-v1-pqidseed";
@@ -68,6 +69,15 @@ pub fn hash_var(msg: &[u8], n: usize) -> Vec<u8> {
 pub fn kdf_root(rk: &[u8; 32], dh_out: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let out = keyed_hash_64(dh_out, rk);
     (out[..32].try_into().unwrap(), out[32..].try_into().unwrap())
+}
+
+/// `KDF_PQ(rk, ss): rk' = H("stonechat-v1-pqratchet" || ss, key=rk, 32)` —
+/// folds a post-quantum ratchet KEM secret into the root key.
+pub fn kdf_pq(rk: &[u8; 32], kem_ss: &[u8; 32]) -> [u8; 32] {
+    let mut msg = Vec::with_capacity(PQ_RATCHET_KDF_INFO.len() + 32);
+    msg.extend_from_slice(PQ_RATCHET_KDF_INFO);
+    msg.extend_from_slice(kem_ss);
+    keyed_hash_32(&msg, rk)
 }
 
 /// `KDF_CK(ck): mk = H(0x01, key=ck, 32); ck' = H(0x02, key=ck, 32)`.

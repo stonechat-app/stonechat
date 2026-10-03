@@ -343,7 +343,8 @@ def top_up_opks(bot: Phone) -> None:
 
 # -- the bot -------------------------------------------------------------------
 
-def send(bot: Phone, peer: Peer, type_: str, payload: dict) -> None:
+def send(bot: Phone, peer: Peer, type_: str, payload: dict,
+         envelope_id: str | None = None) -> None:
     """Seal and deliver one envelope **per device** the peer has.
 
     The recipient device's certified key is needed on every message, not just
@@ -355,7 +356,7 @@ def send(bot: Phone, peer: Peer, type_: str, payload: dict) -> None:
     One dead device does not stop its siblings: the ones that took a copy will
     show the message.
     """
-    envelope_id = str(uuid.uuid4())
+    envelope_id = envelope_id or str(uuid.uuid4())
     token = bot.bundle_tokens.get(peer.stonechat_id)
     delivered, last_error = 0, None
     for device in peer_devices(bot, peer):
@@ -427,30 +428,45 @@ async def handle(bot: Phone, outer: dict) -> None:
 
 # -- groups (PROTOCOL.md "Groups (client-side fan-out)") ------------------------
 
+# The largest roster a client accepts (PROTOCOL.md "Groups").
+GROUP_ROSTER_MAX = 100
+
+
 def is_bot_name(name: str) -> bool:
     return name.endswith("(echo bot)")
 
 
 def apply_membership(bot: Phone, sender: str, payload: dict) -> None:
-    """group_create / group_update: only the admin defines membership, and a
-    stale or replayed version never regresses it — the same rules the app
-    applies."""
+    """group_create / group_update: only the admin on record defines
+    membership, and a stale or replayed version never regresses it — the same
+    rules the app applies (PROTOCOL.md "Groups"). The bot answers anyone, so
+    it has no contacts to gate an invitation on; the rest it checks."""
     group_id, admin = payload.get("group_id"), payload.get("admin")
     members = payload.get("members") or []
-    if not group_id or sender != admin:
-        return
-    known = bot.groups.get(group_id)
-    if known is not None and (sender != known["admin"]
-                              or payload.get("version", 0) <= known["version"]):
+    if not e2e.is_wire_id(group_id) or len(members) > GROUP_ROSTER_MAX:
         return
     roster = {m["stonechat_id"]: m.get("display_name") or m["stonechat_id"][:12]
               for m in members if m.get("stonechat_id")}
+    if len(roster) != len(members) or admin not in roster:
+        return
+    known = bot.groups.get(group_id)
+    if known is None:
+        if sender != admin:
+            return  # only its admin introduces a group
+    elif sender != known["admin"] or payload.get("version", 0) <= known["version"]:
+        # From anyone but the admin we recorded — who may name a new admin,
+        # which is a handover — or not newer than what we hold.
+        return
     if bot.stonechat_id not in roster:
         bot.groups.pop(group_id, None)
         print(f"removed from group {payload.get('name')!r}")
         return
     bot.groups[group_id] = {"name": payload.get("name", ""), "admin": admin,
                             "version": payload.get("version", 0),
+                            # Of the roster as the admin issued it: a
+                            # group_leave applied below does not change it.
+                            "hash": e2e.roster_hash(
+                                group_id, payload.get("version", 0), admin, roster),
                             "members": roster}
     print(f"group {payload.get('name')!r}: {len(roster)} members")
     if known is None:
@@ -468,12 +484,23 @@ async def say_in_group(bot: Phone, group_id: str, text: str) -> None:
     group = bot.groups.get(group_id)
     if group is None:
         return
+    payload = {
+        "group_id": group_id, "text": text,
+        # Our view of the roster: lets a member who holds another one tell —
+        # a newer version, or the same version with different people in it.
+        "roster": {"v": group["version"], "admin": group["admin"],
+                   **({"h": group["hash"]} if group.get("hash") else {})},
+        # Lets the others compare what each of them received from us.
+        "salt": e2e.b64(os.urandom(16)),
+    }
+    # One id for every member's copy, as the app does.
+    message_id = str(uuid.uuid4())
     for member_id in list(group["members"]):
         if member_id == bot.stonechat_id:
             continue
         try:
-            send(bot, resolve(member_id), "group_msg",
-                 {"group_id": group_id, "text": text})
+            send(bot, resolve(member_id), "group_msg", payload,
+                 envelope_id=message_id)
         except Exception as exc:
             print(f"  ! group send to {member_id[:12]}…: {exc!r}")
 
