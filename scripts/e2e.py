@@ -176,6 +176,12 @@ def check_directory_entry(asked_for: str, entry: dict) -> dict:
                 raise Rejected("mailbox address is not https")
         elif mailbox:
             entry = {**entry, "mailbox": None}
+        # The signed device manifest, when the owner has published one
+        # (PROTOCOL.md "Device manifest"). Present and not verifying is a
+        # directory serving something the owner never signed: refuse the
+        # record, not just the manifest.
+        if entry.get("devices") is not None:
+            verify_devices_manifest(entry["devices"], identity, asked_for)
     except Rejected:
         raise
     except Exception as e:
@@ -292,6 +298,68 @@ def unb64(s: str) -> bytes:
 
 PRIMARY_DEVICE = 1
 DEVCERT_SIG_CONTEXT = b"stonechat-v1-devcert"
+DEVICES_SIG_CONTEXT = b"stonechat-v1-devices"
+MAX_MANIFEST_DEVICES = 64
+
+
+def devices_signing_bytes(manifest: dict) -> bytes:
+    """Mirror of Manifest::signing_bytes in core/src/devices.rs (and the
+    hub's copy): length-prefixed and ordered, with the device count, so a
+    truncated list does not verify as a prefix of the signed one."""
+    def field(b: bytes) -> bytes:
+        return len(b).to_bytes(4, "big") + b
+    out = (field(manifest["stonechat_id"].encode())
+           + field(int(manifest["version"]).to_bytes(8, "big"))
+           + field(int(manifest["issued_at"]).to_bytes(8, "big", signed=True))
+           + field(len(manifest["devices"]).to_bytes(4, "big")))
+    for d in manifest["devices"]:
+        out += field(int(d["device_id"]).to_bytes(4, "big"))
+        out += field(unb64(d["sig_pub"]))
+    return out
+
+
+def sign_devices_manifest(identity: SigningKey, stonechat_id: str, version: int,
+                          devices: dict[int, bytes]) -> dict:
+    """The identity's statement of which devices speak for it, numbered."""
+    manifest = {
+        "stonechat_id": stonechat_id,
+        "version": version,
+        "issued_at": int(time.time()),
+        "devices": [{"device_id": i, "sig_pub": b64(k)} for i, k in sorted(devices.items())],
+    }
+    manifest["sig"] = b64(identity.sign(
+        DEVICES_SIG_CONTEXT + devices_signing_bytes(manifest)).signature)
+    return manifest
+
+
+def verify_devices_manifest(manifest: dict, identity_pub: bytes,
+                            stonechat_id: str) -> dict:
+    """Raises Rejected unless `manifest` is that identity's genuine,
+    well-formed manifest for `stonechat_id`."""
+    try:
+        if manifest["stonechat_id"] != stonechat_id:
+            raise Rejected("device manifest names another identity")
+        if stonechat_id_from_pubkey(identity_pub) != stonechat_id:
+            raise Rejected("device manifest checked against a key its ID does not commit to")
+        ids = [d["device_id"] for d in manifest["devices"]]
+        if not ids or len(ids) > MAX_MANIFEST_DEVICES or len(set(ids)) != len(ids):
+            raise Rejected("device manifest lists no device, too many, or one twice")
+        VerifyKey(identity_pub).verify(
+            DEVICES_SIG_CONTEXT + devices_signing_bytes(manifest), unb64(manifest["sig"]))
+    except Rejected:
+        raise
+    except Exception as e:
+        raise Rejected(f"device manifest does not verify: {e!r}")
+    return manifest
+
+
+def device_listed(manifest: dict | None, device_id: int, sig_pub: bytes) -> bool:
+    """Whether a verified manifest names `device_id` with exactly this key. No
+    manifest (an identity that never published one) lists every device."""
+    if manifest is None:
+        return True
+    return any(d["device_id"] == device_id and unb64(d["sig_pub"]) == sig_pub
+               for d in manifest["devices"])
 
 
 def devcert_signing_bytes(cert: dict) -> bytes:
@@ -648,6 +716,10 @@ class Phone:
             self.dev_seal_seed = nacl_random(32)
         self.dev_seal_pk = pqcore.xwing_pk_from_seed(self.dev_seal_seed)
         self.cert = None
+        # The version of our device manifest, stated in every envelope we
+        # send; 0 until one is published.
+        if not hasattr(self, "manifest_version"):
+            self.manifest_version = 0
 
     # -- hub -----------------------------------------------------------
 
@@ -675,6 +747,20 @@ class Phone:
             bytes(self.dev_sig.verify_key), self.dev_seal_pk,
             device=device, not_after=not_after)
         return self.cert
+
+    def publish_devices(self, devices: dict[int, bytes] | None = None) -> dict:
+        """Sign and publish the manifest of our devices (PROTOCOL.md "Device
+        manifest"): by default just this one, as a single-device identity has.
+        Numbered past whatever the directory already holds, as a primary
+        restored from an export must."""
+        devices = devices or {self.device: bytes(self.dev_sig.verify_key)}
+        current = resolve_directory(self.stonechat_id).get("devices")
+        version = max(self.manifest_version, current["version"] if current else 0) + 1
+        manifest = sign_devices_manifest(self.identity, self.stonechat_id, version, devices)
+        r = httpx.post(f"{HUB}/v1/devices", headers=self.auth, json=manifest, timeout=10)
+        r.raise_for_status()
+        self.manifest_version = version
+        return manifest
 
     def register(self):
         pq_sig = self.identity.sign(PQPK_SIG_CONTEXT + self.pq_pk).signature
@@ -981,6 +1067,7 @@ class Phone:
             "to": to.stonechat_id,
             "device": device,
             "sent_at": datetime.now(timezone.utc).isoformat(),
+            **({"manifest_v": self.manifest_version} if self.manifest_version else {}),
             **sealed,
         }
         if state["pending_x3dh"]:
@@ -1802,6 +1889,51 @@ def main():
     assert MX.get(f"{alice.mailbox['address']}/blob/{g_blob_id}",
                   params={"token": g_token}).status_code == 404, \
         "the capability must not outlive the blob"
+
+    print("6f) device manifest: published, served, verified; revocation by omission")
+    # Alice publishes the list of devices that speak for her: just her phone.
+    published = alice.publish_devices()
+    served = resolve_directory(alice.stonechat_id)["devices"]
+    assert served == published, "the directory serves the manifest exactly as published"
+    assert device_listed(served, PRIMARY_DEVICE, bytes(alice.dev_sig.verify_key))
+    # A version that does not move forward is refused, and the hub says
+    # which version stands.
+    stale = sign_devices_manifest(alice.identity, alice.stonechat_id, published["version"],
+                                  {PRIMARY_DEVICE: bytes(alice.dev_sig.verify_key)})
+    r = httpx.post(f"{HUB}/v1/devices", headers=alice.auth, json=stale)
+    assert r.status_code == 409 and r.json()["detail"]["current"] == published["version"]
+    # What a lying directory could serve: a device added after signing, a
+    # device dropped, another identity's manifest under Alice's name.
+    laptop_key = bytes(SigningKey.generate().verify_key)
+    for name, forged in {
+        "added device": {**served, "devices": served["devices"]
+                         + [{"device_id": 2, "sig_pub": b64(laptop_key)}]},
+        "dropped device": {**served, "devices": []},
+        "bob's signature": sign_devices_manifest(bob.identity, alice.stonechat_id, 99,
+                                                 {1: bytes(alice.dev_sig.verify_key)}),
+    }.items():
+        try:
+            check_directory_entry(alice.stonechat_id,
+                                  {**resolve_directory(alice.stonechat_id), "devices": forged})
+        except Rejected:
+            pass
+        else:
+            raise AssertionError(f"a manifest with {name} was accepted")
+    # Alice links a laptop (version 2), then revokes it (version 3): to a
+    # contact, the laptop is a device she vouched for and then stopped
+    # vouching for, whatever her relay says.
+    alice.publish_devices({PRIMARY_DEVICE: bytes(alice.dev_sig.verify_key), 2: laptop_key})
+    assert device_listed(resolve_directory(alice.stonechat_id)["devices"], 2, laptop_key)
+    alice.publish_devices()
+    after = resolve_directory(alice.stonechat_id)["devices"]
+    assert after["version"] == 3 and not device_listed(after, 2, laptop_key), \
+        "a revoked device is one the manifest no longer lists"
+    assert not device_listed(after, PRIMARY_DEVICE, laptop_key), \
+        "a slot is listed with its key, not with any key"
+    # And every envelope Alice sends now says which manifest she holds.
+    stated = alice.make_envelope(bob, "msg", {"text": "v"})
+    assert stated["manifest_v"] == 3, "envelopes state the sender's manifest version"
+    assert bob.open_envelope(stated, alice) == {"text": "v"}
 
     print("7) wrong recipient rejected by mailbox")
     r = MX.post(

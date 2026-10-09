@@ -139,6 +139,12 @@ typedef _WtcertsVerifyNative =
 typedef _WtcertsVerify =
     int Function(Pointer<Uint8>, int, Pointer<Uint8>, Pointer<Uint8>);
 
+// Same shapes as the schedule signing above: JSON in, base64 signature out.
+typedef _DevicesSignNative = _WtcertsSignNative;
+typedef _DevicesSign = _WtcertsSign;
+typedef _DevicesVerifyNative = _WtcertsVerifyNative;
+typedef _DevicesVerify = _WtcertsVerify;
+
 typedef _SignNative =
     Int32 Function(
       Pointer<Uint8>,
@@ -453,7 +459,7 @@ typedef _Decrypt =
 /// The core ABI this binding was written against (core/src/lib.rs
 /// `ABI_VERSION`). A library built from an older core takes a different
 /// argument list, and calling it anyway reads garbage instead of failing.
-const coreAbiVersion = 2;
+const coreAbiVersion = 3;
 
 class StonechatCore {
   final _Free _free;
@@ -464,6 +470,8 @@ class StonechatCore {
   final _DevcertVerify _devcertVerify;
   final _WtcertsSign _wtcertsSign;
   final _WtcertsVerify _wtcertsVerify;
+  final _DevicesSign _devicesSign;
+  final _DevicesVerify _devicesVerify;
   final _Sign _sign;
   final _Verify _verify;
   final _SignReport _signReport;
@@ -505,6 +513,12 @@ class StonechatCore {
       ),
       _wtcertsVerify = lib.lookupFunction<_WtcertsVerifyNative, _WtcertsVerify>(
         'stonechat_wtcerts_verify',
+      ),
+      _devicesSign = lib.lookupFunction<_DevicesSignNative, _DevicesSign>(
+        'stonechat_devices_sign',
+      ),
+      _devicesVerify = lib.lookupFunction<_DevicesVerifyNative, _DevicesVerify>(
+        'stonechat_devices_verify',
       ),
       _sign = lib.lookupFunction<_SignNative, _Sign>('stonechat_sign'),
       _verify = lib.lookupFunction<_VerifyNative, _Verify>('stonechat_verify'),
@@ -996,6 +1010,52 @@ class StonechatCore {
       if (rc == 0) return true;
       if (rc == -3) return false;
       throw StateError('stonechat-core wtcerts verify failed ($rc)');
+    } finally {
+      calloc.free(body);
+      calloc.free(pub);
+      calloc.free(signature);
+    }
+  }
+
+  /// Sign the identity's device manifest (PROTOCOL.md "Device manifest").
+  /// [manifest] is the unsigned form; returns the base64 signature.
+  String devicesSign(Map<String, dynamic> manifest, Uint8List identitySeed) {
+    final json = Uint8List.fromList(utf8.encode(jsonEncode(manifest)));
+    final body = _in(json, 'manifest');
+    final seed = _in(identitySeed, 'identitySeed', expected: 32);
+    final outPtr = calloc<Pointer<Uint8>>();
+    final outLen = calloc<Size>();
+    try {
+      final rc = _devicesSign(body, json.length, seed, outPtr, outLen);
+      if (rc != 0) throw StateError('stonechat-core devices sign failed ($rc)');
+      final sig = utf8.decode(outPtr.value.asTypedList(outLen.value));
+      _free(outPtr.value, outLen.value);
+      return sig;
+    } finally {
+      calloc.free(body);
+      calloc.free(seed);
+      calloc.free(outPtr);
+      calloc.free(outLen);
+    }
+  }
+
+  /// True when [manifest] is the genuine, well-formed device list of the
+  /// identity [identityPublic] — which must also be the key the manifest's
+  /// Stonechat ID commits to.
+  bool devicesVerify(
+    Map<String, dynamic> manifest,
+    Uint8List identityPublic,
+    Uint8List sig,
+  ) {
+    final json = Uint8List.fromList(utf8.encode(jsonEncode(manifest)));
+    final body = _in(json, 'manifest');
+    final pub = _in(identityPublic, 'identityPublic', expected: 32);
+    final signature = _in(sig, 'sig', expected: 64);
+    try {
+      final rc = _devicesVerify(body, json.length, pub, signature);
+      if (rc == 0) return true;
+      if (rc == -3) return false;
+      throw StateError('stonechat-core devices verify failed ($rc)');
     } finally {
       calloc.free(body);
       calloc.free(pub);

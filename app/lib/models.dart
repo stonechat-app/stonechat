@@ -408,6 +408,9 @@ class EnvelopeType {
   /// Someone blocked or unblocked — `{"peer", "blocked_at"|null}`. Blocks are
   /// local-only, so this is the only way a second device learns of one.
   static const syncBlock = 'sync_block';
+  /// The primary renewing a linked device's certificate — `{"cert"}`, to
+  /// that device only (PROTOCOL.md "Device certificates").
+  static const syncCert = 'sync_cert';
 }
 
 class ReceiptKind {
@@ -558,6 +561,10 @@ class Envelope {
   final Map<String, Object?>? x3dh; // {ik, cert, ek, spk_id, opk_id?, kct, kem_id, kem_one_time}
   final String nonceB64;
   final String ciphertextB64;
+  /// The version of the sender's device manifest, as the sender knows it;
+  /// 0 when it knows of none. A receiver holding an older one refetches
+  /// before judging an unlisted device (PROTOCOL.md "Device manifest").
+  final int manifestV;
   final String? blobId;
   /// Our own mailbox's bundle token, so the recipient can list our devices
   /// and encrypt to all of them.
@@ -585,6 +592,7 @@ class Envelope {
     required this.ciphertextB64,
     this.blobId,
     this.bundleToken,
+    this.manifestV = 0,
   });
 
   Map<String, Object?> toJson() => {
@@ -600,6 +608,7 @@ class Envelope {
         if (x3dh != null) 'x3dh': x3dh,
         'nonce': nonceB64,
         'ciphertext': ciphertextB64,
+        if (manifestV > 0) 'manifest_v': manifestV,
         if (blobId != null) 'blob_id': blobId,
         if (bundleToken != null) 'bundle_token': bundleToken,
       };
@@ -619,6 +628,10 @@ class Envelope {
         x3dh: (j['x3dh'] as Map?)?.cast<String, Object?>(),
         nonceB64: j['nonce'] as String,
         ciphertextB64: j['ciphertext'] as String,
+        manifestV: switch (j['manifest_v']) {
+          final int v when v > 0 => v,
+          _ => 0,
+        },
         blobId: j['blob_id'] == null ? null : _wireId(j['blob_id'], 'blob_id'),
         bundleToken: j['bundle_token'] as String?,
       );

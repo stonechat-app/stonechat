@@ -70,6 +70,7 @@ class ChatDb {
       onOpen: (db) async {
         await ensureBlocked(db);
         await ensureGroupIntegrity(db);
+        await ensureDeviceTrust(db);
       },
     );
     return ChatDb._(db);
@@ -138,6 +139,8 @@ class ChatDb {
     await db.execute(_createGroupOutbox);
     await db.execute(_createRosterOwed);
     await db.execute(_createGroupParked);
+    await db.execute(_createDeviceManifests);
+    await db.execute(_createPeerCerts);
     await db.execute(_createSessions);
     await db.execute(_createPrekeys);
     await db.execute(_createReceipts);
@@ -190,6 +193,41 @@ class ChatDb {
       );
     }
   }
+
+  /// Device manifests and persisted peer certificates (PROTOCOL.md "Device
+  /// manifest") arrived after the schema shipped to test devices. Same
+  /// approach as [ensureBlocked].
+  @visibleForTesting
+  static Future<void> ensureDeviceTrust(Database db) async {
+    for (final create in [_createDeviceManifests, _createPeerCerts]) {
+      await db.execute(
+        create.replaceFirst('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
+      );
+    }
+  }
+
+  // The signed device manifest held for each identity we deal with — ours
+  // included — verified before it is stored (device_manifest.dart).
+  static const _createDeviceManifests = '''
+    CREATE TABLE device_manifests (
+      stonechat_id TEXT PRIMARY KEY,
+      version      INTEGER NOT NULL,
+      manifest     TEXT NOT NULL
+    )
+  ''';
+
+  // Verified device certificates of peers, so expiry can be enforced on a
+  // session that outlives an app restart: a certificate is checked when a
+  // session starts, and without this nothing would check it again.
+  static const _createPeerCerts = '''
+    CREATE TABLE peer_certs (
+      peer_id   TEXT NOT NULL,
+      device_id INTEGER NOT NULL,
+      cert      TEXT NOT NULL,
+      not_after INTEGER NOT NULL,
+      PRIMARY KEY (peer_id, device_id)
+    )
+  ''';
 
   // Who this user has blocked — contacts, group members, strangers alike.
   // Local-only: it is never sent anywhere but our own devices (sync_block).
@@ -381,6 +419,63 @@ class ChatDb {
         await tx.delete(table);
       }
     });
+  }
+
+  // -- device manifests and peer certificates -------------------------------------
+
+  Future<({int version, String json})?> manifestFor(String stonechatId) async {
+    final rows = await _db.query(
+      'device_manifests',
+      where: 'stonechat_id = ?',
+      whereArgs: [stonechatId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return (
+      version: rows.first['version'] as int,
+      json: rows.first['manifest'] as String,
+    );
+  }
+
+  Future<void> putManifest(String stonechatId, int version, String json) async {
+    await _db.insert('device_manifests', {
+      'stonechat_id': stonechatId,
+      'version': version,
+      'manifest': json,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<String?> peerCert(String peerId, int deviceId) async {
+    final rows = await _db.query(
+      'peer_certs',
+      columns: ['cert'],
+      where: 'peer_id = ? AND device_id = ?',
+      whereArgs: [peerId, deviceId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['cert'] as String;
+  }
+
+  Future<void> putPeerCert(
+    String peerId,
+    int deviceId,
+    String cert,
+    int notAfter,
+  ) async {
+    await _db.insert('peer_certs', {
+      'peer_id': peerId,
+      'device_id': deviceId,
+      'cert': cert,
+      'not_after': notAfter,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<void> deletePeerCert(String peerId, int deviceId) async {
+    await _db.delete(
+      'peer_certs',
+      where: 'peer_id = ? AND device_id = ?',
+      whereArgs: [peerId, deviceId],
+    );
   }
 
   // -- kv -----------------------------------------------------------------------

@@ -154,6 +154,9 @@ class DirectoryEntry {
   final String? mailboxAddress; // null → peer's mailbox is off right now
   final String? mailboxTlsFp; // pinned cert fingerprint…
   final String? mailboxTlsSig; // …vouched for by the owner's identity key
+  /// The identity's signed device manifest, verbatim; null when none has
+  /// been published. Verified by the caller (device_manifest.dart).
+  final Map<String, dynamic>? devices;
 
   DirectoryEntry({
     required this.stonechatId,
@@ -163,6 +166,7 @@ class DirectoryEntry {
     this.mailboxAddress,
     this.mailboxTlsFp,
     this.mailboxTlsSig,
+    this.devices,
   });
 }
 
@@ -326,8 +330,23 @@ class HubApi {
         mailboxAddress: mailbox?['address'] as String?,
         mailboxTlsFp: mailbox?['tls_fp'] as String?,
         mailboxTlsSig: mailbox?['tls_sig'] as String?,
+        devices: j['devices'] as Map<String, dynamic>?,
       );
     });
+  }
+
+  /// Publish the identity's signed device manifest (PROTOCOL.md "Device
+  /// manifest"). The hub checks the signature and that the version moves
+  /// forward, and serves it in the directory record.
+  Future<void> publishDevices(Map<String, dynamic> manifest) async {
+    final r = await http
+        .post(
+          Uri.parse('$baseUrl/v1/devices'),
+          headers: _auth,
+          body: jsonEncode(manifest),
+        )
+        .timeout(const Duration(seconds: 10));
+    await _check(r, (_) => null);
   }
 
   /// Where a mailbox may live. Unauthenticated, so the picker can render

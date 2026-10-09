@@ -329,7 +329,26 @@ def ensure_provisioned(bot: Phone) -> None:
             print("vouched for the browser transport's certificates")
     except Exception as exc:
         print(f"could not vouch for the browser transport: {exc!r}")
+    ensure_manifest(bot)
     save(bot)
+
+
+def ensure_manifest(bot: Phone) -> None:
+    """Publish the device manifest unless the directory already lists this
+    device with its current key (PROTOCOL.md "Device manifest"). A bot is a
+    single-device identity, so the manifest is one line and changes only
+    when the state file is replaced."""
+    try:
+        current = e2e.resolve_directory(bot.stonechat_id).get("devices")
+        key = bytes(bot.dev_sig.verify_key)
+        if current is not None:
+            bot.manifest_version = current["version"]
+            if e2e.device_listed(current, bot.device, key):
+                return
+        bot.publish_devices({bot.device: key})
+        print(f"published device manifest v{bot.manifest_version}")
+    except Exception as exc:
+        print(f"could not publish the device manifest: {exc!r}")
 
 
 def top_up_opks(bot: Phone) -> None:

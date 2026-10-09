@@ -33,6 +33,7 @@
 //! so one linked artifact serves both ABIs.
 
 pub mod devcert;
+pub mod devices;
 pub mod envelope;
 pub mod ffi;
 pub mod identity;
@@ -45,7 +46,7 @@ pub mod wtcerts;
 pub use pqcore;
 
 /// Bumped whenever the exported C ABI changes shape.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn stonechat_core_abi_version() -> u32 {

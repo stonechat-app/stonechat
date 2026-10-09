@@ -30,10 +30,15 @@ const primaryCertLifetime = Duration(days: 365);
 
 /// How long the primary certifies a linked device for.
 ///
-/// Shorter than the primary's, because this is the lifetime that bounds the
-/// damage from a device the user forgot they linked: revocation stops it
-/// immediately, and expiry stops it eventually without anyone doing anything.
-const linkedCertLifetime = Duration(days: 180);
+/// Short, because this lifetime is what bounds a revoked device for a contact
+/// who has not yet seen the manifest that drops it (PROTOCOL.md "Device
+/// manifest"): the manifest reaches contacts only when something prompts them
+/// to fetch it, and the certificate's expiry is the guarantee for everyone
+/// else. The primary renews a linked device's certificate while the device
+/// is still listed ([certRenewWindow]), so a device that stays linked never
+/// notices; one that is revoked, or whose primary stays offline this long,
+/// stops being accepted.
+const linkedCertLifetime = Duration(days: 14);
 
 /// A browser session. Short by design — the web client cannot protect a key
 /// the way a phone keystore can, so its certificate is the mitigation, and a
@@ -43,18 +48,11 @@ const webCertLifetime = Duration(days: 7);
 /// A headless agent (agent_client/): a device with no screen and nobody
 /// sitting at it, usually on a mailbox rather than in a pocket.
 ///
-/// Same as a linked device, and the reasoning runs opposite to the browser's.
-/// Renewal is the primary's job, so a short lifetime here does not buy
-/// vigilance — it buys an unattended process that stops receiving mail on a
-/// Tuesday, months later, with the owner nowhere near it. Revocation is
-/// immediate and is the control that matters; expiry is the backstop for a
-/// device someone forgot, and 180 days is short enough to be that.
-///
-/// The key material is worse protected than a phone's (a file on a host, not
-/// a keystore), which argues for shorter. What answers it is scope: an agent
-/// holds no identity secret, so a stolen one is bounded by exactly this
-/// certificate — the same bound a linked device gets.
-const agentCertLifetime = Duration(days: 180);
+/// Same as a linked device: the primary renews it over self-sync
+/// (`sync_cert`) for as long as the agent is listed. An agent that does not
+/// handle `sync_cert` (`agent_client/` does not yet) is linked again when
+/// this runs out.
+const agentCertLifetime = Duration(days: 14);
 
 /// The lifetime for a device of the given kind, matching the relay's
 /// `devices.kind` column. Unknown kinds get the shortest, not the longest:
@@ -66,11 +64,17 @@ Duration certLifetimeFor(String kind) => switch (kind) {
   _ => webCertLifetime,
 };
 
+/// The primary renews a device's certificate once it has less than half its
+/// lifetime left — weekly for a linked device, so a primary that is online
+/// at least once a week keeps every linked device current, and a revoked
+/// device's certificate has at most its full lifetime to run.
+Duration certRenewWindow(String kind) => certLifetimeFor(kind) ~/ 2;
+
 /// Refetch a peer's device list once the certificate we hold has less than
 /// this left. Not a `devices_v` bump: that signals a device-*set* change,
 /// which renewal is not, and a missed bump would silently stop delivery on
 /// the day the certificate lapses. Refetching on approach is self-correcting.
-const certRefreshWindow = Duration(days: 7);
+const certRefreshWindow = Duration(days: 3);
 
 /// The two keypairs a device holds. Seeds only — the public halves are
 /// derived, so there is one thing to persist and one thing to lose.

@@ -42,7 +42,8 @@ class Store:
                 token_hash TEXT NOT NULL UNIQUE,
                 created_at TEXT NOT NULL,
                 banned_at  TEXT,                   -- abuse: no more provisioning
-                ban_reason TEXT
+                ban_reason TEXT,
+                devices    TEXT                    -- signed device manifest, JSON
             );
             CREATE TABLE IF NOT EXISTS mailboxes (
                 stonechat_id      TEXT PRIMARY KEY REFERENCES users(stonechat_id),
@@ -279,6 +280,9 @@ class Store:
             # pq_pk, so legacy junk rows are unreachable, not insecure.
             ("pq_pk", "ALTER TABLE users ADD COLUMN pq_pk TEXT"),
             ("pq_sig", "ALTER TABLE users ADD COLUMN pq_sig TEXT"),
+            # The signed device manifest, as published (PROTOCOL.md "Device
+            # manifest"). Null until the owner publishes one.
+            ("devices", "ALTER TABLE users ADD COLUMN devices TEXT"),
         ):
             if column not in have:
                 self._db.execute(ddl)
@@ -459,6 +463,11 @@ class Store:
         self._db.execute(
             "UPDATE mailboxes SET wt_address=? WHERE stonechat_id=?",
             (wt_address, stonechat_id),
+        )
+
+    def set_devices(self, stonechat_id: str, manifest_json: str) -> None:
+        self._db.execute(
+            "UPDATE users SET devices=? WHERE stonechat_id=?", (manifest_json, stonechat_id)
         )
 
     def set_tls_sig(self, stonechat_id: str, tls_sig: str) -> None:

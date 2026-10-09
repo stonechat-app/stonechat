@@ -16,6 +16,7 @@ import '../core/api.dart';
 import '../core/crypto.dart' show randomBytes;
 import '../core/db.dart';
 import '../core/device_keys.dart';
+import '../core/device_manifest.dart';
 import '../core/group_rules.dart';
 import '../core/links.dart';
 import '../core/session.dart';
@@ -179,6 +180,11 @@ class ChatState extends ChangeNotifier {
   /// device learns otherwise from its grant, and it is bound into the AEAD of
   /// everything we send, so it must be right before we send anything.
   int myDeviceId = ChatDb.primaryDevice;
+
+  /// The version of our identity's device manifest as we know it: stated
+  /// in every envelope we send, so a receiver can tell whether the manifest
+  /// it holds for us is current (PROTOCOL.md "Device manifest").
+  int myManifestVersion = 0;
 
   /// The capability we hand peers so they can list our devices. Learned from
   /// our own mailbox's /status — a linked device cannot derive it, since that
@@ -953,8 +959,18 @@ class ChatState extends ChangeNotifier {
       // Unreachable mailbox — fall through to whatever we already hold.
     }
     // A stale-but-valid certificate beats refusing to send because a refresh
-    // could not happen right now.
-    return fetched ?? held;
+    // could not happen right now. An expired one is not valid: a device
+    // whose certificate has run out is not encrypted to, whatever its
+    // mailbox still lists.
+    final result = fetched ?? held;
+    if (result == null) return null;
+    final expiry = certExpiry(result);
+    if (expiry == null || !expiry.isAfter(DateTime.now().toUtc())) {
+      _peerCerts[peerId]?.remove(deviceId);
+      unawaited(app.db.deletePeerCert(peerId, deviceId));
+      return null;
+    }
+    return result;
   }
 
   /// Verify a certificate against the peer's identity key and cache it.
@@ -997,6 +1013,188 @@ class ChatState extends ChangeNotifier {
       return;
     }
     (_peerCerts[peerId] ??= {})[deviceId] = cert;
+    unawaited(
+      app.db.putPeerCert(
+        peerId,
+        deviceId,
+        jsonEncode(cert),
+        (cert['not_after'] as int?) ?? 0,
+      ),
+    );
+  }
+
+  /// The verified certificate we hold for a peer's device, from memory or
+  /// from the database — null if none, or if it has expired.
+  Future<Map<String, dynamic>?> _heldCert(String peerId, int deviceId) async {
+    var cert = _peerCerts[peerId]?[deviceId];
+    if (cert == null) {
+      final stored = await app.db.peerCert(peerId, deviceId);
+      if (stored != null) {
+        cert = (jsonDecode(stored) as Map).cast<String, dynamic>();
+        (_peerCerts[peerId] ??= {})[deviceId] = cert;
+      }
+    }
+    if (cert == null) return null;
+    final expiry = certExpiry(cert);
+    if (expiry == null || !expiry.isAfter(DateTime.now().toUtc())) {
+      _peerCerts[peerId]?.remove(deviceId);
+      await app.db.deletePeerCert(peerId, deviceId);
+      return null;
+    }
+    return cert;
+  }
+
+  // -- device manifests (PROTOCOL.md "Device manifest") ------------------------------
+
+  /// Verified manifests held per identity, over the database copy.
+  final Map<String, DeviceManifest> _manifests = {};
+
+  /// Identities whose directory record was read this run and carried no
+  /// manifest, so a stream of envelopes from one does not become a stream
+  /// of directory lookups.
+  final Set<String> _noManifestThisRun = {};
+
+  /// Peers whose manifest was refetched this run because their mailbox
+  /// listed a device the manifest did not.
+  final Set<String> _manifestRefetched = {};
+
+  /// The manifest we hold for [peerId], fetching from the directory when we
+  /// hold none, or when [wanted] is a version above the one we hold. Null
+  /// when the identity has published none, or it cannot be fetched now.
+  Future<DeviceManifest?> _manifestFor(String peerId, {int wanted = 0}) async {
+    var held = _manifests[peerId];
+    if (held == null) {
+      final stored = await app.db.manifestFor(peerId);
+      if (stored != null) {
+        held = DeviceManifest.fromJson(jsonDecode(stored.json));
+        if (held != null) _manifests[peerId] = held;
+      }
+    }
+    final current = held != null && held.version >= wanted;
+    if (current || (held == null && _noManifestThisRun.contains(peerId))) {
+      return held;
+    }
+    try {
+      final entry = await _resolve(peerId);
+      final fetched = DeviceManifest.verified(
+        entry.devices,
+        peerId,
+        Uint8List.fromList(base64Decode(entry.pubkeyB64)),
+        app.crypto.core,
+      );
+      if (fetched == null) {
+        _noManifestThisRun.add(peerId);
+      } else if (held == null || fetched.version > held.version) {
+        // Only forward: a directory serving an older manifest than the one
+        // we hold is serving a stale one, and we keep ours.
+        held = fetched;
+        _manifests[peerId] = fetched;
+        await app.db.putManifest(peerId, fetched.version, jsonEncode(fetched.toJson()));
+        _peerDevices.remove(peerId); // the device set may have changed
+      }
+    } catch (_) {
+      // Directory unreachable: judge by what we hold.
+    }
+    return held;
+  }
+
+  /// Whether the device an envelope came from still speaks for its sender.
+  ///
+  /// Two things have to hold. The device's certificate, which we verified
+  /// when its session began and keep, must not have expired — and if it
+  /// has, the sender's mailbox is asked for a renewed one, which a device
+  /// still linked has and a revoked one does not. And when the sender's
+  /// identity has published a device manifest, the device must be on it
+  /// with the key its certificate carries; an envelope claiming a newer
+  /// manifest than we hold has the manifest refetched first.
+  ///
+  /// An identity that has never published a manifest is judged by
+  /// certificates alone. A dropped envelope is logged and acked like any
+  /// other refusal.
+  Future<bool> _senderDeviceTrusted(Envelope envelope) async {
+    final peerId = envelope.from;
+    final deviceId = envelope.fromDevice;
+    var cert = await _heldCert(peerId, deviceId);
+    if (cert == null) {
+      // No current certificate: fetch one. For a peer we know, their mailbox
+      // from the contact; otherwise the directory, which we need anyway.
+      try {
+        final pubkey = await _identityKeyFor(peerId);
+        final contact = contactById(peerId);
+        final String address;
+        final String tlsFp;
+        if (contact?.mailboxAddress != null && contact?.tlsFp != null) {
+          address = contact!.mailboxAddress!;
+          tlsFp = contact.tlsFp!;
+        } else {
+          final entry = await _resolve(peerId);
+          if (entry.mailboxAddress == null || entry.mailboxTlsFp == null) {
+            _dropLog(envelope, 'sender device has no current certificate');
+            return false;
+          }
+          address = entry.mailboxAddress!;
+          tlsFp = entry.mailboxTlsFp!;
+        }
+        final token = contact?.bundleToken ?? _memberBundleToken(peerId) ?? envelope.bundleToken;
+        _peerCerts[peerId]?.remove(deviceId);
+        await _certFor(peerId, deviceId, pubkey, token, address, tlsFp);
+        cert = await _heldCert(peerId, deviceId);
+      } catch (_) {
+        cert = null;
+      }
+      if (cert == null) {
+        _dropLog(envelope, 'sender device $deviceId: certificate expired or unknown');
+        return false;
+      }
+    }
+    final manifest = await _manifestFor(peerId, wanted: envelope.manifestV);
+    if (manifest == null) return true; // nothing published: certificates decide
+    if (manifest.lists(deviceId, cert['sig_pub'] as String?)) return true;
+    _dropLog(
+      envelope,
+      'sender device $deviceId is not in their device manifest '
+      '(version ${manifest.version})',
+    );
+    return false;
+  }
+
+  String? _memberBundleToken(String peerId) {
+    for (final members in groupMembers.values) {
+      for (final m in members) {
+        if (m.stonechatId == peerId && m.bundleToken != null) return m.bundleToken;
+      }
+    }
+    return null;
+  }
+
+  /// The devices of [peerId] we may encrypt to: those listed, narrowed to
+  /// the identity's manifest when it has one. A listed device that is not
+  /// on the manifest we hold has the manifest refetched once — it may have
+  /// just been linked — and is left out if it is still not there: a relay
+  /// that keeps serving a revoked device's certificate must not get that
+  /// device a copy.
+  Future<List<int>> _allowedDevices(String peerId, List<int> listed) async {
+    var manifest = await _manifestFor(peerId);
+    if (manifest == null) return listed;
+    bool unlisted(int d) => !manifest!.devices.containsKey(d);
+    // Once per run: a mailbox that keeps listing a revoked device would
+    // otherwise cost a directory lookup on every send.
+    if (listed.any(unlisted) && _manifestRefetched.add(peerId)) {
+      manifest = await _manifestFor(peerId, wanted: manifest.version + 1);
+      if (manifest == null) return listed;
+    }
+    final allowed = <int>[];
+    for (final d in listed) {
+      final cert = _peerCerts[peerId]?[d];
+      // Without a certificate the fan-out skips the device anyway; with one,
+      // the key must be the listed one.
+      if (!unlisted(d) && (cert == null || manifest.lists(d, cert['sig_pub'] as String?))) {
+        allowed.add(d);
+      } else {
+        _dropLogPlain('device $d of $peerId is not in their manifest — not encrypting to it');
+      }
+    }
+    return allowed;
   }
 
   static void _dropLogPlain(String reason) =>
@@ -1040,7 +1238,13 @@ class ChatState extends ChangeNotifier {
     /// tell a retry the difference.
     ({String messageId, String conversationId})? outbox,
   }) async {
-    final devices = await _devicesFor(peerId, bundleToken, address, tlsFp);
+    final listed = await _devicesFor(peerId, bundleToken, address, tlsFp);
+    // Certificates first — the manifest check compares against the key each
+    // certificate carries — then the manifest decides which devices count.
+    for (final device in listed) {
+      await _certFor(peerId, device, pubkeyB64, bundleToken, address, tlsFp);
+    }
+    final devices = await _allowedDevices(peerId, listed);
     final link = MailboxLink(address, tlsFp);
     final accepted = <int>{};
     final gone = <int>{}; // revoked: nobody is owed a copy for these
@@ -1187,9 +1391,15 @@ class ChatState extends ChangeNotifier {
   /// bootstrapped from our own mailbox's per-device bundles. `push: false`
   /// throughout — our own laptop catching up is never worth lighting up our
   /// own phone.
-  Future<void> _syncToSiblings(String type, Map<String, Object?> payload) async {
-    final devices = await _siblingDevices();
-    if (devices.isEmpty) return;
+  Future<void> _syncToSiblings(String type, Map<String, Object?> payload) async =>
+      _syncToDevices(await _siblingDevices(), type, payload);
+
+  Future<void> _syncToDevices(
+    Iterable<int> devices,
+    String type,
+    Map<String, Object?> payload,
+  ) async {
+    if (devices.isEmpty || mailboxAddress == null || mailboxTlsFp == null) return;
     final address = mailboxAddress!;
     final tlsFp = mailboxTlsFp!;
     for (final device in devices) {
@@ -1389,6 +1599,198 @@ class ChatState extends ChangeNotifier {
     myBundleToken = status.bundleToken;
   }
 
+  // -- our own devices: manifest and certificate renewal -------------------------
+
+  /// Housekeeping for the identity's devices, on every mailbox connect.
+  /// Every device learns the current manifest, so its envelopes state the
+  /// right version. The primary, which alone can sign, also makes sure the
+  /// manifest on the directory matches the devices on the relay, and renews
+  /// the certificate of any linked device that is running low.
+  Future<void> maintainDevices() async {
+    if (app.stonechatId == null) return;
+    await _learnOwnManifest();
+    if (myDeviceId != ChatDb.primaryDevice || !app.crypto.hasIdentitySecret) {
+      return;
+    }
+    try {
+      final listed = await _ownDeviceList();
+      await _reconcileManifest(listed);
+      await _renewLinkedCerts(listed);
+    } catch (e) {
+      debugPrint('stonechat: device maintenance skipped: $e');
+    }
+  }
+
+  Future<void> _learnOwnManifest() async {
+    final me = app.stonechatId!;
+    _noManifestThisRun.remove(me);
+    final held = await _manifestFor(me, wanted: myManifestVersion + 1);
+    if (held != null && held.version > myManifestVersion) {
+      myManifestVersion = held.version;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _ownDeviceList() async {
+    final address = mailboxAddress;
+    final token = mailboxToken;
+    final tlsFp = mailboxTlsFp;
+    if (address == null || token == null || tlsFp == null) return const [];
+    return (await listDevices(address, token, tlsFp)).devices;
+  }
+
+  /// Our devices as the relay lists them, each with the signing key of the
+  /// certificate it published. A device that has not published one yet is
+  /// not included; [extra] adds devices whose key we know another way (one
+  /// we just linked).
+  Map<int, String> _deviceKeysOf(
+    List<Map<String, dynamic>> listed, [
+    Map<int, String> extra = const {},
+  ]) {
+    final keys = <int, String>{...extra};
+    for (final d in listed) {
+      final id = d['device_id'];
+      final cert = d['cert'];
+      if (id is! int || cert is! Map) continue;
+      final sigPub = cert['sig_pub'];
+      if (sigPub is String) keys[id] = sigPub;
+    }
+    final own = app.deviceCert?['sig_pub'];
+    if (own is String) keys[myDeviceId] = own;
+    return keys;
+  }
+
+  /// Publish a manifest when the one on record does not say what the relay
+  /// says: a device was linked, revoked or expired, or none was ever
+  /// published.
+  Future<void> _reconcileManifest(List<Map<String, dynamic>> listed) async {
+    final wanted = _deviceKeysOf(listed);
+    if (wanted.isEmpty) return;
+    final held = _manifests[app.stonechatId!];
+    if (held != null && _sameDevices(held.devices, wanted)) return;
+    await publishDeviceManifest();
+  }
+
+  static bool _sameDevices(Map<int, String> a, Map<int, String> b) =>
+      a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
+
+  /// Sign and publish the manifest of our devices as the relay lists them
+  /// plus [extra]. Primary only. Numbered past both the version we know and
+  /// the one the directory holds — a primary restored from an export knows
+  /// nothing, and a manifest numbered at or below the one on record is
+  /// refused.
+  Future<void> publishDeviceManifest({Map<int, String> extra = const {}}) async {
+    final me = app.stonechatId;
+    if (me == null || myDeviceId != ChatDb.primaryDevice || !app.crypto.hasIdentitySecret) {
+      return;
+    }
+    final devices = _deviceKeysOf(await _ownDeviceList(), extra);
+    if (devices.isEmpty) return;
+    var version = myManifestVersion;
+    final onRecord = await _manifestFor(me, wanted: version + 1);
+    if (onRecord != null && onRecord.version > version) version = onRecord.version;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final manifest = DeviceManifest.sign(
+        stonechatId: me,
+        version: version + 1,
+        devices: devices,
+        identitySeed: app.crypto.identitySeed,
+        core: app.crypto.core,
+      );
+      try {
+        await app.api.publishDevices(manifest.toJson());
+      } on ApiException catch (e) {
+        // 409: the directory holds a later version than we knew of (another
+        // primary restore published in between). Number past it once.
+        final detail = e.detail;
+        final current = detail is Map ? detail['current'] : null;
+        if (e.status == 409 && current is int && attempt == 0) {
+          version = current;
+          continue;
+        }
+        rethrow;
+      }
+      _manifests[me] = manifest;
+      myManifestVersion = manifest.version;
+      await app.db.putManifest(me, manifest.version, jsonEncode(manifest.toJson()));
+      _peerDevices.clear(); // our own siblings are peers too
+      return;
+    }
+  }
+
+  /// Re-sign the certificate of every linked device that has less than half
+  /// its lifetime left — or has run out while we were away — and hand it
+  /// over by self-sync. A device still on the relay is still ours; one that
+  /// was revoked is not listed and gets nothing, which is the point of the
+  /// short lifetime.
+  Future<void> _renewLinkedCerts(List<Map<String, dynamic>> listed) async {
+    final now = DateTime.now().toUtc();
+    for (final d in listed) {
+      final id = d['device_id'];
+      final cert = d['cert'];
+      if (id is! int || id == myDeviceId || cert is! Map) continue;
+      final old = cert.cast<String, dynamic>();
+      final kind = (d['kind'] as String?) ?? 'web';
+      final expiry = certExpiry(old);
+      if (expiry != null && expiry.difference(now) >= certRenewWindow(kind)) continue;
+      final sigPub = certSigKey(old);
+      final sealPub = certSealKey(old);
+      if (sigPub == null || sealPub == null) continue;
+      final renewed = app.crypto.core.devcertSign(
+        unsignedCert(
+          stonechatId: app.stonechatId!,
+          deviceId: id,
+          sigPublic: sigPub,
+          sealPublic: sealPub,
+          notAfter: now.add(certLifetimeFor(kind)),
+        ),
+        app.crypto.identitySeed,
+      );
+      await _syncToDevices([id], EnvelopeType.syncCert, {'cert': renewed});
+    }
+  }
+
+  /// A renewed certificate from our primary, for this device. Adopted only
+  /// if it is ours in every respect — our identity, our slot, our keys —
+  /// and later than the one we hold; then republished with our prekeys so
+  /// peers pick it up.
+  Future<void> _applySyncCert(Envelope envelope, Map<String, dynamic> payload) async {
+    final raw = payload['cert'];
+    if (raw is! Map) return;
+    final cert = raw.cast<String, dynamic>();
+    final keys = app.deviceKeys;
+    if (keys == null) return;
+    final now = DateTime.now().toUtc();
+    final status = app.crypto.core.devcertVerify(
+      cert,
+      Uint8List.fromList(base64Decode(app.crypto.publicKeyB64)),
+      now.millisecondsSinceEpoch ~/ 1000,
+    );
+    if (status != 'valid' ||
+        cert['stonechat_id'] != app.stonechatId ||
+        cert['device_id'] != myDeviceId) {
+      _dropLog(envelope, 'renewed certificate is not for this device');
+      return;
+    }
+    final sig = certSigKey(cert);
+    final seal = certSealKey(cert);
+    if (sig == null ||
+        seal == null ||
+        base64Encode(sig) != base64Encode(keys.sigPublic) ||
+        base64Encode(seal) != base64Encode(keys.sealPublic)) {
+      _dropLog(envelope, 'renewed certificate names other keys');
+      return;
+    }
+    final held = app.deviceCert == null ? null : certExpiry(app.deviceCert!);
+    final renewed = certExpiry(cert);
+    if (renewed == null || (held != null && !renewed.isAfter(held))) return;
+    await app.adoptRenewedCert(cert);
+    try {
+      await publishPrekeys();
+    } catch (_) {
+      // Republished on the next connect.
+    }
+  }
+
   // -- forward-secret sessions (PROTOCOL.md "Session crypto") --------------------
 
   /// One writer per ratchet — see [KeyedSerializer]. Different ratchets still
@@ -1568,6 +1970,7 @@ class ChatState extends ChangeNotifier {
         ciphertextB64: base64Encode(sealed.ciphertext),
         blobId: blobId,
         bundleToken: myBundleToken,
+        manifestV: myManifestVersion,
       );
     });
   }
@@ -4010,6 +4413,12 @@ class ChatState extends ChangeNotifier {
     // the type switch so it is learned even from traffic we go on to drop.
     await _noteBundleToken(envelope.from, envelope.bundleToken);
 
+    // The device that wrote this must still speak for the sender: its
+    // certificate unexpired, and listed in the sender's device manifest when
+    // the sender has one. A session that was fine when it started does not
+    // settle this — the device may have been revoked since.
+    if (!await _senderDeviceTrusted(envelope)) return;
+
     // Blocked senders — contacts or not: their DM traffic, calls and contact
     // requests stop at the door. Decrypt first (above) so the ratchet stays
     // current for a later unblock. In groups, messages still arrive (below)
@@ -4300,6 +4709,13 @@ class ChatState extends ChangeNotifier {
           return;
         }
         await _applySyncBlock(payload);
+
+      case EnvelopeType.syncCert:
+        if (envelope.from != app.stonechatId) {
+          _dropLog(envelope, 'sync from someone else\'s identity');
+          return;
+        }
+        await _applySyncCert(envelope, payload);
 
       case EnvelopeType.typing:
         _applyTyping(envelope, payload);

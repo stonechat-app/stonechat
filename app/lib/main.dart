@@ -50,6 +50,9 @@ Future<void> main() async {
       } catch (_) {
         // best-effort; retried on the next connect or app resume
       }
+      // The device manifest and linked devices' certificates: the primary
+      // keeps both current, every device learns the manifest's version.
+      await chat.maintainDevices();
       await chat.retryPending();
     },
     onMailbox: chat.setMailbox,

@@ -491,6 +491,13 @@ class AppState extends ChangeNotifier {
     await _storage.write(key: 'sc_device_cert', value: jsonEncode(signed));
   }
 
+  /// A certificate our primary renewed for this device, already checked by
+  /// the caller to be ours (chat_state `_applySyncCert`).
+  Future<void> adoptRenewedCert(Map<String, dynamic> cert) async {
+    deviceCert = cert;
+    await _storage.write(key: 'sc_device_cert', value: jsonEncode(cert));
+  }
+
   // -- device linking ---------------------------------------------------------
 
   /// BLAKE2b-256 hex — the parking key derivation, shared by both sides.
@@ -642,6 +649,32 @@ class AppState extends ChangeNotifier {
     String kind = 'linked',
     int? expiresInSeconds,
   }) async {
+    final linked = await authoriseLinkDetailed(
+      offer,
+      relayAddress: relayAddress,
+      relayTlsFp: relayTlsFp,
+      ownerToken: ownerToken,
+      hubUrl: hubUrl,
+      bundleToken: bundleToken,
+      kind: kind,
+      expiresInSeconds: expiresInSeconds,
+    );
+    return linked.deviceId;
+  }
+
+  /// [authoriseLink], also returning the new device's signing key so the
+  /// caller can list it in the device manifest before the device has
+  /// published anything itself.
+  Future<({int deviceId, String sigPubB64})> authoriseLinkDetailed(
+    LinkOffer offer, {
+    required String relayAddress,
+    required String relayTlsFp,
+    required String ownerToken,
+    required String hubUrl,
+    String? bundleToken,
+    String kind = 'linked',
+    int? expiresInSeconds,
+  }) async {
     // The QR carried a commitment, not the keys. Fetch them and check they
     // hash to what the user's eyes transported — this is the whole security of
     // the smaller code. A substituted key produces a different commitment and
@@ -716,6 +749,6 @@ class AppState extends ChangeNotifier {
       linkParkingKey(_hashHex, offer.lookup),
       base64Encode(sealed),
     );
-    return minted.deviceId;
+    return (deviceId: minted.deviceId, sigPubB64: base64Encode(sigPub));
   }
 }

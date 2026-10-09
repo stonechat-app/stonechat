@@ -100,7 +100,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
         ],
       ),
     );
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
+    final chat = context.read<ChatState>();
     try {
       await revokeDevice(
         mailbox.address,
@@ -108,6 +109,19 @@ class _DevicesScreenState extends State<DevicesScreen> {
         mailbox.tlsFp,
         deviceId,
       );
+      // Tell everyone: a manifest without the device is what makes contacts
+      // stop accepting it, not the relay's refusal alone.
+      try {
+        await chat.publishDeviceManifest();
+      } on ApiException catch (e) {
+        if (mounted) {
+          showZnSnack(
+            context,
+            'Removed here, but contacts could not be told yet: ${e.message}',
+            error: true,
+          );
+        }
+      }
       await _load();
     } on ApiException catch (e) {
       if (mounted) showZnSnack(context, e.message, error: true);
@@ -215,14 +229,20 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final app = context.read<AppState>();
     setState(() => _busy = true);
     try {
-      await app.authoriseLink(
+      final chat = context.read<ChatState>();
+      final linked = await app.authoriseLinkDetailed(
         offer,
         relayAddress: mailbox.address,
         relayTlsFp: mailbox.tlsFp,
         ownerToken: mailbox.token,
         hubUrl: app.api.baseUrl,
-        bundleToken: context.read<ChatState>().myBundleToken,
+        bundleToken: chat.myBundleToken,
         kind: kind,
+      );
+      // List it now, with the key from its code: contacts accept nothing
+      // from a device the manifest does not name.
+      await chat.publishDeviceManifest(
+        extra: {linked.deviceId: linked.sigPubB64},
       );
       if (mounted) {
         showZnSnack(context, 'Authorised — finish on the other device');

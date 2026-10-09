@@ -180,6 +180,79 @@ pub unsafe extern "C" fn stonechat_wtcerts_verify(
     })
 }
 
+/// Sign a device manifest with the identity root (PROTOCOL.md "Device
+/// manifest"). `manifest_json` is the unsigned manifest; emits the base64
+/// signature, which the caller publishes beside it.
+///
+/// # Safety
+/// Pointers must be valid for their stated lengths; `identity_seed` is 32
+/// bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_devices_sign(
+    manifest_json: *const u8,
+    manifest_len: usize,
+    identity_seed: *const u8,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    ffi_guard!({
+        let Some(bytes) = (unsafe { slice(manifest_json, manifest_len) }) else {
+            return ERR_INPUT;
+        };
+        let Some(seed) = (unsafe { arr::<32>(identity_seed) }) else {
+            return ERR_INPUT;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+            return ERR_INPUT;
+        };
+        let Some(manifest) = crate::devices::Manifest::from_json(&v) else {
+            return ERR_INPUT;
+        };
+        let sig = manifest.sign(seed);
+        unsafe { emit(B64.encode(sig).into_bytes(), out_ptr, out_len) };
+        OK
+    })
+}
+
+/// Check a device manifest against an identity public key: 0 when it is
+/// that identity's genuine, well-formed manifest, -3 when it is not — a
+/// bad signature, a key its Stonechat ID does not commit to, an empty or
+/// oversized list, or a device listed twice.
+///
+/// # Safety
+/// Pointers must be valid for their stated lengths; `identity_pub` is 32
+/// bytes and `sig` is 64.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn stonechat_devices_verify(
+    manifest_json: *const u8,
+    manifest_len: usize,
+    identity_pub: *const u8,
+    sig: *const u8,
+) -> i32 {
+    ffi_guard!({
+        let Some(bytes) = (unsafe { slice(manifest_json, manifest_len) }) else {
+            return ERR_INPUT;
+        };
+        let Some(pubkey) = (unsafe { arr::<32>(identity_pub) }) else {
+            return ERR_INPUT;
+        };
+        let Some(signature) = (unsafe { arr::<64>(sig) }) else {
+            return ERR_INPUT;
+        };
+        let Ok(v) = serde_json::from_slice::<Value>(bytes) else {
+            return ERR_INPUT;
+        };
+        let Some(manifest) = crate::devices::Manifest::from_json(&v) else {
+            return ERR_INPUT;
+        };
+        if manifest.verify(pubkey, signature) {
+            OK
+        } else {
+            ERR_REFUSED
+        }
+    })
+}
+
 /// Sign a device certificate with the identity root.
 ///
 /// `cert_json` is the unsigned certificate; `identity_seed` is the 32-byte

@@ -53,7 +53,7 @@ export const ED_SIGNATURE = 64;
 export const SHA256 = 32;
 
 /** The ABI this binding was written against. */
-export const EXPECTED_ABI = 2;
+export const EXPECTED_ABI = 3;
 
 interface CoreExports {
   memory: WebAssembly.Memory;

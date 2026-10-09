@@ -235,6 +235,21 @@ class WtCertsIn(BaseModel):
     wt_sig: str = Field(max_length=128)
 
 
+class DeviceEntryIn(BaseModel):
+    device_id: int = Field(ge=1, le=2**32 - 1)
+    sig_pub: str = Field(max_length=64)  # base64 Ed25519 key, 32 bytes
+
+
+class DevicesIn(BaseModel):
+    """The identity's signed device manifest (PROTOCOL.md "Device manifest")."""
+    stonechat_id: str = Field(max_length=64)
+    version: int = Field(ge=1, le=2**53)
+    issued_at: int = Field(ge=0, le=2**53)
+    # core/src/devices.rs MAX_DEVICES.
+    devices: list[DeviceEntryIn] = Field(min_length=1, max_length=64)
+    sig: str = Field(max_length=128)
+
+
 # -- routes ---------------------------------------------------------------------
 
 @app.get("/health")
@@ -505,6 +520,10 @@ def directory(stonechat_id: str, request: Request):
         "pubkey": user["pubkey"],
         "pq_pk": user["pq_pk"],
         "pq_sig": user["pq_sig"],
+        # The identity's signed device manifest, exactly as published, or
+        # null when the owner has not published one. Clients verify it
+        # against `pubkey`; we only checked it on the way in.
+        "devices": json.loads(user["devices"]) if user.get("devices") else None,
         "mailbox": (
             {
                 "address": mailbox["address"],
@@ -715,6 +734,70 @@ def publish_wt_certs(body: WtCertsIn, user: User):
     # the fields), but keeping them together is what makes that true.
     store.set_wt_certs(user["stonechat_id"], json.dumps(certs), body.wt_sig)
     return {"status": "ok"}
+
+
+@app.post("/v1/devices")
+def publish_devices(body: DevicesIn, user: User):
+    """The owner publishes the list of devices that currently speak for the
+    identity (PROTOCOL.md "Device manifest"). Verified here so the directory
+    never serves garbage, and clients verify again, because our word does
+    not count: a client that trusted the directory on this would let the
+    directory decide which devices are the owner's.
+
+    The version must move forward. A manifest that does not is a replay or
+    a restored device that is behind; either way the one on record stands,
+    and the caller is told which version that is."""
+    if body.stonechat_id != user["stonechat_id"]:
+        raise HTTPException(400, "manifest names another identity")
+    ids = [d.device_id for d in body.devices]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(400, "a device is listed twice")
+    for d in body.devices:
+        try:
+            if len(base64.b64decode(d.sig_pub, validate=True)) != 32:
+                raise ValueError
+        except Exception:
+            raise HTTPException(400, f"device {d.device_id}: sig_pub is not a 32-byte key")
+    manifest = body.model_dump()
+    sig = manifest.pop("sig")
+    try:
+        from nacl.signing import VerifyKey
+
+        VerifyKey(base64.b64decode(user["pubkey"])).verify(
+            b"stonechat-v1-devices" + _devices_signing_bytes(manifest),
+            base64.b64decode(sig),
+        )
+    except Exception:
+        raise HTTPException(400, "signature does not verify against your identity key")
+    current = json.loads(user["devices"]) if user.get("devices") else None
+    if current and current["version"] >= body.version:
+        raise HTTPException(
+            409,
+            {"code": "stale_version", "current": current["version"],
+             "message": "a manifest at this version or later is already on record"},
+        )
+    manifest["sig"] = sig
+    store.set_devices(user["stonechat_id"], json.dumps(manifest))
+    return {"status": "ok", "version": body.version}
+
+
+def _devices_signing_bytes(manifest: dict) -> bytes:
+    """Mirrors core/src/devices.rs `Manifest::signing_bytes`: length-prefixed
+    and ordered, with the device count, so a truncated list does not verify
+    as a prefix of the signed one."""
+    def field(b: bytes) -> bytes:
+        return len(b).to_bytes(4, "big") + b
+
+    out = (
+        field(manifest["stonechat_id"].encode())
+        + field(int(manifest["version"]).to_bytes(8, "big"))
+        + field(int(manifest["issued_at"]).to_bytes(8, "big", signed=True))
+        + field(len(manifest["devices"]).to_bytes(4, "big"))
+    )
+    for d in manifest["devices"]:
+        out += field(int(d["device_id"]).to_bytes(4, "big"))
+        out += field(base64.b64decode(d["sig_pub"]))
+    return out
 
 
 def _wtcerts_signing_bytes(certs: list[dict]) -> bytes:

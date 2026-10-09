@@ -28,7 +28,9 @@ device** with a hybrid KEM ("Envelope"), so it names no sender on the wire.
 
 An identity may have **several devices**, each with its own keys, its own
 queue on the mailbox, and its own ratchet with every peer device
-("Devices").
+("Devices"). Which devices currently speak for an identity is a signed,
+numbered statement by the identity itself ("Device manifest"), not a
+relay's word.
 
 The wire version is 1 ("Versioning").
 
@@ -292,22 +294,44 @@ skips that device rather than falling back to any other key.
 **Lifetimes.** The certifying (primary) device chooses `not_after`. The
 Flutter app uses, by kind:
 
-| Kind | Certificate lifetime |
-|---|---|
-| `primary` | 365 days |
-| `linked` | 180 days |
-| `agent` | 180 days |
-| `web` (and any unknown kind) | 7 days |
+| Kind | Certificate lifetime | Renewed by the primary when less than |
+|---|---|---|
+| `primary` | 365 days | 3 days (re-signs its own) |
+| `linked` | 14 days | 7 days left |
+| `agent` | 14 days | 7 days left |
+| `web` (and any unknown kind) | 7 days | 3.5 days left |
+
+Lifetimes are short because a certificate is what a revoked device keeps.
+The device manifest ("Device manifest") tells a contact who fetches it
+that a device is gone; the certificate's expiry is the bound for a contact
+who does not.
 
 - A device row given an expiry (`expires_in_s`) gets a certificate of the
   same lifetime, so a device that stops authenticating does not go on being
   a valid encryption target.
-- The primary re-signs its own certificate when it has less than 7 days
+- The primary re-signs its own certificate when it has less than 3 days
   left, or when the one it holds names a different identity.
-- There is no renewal exchange: a linked device does not hold the identity
-  key, so one whose certificate runs out is linked again.
+- **Renewal.** On every connect to its mailbox the primary lists the
+  identity's devices and, for each device other than itself whose
+  certificate has less than half its lifetime left — or has already run
+  out — signs a new certificate over the same keys for the same slot and
+  sends it to that device as a `sync_cert` self-sync envelope ("Self-sync").
+  The device verifies it (against the identity key it holds; names its own
+  ID, slot and both keys; later than the one it has), adopts it and
+  republishes its prekeys with it. A linked device thus stays certified for
+  as long as its primary connects at least once per half-lifetime and it is
+  still on the relay. A device that was revoked is not listed and gets
+  nothing. A linked device that does not handle `sync_cert` (the browser
+  client and the agent do not yet) is linked again when its certificate
+  runs out.
 - Senders re-fetch a peer's certificates when the one they hold has less
-  than 7 days left.
+  than 3 days left, which is after the primary would have renewed it. A
+  sender MUST NOT encrypt to a device whose certificate has expired,
+  whatever the mailbox lists.
+- Receivers keep the certificate they verified for a sending device and
+  check it on every envelope, not only when the session began ("What a
+  recipient checks"). A certificate that has expired is refetched from the
+  sender's mailbox; one that cannot be replaced drops the envelope.
 
 **Where certificates travel.** A device uploads its certificate to its
 mailbox with its prekeys (`POST /prekeys`, `cert`); the mailbox stores it as
@@ -355,6 +379,105 @@ relay reports it in `/status`, `/devices`, `/prekeys/devices`, in every
 `/inbox` response, and in the body of a `410`. A sender that sees a larger
 value than the one it holds drops its cached device list for that peer and
 re-reads it on the next send.
+
+### Device manifest
+
+A certificate says a device *was* the identity's, until a date. The
+**device manifest** is the identity's statement of which devices speak for
+it *now*: the primary signs the current set, numbered so a newer manifest
+supersedes an older, and publishes it to the hub, which serves it in the
+directory record (`devices`). A peer that holds it encrypts only to devices
+on it and accepts envelopes only from devices on it — so revoking a device
+is a new manifest without the device, which a contact can check, rather
+than only a queue deleted on a relay the contact has to trust.
+
+```json
+{
+  "stonechat_id": "SC-…",
+  "version": 7,
+  "issued_at": 1790000000,
+  "devices": [
+    {"device_id": 1, "sig_pub": "<base64, 32 bytes>"},
+    {"device_id": 3, "sig_pub": "<base64, 32 bytes>"}
+  ],
+  "sig": "<base64, 64 bytes>"
+}
+```
+
+Each entry pairs a device slot with the signing key its certificate
+carries, so a relay that moved a certificate between slots, or kept one
+from before a slot was re-keyed, is caught by the pair not matching.
+`issued_at` is informational: nothing expires a manifest. What is signed is
+a length-prefixed byte string, as for certificates:
+
+```
+signing_bytes = field(utf8(stonechat_id))
+             || field(u64_be(version))
+             || field(i64_be(issued_at))
+             || field(u32_be(count))
+             || for each device: field(u32_be(device_id)) || field(sig_pub)
+sig           = Sign("stonechat-v1-devices", signing_bytes, identity_sk)
+```
+
+A manifest is **valid** for identity key `IK` iff `sig` verifies under
+`IK`, `IK` is the key `stonechat_id` commits to, it lists between 1 and 64
+devices, and no slot is listed twice. A client MUST additionally check it
+names the identity it asked about.
+
+**Publishing.** Only the primary can sign. It publishes with
+`POST /v1/devices` ("Hub API"); the hub verifies the signature and refuses a
+version at or below the one on record (`409`, naming the current version).
+The primary publishes:
+
+- when it links a device, listing the new device by the key in its offer,
+  before the device has published anything itself;
+- when it revokes a device;
+- on every connect to its mailbox, if the devices the relay lists (by the
+  certificates they published) are not the set the manifest on record
+  lists — which also covers a device the relay expired.
+
+The next version is one past both the version the primary knows and the
+version on record, so a primary restored from an identity export, which
+knows nothing, still publishes a manifest that supersedes.
+
+**Holding one.** A client keeps the newest verified manifest it has seen
+per identity — its own included — and never replaces it with an older one,
+whatever the directory serves. Every inner envelope states the sender's
+current version as `manifest_v` ("Envelope"). A client fetches an
+identity's manifest (by resolving the ID, "Directory resolution"):
+
+- the first time it deals with the identity, as part of resolving it;
+- when an envelope states a `manifest_v` above the version it holds;
+- when the sender's mailbox lists a device the held manifest does not;
+- once per run when it holds none, so an identity that published after
+  first contact is caught up with.
+
+There is deliberately no periodic refresh. A contact who is never prompted
+to refetch keeps accepting a revoked device until that device's certificate
+expires, which the lifetimes above keep short.
+
+**What a holder enforces.** For an identity with a manifest:
+
+- on receive, the envelope's `from_device` MUST be listed with the
+  `sig_pub` of the certificate the receiver holds for it, else the envelope
+  is dropped (after refetching the manifest if the envelope's `manifest_v`
+  is newer than the one held);
+- on send, only listed devices are encrypted to, and a listed device whose
+  held certificate carries another key is skipped.
+
+For an identity that has published no manifest, certificates alone decide.
+A client's own devices are judged the same way: a revoked device of one's
+own cannot write self-sync to the others once they hold the manifest that
+drops it.
+
+**What it does not do.** The manifest carries no expiry and the directory
+can serve a stale one: a hub can hold a contact at an old version until
+something prompts a refetch, and even then only answer with what it has.
+The certificate lifetime bounds that. A manifest also says nothing about a
+device's *queue*: a hostile relay can go on accepting deposits for a
+revoked device and serving its certificate; a sender holding the manifest
+does not encrypt to it, and one that does not stops when the certificate
+expires.
 
 ### Linking a device
 
@@ -406,7 +529,9 @@ of device this is. Then the primary:
 - builds the **grant** and seals it to the offered `seal_pub` with the same
   construction that seals envelopes ("Envelope");
 - parks it: `POST {hub}/v1/link` `{"key": "<parking_key>", "sealed":
-  "<base64>"}`.
+  "<base64>"}`;
+- publishes a device manifest that lists the new device by the offered
+  `sig_pub` ("Device manifest"), so contacts accept it as soon as it speaks.
 
 The grant, as JSON inside the seal:
 
@@ -472,9 +597,12 @@ incremented, and any later envelope addressed to it is refused with `410`.
 The primary may revoke any other device; a linked device may revoke only
 itself ("sign out"); device 1 cannot be revoked by anyone.
 
-Revocation is enforced by **the relay** and by **certificate expiry**, and
-by nothing else. There is no signed revocation statement and nothing a
-contact can check ("Known open gaps").
+Revocation is enforced three ways: by **the relay**, which stops queueing
+for the device; by the **device manifest** the primary publishes without
+it, which a contact who fetches it checks on every envelope and every send;
+and by **certificate expiry**, which bounds a contact who never fetches it
+("Device manifest", "Device certificates"). The revoked device keeps its
+keys and its certificate; what it loses is anyone's reason to accept them.
 
 ## Prekeys
 
@@ -724,6 +852,7 @@ uses.
   "pubkey": "<base64 Ed25519 identity key>",
   "pq_pk": "<base64, 1216 bytes>",
   "pq_sig": "<base64>",
+  "devices": { …device manifest, "Device manifest"… } | null,
   "mailbox": {
     "address": "https://203.0.113.7:8080",
     "status": "running",
@@ -737,7 +866,8 @@ uses.
 ```
 
 `mailbox` is `null` unless the identity has a mailbox whose status is
-`running`. `wt_certs` is `null` when no schedule has been signed.
+`running`. `wt_certs` is `null` when no schedule has been signed. `devices`
+is `null` until the owner publishes a manifest.
 
 The directory is untrusted. A client that resolves an ID:
 
@@ -746,7 +876,10 @@ The directory is untrusted. A client that resolves an ID:
    the key against the ID *in the answer* proves nothing: a directory that
    returns somebody else's complete record is internally consistent.
 2. MUST verify `tls_sig` before using `address` ("Transport"), and `wt_sig`
-   before pinning anything from `wt_certs`.
+   before pinning anything from `wt_certs`; and MUST verify `devices`, when
+   present, as "Device manifest" says, refusing the record if it does not
+   verify — a directory serving a manifest the owner did not sign is not
+   serving the owner's record.
 3. For a peer it **already knows**, uses the identity key it already holds —
    provided that key still hashes to the peer's ID — for everything that
    needs one: verifying device certificates on send and on receive. An ID
@@ -1063,9 +1196,16 @@ with its own seal seed:
   "nonce": "<base64, 24 bytes>",
   "ciphertext": "<base64>",
   "blob_id": "<uuid, optional — only on type=media>",
-  "bundle_token": "<hex, optional — the SENDER's mailbox's bundle token>"
+  "bundle_token": "<hex, optional — the SENDER's mailbox's bundle token>",
+  "manifest_v": 7
 }
 ```
+
+`manifest_v` is the version of the sender's device manifest as the sender
+knows it ("Device manifest"); absent or 0 when it knows of none. Inside
+the seal and the ratchet, so only the recipient reads it; not
+authenticated beyond that, since the worst a false value does is cause or
+skip one directory lookup.
 
 `from_device` and `device` are required. `ratchet` is the double-ratchet
 header. `x3dh` appears only on a session's initial envelopes (until
@@ -1090,7 +1230,14 @@ are lower-case.
    id that disagrees is a sender trying to be filed under a name the mailbox
    never saw;
 6. the message decrypts on the session keyed by `(from, from_device)`, or a
-   session can be established from its `x3dh` block ("PQXDH").
+   session can be established from its `x3dh` block ("PQXDH");
+7. the sending device still speaks for the sender: the certificate the
+   receiver holds for `(from, from_device)` is unexpired (else refetched
+   from the sender's mailbox, and the envelope dropped if none is current),
+   and, when the sender has a device manifest, the device is listed on it
+   with that certificate's key ("Device manifest"). Checked on every
+   envelope, not only when a session begins: a device may have been
+   revoked since.
 
 A dropped envelope is still acked: it can never succeed, and leaving it
 queued would replay it on every connect. The sender's pending-outbox retry
@@ -1142,6 +1289,7 @@ history.
 | `sync_sent` | `{"peer" \| "group_id", "type", "payload", "id", "sent_at"}` | stores an outgoing message. `type`/`payload` are the type and payload that were sent to the peer; `id` is the message id; `sent_at` is **milliseconds** since the epoch (unlike the envelope's ISO `sent_at`) |
 | `sync_read` | `{"peer" \| "group_id", "ids": ["<message id>", …]}` | marks those incoming messages read, without sending a receipt |
 | `sync_clear` | `{"peer" \| "group_id"}` | deletes that conversation's history; the conversation itself stays |
+| `sync_cert` | `{"cert"}` | from the primary to one linked device: a renewed certificate over that device's keys ("Device certificates"). Adopted only if it verifies against the identity key, names this device's ID, slot and keys, and is later than the one held |
 | `sync_block` | `{"peer", "blocked_at": <ms> \| null}` | blocks (`blocked_at` set) or unblocks (`null`) that Stonechat ID |
 
 Exactly one of `peer` (a DM, the peer's ID) or `group_id` names the
@@ -1947,6 +2095,7 @@ Only the primary device holds an account token; a linked device has none.
 | POST   | `/v1/mailbox`             | bearer | `{"country": "DE"}` (the app's form — the hub resolves it against the catalog and the caller's tier; on an open hub, where nobody holds one, it picks a shared mailbox host when one declares that country, else a dedicated VM) **or** `{"provider", "machine": {"machine_type", "region", "disk_gb"}}` — exactly one of the two forms. For `mailbox_host`, `region` is the ISO country code: placement is least-loaded *within* that country and fails rather than falling back to another. → 202 `{"status": "provisioning"}`. One mailbox per user (409). 400 `{"code": "country_unavailable"}`; 403 `{"code": "account_suspended"}` for a banned account. On a gated hub, gated providers require a tier (see "Gate"): missing/insufficient → 402 `{"code": "access_required", "tier_required", "message"}`; gate unreachable → 503 `{"code": "gate_unavailable"}`. |
 | POST   | `/v1/mailbox/external`    | bearer | `{"address": "https://host[:port]", "wt_address"?: "host:port"}` → 201 `{"status": "running", "address", "tls_fp"}` — list a self-provisioned relay. The hub confirms ownership via `GET {address}/owner?stonechat_id=<caller>` — the mailbox confirms the supplied ID rather than exposing its owner. The relay's token never reaches the hub. 403 for a banned account. |
 | POST   | `/v1/mailbox/tls`         | bearer | `{"tls_fp", "tls_sig"}` — the owner publishes the signature over their mailbox's TLS fingerprint. The hub verifies the signature against the registered identity key and that `tls_fp` matches the fingerprint it observed. 404 no running mailbox. |
+| POST   | `/v1/devices`             | bearer | the signed device manifest, as "Device manifest" shows it. The hub verifies the signature against the registered identity key, that the manifest names the caller, lists 1–64 devices with 32-byte keys and no slot twice, and that `version` is above the one on record — else **409** `{"code": "stale_version", "current": n}`. Stored and served verbatim as the directory record's `devices`. |
 | POST   | `/v1/mailbox/wt`          | bearer | `{"certs": [{"sha256", "not_before", "not_after"}, …], "wt_sig"}` (at most 64 entries) — the owner publishes the signature over the browser transport's certificate schedule. The hub verifies the signature and stores list and signature together. It does **not** check the list against the relay. 404 no running mailbox. |
 | GET    | `/v1/mailbox`             | bearer | `{"status": "none"}` or `{"status": "provisioning"\|"running"\|"error", "provider", "machine", "address", "mailbox_token", "tls_fp", "error", "mailbox_host"}`. `mailbox_token` is the mailbox's owner token — device 1's token; null for an external mailbox. `mailbox_host` is `{"address", "admin_token"}` on running dedicated VMs, else `null`. |
 | DELETE | `/v1/mailbox`             | bearer | Destroys the machine and forgets it. → `{"status": "deleted"}`. 404 no mailbox, 502 if the provider could not destroy it (nothing is forgotten). |
@@ -2082,7 +2231,7 @@ of paying, and it is borne by the gate, not the hub.
 
 | Scope | Stored |
 |---|---|
-| Per **account** | the Stonechat ID; the identity public key; `pq_pk` and `pq_sig`; a SHA-256 hash of the account token; when the account was created; and, if an operator banned it, when and why |
+| Per **account** | the Stonechat ID; the identity public key; `pq_pk` and `pq_sig`; the signed device manifest, if published; a SHA-256 hash of the account token; when the account was created; and, if an operator banned it, when and why |
 | Per **mailbox** (at most one per account) | provider; status; the machine spec that was asked for; the provider-side resource id and whatever else the provider needs to destroy it; the address; the **mailbox's owner token**, in the clear, for mailboxes the hub provisioned (never for external ones); the mailbox host's admin token, for dedicated VMs; the TLS fingerprint it observed and the owner's signature over it; the browser transport's address, certificate schedule and the owner's signature over that; the last provisioning error; when it was created |
 | **Link offers and grants** in flight | public keys, and ciphertext the hub cannot open; 600 s at most |
 | **Tombstones** of machines an operator destroyed for abuse | ID, provider, resource, address, reason, dates; kept indefinitely |
@@ -2223,7 +2372,10 @@ What the design gives, and where it stops.
   mailbox of the same owner — for as long as someone holds that mailbox's
   TLS key. That does not expose content (envelopes are sealed to device keys
   from certificates), but it delivers metadata and one-time prekey requests
-  to whoever that is. And it **observes lookups**: who (by network address,
+  to whoever that is. It can **serve an old device manifest**, or none,
+  holding a contact at a version that still lists a revoked device until
+  that device's certificate expires ("Device manifest"); it cannot forge
+  one. And it **observes lookups**: who (by network address,
   and by account when the lookup is followed by authenticated calls) asks
   for which ID, at first contact and whenever a mailbox address is
   refreshed. It stores no contact graph; it is in a position to watch one
@@ -2277,14 +2429,15 @@ What the design gives, and where it stops.
 
 Accepted for now, not fixed.
 
-1. **Device revocation is not verifiable by contacts.** Revocation is
-   enforced by the owner's relay (the queue is gone, deposits get `410`) and
-   by certificate expiry. There is no signed revocation statement and no
-   list a contact can check. A revoked device keeps its device keys and its
-   certificate, so until the certificate expires — up to 180 days for a
-   linked device — it can still **open sessions to the owner's contacts and
-   send to them as the owner**, and a contact will accept it. It receives
-   nothing new through the owner's mailbox.
+1. **Revocation reaches a contact only when something prompts a refetch.**
+   The device manifest is checked by every contact who holds it, but a
+   contact is prompted to refetch it by an envelope stating a newer
+   version, by the sender's mailbox listing an unknown device, or once per
+   run when it holds none — never by time. A revoked device claims the old
+   version, so a contact who hears from nothing but the revoked device
+   keeps accepting it until its certificate expires: up to 14 days for a
+   linked device, 7 for a browser. A hub can likewise hold a contact at an
+   old manifest until then. There is no periodic refresh by design.
 2. **One-time prekeys are unsigned, the KEM one-time prekey included.** A
    mailbox can hand a sender one-time prekeys of its own making. The
    recipient holds no matching private half, so it cannot complete that

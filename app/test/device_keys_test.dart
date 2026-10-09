@@ -38,7 +38,7 @@ void main() {
         isFalse,
       );
       expect(
-        certNeedsRefresh(certExpiring(now.add(const Duration(days: 3))), now: now),
+        certNeedsRefresh(certExpiring(now.add(const Duration(days: 2))), now: now),
         isTrue,
       );
       expect(
