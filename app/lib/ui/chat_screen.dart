@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
@@ -422,7 +423,11 @@ class _ChatScreenState extends State<ChatScreen> {
 
   /// Block (or unblock) whoever sent [m] in a group — contact or not. Their
   /// messages stay in the room, collapsed; see ChatState.setBlocked.
-  Widget _blockSenderTile(ChatState chat, Message m, BuildContext sheetContext) {
+  Widget _blockSenderTile(
+    ChatState chat,
+    Message m,
+    BuildContext sheetContext,
+  ) {
     final senderId = m.senderId!;
     final name =
         chat.memberOf(m.contactId, senderId)?.displayName ?? 'this member';
@@ -1247,7 +1252,8 @@ class _ChatScreenState extends State<ChatScreen> {
                         conversation: chat.messagesFor(contact.stonechatId),
                         canBlock: !chat.isBlocked(contact.stonechatId),
                       );
-                      if (outcome.alsoBlock && !chat.isBlocked(contact.stonechatId)) {
+                      if (outcome.alsoBlock &&
+                          !chat.isBlocked(contact.stonechatId)) {
                         await chat.toggleBlock(contact);
                       }
                       return;
@@ -2239,54 +2245,94 @@ class _FileEntry extends StatelessWidget {
                   );
                 }
               },
-        child: Container(
-          padding: const EdgeInsets.all(8),
-          constraints: const BoxConstraints(maxWidth: 260),
-          decoration: BoxDecoration(
-            color: Zn.raised,
-            borderRadius: BorderRadius.circular(Zn.radius),
-            border: Border.all(color: Zn.line),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(Zn.radius),
-                  border: Border.all(color: color.withValues(alpha: 0.5)),
+        child: _MaxWidth(
+          260,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Zn.raised,
+              borderRadius: BorderRadius.circular(Zn.radius),
+              border: Border.all(color: Zn.line),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(Zn.radius),
+                    border: Border.all(color: color.withValues(alpha: 0.5)),
+                  ),
+                  child: Icon(
+                    Icons.description_outlined,
+                    size: 18,
+                    color: color,
+                  ),
                 ),
-                child: Icon(Icons.description_outlined, size: 18, color: color),
-              ),
-              const SizedBox(width: 10),
-              Flexible(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      name,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 13, color: Zn.text),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      exists
-                          ? _sizeLabel(File(path).lengthSync())
-                          : 'no longer on this device',
-                      style: Zn.mono(size: 9, color: Zn.muted),
-                    ),
-                  ],
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13, color: Zn.text),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        exists
+                            ? _sizeLabel(File(path).lengthSync())
+                            : 'no longer on this device',
+                        style: Zn.mono(size: 9, color: Zn.muted),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+/// A max-width box that also caps the width it reports intrinsics at.
+/// `Container(constraints:)` doesn't: under the ledger's IntrinsicHeight the
+/// card was measured at full row width (name on one line), then laid out at
+/// 260 (name on two), and overflowed into the next message.
+class _MaxWidth extends SingleChildRenderObjectWidget {
+  final double maxWidth;
+  const _MaxWidth(this.maxWidth, {super.child});
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderMaxWidth(maxWidth);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderMaxWidth renderObject) =>
+      renderObject.additionalConstraints = BoxConstraints(maxWidth: maxWidth);
+}
+
+class _RenderMaxWidth extends RenderConstrainedBox {
+  _RenderMaxWidth(double maxWidth)
+    : super(additionalConstraints: BoxConstraints(maxWidth: maxWidth));
+
+  double _cap(double width) => width < additionalConstraints.maxWidth
+      ? width
+      : additionalConstraints.maxWidth;
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      super.computeMinIntrinsicHeight(_cap(width));
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      super.computeMaxIntrinsicHeight(_cap(width));
 }
 
 class _AudioEntry extends StatefulWidget {
