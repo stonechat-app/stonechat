@@ -3,14 +3,20 @@
 
 Companion to upload_to_testflight.sh, which ships the *binary* and leaves the
 product page blank. This ships the page: name, subtitle, description, keywords,
-URLs, categories and the age-rating questionnaire.
+URLs, categories and the age-rating questionnaire — and the rest of what a
+submission needs that is data rather than judgement: the price (free), the
+storefronts it is offered in, and the notes App Review reads.
 
     scripts/appstore_listing.py --dry-run   # show what would change
     scripts/appstore_listing.py             # apply it
 
 Copy lives in store/listing.en-US.toml — edit there, not in the ASC web UI, or
 the next push overwrites the edit. Credentials come from .env.appstore (the
-same file upload_to_testflight.sh reads).
+same file upload_to_testflight.sh reads). So does everything about App Review
+that must not sit in a public repository: the reviewer's invite codes, the
+test contact, and the phone number and address Apple may call or write to —
+REVIEW_INVITE_CODES, REVIEW_TEST_CONTACT, REVIEW_CONTACT_FIRST_NAME,
+REVIEW_CONTACT_LAST_NAME, REVIEW_CONTACT_PHONE, REVIEW_CONTACT_EMAIL.
 
 Two things this deliberately does not do, because neither can be done honestly
 without a human: upload screenshots (they must depict the real app) and set the
@@ -132,6 +138,22 @@ class Client:
         response = self._http.patch(path, json=payload)
         self._check(response, "PATCH", path)
 
+    def post(self, url: str, payload: dict) -> None:
+        """Create a resource. `url` may be absolute: some resources live
+        under /v2 while the client's base is /v1."""
+        if self.dry_run:
+            return
+        response = self._http.post(url, json=payload)
+        self._check(response, "POST", url)
+
+    def get_or_none(self, url: str, **params: Any) -> dict | None:
+        """GET, with "there is no such resource yet" as None, not an error."""
+        response = self._http.get(url, params=params)
+        if response.status_code == 404:
+            return None
+        self._check(response, "GET", url)
+        return response.json()
+
     def patch_relationships(self, path: str, kind: str, ident: str, rels: dict) -> None:
         """Set to-one relationships on the resource itself.
 
@@ -236,6 +258,193 @@ def report(label: str, changes: dict, current: dict) -> None:
         print(f"  {label}.{field}")
         print(f"      - {before_text}")
         print(f"      + {_clip(str(value))}")
+
+
+# --------------------------------------------------------------------------
+# pricing and availability
+# --------------------------------------------------------------------------
+
+API_V2 = "https://api.appstoreconnect.apple.com/v2"
+
+
+def push_free_price(client: Client, app_id: str, base_territory: str) -> None:
+    """A free app still needs a price schedule: until one exists the version
+    cannot be submitted."""
+    # 404 while the app has never had a schedule.
+    current = client.get_or_none(f"appPriceSchedules/{app_id}/manualPrices", limit=1)
+    if current and current["data"]:
+        print("  price: a schedule is already set — left alone")
+        return
+    points = client.get(
+        f"apps/{app_id}/appPricePoints",
+        **{"filter[territory]": base_territory, "limit": 200},
+    )["data"]
+    free = next(
+        (p for p in points if float(p["attributes"]["customerPrice"]) == 0.0), None
+    )
+    if free is None:
+        raise Fatal(f"no free price point for {base_territory}")
+    print(f"  price\n      - (unset)\n      + free, base territory {base_territory}")
+    client.post(
+        "appPriceSchedules",
+        {
+            "data": {
+                "type": "appPriceSchedules",
+                "relationships": {
+                    "app": {"data": {"type": "apps", "id": app_id}},
+                    "baseTerritory": {
+                        "data": {"type": "territories", "id": base_territory}
+                    },
+                    "manualPrices": {"data": [{"type": "appPrices", "id": "${free}"}]},
+                },
+            },
+            "included": [
+                {
+                    "type": "appPrices",
+                    "id": "${free}",
+                    "attributes": {"startDate": None},
+                    "relationships": {
+                        "appPricePoint": {
+                            "data": {"type": "appPricePoints", "id": free["id"]}
+                        }
+                    },
+                }
+            ],
+        },
+    )
+
+
+def push_availability(client: Client, app_id: str, excluded: list[str]) -> None:
+    """Offer the app everywhere except `excluded` (territory ids, e.g. FRA).
+
+    Created once if the app has no availability yet; after that each
+    territory is compared and only the ones that differ are changed."""
+    excluded_set = set(excluded)
+    existing = client.get_or_none(
+        f"{API_V2}/appAvailabilities/{app_id}/territoryAvailabilities",
+        **{"limit": 200, "include": "territory"},
+    )
+    if existing is None:
+        territories = [t["id"] for t in client.get("territories", limit=200)["data"]]
+        unknown = excluded_set - set(territories)
+        if unknown:
+            raise Fatal(f"not territories Apple knows: {', '.join(sorted(unknown))}")
+        print(
+            f"  availability\n      - (unset)\n      + {len(territories) - len(excluded_set)}"
+            f" territories, and new ones as Apple adds them; not {', '.join(sorted(excluded_set)) or '(none)'}"
+        )
+        client.post(
+            f"{API_V2}/appAvailabilities",
+            {
+                "data": {
+                    "type": "appAvailabilities",
+                    "attributes": {"availableInNewTerritories": True},
+                    "relationships": {
+                        "app": {"data": {"type": "apps", "id": app_id}},
+                        "territoryAvailabilities": {
+                            "data": [
+                                {"type": "territoryAvailabilities", "id": f"${{{t}}}"}
+                                for t in territories
+                            ]
+                        },
+                    },
+                },
+                "included": [
+                    {
+                        "type": "territoryAvailabilities",
+                        "id": f"${{{t}}}",
+                        "attributes": {"available": t not in excluded_set},
+                        "relationships": {
+                            "territory": {"data": {"type": "territories", "id": t}}
+                        },
+                    }
+                    for t in territories
+                ],
+            },
+        )
+        return
+    changed = False
+    for row in existing["data"]:
+        territory = row["relationships"]["territory"]["data"]["id"]
+        wanted = territory not in excluded_set
+        if row["attributes"]["available"] != wanted:
+            changed = True
+            print(f"  availability.{territory}\n      - {not wanted}\n      + {wanted}")
+            client.patch(
+                f"territoryAvailabilities/{row['id']}",
+                "territoryAvailabilities",
+                row["id"],
+                {"available": wanted},
+            )
+    if not changed:
+        print("  availability: already current")
+
+
+# --------------------------------------------------------------------------
+# App Review
+# --------------------------------------------------------------------------
+
+
+def push_review_detail(
+    client: Client, version_id: str, review: dict, env: dict[str, str]
+) -> None:
+    """The notes and contact App Review sees. The notes template lives with
+    the listing; what fills it in, and the contact, come from .env.appstore."""
+    codes = [c.strip() for c in env.get("REVIEW_INVITE_CODES", "").split(",") if c.strip()]
+    contact = env.get("REVIEW_TEST_CONTACT", "")
+    if not codes or not contact:
+        print(
+            "  review: skipped — set REVIEW_INVITE_CODES and REVIEW_TEST_CONTACT"
+            " in .env.appstore"
+        )
+        return
+    notes = review["notes"].strip().format(
+        invite_codes="\n".join(f"    {c}" for c in codes), test_contact=contact
+    )
+    if len(notes) > 4000:
+        raise Fatal(f"review.notes is {len(notes)} chars, limit 4000")
+    desired: dict[str, Any] = {"notes": notes, "demoAccountRequired": False}
+    fields = {
+        "contactFirstName": "REVIEW_CONTACT_FIRST_NAME",
+        "contactLastName": "REVIEW_CONTACT_LAST_NAME",
+        "contactPhone": "REVIEW_CONTACT_PHONE",
+        "contactEmail": "REVIEW_CONTACT_EMAIL",
+    }
+    missing = [name for name in fields.values() if not env.get(name)]
+    for attribute, name in fields.items():
+        if env.get(name):
+            desired[attribute] = env[name]
+
+    current = client.get(f"appStoreVersions/{version_id}/appStoreReviewDetail").get("data")
+    if current is None:
+        print(f"  review\n      - (none)\n      + notes ({len(notes)} chars)"
+              + ("" if missing else ", contact"))
+        client.post(
+            "appStoreReviewDetails",
+            {
+                "data": {
+                    "type": "appStoreReviewDetails",
+                    "attributes": desired,
+                    "relationships": {
+                        "appStoreVersion": {
+                            "data": {"type": "appStoreVersions", "id": version_id}
+                        }
+                    },
+                }
+            },
+        )
+    else:
+        changes = diff(current["attributes"], desired)
+        report("review", changes, current["attributes"])
+        if changes:
+            client.patch(
+                f"appStoreReviewDetails/{current['id']}",
+                "appStoreReviewDetails",
+                current["id"],
+                changes,
+            )
+    if missing:
+        print(f"      still needed before submitting: {', '.join(missing)}")
 
 
 def _clip(text: str, width: int = 88) -> str:
@@ -375,6 +584,14 @@ def main() -> int:
             )
         else:
             print("  ageRating: already current")
+
+    # -- price, storefronts, App Review -------------------------------------
+    if listing.get("availability"):
+        availability = listing["availability"]
+        push_free_price(client, app_id, availability.get("base_territory", "USA"))
+        push_availability(client, app_id, availability.get("excluded", []))
+    if listing.get("review"):
+        push_review_detail(client, version["id"], listing["review"], env)
 
     # -- what a script cannot do --------------------------------------------
     print()
