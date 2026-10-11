@@ -12,6 +12,11 @@ class ContactStatus {
   static const accepted = 'accepted';
 }
 
+/// Senders scale a profile photo to at most this many raw bytes, so the
+/// envelope stays under the mailbox's 64 KiB cap after the base64 layers;
+/// receivers accept up to twice it (PROTOCOL.md "Profiles").
+const avatarBytesMax = 24 * 1024;
+
 class Contact {
   final String stonechatId;
   String displayName;
@@ -411,6 +416,12 @@ class EnvelopeType {
   /// The primary renewing a linked device's certificate — `{"cert"}`, to
   /// that device only (PROTOCOL.md "Device certificates").
   static const syncCert = 'sync_cert';
+  /// A contact as the sending device now holds it (`core/contact_sync.dart`),
+  /// so one user's devices hold one contact list.
+  static const syncContact = 'sync_contact';
+  /// The primary's contacts, groups and text history for a newly linked
+  /// device: a sealed backup payload parked on our own mailbox.
+  static const syncHistory = 'sync_history';
 }
 
 class ReceiptKind {

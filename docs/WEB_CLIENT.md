@@ -377,11 +377,15 @@ below slides.
 - **Enforcement lives on the relay and in the certificate**, not in the web
   client; a malicious page can ignore neither. Revocation from the phone
   overrides everything, always.
-- **Not built yet:** the phone's link dialog offers "Device" and "Agent"
-  and passes no lifetime, so today a browser linked from the app is minted
-  as a `linked` device with a 180-day certificate and no relay expiry. The
-  `web` kind, its 7-day certificate and `expires_in_s` exist in the relay
-  and in the app's linking code; the UI that selects them does not.
+- **As built (2026-10-11):** the phone's link dialog offers "Device",
+  "Browser" and "Agent". A browser is minted as a `web` device with a 7-day
+  certificate and **no relay expiry**: the primary renews the certificate
+  over `sync_cert` while the device stays listed, and revocation ends it.
+  That departs from the fixed deadline described above — renewal while
+  linked is what PROTOCOL.md's certificate table specifies for every kind,
+  and a browser that silently died after a week would be relinked rather
+  than revoked. `expires_in_s` stays available in the relay and the linking
+  code for a deployment that wants the deadline back.
 
 Two rough edges the UX owns honestly: no notifications when the
 tab is closed (web is live-only; the phone still gets everything), and

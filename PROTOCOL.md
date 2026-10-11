@@ -114,8 +114,8 @@ the 32-byte seed yields a different key.)
 directory record. The hub checks the length of `pq_pk` (1216 bytes) and the
 signature, and refuses the registration otherwise. A client MAY verify
 `pq_sig` against the (commitment-checked) identity key when it resolves a
-record: the Flutter app does, and treats a record without a valid `pq_pk` as
-unusable; the browser client and the agent ignore both fields.
+record: the Flutter app and the browser client do, and treat a record with an
+invalid `pq_pk` as unusable; the agent ignores both fields.
 
 **Nothing is sealed to `pq_pk`.** No client encapsulates to it or attempts
 to open anything with its private half. Envelopes are sealed to the
@@ -301,6 +301,11 @@ Flutter app uses, by kind:
 | `agent` | 14 days | 7 days left |
 | `web` (and any unknown kind) | 7 days | 3.5 days left |
 
+The Flutter app's link dialog asks which of the three a scanned code is for
+and sets no relay expiry (`expires_in_s`): a device's lifetime is bounded by
+its certificate, which the primary renews only while the device is still
+listed, and by revocation.
+
 Lifetimes are short because a certificate is what a revoked device keeps.
 The device manifest ("Device manifest") tells a contact who fetches it
 that a device is gone; the certificate's expiry is the bound for a contact
@@ -321,8 +326,8 @@ who does not.
   republishes its prekeys with it. A linked device thus stays certified for
   as long as its primary connects at least once per half-lifetime and it is
   still on the relay. A device that was revoked is not listed and gets
-  nothing. A linked device that does not handle `sync_cert` (the browser
-  client and the agent do not yet) is linked again when its certificate
+  nothing. A linked device that does not handle `sync_cert` (the agent does
+  not yet; the browser client does) is linked again when its certificate
   runs out.
 - Senders re-fetch a peer's certificates when the one they hold has less
   than 3 days left, which is after the primary would have renewed it. A
@@ -572,6 +577,11 @@ It then stores the identity public key, the certificate, the device id and
 token, pins `relay_tls_fp` for its own mailbox connection, and publishes its
 prekeys and certificate.
 
+**4. The primary fills it in.** The next time the primary connects to its
+mailbox and finds the new device listed with prekeys, it sends it a
+`sync_history` with its contacts, groups and text history ("Self-sync"),
+once. Until then the new device knows nobody.
+
 **The dead drop.** Both hub tables are unauthenticated — a device being
 linked has no account — and bounded instead:
 
@@ -635,7 +645,9 @@ Client policy (Flutter app):
 - a one-time private half is deleted after the session that used it
   decrypts its first message.
 
-The browser client keeps 20 of each and does not rotate its signed prekeys.
+The browser client follows the same policy, with one difference: it keeps
+the private half of the previous signed prekey of each kind through one
+rotation, and nothing older.
 
 The upload (`POST /prekeys`, the device's token) carries the SPK + KSPK plus
 the device's **full remaining OPK/KOPK stock**, and optionally its
@@ -1291,9 +1303,22 @@ history.
 | `sync_clear` | `{"peer" \| "group_id"}` | deletes that conversation's history; the conversation itself stays |
 | `sync_cert` | `{"cert"}` | from the primary to one linked device: a renewed certificate over that device's keys ("Device certificates"). Adopted only if it verifies against the identity key, names this device's ID, slot and keys, and is later than the one held |
 | `sync_block` | `{"peer", "blocked_at": <ms> \| null}` | blocks (`blocked_at` set) or unblocks (`null`) that Stonechat ID |
+| `sync_contact` | `{"peer", "pubkey", "status": "pending_out" \| "pending_in" \| "accepted" \| "removed", "display_name"?, "avatar"?: {"data", "mime"} \| null, "bundle_token"?, "hub"?}` | the contact as the sending device now holds it: created if unknown (`pubkey` MUST hash to `peer`, else the envelope is dropped), updated otherwise; `removed` deletes it and its sessions. Sent on every change a device makes to its contact list — a request sent or received, an accept, a decline — so the user's devices hold one list |
+| `sync_history` | `{"blob_id", "key", "blob_nonce", "fetch_token", "blob_host", "blob_tls_fp"}` | the sender's contacts, blocks, groups, rosters and text history, as the backup payload ("Local containers", gzip-compressed JSON) encrypted like a media blob and parked on the sender's own mailbox as a shared blob ("Group media"). The receiver fetches it from its own mailbox (`blob_host` MUST be it), decrypts, and merges with the backup's rules: existing rows win, so nothing the receiver already holds is overwritten |
 
 Exactly one of `peer` (a DM, the peer's ID) or `group_id` names the
 conversation.
+
+**History bootstrap.** A newly linked device starts with nothing but the
+grant. Once it has published prekeys, the primary sends it one
+`sync_history` ("Linking a device"): the same export the `.stonechatbackup`
+file carries, minus the passphrase — the blob is sealed under a fresh key
+that rides inside the envelope, so the mailbox holding it sees ciphertext.
+The primary sends it once per device, on the next connect at which the
+device is listed with prekeys, and the blob's 14-day TTL is the backstop for
+a device that never comes back. Media is not carried; from link time on
+every device receives everything independently. Contacts changed afterwards
+reach the siblings over `sync_contact`.
 
 Incoming messages need no sync — every device gets its own copy from the
 sender. Outgoing **media** cannot be mirrored verbatim, because DM media

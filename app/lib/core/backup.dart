@@ -177,18 +177,27 @@ class BackupService {
       case VaultOutcome.ok:
         break;
     }
+    final summary = await mergePayloadBytes(opened.plaintext!);
+    if (summary == null) throw const BackupException(_notABackup);
+    return summary;
+  }
+
+  /// Merge a decrypted, gzip-compressed payload — the inside of a backup
+  /// file, or of a `sync_history` blob from our primary. Null when it is not
+  /// one of ours; throws [BackupException] for a newer version.
+  Future<RestoreSummary?> mergePayloadBytes(Uint8List plain) async {
     Object? decoded;
     try {
-      decoded = jsonDecode(utf8.decode(gzip.decode(opened.plaintext!)));
+      decoded = jsonDecode(utf8.decode(gzip.decode(plain)));
     } catch (_) {
-      // Right passphrase but garbage inside: truncated file, or not ours.
-      throw const BackupException(_notABackup);
+      // Right key but garbage inside: truncated, or not ours.
+      return null;
     }
 
     // `decoded` is assigned inside try/catch, so it never promotes — pin the
     // Map into a fresh local for the closure below.
     if (decoded is! Map || decoded['format'] != 'stonechat-backup') {
-      throw const BackupException(_notABackup);
+      return null;
     }
     final payload = decoded;
     final version = payload['version'];

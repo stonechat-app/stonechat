@@ -198,6 +198,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
       title: const Text('What is this?'),
       content: const Text(
         'A device is a phone, tablet or desktop you use.\n\n'
+        'A browser is Stonechat open in a web browser: it gets a shorter '
+        'certificate, renewed while it stays linked.\n\n'
         'An agent is a headless program — no screen, nobody sitting at it, '
         'usually on a mailbox. It can read and send your messages like any '
         'other device.',
@@ -211,6 +213,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
         TextButton(
           onPressed: () => Navigator.pop(ctx, 'agent'),
           child: const Text('Agent'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, 'web'),
+          child: const Text('Browser'),
         ),
         FilledButton(
           onPressed: () => Navigator.pop(ctx, 'linked'),
@@ -244,6 +250,9 @@ class _DevicesScreenState extends State<DevicesScreen> {
       await chat.publishDeviceManifest(
         extra: {linked.deviceId: linked.sigPubB64},
       );
+      // Its contacts, groups and history, once it has published prekeys —
+      // kept trying on later connects if it is not reachable now.
+      unawaited(chat.bootstrapDevice(linked.deviceId));
       if (mounted) {
         showZnSnack(context, 'Authorised — finish on the other device');
       }
