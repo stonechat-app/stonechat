@@ -98,6 +98,22 @@ class _CallScreenState extends State<CallScreen> {
                         RTCVideoViewObjectFit.RTCVideoViewObjectFitCover),
               ),
             ),
+          // Video: the picture is the point, so who and how long sit in a
+          // corner (top-left, level with the self-view) and leave the
+          // middle to the other person.
+          if (showVideo)
+            Positioned(
+              left: 16,
+              top: MediaQuery.of(context).padding.top + 16,
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                    color: Zn.bg.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(Zn.radius)),
+                child: _statusText(call, '${peer.displayName} · '),
+              ),
+            ),
           SafeArea(
             child: Column(
               children: [
@@ -115,27 +131,8 @@ class _CallScreenState extends State<CallScreen> {
                           fontSize: 24,
                           fontWeight: FontWeight.w600)),
                   const SizedBox(height: 8),
+                  _statusText(call, ''),
                 ],
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: showVideo
-                      ? BoxDecoration(
-                          color: Zn.bg.withValues(alpha: 0.6),
-                          borderRadius: BorderRadius.circular(Zn.radius))
-                      : null,
-                  child: Text(
-                    showVideo
-                        ? '${peer.displayName} · ${_status(call)}'
-                        : _status(call),
-                    style: Zn.mono(
-                        size: 12,
-                        color: call.phase == CallPhase.active
-                            ? Zn.orange
-                            : Zn.muted,
-                        letterSpacing: 2),
-                  ),
-                ),
                 const Spacer(flex: 3),
                 _controls(call),
                 const SizedBox(height: 32),
@@ -146,6 +143,14 @@ class _CallScreenState extends State<CallScreen> {
       ),
     );
   }
+
+  Widget _statusText(CallState call, String prefix) => Text(
+        '$prefix${_status(call)}',
+        style: Zn.mono(
+            size: 12,
+            color: call.phase == CallPhase.active ? Zn.orange : Zn.muted,
+            letterSpacing: 2),
+      );
 
   Widget _controls(CallState call) {
     if (call.phase == CallPhase.ringing) {
