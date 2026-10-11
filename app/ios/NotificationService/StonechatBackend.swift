@@ -81,15 +81,17 @@ enum Core {
     stateJson: Data, headerJson: Data, nonce: Data, ciphertext: Data, ad: String
   ) -> (state: Data, plaintext: Data)? {
     var fresh = Data(count: 32)
-    // The post-quantum ratchet's own draw (core ABI 2): never derived from
-    // `fresh`, whose public half goes on the wire.
+    // The post-quantum ratchet's own draw: never derived from `fresh`, whose
+    // public half goes on the wire. The ABI number must match core/src/lib.rs
+    // exactly — a decrypt against the wrong shape would read garbage, so the
+    // extension declines to show a preview rather than guess.
     var pqRandom = Data(count: 64)
     let ok = fresh.withUnsafeMutableBytes {
       SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) == errSecSuccess
     } && pqRandom.withUnsafeMutableBytes {
       SecRandomCopyBytes(kSecRandomDefault, 64, $0.baseAddress!) == errSecSuccess
     }
-    guard ok, stonechat_core_abi_version() == 2 else { return nil }
+    guard ok, stonechat_core_abi_version() == 3 else { return nil }
     let adBytes = Data(ad.utf8)
     var ptr: UnsafeMutablePointer<UInt8>?
     var len = 0

@@ -45,7 +45,14 @@ pub mod wtcerts;
 
 pub use pqcore;
 
-/// Bumped whenever the exported C ABI changes shape.
+/// Bumped whenever the exported C ABI changes shape. Every host pins the
+/// number and refuses a library that reports another, so a bump here is a
+/// bump in each of them, in the same commit:
+///
+/// - `app/lib/core/core_ffi.dart` (`coreAbiVersion`)
+/// - `app/ios/NotificationService/StonechatBackend.swift` (the guard in
+///   `sessionDecrypt` — easy to miss, and a miss means no push previews)
+/// - `webclient/src/core.ts` (`EXPECTED_ABI`)
 pub const ABI_VERSION: u32 = 3;
 
 #[unsafe(no_mangle)]
