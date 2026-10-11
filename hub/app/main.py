@@ -617,6 +617,17 @@ def create_mailbox(body: MailboxIn, user: UnbannedUser, background: BackgroundTa
             raise HTTPException(400, {"code": "country_unavailable", "message": str(e)})
         machine = MachineIn(**machine_dict)
 
+    # Entitlement before availability: an account with no tier resolves to
+    # the dedicated plan, and what it needs to hear is "redeem a code" (402,
+    # which the app turns into the invite sheet), not that the provider the
+    # code would have steered it away from is switched off here.
+    required = GATED_PROVIDERS.get(provider)
+    if required is not None and not gate.satisfies(tier, required):
+        raise HTTPException(402, {
+            "code": "access_required",
+            "tier_required": required,
+            "message": f"the '{provider}' provider requires the {required} tier",
+        })
     if provider not in enabled_providers():
         raise HTTPException(400, {
             "code": "provider_unavailable",
@@ -632,13 +643,6 @@ def create_mailbox(body: MailboxIn, user: UnbannedUser, background: BackgroundTa
                 "message": f"{provider} does not offer {machine.machine_type} "
                            f"in {machine.region}; ask for a country instead",
             })
-    required = GATED_PROVIDERS.get(provider)
-    if required is not None and not gate.satisfies(tier, required):
-        raise HTTPException(402, {
-            "code": "access_required",
-            "tier_required": required,
-            "message": f"the '{provider}' provider requires the {required} tier",
-        })
     mailbox_token = secrets.token_urlsafe(32)
     # Dedicated VMs ship with the mailbox host pre-installed (PROTOCOL.md "Host
     # agent") — mint its admin token here so the app can pick it up from

@@ -63,6 +63,21 @@ class Allowlist(unittest.TestCase):
         self.assertEqual(r.status_code, 400, r.text)
         self.assertEqual(r.json()["detail"]["code"], "provider_unavailable")
 
+    def test_no_entitlement_is_answered_before_availability(self):
+        # The hosted hub again: an account with no code picks a country,
+        # resolves to the dedicated plan, and must hear "redeem a code" — the
+        # 402 the app turns into the invite sheet — not that gcp is off here.
+        from app import gate, main
+        with mock.patch.dict(os.environ, {"STONECHAT_PROVIDERS": "mailbox_host"}), \
+                mock.patch.object(gate, "GATED", True), \
+                mock.patch.object(main, "GATED_PROVIDERS",
+                                  {"mailbox_host": "mailbox", "gcp": "machine"}), \
+                mock.patch.object(gate, "access", return_value={"tier": None}), \
+                mock.patch.object(main, "shared_host_countries", return_value=set()):
+            r = self.create(country="DE")
+        self.assertEqual(r.status_code, 402, r.text)
+        self.assertEqual(r.json()["detail"]["code"], "access_required")
+
     def test_the_explicit_form_is_held_to_catalog_shapes(self):
         with mock.patch.dict(os.environ, {"STONECHAT_PROVIDERS": "gcp"}):
             r = self.create(provider="gcp",

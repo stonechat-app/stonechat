@@ -66,13 +66,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Spacer(),
-                    Text(
-                      'STONECHAT',
-                      style: Zn.mono(
-                        size: 42,
-                        color: Zn.orange,
-                        weight: FontWeight.w700,
-                        letterSpacing: 10,
+                    // Scales down rather than wrapping: at 42px with this
+                    // tracking the wordmark is wider than a 360dp phone.
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'STONECHAT',
+                        maxLines: 1,
+                        style: Zn.mono(
+                          size: 42,
+                          color: Zn.orange,
+                          weight: FontWeight.w700,
+                          letterSpacing: 10,
+                        ),
                       ),
                     ),
                     const SizedBox(height: 8),

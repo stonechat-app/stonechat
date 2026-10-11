@@ -342,9 +342,16 @@ class _MailboxScreenState extends State<MailboxScreen> {
   /// null → no plan on this account yet (caller offers the redeem sheet).
   /// An open hub needs no plan: it gets the shared tier's provider here, and
   /// the country form lets the hub choose anyway.
+  ///
+  /// `mailbox_host` is not an escape hatch (mailbox_setup_screen says the
+  /// same): a shared host is reached through a country and an entitlement,
+  /// so that define means "release path, in a debug build" — against the
+  /// real hub, the redeem sheet included.
   Future<String?> _resolveProvider() async {
-    if (_envProvider != '') return _envProvider;
-    if (kDebugMode) return 'local';
+    if (_envProvider != '' && _envProvider != 'mailbox_host') {
+      return _envProvider;
+    }
+    if (kDebugMode && _envProvider == '') return 'local';
     final access = await context.read<AppState>().api.getAccess();
     if (!access.mayProvision) return null;
     return access.plan == 'machine' ? 'gcp' : 'mailbox_host';
