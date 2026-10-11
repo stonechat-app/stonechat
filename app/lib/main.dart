@@ -235,13 +235,19 @@ class _StonechatAppState extends State<StonechatApp>
       // Reconcile with what the notification extension wrote BEFORE the
       // socket reconnects — new envelopes must never meet a stale session
       // cache (chat_state.reloadAfterExtension).
+      // Whatever the reload's fate: an app that stays off its socket after
+      // a resume receives nothing live (a ring, a call's candidates), and
+      // nothing on screen says so.
       unawaited(
-        chat.reloadAfterExtension().then((_) {
-          mailbox
-            ..onForeground()
-            ..refresh();
-          chat.retryPending();
-        }),
+        chat
+            .reloadAfterExtension()
+            .catchError((e) => debugPrint('reload after extension: $e'))
+            .whenComplete(() {
+              mailbox
+                ..onForeground()
+                ..refresh();
+              chat.retryPending();
+            }),
       );
     } else if (state == AppLifecycleState.paused) {
       // Mid-call the app keeps running in the background and signaling
