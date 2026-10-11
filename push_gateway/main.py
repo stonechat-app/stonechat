@@ -229,30 +229,51 @@ def _fcm_configured() -> bool:
 _fcm_token: tuple[str, float] | None = None
 
 
-def _fcm_auth() -> tuple[str, str]:
-    """Returns (access_token, project_id), token cached ~50 min."""
+async def _fcm_auth() -> tuple[str, str]:
+    """Returns (access_token, project_id), token cached ~50 min.
+
+    The service-account OAuth exchange done by hand — a JWT the account's
+    key signs, traded at Google's token endpoint — with the pyjwt + httpx
+    already here for APNs, rather than google-auth and the HTTP stack it
+    drags in. The flow: https://developers.google.com/identity/protocols/oauth2/service-account
+    """
     global _fcm_token
     import json
 
-    from google.auth.transport.requests import Request
-    from google.oauth2 import service_account
+    import jwt  # pyjwt[crypto]
 
-    path = os.environ["STONECHAT_FCM_CREDENTIALS"]
-    with open(path) as f:
-        project_id = json.load(f)["project_id"]
+    with open(os.environ["STONECHAT_FCM_CREDENTIALS"]) as f:
+        sa = json.load(f)
+    project_id = sa["project_id"]
     now = time.time()
     if _fcm_token and now - _fcm_token[1] < 50 * 60:
         return _fcm_token[0], project_id
-    creds = service_account.Credentials.from_service_account_file(
-        path, scopes=["https://www.googleapis.com/auth/firebase.messaging"]
+    assertion = jwt.encode(
+        {
+            "iss": sa["client_email"],
+            "scope": "https://www.googleapis.com/auth/firebase.messaging",
+            "aud": sa["token_uri"],
+            "iat": int(now),
+            "exp": int(now) + 3600,
+        },
+        sa["private_key"],
+        algorithm="RS256",
     )
-    creds.refresh(Request())
-    _fcm_token = (creds.token, now)
-    return creds.token, project_id
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            sa["token_uri"],
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": assertion,
+            },
+        )
+    r.raise_for_status()
+    _fcm_token = (r.json()["access_token"], now)
+    return _fcm_token[0], project_id
 
 
 async def _send_fcm(device_token: str, key_id: str = "") -> None:
-    access_token, project_id = _fcm_auth()
+    access_token, project_id = await _fcm_auth()
     # Content-free by design, and a *data* message rather than a displayed
     # one: Android has no notification extension, so the app's own background
     # handler (app/lib/core/push_drain.dart) is what fetches + decrypts and
