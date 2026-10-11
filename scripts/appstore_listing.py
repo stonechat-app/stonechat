@@ -10,8 +10,9 @@ storefronts it is offered in, and the notes App Review reads.
     scripts/appstore_listing.py --dry-run   # show what would change
     scripts/appstore_listing.py             # apply it
 
-Copy lives in store/listing.en-US.toml — edit there, not in the ASC web UI, or
-the next push overwrites the edit. Credentials come from .env.appstore (the
+Copy lives in ../store/listing.en-US.toml, next to the checkout and outside the
+repository (--listing to point elsewhere) — edit there, not in the ASC web UI,
+or the next push overwrites the edit. Credentials come from .env.appstore (the
 same file upload_to_testflight.sh reads). So does everything about App Review
 that must not sit in a public repository: the reviewer's invite codes, the
 test contact, and the phone number and address Apple may call or write to —
@@ -459,8 +460,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--listing",
-        default=str(ROOT / "store" / "listing.en-US.toml"),
-        help="path to the listing copy",
+        # The listing copy is the owner's, not the project's: it lives beside
+        # the checkout rather than in it, like .env.appstore's contents.
+        default=str(ROOT.parent / "store" / "listing.en-US.toml"),
+        help="path to the listing copy (default: ../store/listing.en-US.toml)",
     )
     parser.add_argument(
         "--bundle-id",

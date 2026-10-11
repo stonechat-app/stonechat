@@ -1,6 +1,6 @@
 # Stonechat
 
-Privacy-first messaging where **every user runs their own relay**.
+Privacy-first messaging app where **every user runs their own relay**.
 
 - No central message store. Your "relay" is a mailbox of your own — a container
   on a box that hosts a handful of people, a whole VM if you want one, or
@@ -19,7 +19,7 @@ Privacy-first messaging where **every user runs their own relay**.
   fingerprint the owner signs with their identity key and publishes in the
   directory. Trust chains to the Stonechat ID, not to any authority — same as
   everything else in the protocol.
-- Message history lives on your phone only. Uninstall the app and it's gone. Well you can do an encrypted backup if you want, but you need to take care of that backup.
+- Message history lives on your phone only. Uninstall the app and it's gone. Well, you can do an encrypted backup if you want, but you need to take care of that backup.
 
 See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 
@@ -29,7 +29,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `app/`          | Flutter app (iOS/Android). Keys, history, encryption — all client-side.                                                                                                                                                                                                                                                      |
 | `relay/`        | The mailbox. Rust + SQLite; a static binary that runs on the user's VM. Stores ciphertext only, deletes on ack.                                                                                                                                                                                                              |
-| `hub/`          | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Stonechat IDs → pubkeys + current relay address. Never sees message content.                                                                                                                                                          |
+| `hub/`          | Provisioner + directory. Boots/destroys relays via a pluggable provider layer and maps Stonechat IDs to pubkeys + current relay address. Never sees message content.                                                                                                                                                         |
 | `push_gateway/` | Push gateway for mobile push notifications. Stateless. The only holder of APNs/FCM credentials. Mailboxes ping it when the owner is offline; it sends a content-free wake-up. Sees device tokens + timing, never identities.                                                                                                 |
 | `mailbox_host/` | Mailbox host, hosts multiple mailboxes. Runs on a user-owned VM; mints invites and provisions invited friends' mailboxes as containers on that box. If you want to host mailboxes, for friends or family, in your own machine, you should use this. Still connects to the main Stonechat directory (where all the users are) |
 | `agent_client/` | Agent client. A headless **device** on a user's identity — links like a phone or a browser tab, holds no identity secret, runs unattended on a server.                                                                                                                                                                       |
@@ -48,8 +48,7 @@ See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 
 - **The hub is a centralized directory.** It stores routing metadata
   (ID → pubkey → relay IP), never content. Self-hosted relays reduce its
-  knowledge further (it never sees their tokens); running your own control
-  plane is possible but puts you on a separate directory island.
+  knowledge further (it never sees their tokens); running your own hub is possible but puts you on a separate directory island.
 - **Push needs credentials to go live.** The full path is wired end to end —
   app fetches a device token → registers it with its own mailbox → mailbox
   pings the gateway → content-free wake-up. It stays dormant until you supply
