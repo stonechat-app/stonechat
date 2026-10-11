@@ -1418,6 +1418,7 @@ class MailboxSocket {
 
   WebSocketChannel? _channel;
   bool _closed = false;
+  bool _reconnectPending = false;
   int _retrySeconds = 1;
 
   MailboxSocket({
@@ -1428,8 +1429,14 @@ class MailboxSocket {
     this.onStateChange,
   });
 
+  /// One channel at a time. The relay keeps one connection per device and
+  /// closes the previous one as "replaced", so a second channel from here
+  /// does not add a connection — it evicts our own, which reconnects and
+  /// evicts the second, and so on at the retry interval. A dropped stream
+  /// reports itself twice (onError, then onDone), which is how that used
+  /// to start: each report scheduled a connect of its own.
   void connect() {
-    if (_closed) return;
+    if (_closed || _channel != null) return;
     final wsUrl = '${address.replaceFirst('http', 'ws')}/ws?token=$token';
     try {
       final channel = IOWebSocketChannel.connect(
@@ -1437,8 +1444,17 @@ class MailboxSocket {
         customClient: _pinnedHttpClient(tlsFp),
       );
       _channel = channel;
+      // Only the live channel's fate matters; a channel we already moved
+      // on from must not reconnect over its successor.
+      void gone() {
+        if (!identical(_channel, channel)) return;
+        _channel = null;
+        _scheduleReconnect();
+      }
+
       channel.ready
           .then((_) {
+            if (!identical(_channel, channel)) return;
             _retrySeconds = 1;
             onStateChange?.call(true);
           })
@@ -1455,24 +1471,30 @@ class MailboxSocket {
             // Undecodable frame — leave it unacked; it will retry on reconnect.
           }
         },
-        onDone: _scheduleReconnect,
-        onError: (_) => _scheduleReconnect(),
+        onDone: gone,
+        onError: (_) => gone(),
       );
     } catch (_) {
+      _channel = null;
       _scheduleReconnect();
     }
   }
 
   void _scheduleReconnect() {
     onStateChange?.call(false);
-    if (_closed) return;
-    Future.delayed(Duration(seconds: _retrySeconds), connect);
+    if (_closed || _reconnectPending) return;
+    _reconnectPending = true;
+    Future.delayed(Duration(seconds: _retrySeconds), () {
+      _reconnectPending = false;
+      connect();
+    });
     _retrySeconds = (_retrySeconds * 2).clamp(1, 30);
   }
 
   void close() {
     _closed = true;
     _channel?.sink.close();
+    _channel = null;
     onStateChange?.call(false);
   }
 }
