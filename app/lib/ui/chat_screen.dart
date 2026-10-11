@@ -1151,35 +1151,44 @@ class _ChatScreenState extends State<ChatScreen> {
                         image: widget.contact?.avatar,
                       ),
                     const SizedBox(width: 10),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(title, style: const TextStyle(fontSize: 16)),
-                        Row(
-                          children: [
-                            if (chat.expireTimerFor(conversationId) > 0)
-                              const Padding(
-                                padding: EdgeInsets.only(right: 3),
-                                child: Icon(
-                                  Icons.timer_outlined,
-                                  size: 11,
-                                  color: Zn.muted,
+                    // A name is the contact's own choice and any length;
+                    // the action buttons are not. Ellipsis beats overflow.
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                          Row(
+                            children: [
+                              if (chat.expireTimerFor(conversationId) > 0)
+                                const Padding(
+                                  padding: EdgeInsets.only(right: 3),
+                                  child: Icon(
+                                    Icons.timer_outlined,
+                                    size: 11,
+                                    color: Zn.muted,
+                                  ),
                                 ),
+                              Text(
+                                isGroup
+                                    ? '$memberCount members'
+                                    : isNotes
+                                    ? 'ONLY YOU'
+                                    : widget.contact!.stonechatId.substring(
+                                        0,
+                                        12,
+                                      ),
+                                style: Zn.mono(size: 9, letterSpacing: 1),
                               ),
-                            Text(
-                              isGroup
-                                  ? '$memberCount members'
-                                  : isNotes
-                                  ? 'ONLY YOU'
-                                  : widget.contact!.stonechatId.substring(
-                                      0,
-                                      12,
-                                    ),
-                              style: Zn.mono(size: 9, letterSpacing: 1),
-                            ),
-                          ],
-                        ),
-                      ],
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),

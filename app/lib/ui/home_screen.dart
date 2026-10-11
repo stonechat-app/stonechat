@@ -38,10 +38,8 @@ class _HomeScreenState extends State<HomeScreen> {
       return activityB.compareTo(activityA);
     }
 
-    final allContacts = [
-      ...chat.acceptedContacts,
-      ?chat.notesToSelf,
-    ]..sort(
+    final allContacts = [...chat.acceptedContacts, ?chat.notesToSelf]
+      ..sort(
         (a, b) => compare(
           a.pinnedAt,
           b.pinnedAt,
@@ -81,13 +79,22 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             Image.asset('assets/logo/bird.png', height: 22),
             const SizedBox(width: 8),
-            Text(
-              'STONECHAT',
-              style: Zn.mono(
-                size: 20,
-                color: Zn.orange,
-                weight: FontWeight.w700,
-                letterSpacing: 6,
+            // Three action buttons leave a 360dp phone a pixel short of
+            // this at full size: scale rather than clip the last letter.
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  'STONECHAT',
+                  maxLines: 1,
+                  style: Zn.mono(
+                    size: 20,
+                    color: Zn.orange,
+                    weight: FontWeight.w700,
+                    letterSpacing: 6,
+                  ),
+                ),
               ),
             ),
           ],
