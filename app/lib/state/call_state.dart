@@ -36,6 +36,16 @@ class CallEndReason {
   static const timeout = 'timeout';
 }
 
+/// The mailbox serves no TURN (relay/src/turn.rs): a relay older than
+/// 0.3.0, or one run with STONECHAT_TURN_PORT=0. Ends the call with a
+/// reason the user can act on.
+class NoCallRelay implements Exception {
+  const NoCallRelay();
+
+  @override
+  String toString() => 'your mailbox has no call relay';
+}
+
 class CallState extends ChangeNotifier {
   final AppState app;
   final ChatState chat;
@@ -327,26 +337,23 @@ class CallState extends ChangeNotifier {
   /// the phone learns its public address from its own mailbox and nothing
   /// about a call leaves the user's infrastructure. Either side's relay can
   /// carry the call, so we only need our own. A mailbox without one (an
-  /// older relay, or STONECHAT_TURN_PORT=0) leaves a public STUN server as
-  /// the fallback: calls then connect only where a direct path exists.
+  /// older relay, or STONECHAT_TURN_PORT=0) is not papered over with a
+  /// third-party STUN server: the call fails and says why.
   Future<List<Map<String, Object?>>> _iceServers() async {
     final address = chat.mailboxAddress;
     final token = chat.mailboxToken;
     final tlsFp = chat.mailboxTlsFp;
-    if (address != null && token != null && tlsFp != null) {
-      final turn = await fetchTurnCredentials(address, token, tlsFp);
-      if (turn != null) {
-        return [
-          {
-            'urls': turn.urls,
-            'username': turn.username,
-            'credential': turn.credential,
-          },
-        ];
-      }
+    if (address == null || token == null || tlsFp == null) {
+      throw const NoCallRelay();
     }
+    final turn = await fetchTurnCredentials(address, token, tlsFp);
+    if (turn == null) throw const NoCallRelay();
     return [
-      {'urls': 'stun:stun.l.google.com:19302'},
+      {
+        'urls': turn.urls,
+        'username': turn.username,
+        'credential': turn.credential,
+      },
     ];
   }
 

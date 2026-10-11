@@ -1535,8 +1535,8 @@ credentials ends any allocation earlier credentials still hold. Clients MUST
 fetch credentials per call, not cache them — the fetch is what frees the
 relay port after a call that never hung up. Each side fetches from its
 **own** mailbox and contributes its own relay candidates; either side's relay
-can carry the call. Clients fall back to a public STUN server when their
-mailbox serves no TURN.
+can carry the call. A client whose mailbox serves no TURN does not place the
+call — there is no third-party STUN fallback — and tells the user why.
 
 ### Media (photos, videos, voice notes, documents)
 

@@ -227,8 +227,8 @@ Credentials are coturn's REST scheme, unchanged on the wire:
 `username = "<expiry>:stonechat"`, `credential = base64(HMAC-SHA1(secret,
 username))`, six hours. The secret is the mailbox's own, generated into
 `STONECHAT_TLS_DIR/turn-secret` on first start. `0` disables the whole thing;
-the route then answers 404 and the app places calls with no relay, which
-connect wherever a direct path exists.
+the route then answers 404 and the app refuses to place calls from this
+mailbox, saying so — there is no third-party STUN fallback.
 
 Docker: `docker build -t stonechat-relay:rust .` (self-building dev image;
 production ships a prebuilt binary — RUST_PORT.md "Packaging").
