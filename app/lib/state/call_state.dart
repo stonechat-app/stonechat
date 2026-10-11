@@ -373,9 +373,16 @@ class CallState extends ChangeNotifier {
       if (contact == null || id == null || _iceOutbox.isEmpty) return;
       final batch = List.of(_iceOutbox);
       _iceOutbox.clear();
+      // Queued, not transient: the callee is routinely NOT on its socket
+      // at this moment — woken by the ring push, unlocking the phone — and
+      // a transient envelope to an absent device is simply dropped, after
+      // which the call can never connect (they hold our offer and none of
+      // our addresses). Queued, the candidates are waiting when the socket
+      // comes up. No push: nobody needs waking for them, and the receiver
+      // discards candidates for a call it no longer has.
       unawaited(chat
           .sendCallSignal(contact, EnvelopeType.callIce,
-              {'call_id': id, 'candidates': batch}, transient: true)
+              {'call_id': id, 'candidates': batch}, noPush: true)
           .catchError((_) {})); // late/lost candidates are self-healing
     });
   }
@@ -454,8 +461,14 @@ class CallState extends ChangeNotifier {
     _pendingRemoteCandidates.clear();
     _remoteDescriptionSet = false;
     _pendingOffer = null;
-    localRenderer.srcObject = null;
-    remoteRenderer.srcObject = null;
+    // An incoming call declined, cancelled or timed out before it was
+    // accepted never set up media, and a renderer that was never
+    // initialized throws on assignment — which used to abort the teardown
+    // here and leave the call screen up for good.
+    if (_renderersReady) {
+      localRenderer.srcObject = null;
+      remoteRenderer.srcObject = null;
+    }
     final stream = _localStream;
     _localStream = null;
     if (stream != null) {

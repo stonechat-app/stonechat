@@ -1507,9 +1507,12 @@ relay, below).
   **lower Stonechat ID** wins; the other side discards its own attempt and
   treats the winning offer as incoming — same tiebreak as simultaneous
   PQXDH.
-- `call_ice` envelopes are transient: late candidates are useless, and if
-  the peer is not connected the call is failing anyway. Offers, answers and
-  hangups are normal (queued) envelopes.
+- `call_ice` envelopes are queued like offers, answers and hangups, with
+  `push: false`: the callee is routinely off its socket while the offer is
+  ringing (woken by push, unlocking the phone), and a transient candidate
+  sent then would be dropped, leaving a callee that holds the offer and none
+  of the caller's addresses. A receiver discards candidates for a call it
+  does not have.
 - IP privacy: exchanging ICE candidates reveals device addresses to the
   *peer* (an accepted contact). Callers who consider that sensitive route
   through TURN/VPN; a relay-only mode is planned, not present.

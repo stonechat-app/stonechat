@@ -4689,9 +4689,11 @@ class ChatState extends ChangeNotifier {
     String type,
     Map<String, Object?> payload, {
     bool transient = false,
+    bool noPush = false,
     bool ring = false,
   }) async {
-    await _deliver(contact, type, payload, transient: transient, ring: ring);
+    await _deliver(contact, type, payload,
+        transient: transient, noPush: noPush, ring: ring);
   }
 
   /// A call's epitaph in the conversation ("Missed voice call",
