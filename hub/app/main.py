@@ -5,6 +5,11 @@ Config (env):
     STONECHAT_HUB_DB                  sqlite path (default hub.db)
     STONECHAT_GCP_PROJECT            required for provider=gcp
     STONECHAT_LOCAL_HOST             advertised host for provider=local (default 127.0.0.1)
+    STONECHAT_PROVIDERS              comma-separated providers this hub will
+                                provision on, whichever form the request takes
+                                (default: every registered one). The hosted hub
+                                sets it so a client cannot ask for `local`,
+                                or a cloud whose adapter has never been live.
     STONECHAT_GATE_URL               the gate that decides who may use the gated
                                 providers (gate.py); unset → open hub: no
                                 tiers required, no reaper
@@ -40,7 +45,7 @@ import os
 
 from .admin import router as admin_router
 from . import gate
-from .countries import UnavailableCountry
+from .countries import UnavailableCountry, known_shapes
 from .countries import catalog as country_catalog
 from .countries import resolve as resolve_country
 from .countries import shared_host_countries
@@ -157,6 +162,23 @@ GATED_PROVIDERS = {
 DEDICATED_PROVIDERS = {"gcp", "aws", "digitalocean", "hetzner", "vultr"}
 
 
+def enabled_providers() -> list[str]:
+    """Providers a request may end up on: STONECHAT_PROVIDERS ∩ registered.
+
+    Unset means all of them, which is right for a development hub and for a
+    self-hoster who runs only what they configured. A hosted hub names its
+    live adapters, because the explicit provider+machine form lets any client
+    choose: without this, a debug build asking for `local` makes the hub try
+    Docker on itself, and `aws` would boot on an adapter nobody has tested.
+    """
+    registered = available_providers()
+    raw = os.environ.get("STONECHAT_PROVIDERS")
+    if raw is None:
+        return registered
+    wanted = {p.strip() for p in raw.split(",") if p.strip()}
+    return [p for p in registered if p in wanted]
+
+
 # -- schemas --------------------------------------------------------------------
 
 class RegisterIn(BaseModel):
@@ -254,7 +276,7 @@ class DevicesIn(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "providers": available_providers()}
+    return {"status": "ok", "providers": enabled_providers()}
 
 
 @app.get("/v1/relay-binary")
@@ -595,10 +617,21 @@ def create_mailbox(body: MailboxIn, user: UnbannedUser, background: BackgroundTa
             raise HTTPException(400, {"code": "country_unavailable", "message": str(e)})
         machine = MachineIn(**machine_dict)
 
-    if provider not in available_providers():
-        raise HTTPException(
-            400, f"unknown provider; available: {', '.join(available_providers())}"
-        )
+    if provider not in enabled_providers():
+        raise HTTPException(400, {
+            "code": "provider_unavailable",
+            "message": f"unknown provider; available: {', '.join(enabled_providers())}",
+        })
+    if body.provider is not None and provider in DEDICATED_PROVIDERS:
+        # The explicit form names a machine. Hold it to the shapes the catalog
+        # boots, so an account token is not a licence to pick the VM size.
+        shape = (machine.region, machine.machine_type)
+        if shape not in known_shapes(provider):
+            raise HTTPException(400, {
+                "code": "machine_unavailable",
+                "message": f"{provider} does not offer {machine.machine_type} "
+                           f"in {machine.region}; ask for a country instead",
+            })
     required = GATED_PROVIDERS.get(provider)
     if required is not None and not gate.satisfies(tier, required):
         raise HTTPException(402, {

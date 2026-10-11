@@ -216,3 +216,17 @@ def resolve(code: str, plan: str) -> tuple[str, dict]:
         "region": h.region,
         "disk_gb": 10,
     }
+
+
+def known_shapes(provider: str) -> set[tuple[str, str]]:
+    """The (region, machine_type) pairs the catalog boots on `provider`.
+
+    The explicit provider+machine form of POST /v1/mailbox is held to this
+    set, so a client cannot name a machine type the catalog never offers:
+    the cost of a VM is decided here, not by whoever holds an account token.
+    """
+    return {
+        (c.hosting.region, c.hosting.machine_type)
+        for c in CATALOG
+        if c.hosting.provider == provider
+    }

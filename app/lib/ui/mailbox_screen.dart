@@ -229,8 +229,7 @@ class _MailboxScreenState extends State<MailboxScreen> {
           const SizedBox(height: 10),
           ZnOptionCard(
             title: 'Self-host',
-            subtitle: 'Run the relay on your own machine. '
-                'Free, forever.',
+            subtitle: 'Run the relay on your own machine.',
             selected: !locked && _choice == _Choice.selfHost,
             active: active == _Choice.selfHost,
             dimmed: locked && active != _Choice.selfHost,

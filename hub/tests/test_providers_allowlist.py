@@ -1,0 +1,83 @@
+"""STONECHAT_PROVIDERS: which providers a request may land on, and the
+machine shapes the explicit provider+machine form is held to."""
+
+import base64
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+os.environ["STONECHAT_HUB_DB"] = os.path.join(tempfile.mkdtemp(), "hub.db")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from fastapi.testclient import TestClient  # noqa: E402
+from nacl.signing import SigningKey  # noqa: E402
+
+from app import countries  # noqa: E402
+from app.main import app, enabled_providers  # noqa: E402
+
+PQ_PK_LEN = 1216
+
+
+def b64(b: bytes) -> str:
+    return base64.b64encode(b).decode()
+
+
+class Allowlist(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = TestClient(app)
+        identity = SigningKey.generate()
+        pq_pk = bytes(PQ_PK_LEN)
+        r = cls.client.post("/v1/register", json={
+            "pubkey": b64(bytes(identity.verify_key)),
+            "pq_pk": b64(pq_pk),
+            "pq_sig": b64(identity.sign(b"stonechat-v1-pqpk" + pq_pk).signature),
+        })
+        assert r.status_code == 201, r.text
+        cls.auth = {"Authorization": f"Bearer {r.json()['account_token']}"}
+
+    def create(self, **body):
+        return self.client.post("/v1/mailbox", json=body, headers=self.auth)
+
+    def test_unset_means_every_registered_provider(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STONECHAT_PROVIDERS", None)
+            self.assertIn("local", enabled_providers())
+            self.assertIn("gcp", enabled_providers())
+
+    def test_set_narrows_and_ignores_unknown_names(self):
+        with mock.patch.dict(os.environ, {"STONECHAT_PROVIDERS": " mailbox_host, gcp ,nope"}):
+            self.assertEqual(enabled_providers(), ["gcp", "mailbox_host"])
+            self.assertEqual(self.client.get("/health").json()["providers"],
+                             ["gcp", "mailbox_host"])
+
+    def test_a_client_cannot_name_a_provider_the_hub_does_not_run(self):
+        # The hosted hub's case: a debug build defaulting to `local` must be
+        # told no, not make the hub try Docker on itself.
+        with mock.patch.dict(os.environ, {"STONECHAT_PROVIDERS": "mailbox_host,gcp"}):
+            r = self.create(provider="local",
+                            machine={"machine_type": "container", "region": "localhost"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(r.json()["detail"]["code"], "provider_unavailable")
+
+    def test_the_explicit_form_is_held_to_catalog_shapes(self):
+        with mock.patch.dict(os.environ, {"STONECHAT_PROVIDERS": "gcp"}):
+            r = self.create(provider="gcp",
+                            machine={"machine_type": "n2-highmem-96",
+                                     "region": "us-central1-a"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertEqual(r.json()["detail"]["code"], "machine_unavailable")
+
+    def test_catalog_shapes_are_what_resolve_hands_out(self):
+        for c in countries.CATALOG:
+            provider, machine = countries.resolve(c.code, "machine")
+            self.assertIn((machine["region"], machine["machine_type"]),
+                          countries.known_shapes(provider))
+        self.assertEqual(countries.known_shapes("nope"), set())
+
+
+if __name__ == "__main__":
+    unittest.main()
