@@ -48,6 +48,14 @@ class NotificationService: UNNotificationServiceExtension {
       content.title = title
       content.body = body
       content.threadIdentifier = thread
+      // A tap on this banner should land in the conversation, not the
+      // list: the app reads this back out of the tapped notification
+      // (core/push.dart). Several conversations → no single place to go.
+      if thread != DrainSummary.mixedThread {
+        var info = content.userInfo
+        info["conversation"] = thread
+        content.userInfo = info
+      }
     }
     handler(content)
   }
@@ -64,6 +72,9 @@ struct ShownMessage {
 struct DrainSummary {
   var shown: [ShownMessage] = []
 
+  /// Thread for a batch spanning conversations: grouped together, opens the list.
+  static let mixedThread = "stonechat-mixed"
+
   func notification() -> (title: String, body: String, thread: String)? {
     guard let last = shown.last else { return nil }
     if shown.count == 1 {
@@ -73,7 +84,7 @@ struct DrainSummary {
     if conversations.count == 1 {
       return (last.title, "\(shown.count) new messages", last.conversationId)
     }
-    return ("Stonechat", "\(shown.count) new messages", "stonechat-mixed")
+    return ("Stonechat", "\(shown.count) new messages", Self.mixedThread)
   }
 }
 

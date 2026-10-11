@@ -11,6 +11,7 @@
 /// while foregrounded / on resume).
 library;
 
+import 'dart:async' show unawaited;
 import 'dart:io' show Platform;
 
 import 'package:firebase_core/firebase_core.dart';
@@ -27,6 +28,35 @@ class PushService {
 
   bool _firebaseReady = false;
   void Function(String token, String platform)? _onToken;
+
+  /// Where a tapped notification wants to go. The iOS notification
+  /// extension names the conversation it decrypted for (`conversation` in
+  /// the payload); the content-free Android alert names none, and a batch
+  /// spanning conversations names none either — both just open the app.
+  /// A tap that launched the app lands before the shell can listen, so it
+  /// is held and replayed when the listener arrives.
+  void Function(String conversationId)? _onOpen;
+  String? _pendingOpen;
+
+  set onOpen(void Function(String conversationId)? cb) {
+    _onOpen = cb;
+    final held = _pendingOpen;
+    if (cb != null && held != null) {
+      _pendingOpen = null;
+      cb(held);
+    }
+  }
+
+  void _opened(RemoteMessage? m) {
+    final id = m?.data['conversation'];
+    if (id is! String || id.isEmpty) return;
+    final cb = _onOpen;
+    if (cb == null) {
+      _pendingOpen = id;
+    } else {
+      cb(id);
+    }
+  }
 
   /// Sets up Firebase and the message listeners **without** prompting for
   /// permission. A returning user who already granted gets their token wired
@@ -54,9 +84,14 @@ class PushService {
     final messaging = FirebaseMessaging.instance;
 
     // A content-free wake-up: foreground arrival or the user tapping the
-    // notification both just mean "go check your mailbox".
+    // notification both mean "go check your mailbox"; a tap also says
+    // where to look.
     FirebaseMessaging.onMessage.listen((_) => onWake());
-    FirebaseMessaging.onMessageOpenedApp.listen((_) => onWake());
+    FirebaseMessaging.onMessageOpenedApp.listen((m) {
+      onWake();
+      _opened(m);
+    });
+    unawaited(messaging.getInitialMessage().then(_opened));
 
     // FCM token rotation (Android). APNs tokens are re-read each launch.
     messaging.onTokenRefresh.listen((t) {
@@ -112,15 +147,16 @@ class PushService {
     final s = await FirebaseMessaging.instance.getNotificationSettings();
     return switch (s.authorizationStatus) {
       AuthorizationStatus.authorized ||
-      AuthorizationStatus.provisional =>
-        NotificationPermission.granted,
+      AuthorizationStatus.provisional => NotificationPermission.granted,
       AuthorizationStatus.denied => NotificationPermission.denied,
       _ => NotificationPermission.notDetermined,
     };
   }
 
   Future<void> _emitToken(
-      FirebaseMessaging messaging, void Function(String, String) onToken) async {
+    FirebaseMessaging messaging,
+    void Function(String, String) onToken,
+  ) async {
     try {
       // iOS: the raw APNs token (our gateway pushes APNs-direct). Android: the
       // FCM registration token.

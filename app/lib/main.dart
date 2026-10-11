@@ -14,6 +14,7 @@ import 'state/mailbox_state.dart';
 import 'ui/add_contact_screen.dart';
 import 'ui/backup_screen.dart';
 import 'ui/call_screen.dart';
+import 'ui/chat_screen.dart';
 import 'ui/create_group_screen.dart';
 import 'ui/home_screen.dart';
 import 'ui/identity_export_screen.dart';
@@ -141,6 +142,8 @@ class _StonechatAppState extends State<StonechatApp>
     WidgetsBinding.instance.addObserver(this);
     _call = context.read<CallState>();
     _call!.addListener(_syncCallRoute);
+    // A tapped notification opens the conversation it was about.
+    context.read<PushService>().onOpen = _openConversation;
     // Contact invite universal links (https://stonechat.app/add#SC-…).
     _linkSub = _appLinks.uriLinkStream.listen(_handleInviteLink);
     _appLinks.getInitialLink().then((uri) {
@@ -154,6 +157,7 @@ class _StonechatAppState extends State<StonechatApp>
 
   @override
   void dispose() {
+    context.read<PushService>().onOpen = null;
     _linkSub?.cancel();
     _call?.removeListener(_syncCallRoute);
     WidgetsBinding.instance.removeObserver(this);
@@ -172,6 +176,26 @@ class _StonechatAppState extends State<StonechatApp>
         builder: (_) => AddContactScreen(initialId: uri.fragment),
       ),
     );
+  }
+
+  /// The conversation a tapped notification named. Replaces whatever chat
+  /// is open rather than stacking on it: the user asked for this one. Unknown
+  /// ids (a contact removed since the push was shown) just leave the list up.
+  void _openConversation(String conversationId) {
+    if (!mounted || !context.read<AppState>().hasIdentity) return;
+    final chat = context.read<ChatState>();
+    final group = chat.groupById(conversationId);
+    final contact = group == null ? chat.contactById(conversationId) : null;
+    if (group == null && contact == null) return;
+    _navKey.currentState
+      ?..popUntil((route) => route.isFirst)
+      ..push(
+        MaterialPageRoute<void>(
+          builder: (_) => group != null
+              ? ChatScreen.group(group: group)
+              : ChatScreen(contact: contact!),
+        ),
+      );
   }
 
   /// The call surface follows CallState: pushed over whatever the user is
