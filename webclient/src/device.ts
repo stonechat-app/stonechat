@@ -19,17 +19,23 @@ import { b64decode, b64encode } from './bytes.js';
 
 /**
  * How long the primary certifies a browser session for — mirrors
- * `webCertLifetime` in device_keys.dart.
+ * `linkedCertLifetime` in device_keys.dart.
  *
  * Short by design. A browser cannot protect a key the way a phone keystore
  * can, so the certificate's lifetime *is* the mitigation, and a mitigation
- * measured in months is not one. The phone decides the real value; this
- * constant is only what the UI counts down against when it has nothing else.
+ * measured in months is not one. The phone decides the real value (its link
+ * dialog mints a `linked` device, 14 days, renewed over `sync_cert` while the
+ * device is still listed); this constant is only what the UI counts down
+ * against when it has nothing else.
  */
-export const WEB_CERT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+export const WEB_CERT_LIFETIME_MS = 14 * 24 * 60 * 60 * 1000;
 
-/** Refetch a peer's device list once our certificate has less than this left. */
-export const CERT_REFRESH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Refetch a peer's certificate once the one we hold has less than this left
+ * — 3 days, as the app (`certRefreshWindow`): after the primary would have
+ * renewed it, so a device still linked has a newer one to serve.
+ */
+export const CERT_REFRESH_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 
 /**
  * The two keypairs a device holds. Seeds only — public halves are derived, so

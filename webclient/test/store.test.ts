@@ -196,3 +196,38 @@ test('a roster filed under a Stonechat ID is refused', () => {
   }
   assert.deepEqual(store.groups(), {});
 });
+
+test('an attachment is kept as a description: its object URL dies with the tab', () => {
+  // `blob:` URLs name bytes this tab decrypted; after a reload they point at
+  // nothing. The store drops the URL on write so a message read back shows
+  // what the attachment was rather than a broken image.
+  store.appendMessage({
+    ...message('m'),
+    media: { url: 'blob:https://x/1', mime: 'image/png', kind: 'image', size: 10, name: 'a.png' },
+  });
+  const held = store.messages()['SC-PEER']![0]!;
+  assert.equal(held.media?.url, undefined);
+  assert.equal(held.media?.name, 'a.png');
+  assert.equal(held.media?.size, 10);
+});
+
+test('a message can be changed in place, found by id, and removed', () => {
+  store.appendMessage(message('a'));
+  store.appendMessage(message('b', 'SC-OTHER'));
+  assert.equal(store.findMessage('b')?.key, 'SC-OTHER');
+  store.updateMessage('a', (m) => ({ ...m, status: 'read' }));
+  assert.equal(store.findMessage('a')?.message.status, 'read');
+  assert.equal(store.updateMessage('zzz', (m) => m), null);
+  store.removeMessages(new Set(['a']));
+  assert.equal(store.findMessage('a'), null);
+  assert.equal(store.findMessage('b')?.message.id, 'b');
+});
+
+test('a device manifest only ever moves forward', () => {
+  const m = (version: number) => ({ stonechat_id: 'SC-X', version, issued_at: 0, devices: { 1: 'k' }, sig: 's' });
+  assert.equal(store.setManifest('SC-X', m(3)), true);
+  assert.equal(store.setManifest('SC-X', m(2)), false);
+  assert.equal(store.setManifest('SC-X', m(3)), false);
+  assert.equal(store.setManifest('SC-X', m(4)), true);
+  assert.equal(store.manifest('SC-X')?.version, 4);
+});

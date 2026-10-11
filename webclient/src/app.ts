@@ -2,11 +2,12 @@
  * Entry point: link if we are not linked, otherwise chat.
  *
  * The link is persisted, so a reload does not send the user back to the QR.
- * Message *history* is not — it stays on the phone (WEB_CLIENT.md "the
- * defensible shape"), and `store.ts` says which is which and why.
+ * Recent message history is too, up to a cap — `store.ts` says what is kept
+ * and why.
  */
 import birdMark from './bird.png';
 import { b64decode, b64encode } from './bytes.js';
+import { CallManager } from './calls.js';
 import { StonechatCore } from './core.js';
 import { DeviceKeys, randomBytes, WEB_CERT_LIFETIME_MS } from './device.js';
 import { Hub } from './hub.js';
@@ -199,7 +200,11 @@ class LinkScreen {
     for (const [k, v] of [
       ['session keys', 'generated here, never sent'],
       ['grant target', 'this session’s seal key'],
-      ['certificate', `${WEB_CERT_LIFETIME_MS / 86_400_000} days, not renewable here`],
+      ['certificate', `${WEB_CERT_LIFETIME_MS / 86_400_000} days, renewed by your phone while linked`],
+      // Named, because `?hub=` lets whoever wrote this page's URL choose it:
+      // the offer is parked there, and a hub that is not your phone's is a
+      // link that fails. Seeing it is the check.
+      ['hub', this.hub.baseUrl],
       ['parking key', parkingKey(this.core, this.offer.lookup).slice(0, 16) + '…'],
     ]) {
       const row = el('div');
@@ -224,9 +229,11 @@ class LinkScreen {
     const caveatBody = el(
       'p',
       undefined,
-      'Send and receive text. No groups, media, calls or receipts yet. ' +
-        'Recent messages are kept in this browser so a refresh does not lose ' +
-        'them — Unlink erases everything it holds.',
+      'Send and receive messages and attachments, in direct conversations ' +
+        'and in groups your phone has told it about, and make voice and video ' +
+        'calls. Adding contacts and managing groups stay on your phone. Recent ' +
+        'messages are kept in this browser so a refresh does not lose them — ' +
+        'Unlink erases everything it holds.',
     );
     caveatBody.style.color = 'var(--muted)';
     caveat.append(caveatTitle, caveatBody);
@@ -380,7 +387,8 @@ async function main(): Promise<void> {
       return;
     }
     const linkedHub = new Hub(stored.hub_url || hubUrl);
-    new App(new Protocol(core, linkedHub, keys, stored)).mount(mount);
+    const protocol = new Protocol(core, linkedHub, keys, stored);
+    new App(protocol, new CallManager(protocol)).mount(mount);
     return;
   }
 

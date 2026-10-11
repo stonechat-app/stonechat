@@ -7,11 +7,12 @@
  * rails, not bubbles — the *layout* is desktop-shaped, the visual language is
  * still ours.
  *
- * **Messages persist, up to a cap.** They used to live in memory only, which
- * meant a refresh emptied every conversation — defensible on paper and
- * unusable in practice. `store.ts` holds the reasoning and the bound.
+ * Everything shown is read back from `store.ts` on every change; the only
+ * state this file keeps is what cannot be stored — decrypted media URLs,
+ * which die with the tab, and what is open.
  */
 import birdMark from './bird.png';
+import type { CallManager } from './calls.js';
 import type { MediaAttachment, Message, Protocol } from './protocol.js';
 import { certExpiry } from './device.js';
 import {
@@ -19,6 +20,7 @@ import {
   store,
   threadKey,
   type Contact,
+  type Group,
 } from './store.js';
 
 const el = <K extends keyof HTMLElementTagNameMap>(
@@ -61,6 +63,13 @@ const ICON = {
     'M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zM19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2 2 2 0 1 1-4 0 1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 15a2 2 0 1 1 0-4 1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 4a2 2 0 1 1 4 0 1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 11a2 2 0 1 1 0 4z',
   compose: 'M12 5v14M5 12h14',
   back: 'M15 18l-6-6 6-6',
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  close: 'M18 6L6 18M6 6l12 12',
+  phone:
+    'M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z',
+  video: 'M23 7l-7 5 7 5V7zM14 5H3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z',
+  hangup: 'M10.7 13.3a16 16 0 0 1-2.7-3.5l1.3-1.3a2 2 0 0 0 .5-2.1c-.3-.9-.6-1.8-.7-2.7A2 2 0 0 0 7.1 2h-3A2 2 0 0 0 2.1 4.2a19.8 19.8 0 0 0 3.1 8.6M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1M2 2l20 20',
+  mic: 'M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8',
 };
 
 /** The per-contact colour, by the same hash the app uses (`Zn.idColor`), so a
@@ -71,20 +80,20 @@ function idColor(stonechatId: string): string {
   return `var(--id-${h % 6})`;
 }
 
-const shortId = (id: string) => id.replace(/^SC-/, '').slice(0, 9);
+/** The quick reactions the app offers. */
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
+/** The disappearing-message timers the app offers. */
+const TIMERS: Array<[number, string]> = [
+  [0, 'off'],
+  [3_600_000, '1 hour'],
+  [86_400_000, '24 hours'],
+  [7 * 86_400_000, '7 days'],
+];
 
 /**
  * The top bar: the mark and wordmark on the left, connection status on the
- * right.
- *
- * One bar rather than two. The status used to sit in a strip of its own above
- * the app, which spent a whole row saying "connected" — folding it in beside
- * the brand costs nothing and reads as one piece of chrome.
- *
- * The mark is the same bird as the phone app and the landing page
- * (`app/assets/logo/bird.png`), and the wordmark is set in the monospace face
- * with the landing site's letter-spacing, so the three surfaces still look
- * like one product.
+ * right. One bar rather than two.
  */
 function brandBar(status: HTMLElement): HTMLElement {
   const bar = el('header', 'brand');
@@ -121,21 +130,21 @@ export class App {
   private readonly dot = el('span', 'dot');
   private readonly bannerText = el('span');
 
-  /** Loaded from storage on mount and written through on every change, so a
-   * refresh resumes rather than forgetting. */
-  private readonly threads = new Map<string, Message[]>();
   private open: Open | null = null;
   private section: Section = 'chats';
+  private replyingTo: Message | null = null;
   private readonly railButtons = new Map<string, HTMLButtonElement>();
+  private menu: HTMLElement | null = null;
+  private expirySweep: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(private readonly protocol: Protocol) {}
+  private readonly callLayer = el('div', 'call');
+
+  constructor(
+    private readonly protocol: Protocol,
+    private readonly calls: CallManager,
+  ) {}
 
   mount(into: HTMLElement): void {
-    // Keyed as stored (`threadKey`), so a group's thread and a peer's stay
-    // apart in memory exactly as they do on disk.
-    for (const [key, messages] of Object.entries(store.messages())) {
-      this.threads.set(key, messages);
-    }
     this.shell.append(this.railEl(), this.sidebarEl(), this.pane);
 
     this.dot.classList.add('dot--warn');
@@ -180,9 +189,8 @@ export class App {
     compose.style.marginLeft = 'auto';
     compose.addEventListener('click', () => {
       if (this.section === 'groups') {
-        // Creating one means choosing contacts and fanning a roster out to
-        // every member's every device. Reading and replying is the useful
-        // half; making that claim without the fan-out would be worse.
+        // Creating one means choosing contacts and owing a roster to every
+        // member's every device until it lands. The phone does that.
         this.setStatus('warn', 'Groups are created on your phone.');
         return;
       }
@@ -203,7 +211,7 @@ export class App {
     // Close whatever is open only if it does not belong to the section being
     // shown — otherwise entering Groups would close the group you just picked.
     if (this.open !== null && (section === 'groups') !== this.open.group) {
-      this.open = null;
+      this.setOpen(null);
     }
     this.render();
   }
@@ -211,6 +219,16 @@ export class App {
   private setStatus(kind: 'live' | 'warn' | 'down', text: string): void {
     this.dot.className = `dot dot--${kind}`;
     this.bannerText.textContent = text;
+  }
+
+  private setOpen(open: Open | null): void {
+    if (this.open && (!open || open.id !== this.open.id || open.group !== this.open.group)) {
+      this.protocol.stopTyping(this.open.id, this.open.group);
+    }
+    this.open = open;
+    this.replyingTo = null;
+    this.closeMenu();
+    if (open) this.protocol.markRead(open.id, open.group);
   }
 
   // -- modals -------------------------------------------------------------
@@ -236,12 +254,13 @@ export class App {
   private openCompose(): void {
     this.modal((close) => {
       const card = el('div', 'modal');
-      card.append(el('h2', undefined, 'New conversation'));
+      card.append(el('h2', undefined, 'Add a contact'));
       const lede = el(
         'p',
         'mono',
         'Paste their Stonechat ID. There is nothing to search — an ID is a ' +
-          'commitment to a key, not a name in a directory.',
+          'commitment to a key, not a name in a directory. They get a request; ' +
+          'the conversation opens once they accept.',
       );
       lede.style.marginBottom = '14px';
       card.append(lede);
@@ -255,34 +274,32 @@ export class App {
       error.style.marginTop = '8px';
       error.style.minHeight = '16px';
 
-      const submit = () => {
+      const submit = async () => {
         const id = input.value.trim().toUpperCase();
         if (!id.startsWith('SC-') || id.length < 10) {
           error.textContent = "that doesn't look like a Stonechat ID";
           return;
         }
-        if (id === this.protocol.stonechatId) {
-          // Your devices share your ID; a conversation with yourself is not a
-          // thing this protocol has.
-          error.textContent = 'that is your own ID';
-          return;
+        go.disabled = true;
+        try {
+          const contact = await this.protocol.addContact(id);
+          this.section = 'chats';
+          this.setOpen({ group: false, id: contact.stonechatId });
+          close();
+          this.render();
+        } catch (e) {
+          error.textContent = (e as Error).message;
+          go.disabled = false;
         }
-        // Recorded on open so the conversation exists before the first send —
-        // the public key is filled in when the directory is resolved.
-        store.setContact({ stonechatId: id, pubkey: '' });
-        this.section = 'chats';
-        this.open = { group: false, id };
-        close();
-        this.render();
       };
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') submit();
+        if (e.key === 'Enter') void submit();
       });
 
       const cancel = el('button', 'secondary', 'Cancel');
       cancel.addEventListener('click', close);
-      const go = el('button', undefined, 'Open');
-      go.addEventListener('click', submit);
+      const go = el('button', undefined, 'Send request');
+      go.addEventListener('click', () => void submit());
       const actions = el('div', 'modal__actions');
       actions.append(cancel, go);
 
@@ -309,8 +326,10 @@ export class App {
         ['your ID', this.protocol.stonechatId],
         ['device', String(this.protocol.deviceId)],
         [
-          'session ends',
-          expiry ? `${expiry.toISOString().slice(0, 10)} · ${days}d` : 'unknown',
+          'certificate',
+          expiry
+            ? `${expiry.toISOString().slice(0, 10)} · ${days}d · renewed by your phone`
+            : 'unknown',
         ],
         ['messages kept', `${MAX_MESSAGES_PER_CONVERSATION} per conversation`],
       ]) {
@@ -327,6 +346,20 @@ export class App {
         facts.append(row);
       }
       card.append(facts);
+
+      // Read receipts: what the *peer* learns. Delivery receipts are
+      // unconditional, as on the phone.
+      const receipts = el('label', 'mono');
+      receipts.style.display = 'flex';
+      receipts.style.gap = '8px';
+      receipts.style.alignItems = 'center';
+      receipts.style.margin = '0 0 14px';
+      const box = el('input');
+      box.type = 'checkbox';
+      box.checked = store.settings().sendReadReceipts !== false;
+      box.addEventListener('change', () => store.setSettings({ sendReadReceipts: box.checked }));
+      receipts.append(box, el('span', undefined, 'send read receipts from this browser'));
+      card.append(receipts);
 
       const warn = el(
         'p',
@@ -357,56 +390,60 @@ export class App {
 
   // -- running ------------------------------------------------------------
 
-  private push(message: Message): void {
-    const key = threadKey(message.peerId, message.group === true);
-    const thread = this.threads.get(key) ?? [];
-    // Redelivery is normal — the relay re-sends anything unacked when a socket
-    // reconnects — so the same message can arrive twice across a refresh.
-    if (thread.some((m) => m.id === message.id)) return;
-    thread.push(message);
-    this.threads.set(key, thread);
-    store.appendMessage(message);
-    this.render();
+  private async run(): Promise<void> {
+    this.protocol.onChange = () => this.render();
+    this.protocol.onGroupsChanged = () => this.render();
+    this.protocol.onConversationCleared = () => this.render();
+    this.protocol.onTyping = () => this.renderTyping();
+    this.protocol.onCertRenewed = () => this.setStatus('live', 'connected · certificate renewed');
+    this.calls.onChange = () => {
+      this.renderCall();
+      this.render();
+    };
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && this.open) {
+        this.protocol.markRead(this.open.id, this.open.group);
+      }
+    });
+    // The retry sweep: what could not be delivered is tried again with the
+    // app's backoff. Cheap when nothing is owed.
+    setInterval(() => void this.protocol.retryPending(), 30_000);
+    this.scheduleExpirySweep();
+
+    await this.protocol.start(
+      (message) => {
+        if (
+          this.open && document.visibilityState === 'visible' &&
+          message.peerId === this.open.id && (message.group === true) === this.open.group
+        ) {
+          this.protocol.markRead(this.open.id, this.open.group);
+        }
+        if (message.expiresAt) this.scheduleExpirySweep();
+        this.render();
+      },
+      (kind, text) => {
+        if (kind === 'live') {
+          const expiry = certExpiry(this.protocol.grant.cert);
+          const days = expiry
+            ? Math.max(0, Math.round((expiry.getTime() - Date.now()) / 86_400_000))
+            : 0;
+          this.setStatus('live', `${text} · device ${this.protocol.deviceId} · certificate ${days}d`);
+        } else {
+          this.setStatus(kind, text);
+        }
+      },
+    );
   }
 
-  private async run(): Promise<void> {
-    try {
-      await this.protocol.publishPrekeys();
-      const expiry = certExpiry(this.protocol.grant.cert);
-      const days = expiry
-        ? Math.max(0, Math.round((expiry.getTime() - Date.now()) / 86_400_000))
-        : 0;
-      this.setStatus(
-        'live',
-        `connected · device ${this.protocol.deviceId} · session ends in ${days}d`,
-      );
-      // A clear performed on the phone has to empty the view here too, or the
-      // browser goes on showing history the user believes they deleted — the
-      // one outcome that makes "clear chat" untrustworthy.
-      // A roster arriving is what makes a group exist here at all, and one
-      // changing can rename it or end our part in it.
-      this.protocol.onGroupsChanged = () => this.render();
-      this.protocol.onConversationCleared = (peerId, group) => {
-        this.threads.set(threadKey(peerId, group), []);
-        this.render();
-      };
-      for await (const message of this.protocol.receive()) {
-        this.push(message);
-      }
-      this.setStatus('warn', 'disconnected — reload to reconnect');
-    } catch (e) {
-      const message = (e as Error).message;
-      // 410 is the relay saying this device is gone — revoked, or its mailbox
-      // was replaced. Nothing here recovers from that, so say what to do
-      // rather than showing a network error forever.
-      const dead = /\b410\b/.test(message) || /revoked/i.test(message);
-      this.setStatus(
-        'down',
-        dead
-          ? 'This browser is no longer linked — open Settings and Unlink.'
-          : message,
-      );
-    }
+  private scheduleExpirySweep(): void {
+    if (this.expirySweep) clearTimeout(this.expirySweep);
+    const next = this.protocol.nextExpiry();
+    if (next === null) return;
+    this.expirySweep = setTimeout(() => {
+      this.expirySweep = null;
+      this.protocol.sweepExpired();
+      this.scheduleExpirySweep();
+    }, Math.max(1000, Math.min(next - Date.now(), 3_600_000)));
   }
 
   // -- rendering ----------------------------------------------------------
@@ -424,13 +461,14 @@ export class App {
 
   private renderList(): void {
     this.listBody.replaceChildren();
+    const messages = store.messages();
 
     if (this.section === 'groups') {
       // Only groups we hold a roster for. One we were linked too late to hear
-      // about has no row and no messages until its admin next changes it:
-      // without a roster there is no telling a member from anyone else.
-      const known = store.groups();
-      if (Object.keys(known).length === 0) {
+      // about has no row and no messages until its admin next changes it or
+      // a member's message shows we are behind.
+      const known = Object.values(store.groups());
+      if (known.length === 0) {
         const note = el('div', 'mono');
         note.style.padding = 'var(--gutter)';
         note.style.color = 'var(--faint)';
@@ -438,11 +476,12 @@ export class App {
         this.listBody.append(note);
         return;
       }
-      for (const group of Object.values(known)) {
-        this.listBody.append(
-          this.groupRow(group.id, group.name, group.removed === true),
-        );
-      }
+      const lastOf = (g: Group) => {
+        const thread = messages[threadKey(g.id, true)];
+        return thread?.[thread.length - 1];
+      };
+      known.sort((a, b) => (Date.parse(lastOf(b)?.sentAt ?? '') || 0) - (Date.parse(lastOf(a)?.sentAt ?? '') || 0));
+      for (const group of known) this.listBody.append(this.groupRow(group, lastOf(group)));
       return;
     }
 
@@ -460,49 +499,66 @@ export class App {
       this.listBody.append(empty);
       return;
     }
+    const lastAt = (c: Contact) => {
+      const thread = messages[c.stonechatId];
+      const last = thread?.[thread.length - 1];
+      return last ? Date.parse(last.sentAt) || 0 : 0;
+    };
     // Most recent first, so a reply moves a conversation up the list.
-    for (const contact of contacts.sort((a, b) => this.lastAt(b) - this.lastAt(a))) {
-      this.listBody.append(this.contactRow(contact));
+    for (const contact of contacts.sort((a, b) => lastAt(b) - lastAt(a))) {
+      const thread = messages[contact.stonechatId] ?? [];
+      this.listBody.append(this.contactRow(contact, thread[thread.length - 1]));
     }
   }
 
-  private lastAt(contact: Contact): number {
-    const thread = this.threads.get(contact.stonechatId);
-    const last = thread?.[thread.length - 1];
-    return last ? Date.parse(last.sentAt) || 0 : 0;
+  private avatar(contact: Contact | null, id: string, size = 26): HTMLElement {
+    if (contact?.avatar) {
+      const img = el('img', 'avatar');
+      img.src = `data:${contact.avatar.mime};base64,${contact.avatar.data}`;
+      img.alt = '';
+      img.width = size;
+      img.height = size;
+      return img;
+    }
+    const dot = el('div', 'avatar avatar--letter', this.protocol.nameOf(id).slice(0, 1).toUpperCase());
+    dot.style.background = idColor(id);
+    dot.style.width = `${size}px`;
+    dot.style.height = `${size}px`;
+    dot.style.lineHeight = `${size}px`;
+    return dot;
   }
 
-  private contactRow(contact: Contact): HTMLElement {
-    const thread = this.threads.get(contact.stonechatId) ?? [];
-    const last = thread[thread.length - 1];
+  private contactRow(contact: Contact, last: Message | undefined): HTMLElement {
+    const id = contact.stonechatId;
     const row = el(
       'div',
-      this.open !== null && !this.open.group && contact.stonechatId === this.open.id
-        ? 'row row--active'
-        : 'row',
+      this.open !== null && !this.open.group && id === this.open.id ? 'row row--active' : 'row',
     );
     row.style.cursor = 'pointer';
     row.style.borderBottom = '1px solid var(--line)';
     const rail = el('div', 'row__rail');
-    rail.style.background = idColor(contact.stonechatId);
+    rail.style.background = idColor(id);
     const main = el('div');
     main.style.minWidth = '0';
     const meta = el('div', 'row__meta');
-    // Always the ID. A contact row is never named from a roster: a group's
-    // name is its admin's choice, and this row is somebody else.
-    const who = el('span', 'row__who mono--id', shortId(contact.stonechatId));
-    who.style.color = idColor(contact.stonechatId);
+    const who = el('span', 'row__who', this.protocol.nameOf(id));
+    who.style.color = idColor(id);
     meta.append(who);
+    if (contact.status === 'pendingIn') meta.append(el('span', 'tag', 'request'));
+    if (contact.status === 'pendingOut') meta.append(el('span', 'tag', 'invited'));
+    if (typeof contact.blockedAt === 'number') meta.append(el('span', 'tag tag--danger', 'blocked'));
     if (last) meta.append(el('span', undefined, time(last.sentAt)));
-    const preview = el('div', 'row__body', last ? last.text : 'no messages yet');
+    const preview = el('div', 'row__body', last ? previewOf(last) : 'no messages yet');
     preview.style.whiteSpace = 'nowrap';
     preview.style.overflow = 'hidden';
     preview.style.textOverflow = 'ellipsis';
     if (!last) preview.style.color = 'var(--faint)';
+    const unread = (store.messages()[id] ?? []).filter((m) => !m.mine && !m.notice && m.status !== 'read').length;
+    if (unread > 0) meta.append(el('span', 'badge', String(unread)));
     main.append(meta, preview);
     row.append(rail, main);
     row.addEventListener('click', () => {
-      this.open = { group: false, id: contact.stonechatId };
+      this.setOpen({ group: false, id });
       this.render();
     });
     return row;
@@ -515,19 +571,36 @@ export class App {
    * in it is still ours to read. It is readable and not sendable, and the
    * label says so.
    */
-  private groupRow(id: string, label: string, removed: boolean): HTMLElement {
-    const row = el('button', 'conv');
-    if (this.open?.group && id === this.open.id) row.classList.add('conv--open');
-    const name = el('span', 'row__who', label);
-    row.append(name);
-    if (removed) {
-      const hint = el('span', 'mono', ' · read-only');
-      hint.style.color = 'var(--faint)';
+  private groupRow(group: Group, last: Message | undefined): HTMLElement {
+    const row = el('div', this.open?.group && group.id === this.open.id ? 'row row--active' : 'row');
+    row.style.cursor = 'pointer';
+    row.style.borderBottom = '1px solid var(--line)';
+    const rail = el('div', 'row__rail');
+    rail.style.background = idColor(group.id);
+    const main = el('div');
+    main.style.minWidth = '0';
+    const meta = el('div', 'row__meta');
+    const name = el('span', 'row__who', group.name);
+    name.style.color = 'var(--text)';
+    meta.append(name);
+    if (group.removed) {
+      const hint = el('span', 'tag', 'read-only');
       hint.title = 'You were removed from this group.';
-      row.append(hint);
+      meta.append(hint);
     }
+    if (last) meta.append(el('span', undefined, time(last.sentAt)));
+    const unread = (store.messages()[threadKey(group.id, true)] ?? [])
+      .filter((m) => !m.mine && !m.notice && m.status !== 'read').length;
+    if (unread > 0) meta.append(el('span', 'badge', String(unread)));
+    const preview = el('div', 'row__body', last ? previewOf(last, this.protocol) : `${group.members.length} members`);
+    preview.style.whiteSpace = 'nowrap';
+    preview.style.overflow = 'hidden';
+    preview.style.textOverflow = 'ellipsis';
+    if (!last) preview.style.color = 'var(--faint)';
+    main.append(meta, preview);
+    row.append(rail, main);
     row.addEventListener('click', () => {
-      this.open = { group: true, id };
+      this.setOpen({ group: true, id: group.id });
       this.render();
     });
     return row;
@@ -543,31 +616,76 @@ export class App {
       return;
     }
 
+    const open = this.open;
     const head = el('div', 'pane__head');
     const back = el('button', 'icon-btn pane__back');
     back.setAttribute('aria-label', 'Back');
     back.append(icon(ICON.back, 18));
     back.addEventListener('click', () => {
-      this.open = null;
+      this.setOpen(null);
       this.render();
     });
-    const open = this.open;
-    const openGroup = open.group ? store.groups()[open.id] : undefined;
-    const title = openGroup
-      ? el('span', undefined, openGroup.name)
-      : el('span', 'mono mono--id', shortId(open.id));
-    title.style.color = idColor(open.id);
-    title.style.fontSize = '13px';
-    const full = el('span', 'mono', open.id);
-    full.style.color = 'var(--faint)';
-    full.style.marginLeft = 'auto';
-    full.style.overflow = 'hidden';
-    full.style.textOverflow = 'ellipsis';
-    full.style.whiteSpace = 'nowrap';
-    head.append(back, title, full);
+    const openGroup = open.group ? store.group(open.id) : null;
+    const contact = open.group ? null : store.contact(open.id);
+    const title = el('span', 'pane__title', openGroup ? openGroup.name : this.protocol.nameOf(open.id));
+    if (!openGroup) title.style.color = idColor(open.id);
+    const sub = el('span', 'mono pane__sub');
+    sub.textContent = openGroup
+      ? openGroup.removed
+        ? 'you were removed'
+        : openGroup.members.map((m) => this.protocol.nameOf(m.stonechatId)).join(', ')
+      : open.id;
+    const titles = el('div', 'pane__titles');
+    titles.append(title, sub);
+    head.append(back, open.group ? el('span') : this.avatar(contact, open.id), titles);
+
+    // Calls are 1:1, between accepted contacts. This browser refuses what it
+    // knows is not one; the rest it offers.
+    if (!open.group && contact?.status === 'accepted' && typeof contact?.blockedAt !== 'number') {
+      const spacer = el('span');
+      spacer.style.marginLeft = 'auto';
+      head.append(spacer);
+      for (const [path, label, video] of [
+        [ICON.phone, 'Voice call', false],
+        [ICON.video, 'Video call', true],
+      ] as const) {
+        const b = el('button', 'icon-btn');
+        b.title = label;
+        b.setAttribute('aria-label', label);
+        b.append(icon(path, 16));
+        b.disabled = this.calls.inCall;
+        b.addEventListener('click', () => void this.calls.startCall(open.id, video));
+        head.append(b);
+      }
+    }
+
+    // The disappearing-messages timer: ours to set in a DM, any member's in
+    // a group. The other side learns over timer_update.
+    if (!openGroup?.removed && !(contact && typeof contact.blockedAt === 'number')) {
+      const timer = el('select', 'timer');
+      timer.title = 'Disappearing messages';
+      const current = this.protocol.expireTimerOf(open.id, open.group);
+      for (const [ms, label] of TIMERS) {
+        const option = el('option', undefined, ms === 0 ? 'disappear: off' : `disappear: ${label}`);
+        option.value = String(ms);
+        if (ms === current) option.selected = true;
+        timer.append(option);
+      }
+      if (!TIMERS.some(([ms]) => ms === current)) {
+        const option = el('option', undefined, `disappear: ${Math.round(current / 60_000)} min`);
+        option.value = String(current);
+        option.selected = true;
+        timer.append(option);
+      }
+      timer.addEventListener('change', () => {
+        void this.protocol.setExpireTimer(open.id, open.group, Number(timer.value));
+      });
+      if (open.group) timer.style.marginLeft = 'auto';
+      head.append(timer);
+    }
 
     const ledger = el('div', 'ledger');
-    const thread = this.threads.get(threadKey(open.id, open.group)) ?? [];
+    const thread = store.messages()[threadKey(open.id, open.group)] ?? [];
     if (thread.length === 0) {
       const empty = el('div', 'mono');
       empty.style.padding = 'var(--gutter)';
@@ -575,31 +693,374 @@ export class App {
       empty.textContent = 'nothing here yet';
       ledger.append(empty);
     }
-    for (const message of thread) ledger.append(this.messageRow(message));
+    for (const message of thread) ledger.append(this.messageRow(message, thread));
 
-    this.pane.append(head, ledger, this.composerRow(open));
+    this.pane.append(head, ledger, this.typingRow(), this.composerRow(open, openGroup, contact));
     ledger.scrollTop = ledger.scrollHeight;
   }
 
-  private messageRow(message: Message): HTMLElement {
+  private readonly typingLine = el('div', 'typing mono');
+
+  private typingRow(): HTMLElement {
+    this.renderTyping();
+    return this.typingLine;
+  }
+
+  private renderTyping(): void {
+    if (!this.open) return;
+    const who = this.protocol.typersIn(threadKey(this.open.id, this.open.group));
+    this.typingLine.textContent =
+      who.length === 0 ? '' : `${who.map((w) => this.protocol.nameOf(w)).join(', ')} typing…`;
+    this.typingLine.hidden = who.length === 0;
+  }
+
+  private messageRow(message: Message, thread: Message[]): HTMLElement {
+    if (message.notice) {
+      const row = el('div', 'notice mono', message.text);
+      if (message.request) row.classList.add('notice--request');
+      if (message.call) row.classList.add('notice--call');
+      return row;
+    }
     const row = el('div', message.mine ? 'row row--mine' : 'row');
     const rail = el('div', 'row__rail');
-    if (!message.mine) rail.style.background = idColor(message.peerId);
+    if (!message.mine) rail.style.background = idColor(message.sender ?? message.peerId);
     const main = el('div');
+    main.style.minWidth = '0';
     const meta = el('div', 'row__meta');
-    const who = el(
-      'span',
-      'row__who',
-      message.mine ? 'you' : shortId(message.sender ?? message.peerId),
-    );
-    if (!message.mine) who.style.color = idColor(message.peerId);
+    const who = el('span', 'row__who', this.protocol.nameOf(message.mine ? this.protocol.stonechatId : message.sender ?? message.peerId));
+    if (!message.mine) who.style.color = idColor(message.sender ?? message.peerId);
     meta.append(who, el('span', undefined, time(message.sentAt)));
-    main.append(meta, message.media ? mediaBody(message.media) : el('div', 'row__body', message.text));
+    if (message.editedAt) meta.append(el('span', undefined, 'edited'));
+    if (message.expiresAt) {
+      const left = el('span', undefined, `⌛ ${remaining(message.expiresAt)}`);
+      left.title = 'disappears';
+      meta.append(left);
+    }
+    if (message.mine) meta.append(stateLabel(message));
+    const more = el('button', 'icon-btn row__more');
+    more.setAttribute('aria-label', 'Message actions');
+    more.append(icon(ICON.more, 14));
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.openMenu(message, more);
+    });
+    meta.append(more);
+    main.append(meta);
+
+    if (message.replyTo) {
+      const quote = el('div', 'quote');
+      const quoted = thread.find((m) => m.id === message.replyTo!.id);
+      const by = el('span', 'quote__who', this.protocol.nameOf(message.replyTo.sender ?? ''));
+      const text = el('span', 'quote__text', message.replyTo.preview ?? '');
+      quote.append(by, text);
+      if (quoted) {
+        quote.style.cursor = 'pointer';
+        quote.title = 'Jump to the original';
+        quote.addEventListener('click', () => {
+          const target = this.pane.querySelector<HTMLElement>(`[data-id="${CSS.escape(quoted.id)}"]`);
+          target?.scrollIntoView({ block: 'center' });
+          target?.classList.add('row--flash');
+          setTimeout(() => target?.classList.remove('row--flash'), 1200);
+        });
+      }
+      main.append(quote);
+    }
+
+    if (message.deleted) {
+      const gone = el('div', 'row__body mono', 'message deleted');
+      gone.style.color = 'var(--faint)';
+      main.append(gone);
+    } else if (message.media) {
+      main.append(this.mediaBody(message.id, message.media));
+    } else {
+      main.append(el('div', 'row__body', message.text));
+    }
+
+    if (message.reactions && Object.keys(message.reactions).length) {
+      const line = el('div', 'reactions');
+      const byEmoji = new Map<string, string[]>();
+      for (const [who, emoji] of Object.entries(message.reactions)) {
+        byEmoji.set(emoji, [...(byEmoji.get(emoji) ?? []), who]);
+      }
+      for (const [emoji, whos] of byEmoji) {
+        const chip = el('button', 'reaction', whos.length > 1 ? `${emoji} ${whos.length}` : emoji);
+        if (whos.includes(this.protocol.stonechatId)) chip.classList.add('reaction--mine');
+        chip.title = whos.map((w) => this.protocol.nameOf(w)).join(', ');
+        chip.addEventListener('click', () => void this.protocol.react(message, emoji));
+        line.append(chip);
+      }
+      main.append(line);
+    }
+    if (message.status === 'failed' || (message.status === 'pending' && message.error)) {
+      const why = el('div', 'row__state row__state--failed mono', message.error ?? 'not sent');
+      main.append(why);
+    }
     row.append(rail, main);
+    row.dataset['id'] = message.id;
     return row;
   }
 
-  private composerRow(open: Open): HTMLElement {
+  /**
+   * Render a decrypted attachment.
+   *
+   * Images render inline; everything else becomes a download link, because a
+   * browser asked to inline an arbitrary mime type from a stranger is a
+   * decision better left to the person receiving it. The name is whatever the
+   * sender chose, already stripped of any path by the protocol layer. An
+   * attachment this tab never decrypted — one from before a reload — shows
+   * what it was; the phone holds the file.
+   */
+  private mediaBody(id: string, media: MediaAttachment): HTMLElement {
+    const wrap = el('div', 'row__body');
+    // Decrypted in this tab, or from before a reload — in which case the
+    // bytes are gone and the phone holds the file.
+    const url = media.url ?? this.protocol.mediaUrls.get(id);
+    if (!url) {
+      const gone = el('span', 'mono', `${media.kind}${media.name ? ` · ${media.name}` : ''} · ${sizeLabel(media.size)} · not kept in this browser`);
+      gone.style.color = 'var(--faint)';
+      wrap.append(gone);
+      return wrap;
+    }
+    if (media.kind === 'image' || media.kind === 'sticker' || media.mime.startsWith('image/')) {
+      const img = el('img') as HTMLImageElement;
+      img.src = url;
+      img.alt = media.name ?? 'attachment';
+      img.style.maxWidth = media.kind === 'sticker' ? '160px' : '320px';
+      img.style.maxHeight = media.kind === 'sticker' ? '160px' : '320px';
+      img.style.borderRadius = '8px';
+      img.style.display = 'block';
+      wrap.append(img);
+      return wrap;
+    }
+    if (media.kind === 'video' || media.mime.startsWith('video/')) {
+      const video = el('video') as HTMLVideoElement;
+      video.src = url;
+      video.controls = true;
+      video.style.maxWidth = '320px';
+      video.style.display = 'block';
+      wrap.append(video);
+      return wrap;
+    }
+    if (media.kind === 'audio' || media.mime.startsWith('audio/')) {
+      const audio = el('audio') as HTMLAudioElement;
+      audio.src = url;
+      audio.controls = true;
+      wrap.append(audio);
+      return wrap;
+    }
+    const link = el('a', undefined, media.name ?? 'attachment') as HTMLAnchorElement;
+    link.href = url;
+    link.download = media.name ?? 'attachment';
+    wrap.append(link, el('span', undefined, ` · ${sizeLabel(media.size)}`));
+    return wrap;
+  }
+
+  // -- calls --------------------------------------------------------------------
+
+  /**
+   * The call, over everything else while there is one.
+   *
+   * One layer for every phase: ringing shows accept and decline, dialing and
+   * connecting show the peer and a status line, active shows the streams
+   * and the controls, ended flashes the epitaph.
+   */
+  private renderCall(): void {
+    const call = this.calls;
+    if (call.phase === 'idle') {
+      this.callLayer.remove();
+      this.callLayer.replaceChildren();
+      return;
+    }
+    const peer = call.peerId ?? '';
+    this.callLayer.replaceChildren();
+
+    const stage = el('div', 'call__stage');
+    if (call.withVideo && call.remoteStream) {
+      const remote = el('video', 'call__remote') as HTMLVideoElement;
+      remote.autoplay = true;
+      remote.playsInline = true;
+      remote.srcObject = call.remoteStream as unknown as MediaStream;
+      stage.append(remote);
+    } else if (call.remoteStream) {
+      // Audio only: the element plays, nothing shows.
+      const audio = el('audio') as HTMLAudioElement;
+      audio.autoplay = true;
+      audio.srcObject = call.remoteStream as unknown as MediaStream;
+      stage.append(audio);
+      stage.append(this.avatar(store.contact(peer), peer, 88));
+    } else {
+      stage.append(this.avatar(store.contact(peer), peer, 88));
+    }
+    if (call.withVideo && call.localStream && !call.cameraOff) {
+      const local = el('video', 'call__local') as HTMLVideoElement;
+      local.autoplay = true;
+      local.playsInline = true;
+      local.muted = true;
+      local.srcObject = call.localStream as unknown as MediaStream;
+      stage.append(local);
+    }
+
+    const who = el('div', 'call__who', this.protocol.nameOf(peer));
+    const status = el('div', 'call__status mono');
+    status.textContent =
+      call.phase === 'dialing' ? 'calling…'
+        : call.phase === 'ringing' ? `incoming ${call.withVideo ? 'video' : 'voice'} call`
+          : call.phase === 'connecting' ? 'connecting…'
+            : call.phase === 'active' ? 'connected'
+              : call.endNote ?? 'ended';
+    if (call.phase === 'active' && call.connectedAt !== null) {
+      const tick = () => {
+        if (call.phase !== 'active' || call.connectedAt === null) return;
+        const s = Math.floor((Date.now() - call.connectedAt) / 1000);
+        status.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+        setTimeout(tick, 1000);
+      };
+      tick();
+    }
+
+    const controls = el('div', 'call__controls');
+    const control = (path: string, label: string, onClick: () => void, danger = false, on = false) => {
+      const b = el('button', 'call__btn');
+      if (danger) b.classList.add('call__btn--danger');
+      if (on) b.classList.add('call__btn--on');
+      b.title = label;
+      b.setAttribute('aria-label', label);
+      b.append(icon(path, 22), el('span', 'mono', label));
+      b.addEventListener('click', onClick);
+      controls.append(b);
+    };
+    if (call.phase === 'ringing') {
+      control(ICON.hangup, 'Decline', () => void call.declineCall(), true);
+      control(call.withVideo ? ICON.video : ICON.phone, 'Accept', () => void call.acceptCall());
+    } else if (call.phase !== 'ended') {
+      control(ICON.mic, call.muted ? 'Unmute' : 'Mute', () => call.toggleMute(), false, call.muted);
+      if (call.withVideo) {
+        control(ICON.video, call.cameraOff ? 'Camera on' : 'Camera off', () => call.toggleCamera(), false, call.cameraOff);
+      }
+      control(ICON.hangup, 'End', () => void call.hangUp(), true);
+    }
+
+    this.callLayer.append(stage, who, status, controls);
+    if (!this.callLayer.isConnected) document.body.append(this.callLayer);
+  }
+
+  // -- message actions -------------------------------------------------------
+
+  private closeMenu(): void {
+    this.menu?.remove();
+    this.menu = null;
+  }
+
+  private openMenu(message: Message, anchor: HTMLElement): void {
+    this.closeMenu();
+    const menu = el('div', 'menu');
+    const add = (label: string, onClick: () => void, danger = false) => {
+      const b = el('button', 'menu__item', label);
+      if (danger) b.classList.add('menu__item--danger');
+      b.addEventListener('click', () => {
+        this.closeMenu();
+        onClick();
+      });
+      menu.append(b);
+    };
+    if (!message.deleted) {
+      const quick = el('div', 'menu__reactions');
+      for (const emoji of QUICK_REACTIONS) {
+        const b = el('button', 'reaction', emoji);
+        if (this.protocol.myReactionTo(message) === emoji) b.classList.add('reaction--mine');
+        b.addEventListener('click', () => {
+          this.closeMenu();
+          void this.protocol.react(message, emoji);
+        });
+        quick.append(b);
+      }
+      menu.append(quick);
+      add('Reply', () => {
+        this.replyingTo = message;
+        this.renderPane();
+      });
+    }
+    if (message.status === 'failed') add('Retry', () => void this.protocol.retryMessage(message.id));
+    if (this.protocol.canEdit(message)) {
+      add('Edit', () => {
+        const text = prompt('Edit message', message.text);
+        if (text !== null) void this.protocol.editMessage(message, text);
+      });
+    }
+    if (this.protocol.canDeleteForEveryone(message)) {
+      add('Delete for everyone', () => void this.protocol.deleteForEveryone(message), true);
+    }
+    add('Delete for me', () => this.protocol.deleteForMe(message), true);
+
+    const rect = anchor.getBoundingClientRect();
+    menu.style.top = `${rect.bottom + 4}px`;
+    menu.style.left = `${Math.min(rect.left, window.innerWidth - 240)}px`;
+    document.body.append(menu);
+    this.menu = menu;
+    const onAway = (e: MouseEvent) => {
+      if (!menu.contains(e.target as Node)) {
+        this.closeMenu();
+        document.removeEventListener('mousedown', onAway);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', onAway), 0);
+  }
+
+  private composerRow(open: Open, group: Group | null, contact: Contact | null): HTMLElement {
+    const box = el('div', 'composer__box');
+    if (group?.removed) {
+      const note = el('div', 'mono composer__note', 'You were removed from this group. You can read what was said; nothing more is sent.');
+      box.append(note);
+      return box;
+    }
+    if (contact && typeof contact.blockedAt === 'number') {
+      const note = el('div', 'mono composer__note', 'You blocked this person on your phone. Nothing is sent or shown from them here.');
+      box.append(note);
+      return box;
+    }
+    if (contact?.status === 'pendingIn') {
+      const note = el('div', 'composer__note');
+      note.append(el('span', 'mono', `${this.protocol.nameOf(open.id)} asked to connect.`));
+      const decline = el('button', 'secondary', 'Decline');
+      decline.addEventListener('click', () => void this.protocol.declineContact(open.id).then(() => {
+        this.setOpen(null);
+        this.render();
+      }));
+      const accept = el('button', undefined, 'Accept');
+      accept.addEventListener('click', () => void this.protocol.acceptContact(open.id));
+      const actions = el('div', 'modal__actions');
+      actions.style.marginTop = '8px';
+      actions.append(decline, accept);
+      note.append(actions);
+      box.append(note);
+      return box;
+    }
+    if (contact?.status === 'pendingOut') {
+      const note = el('div', 'mono composer__note', 'Request sent — the conversation opens once they accept.');
+      box.append(note);
+      return box;
+    }
+    if (!contact || contact.status !== 'accepted') {
+      const note = el('div', 'mono composer__note', 'Not a contact. Use + to send them a request.');
+      box.append(note);
+      return box;
+    }
+
+    if (this.replyingTo) {
+      const strip = el('div', 'composer__reply');
+      const label = el('span', 'mono', `replying to ${this.protocol.nameOf(this.replyingTo.mine ? this.protocol.stonechatId : this.replyingTo.sender ?? this.replyingTo.peerId)}`);
+      const text = el('span', 'quote__text', previewOf(this.replyingTo));
+      const cancel = el('button', 'icon-btn');
+      cancel.setAttribute('aria-label', 'Cancel reply');
+      cancel.append(icon(ICON.close, 14));
+      cancel.addEventListener('click', () => {
+        this.replyingTo = null;
+        this.renderPane();
+      });
+      strip.append(label, text, cancel);
+      box.append(strip);
+    }
+
     const row = el('div', 'composer');
     const input = el('input');
     input.type = 'text';
@@ -610,26 +1071,26 @@ export class App {
     const picker = el('input');
     picker.type = 'file';
     picker.style.display = 'none';
-    const attach = el('button', undefined, 'Attach');
+    const attach = el('button', 'secondary', 'Attach');
     attach.title = 'Send a photo or file';
     attach.addEventListener('click', () => picker.click());
     picker.addEventListener('change', async () => {
       const file = picker.files?.[0];
       picker.value = ''; // so the same file can be picked twice in a row
       if (!file) return;
-      if (open.group) {
-        // There is no group media send here, and the DM one must not be
-        // handed a group's id as if it were a person.
-        this.setStatus('warn', 'Attachments to a group are sent from your phone.');
-        return;
-      }
       attach.disabled = true;
       const previous = attach.textContent;
       // Encrypting and uploading a photo is slow enough to look broken
-      // without this, and there is no outbox to show progress anywhere else.
+      // without this.
       attach.textContent = 'Sending…';
+      const replyTo = this.replyingTo ?? undefined;
+      this.replyingTo = null;
       try {
-        this.push(await this.protocol.sendMedia(open.id, file));
+        const sent = open.group
+          ? await this.protocol.sendGroupMedia(open.id, file, replyTo ? { replyTo } : {})
+          : await this.protocol.sendMedia(open.id, file, replyTo ? { replyTo } : {});
+        if (sent.media?.url) this.protocol.mediaUrls.set(sent.id, sent.media.url);
+        this.render();
       } catch (e) {
         this.setStatus('down', (e as Error).message);
       } finally {
@@ -642,67 +1103,89 @@ export class App {
       if (!text) return;
       input.value = '';
       send.disabled = true;
+      const replyTo = this.replyingTo ?? undefined;
+      this.replyingTo = null;
       try {
         // By the conversation's type, never by whether a roster happens to
         // exist under its id: that lookup is what let a roster carrying a
         // contact's SC- ID redirect what was typed to them.
-        this.push(
-          open.group
-            ? await this.protocol.sendGroup(open.id, text)
-            : await this.protocol.send(open.id, text),
-        );
+        // The message is in the ledger, pending, before anything is sent;
+        // a failure shows on it and is retried rather than handed back.
+        if (open.group) await this.protocol.sendGroup(open.id, text, replyTo ? { replyTo } : {});
+        else await this.protocol.send(open.id, text, replyTo ? { replyTo } : {});
       } catch (e) {
         this.setStatus('down', (e as Error).message);
-        // Put it back rather than losing what they typed — there is no outbox
-        // and no retry, so the composer is the only place it survives.
-        input.value = text;
       } finally {
         send.disabled = false;
-        input.focus();
+        this.render();
+        this.pane.querySelector<HTMLInputElement>('.composer input[type=text]')?.focus();
       }
     };
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') void submit();
     });
+    input.addEventListener('input', () => {
+      if (input.value) this.protocol.notifyTyping(open.id, open.group);
+      else this.protocol.stopTyping(open.id, open.group);
+    });
     send.addEventListener('click', () => void submit());
     row.append(picker, attach, input, send);
+    box.append(row);
     setTimeout(() => input.focus(), 0);
-    return row;
+    return box;
   }
 }
 
-/**
- * Render a decrypted attachment.
- *
- * Images render inline; everything else becomes a download link, because a
- * browser asked to inline an arbitrary mime type from a stranger is a
- * decision better left to the person receiving it. The name is whatever the
- * sender chose, already stripped of any path by the protocol layer.
- */
-function mediaBody(media: MediaAttachment): HTMLElement {
-  const wrap = el('div', 'row__body');
-  if (media.kind === 'image' || media.mime.startsWith('image/')) {
-    const img = el('img') as HTMLImageElement;
-    img.src = media.url;
-    img.alt = media.name ?? 'attachment';
-    img.style.maxWidth = '320px';
-    img.style.maxHeight = '320px';
-    img.style.borderRadius = '8px';
-    img.style.display = 'block';
-    wrap.append(img);
-    return wrap;
+/** The delivery state of one of our messages, in the machine voice. */
+function stateLabel(message: Message): HTMLElement {
+  const label = el('span', 'row__state mono');
+  switch (message.status) {
+    case 'pending':
+      label.textContent = '…';
+      label.classList.add('row__state--pending');
+      label.title = 'not delivered yet';
+      break;
+    case 'failed':
+      label.textContent = 'failed';
+      label.classList.add('row__state--failed');
+      break;
+    case 'delivered':
+      label.textContent = '✓✓';
+      label.title = 'delivered';
+      break;
+    case 'read':
+      label.textContent = '✓✓';
+      label.classList.add('row__state--read');
+      label.title = 'read';
+      break;
+    default:
+      label.textContent = '✓';
+      label.title = 'sent';
   }
-  const link = el('a', undefined, media.name ?? 'attachment') as HTMLAnchorElement;
-  link.href = media.url;
-  link.download = media.name ?? 'attachment';
-  wrap.append(link, el('span', undefined, ` · ${sizeLabel(media.size)}`));
-  return wrap;
+  return label;
+}
+
+function previewOf(message: Message, protocol?: Protocol): string {
+  const by = protocol && message.group && !message.mine && message.sender
+    ? `${protocol.nameOf(message.sender)}: `
+    : message.mine ? 'you: ' : '';
+  if (message.deleted) return `${by}message deleted`;
+  if (message.media) return `${by}${message.media.kind}${message.media.name ? ` · ${message.media.name}` : ''}`;
+  return `${by}${message.text}`;
 }
 
 function sizeLabel(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function remaining(at: number): string {
+  const ms = Math.max(0, at - Date.now());
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
 }
 
 function time(iso: string): string {

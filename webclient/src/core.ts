@@ -382,6 +382,59 @@ export class StonechatCore {
     return this.json<{ status: CertStatus }>(out!).status;
   }
 
+  // -- device manifests ---------------------------------------------------
+
+  /** Sign a device manifest with the identity root — primary only, by
+   * design. Here for the tests, which play the phone; this client has
+   * nothing to call it with. Returns the base64 signature. */
+  devicesSign(unsigned: Record<string, unknown>, identitySeed: Uint8Array): string {
+    fixed(identitySeed, ED_SEED, 'identity seed');
+    const json = enc.encode(JSON.stringify(unsigned));
+    const out = this.callOut('stonechat_devices_sign', (a) => [
+      a(json),
+      json.length,
+      a(identitySeed),
+    ]);
+    return dec.decode(out!);
+  }
+
+  /**
+   * Is this the identity's genuine, well-formed device manifest?
+   *
+   * `unsigned` is the manifest without its `sig`. True only when the
+   * signature verifies under `identityPublic`, that key is the one the
+   * manifest's Stonechat ID commits to, it lists 1–64 devices and no slot
+   * twice — the core refuses the rest (PROTOCOL.md "Device manifest").
+   */
+  devicesVerify(
+    unsigned: Record<string, unknown>,
+    identityPublic: Uint8Array,
+    sig: Uint8Array,
+  ): boolean {
+    fixed(identityPublic, ED_PUBLIC, 'identity public key');
+    fixed(sig, ED_SIGNATURE, 'signature');
+    const json = enc.encode(JSON.stringify(unsigned));
+    const owned: Array<[number, number]> = [];
+    const put = (d: Uint8Array): number => {
+      const p = this.put(d);
+      owned.push([p, Math.max(d.length, 1)]);
+      return p;
+    };
+    try {
+      const rc = this.fn('stonechat_devices_verify')(
+        put(json),
+        json.length,
+        put(identityPublic),
+        put(sig),
+      );
+      if (rc === OK) return true;
+      if (rc === ERR_REFUSED) return false;
+      throw new CoreError('stonechat_devices_verify', rc);
+    } finally {
+      for (const [ptr, len] of owned) this.ex.stonechat_free(ptr, len);
+    }
+  }
+
   /**
    * Is this the certificate schedule its owner signed?
    *

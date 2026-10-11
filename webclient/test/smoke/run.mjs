@@ -71,7 +71,13 @@ const servers = [];
 function cleanup() {
   for (const c of children) c.kill();
   for (const s of servers) s.close();
-  rmSync(dir, { recursive: true, force: true });
+  // Chrome may still be writing its profile as it exits; a directory that
+  // refuses to empty on the first pass is not a failed smoke test.
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch {
+    // Left in the system temp dir; the OS reaps it.
+  }
 }
 process.on('exit', cleanup);
 

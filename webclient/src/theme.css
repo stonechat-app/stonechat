@@ -529,3 +529,339 @@ button.secondary {
   border: 0;
   padding: 0;
 }
+
+/* -- conversation chrome ------------------------------------------------- */
+
+.pane__titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pane__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pane__sub {
+  font-size: 11px;
+  color: var(--faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex: none;
+  object-fit: cover;
+}
+
+.avatar--letter {
+  display: block;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--on-accent);
+}
+
+/* A small label beside a name: request, invited, blocked, read-only. */
+.tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 4px;
+}
+
+.tag--danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.badge {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--on-accent);
+  background: var(--orange);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+
+/* The disappearing-messages timer, a plain select in the machine voice. */
+select.timer {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+}
+
+/* -- the ledger, continued ------------------------------------------------ */
+
+/* A system row: what changed, said once, centred, in the machine voice. */
+.notice {
+  text-align: center;
+  padding: 6px var(--gutter);
+  color: var(--faint);
+  font-size: 11px;
+}
+
+.notice--request {
+  color: var(--amber);
+}
+
+.row__state--read {
+  color: var(--ok);
+}
+
+.row__more {
+  width: 22px;
+  height: 22px;
+  border-color: transparent;
+  color: var(--faint);
+  opacity: 0;
+  margin-left: auto;
+}
+
+.row:hover .row__more,
+.row__more:focus {
+  opacity: 1;
+}
+
+.row--flash {
+  background: var(--raised);
+}
+
+/* A quoted message: a snapshot of what was replied to. */
+.quote {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.quote__who {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--amber);
+}
+
+.quote__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reactions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.reaction {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 400;
+  padding: 1px 7px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+.reaction--mine {
+  border-color: var(--orange);
+}
+
+/* Who is typing, just above the composer. */
+.typing {
+  padding: 0 var(--gutter) 4px;
+  font-size: 11px;
+  color: var(--faint);
+  min-height: 0;
+}
+
+/* -- message actions ------------------------------------------------------ */
+
+.menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 4px;
+}
+
+.menu__reactions {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.menu__item {
+  text-align: left;
+  font-weight: 400;
+  background: transparent;
+  color: var(--text);
+  padding: 7px 10px;
+}
+
+.menu__item:hover {
+  background: var(--surface);
+}
+
+.menu__item--danger {
+  color: var(--danger);
+}
+
+/* -- composer, continued ----------------------------------------------- */
+
+.composer__box {
+  flex: none;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.composer__box .composer {
+  border-top: 0;
+}
+
+.composer__note {
+  padding: 12px var(--gutter);
+  color: var(--faint);
+}
+
+.composer__reply {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px var(--gutter) 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.composer__reply .quote__text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* -- calls ---------------------------------------------------------------- */
+
+/* The call sits over everything while there is one: a stage for the
+ * streams, the peer's name, a status line in the machine voice, controls. */
+.call {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: var(--gutter);
+  padding-bottom: calc(var(--gutter) + 24px);
+  background: var(--bg);
+}
+
+.call__stage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+}
+
+.call__remote {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.call__local {
+  position: absolute;
+  right: var(--gutter);
+  top: var(--gutter);
+  width: 160px;
+  max-width: 30vw;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.call__stage .avatar--letter {
+  font-size: 36px;
+}
+
+.call__who,
+.call__status,
+.call__controls {
+  position: relative;
+}
+
+.call__who {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.call__status {
+  color: var(--muted);
+}
+
+.call__controls {
+  display: flex;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.call__btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 72px;
+  padding: 10px 0;
+  background: var(--raised);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+.call__btn .mono {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.call__btn--on {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+
+.call__btn--danger {
+  background: var(--danger);
+  color: var(--on-accent);
+  border-color: transparent;
+}
+
+.notice--call {
+  color: var(--muted);
+}

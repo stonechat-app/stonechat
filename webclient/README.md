@@ -3,13 +3,18 @@
 Design and threat analysis: [`docs/WEB_CLIENT.md`](../docs/WEB_CLIENT.md). This
 README is the build record and the open decisions.
 
-Status: **linking and messaging work; there is no deploy target yet.** A
-browser session can be linked — generate its own keys, show the offer,
-collect the grant, verify the certificate — and then talks to relays over
-WebTransport: text and attachments in direct conversations, text and
-attachments in groups it has been told about, and its own outgoing messages
-mirrored to and from the user's other devices. What it does not do is listed
-under "Still missing".
+Status: **a working second device; there is no deploy target yet.** A browser
+session can be linked — generate its own keys, show the offer, collect the
+grant, verify the certificate, be filled in by the phone — and then talks to
+relays over WebTransport.
+It sends and receives text and attachments in direct conversations and in
+groups it has been told about, with receipts, typing, edits, deletes,
+reactions, replies and disappearing messages, and makes voice and video
+calls over WebRTC; its own outgoing messages are
+mirrored to and from the user's other devices, and the phone renews its
+certificate over `sync_cert`. It makes the receive-side checks PROTOCOL.md
+requires and the Flutter app makes, device manifests included. What it does
+not do is listed under "Still missing".
 
 ```bash
 cd ../core && cargo build --release --target wasm32-unknown-unknown
@@ -26,8 +31,13 @@ cd ../webclient && npm ci && npm run check     # typecheck, tests, build, smoke
 | `src/hub.ts` | the hub over ordinary HTTPS: the link dead drop and the directory |
 | `src/transport.ts` | the owner-signed certificate schedule → WebTransport pins; refuses anything unsigned |
 | `src/mailbox.ts` | a relay's HTTP surface and owner socket over WebTransport streams |
-| `src/protocol.ts` | sessions, per-device fan-out, sending and receiving — the slim counterpart of `chat_state.dart` |
-| `src/store.ts` | what the browser keeps: device keys, grant, ratchets, peer certificates, capped history |
+| `src/wire.ts` | what arrives on the wire, checked where it enters — counterpart of `wire_ids.dart` and the top of `handleIncoming` |
+| `src/manifest.ts` | device manifests — counterpart of `device_manifest.dart` |
+| `src/groups.ts` | the group rules that are decisions: which roster to accept, roster and message hashes — counterpart of `group_rules.dart`, checked against its vectors |
+| `src/protocol.ts` | sessions, per-device fan-out, the outbox, sending and receiving every type this client handles — the counterpart of `chat_state.dart` |
+| `src/model.ts`, `src/store.ts` | what the browser keeps: device keys, grant, ratchets, peer certificates and manifests, prekeys, outbox, capped history |
+| `src/calls.ts` | 1:1 calls: the signaling state machine over the envelope layer, WebRTC behind an interface — counterpart of `call_state.dart` |
+| `src/retry.ts` | the timings shared with the app: backoff, windows, caps |
 | `src/ui.ts`, `src/app.ts` | the screens |
 | `src/theme.css` | the visual identity, lifted value-for-value from `app/lib/ui/theme.dart` |
 | `build.mjs` | bundle → hash → SRI-pinned index.html → **hash root** |
@@ -133,29 +143,95 @@ can use it:
 
 **The transport is finished**, and a slim application runs on it.
 
-## The slim client
+## The client
 
 `src/protocol.ts` + `src/ui.ts`: a conversations list and a chat screen.
-It handles `msg`, `media`, `group_msg`, `group_media`, `group_create` /
-`group_update` (rosters), and the self-sync types `sync_sent` and
-`sync_clear`. No receipts, typing, calls, edits, reactions, disappearing
-messages, contact requests or profiles. Far smaller than `chat_state.dart`,
-but the protocol parts are identical and have to stay identical: envelopes
-sealed to a
-device's certified key, the AEAD binding both device numbers in one form, a
-peer's certificate checked against the identity key their SC- ID commits to,
-prekeys signed by the device and published with its certificate.
+Smaller than `chat_state.dart` — no calls, no backups, no contact
+management, no group administration — but the *protocol* parts are the
+same and have to stay the same: envelopes sealed to a device's certified
+key, the AEAD binding both device numbers in one form, a peer's certificate
+checked against the identity key their SC- ID commits to and again on every
+envelope, the identity's device manifest deciding which devices count,
+prekeys signed by the device and published with its certificate, and what
+arrives checked where it enters (`wire.ts`: UUID ids, inner id equal to the
+wire id, inner `to`, both device numbers present).
+
+**What it handles.** `msg`, `media`, `group_msg`, `group_media`,
+`group_create` / `group_update` (rosters, including handover),
+`group_sync` and `group_leave`, `receipt`, `typing`, `msg_edit` /
+`msg_delete` and their group forms, `reaction` / `group_reaction`,
+`reply_to`, `timer_update` / `group_timer_update` with expiry, `contact_request`
+/ `contact_accept` / `profile_update` (recorded for names and photos, not
+answered), `call_offer` / `call_answer` / `call_ice` / `call_end`, and every
+self-sync type: `sync_sent`, `sync_read`, `sync_clear`, `sync_block`,
+`sync_cert`. Anything else is decrypted (to keep the ratchet current), acked
+and dropped.
 
 **Fan-out is not optional even here.** A web session is device 2 or later, so a
 reply that only went to device 1 would never reach the browser it was
 answering. Which devices exist comes from the peer's bundle token, which rides
 every envelope; without one we reach their primary only, exactly as a
-stranger's first message does.
+stranger's first message does. A bundle for a device other than 1 is fetched
+with that token, as the relay requires. A device answered `410` is forgotten
+along with its session.
 
-**What is stored** (`src/store.ts`): device keys, the grant, ratchet state and
-peer certificates — the ratchet especially, because a peer who has advanced
-their chain cannot rewind it, and losing it breaks the conversation permanently
-rather than losing one message.
+**Retry.** A message is in the ledger, pending, before anything touches the
+network. What no device accepted waits in an outbox and is retried with the
+app's backoff (30 s doubling to 30 min, giving up after seven days), per
+device still owed; a refusal that no retry can fix — a certificate or prekey
+that does not verify, a directory answer that is not the owner's — fails at
+once and says why. A manual retry resets the backoff.
+
+**Certificates and manifests.** The certificate held for a sending device is
+checked on every envelope, refetched from the sender's mailbox when it has
+expired, and the envelope dropped if nothing current is served. When the
+sender's identity has published a device manifest, the device must be on it
+with the certificate's key; an envelope stating a newer manifest version has
+it refetched first, and a mailbox listing an unlisted device has it refetched
+once per run. There is no periodic refetch, as PROTOCOL.md says. This
+session's own certificate is renewed by the phone over `sync_cert`: adopted
+only if it verifies against the identity key, names this ID, slot and both
+keys, and is later than the one held; then republished with the prekeys.
+
+**Calls** (`src/calls.ts`) are the app's state machine, in a browser: the
+offer rides a `ring` envelope to every device of the peer, the answer and
+hang-up are ordinary envelopes, ICE candidates are batched into `transient`
+ones; both sides give up ringing after 45 s, an offer older than 60 s is a
+missed call, a second offer is answered `busy`, and when two people call each
+other at once the lower Stonechat ID's offer wins. ICE servers are a public
+STUN plus this mailbox's own TURN when it runs one (`/turn-credentials`,
+fetched with the device token), as on the phone; either side's relay can
+carry the call. Media never touches a mailbox. A call rings on every device
+of the callee, this browser included; whichever answers takes it, and the
+caller's eventual `call_end` quiets the rest. `getUserMedia` needs a secure
+context, which the deploy target is anyway.
+
+**Prekeys** follow the app's policy: signed prekeys rotate weekly (the
+previous one is kept through one rotation so a handshake in flight against
+it still completes), one-time pools of 32, the mailbox's store replaced with
+what is held.
+
+**Sessions.** A handshake that arrives over a session that no longer decrypts
+replaces it (a peer who reinstalled). Two sides that start a session with
+each other at once converge on the lower Stonechat ID's, and between two of
+our own devices on the lower device number's; the loser's initial envelope is
+dropped, as PROTOCOL.md says and as the app's `core/handshake.dart` decides.
+
+**Contacts.** The phone's contact list reaches the browser twice over: once
+at link time, in the `sync_history` the primary sends when it next finds the
+new device listed with prekeys (contacts, blocks, groups and text history —
+the backup payload, sealed like a media blob and parked on our own mailbox),
+and then on every change, as `sync_contact` from whichever device made it. A
+request can be sent, accepted or declined from here, and the phone follows.
+With that list, the browser applies the phone's gates: nothing is rendered
+from anyone but an accepted contact, and a group invitation is taken only
+from one.
+
+**What is stored** (`src/store.ts`): device keys, the grant, ratchet state,
+peer certificates and device manifests, prekey private halves, the outbox —
+the ratchet especially, because a peer who has advanced their chain cannot
+rewind it, and losing it breaks the conversation permanently rather than
+losing one message.
 
 **Message history too, capped** (2026-08-04). This reverses WEB_CLIENT.md's
 "no history sync; history stays on the phone", and the reversal is a real
@@ -163,62 +239,38 @@ tradeoff rather than an oversight. Before: a compromised browser session
 yielded *messages during that session*. Now: what the browser has seen, up to
 `MAX_MESSAGES_PER_CONVERSATION` (200). The certificate bounds what a session
 can **do**, not what is sitting on disk, so the cap and the Unlink button are
-the only things bounding this.
+the only things bounding this. Decrypted media is not kept: an object URL
+dies with the tab and `localStorage` is far too small for files, so after a
+reload an attachment shows as what it was; the phone holds the file.
 
 Deliberately no encryption at rest: any key the page could decrypt with would
 live in the same storage, readable by exactly the same attacker. It would look
 like protection and be none.
 
-The reason it changed is worth recording too — a client that forgets every
-conversation on refresh is defensible on paper and unusable in practice, which
-makes it untestable, which makes it undeployable.
+The reason history changed is worth recording too — a client that forgets
+every conversation on refresh is defensible on paper and unusable in practice,
+which makes it untestable, which makes it undeployable.
 
 ## Still missing
 
-**Message types.** Receipts, typing, calls, edits, reactions, disappearing
-messages, contact requests, profile updates, `sync_read` and `sync_block`.
-Anything it does not handle is decrypted (to keep the ratchet current),
-acked and dropped. It sends no receipts, so a message read only in the
-browser never shows as delivered or read to its sender. Groups can be sent
-to only once a roster has arrived (`group_create` / `group_update`); group
-attachments can be received but not sent.
+**History bootstrap, media.** `sync_history` carries contacts, blocks,
+groups and text history; attachments are not carried, and show as what they
+were. The phone holds the files.
 
-**Receive-side checks the app makes and this client does not yet.** It does
-not require envelope ids to be UUIDs or the inner id to equal the outer one,
-does not check the inner `to`, and resolves every sender through the
-directory once per session rather than from a key it already holds. It does
-not replace a session when a fresh handshake arrives over one that no longer
-decrypts, and has no tie-break for simultaneous handshakes. PROTOCOL.md is
-the contract; these are gaps against it.
+**Group administration.** Creating a group, changing its roster and handing
+over admin stay on the phone: the admin owes the roster to every member's
+every device until it lands, and the phone has that outbox. The browser does
+answer a `group_sync` for a group it holds as admin (its phone mirrored the
+roster to it), and mirrors `group_sync` to its siblings when a member shows
+it is behind.
 
-**Starting a session with a device other than device 1.** The bundle is
-requested as `/prekeys/bundle?device=N` without the bundle token, which the
-relay refuses. Device 1 — a peer's primary, or the user's own phone — is
-served without a token, so that works; a session with any other device
-exists only once that device has started it.
+**Profile.** The browser sends the display name the grant gave it with a
+contact request or accept, and no photo: the phone's profile is not synced
+to it.
 
-**Retry.** A send that fails reports the error and puts the text back in the
-composer. There is no outbox and no backoff, so a message typed while the
-relay is briefly unreachable is lost rather than queued — the app has
-`sendGiveUpAfterMs` and a retry sweep; this has neither.
-
-**History bootstrap.** A freshly-linked browser starts empty. It keeps what
-passes through it (capped), but never fetches the phone's backlog —
-`sync_history` in MULTIDEVICE.md is designed and unbuilt on both sides.
-
-**Certificate renewal.** A certificate cannot be renewed from here by
-design, and nothing yet asks the phone to reissue one, so a browser session
-stops working when its certificate expires and must be re-linked. The
-intended lifetime for a browser is 7 days (`web` kind); the phone's link
-dialog does not offer that kind yet, so a browser linked today is certified
-as a `linked` device, for 180 days.
-
-**Contact names.** Conversations are labelled with a truncated SC- ID. Display
-names arrive in `contact_request`/`contact_accept`, which this client does not
-handle.
-
-**Everything above is what is missing; the browser gap is closed** — see "The
-browser smoke test".
+**`?hub=`.** Whoever writes this page's URL can choose the hub the offer is
+parked on (M26). The link screen names it; a hub that is not the phone's is
+a link that fails, not a compromise.
 
 ## Decisions
 

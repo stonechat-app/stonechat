@@ -1,240 +1,26 @@
 /**
  * Two web sessions, talking.
  *
- * The relay and hub are mocked — a fake mailbox holding queues and prekey
- * bundles, a fake directory — because what needs proving here is the *crypto
- * orchestration*, and that should be provable without a browser or a running
- * relay. The relay's own behaviour has its own tests, and the wire format has
- * the conformance corpus.
+ * The relay and hub are mocked (`fixtures.ts`): what needs proving here is
+ * the *crypto orchestration*, and that should be provable without a browser
+ * or a running relay.
  *
  * What this pins: PQXDH between two devices, the certificate checks on both
  * sides, the AEAD binding both device numbers, ratchet advance across several
- * messages, and one-time prekeys being consumed exactly once.
+ * messages, one-time prekeys being consumed exactly once, self-sync between a
+ * user's own devices, and the group rules.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 
-import { StonechatCore, type SignedCert } from '../src/core.js';
+import type { SignedCert } from '../src/core.js';
 import { DeviceKeys } from '../src/device.js';
-import { Hub, type DirectoryEntry } from '../src/hub.js';
-import type { LinkGrant } from '../src/linking.js';
-import type { Mailbox } from '../src/mailbox.js';
-import { Protocol } from '../src/protocol.js';
 import { store } from '../src/store.js';
 import { b64decode, b64encode, utf8 } from '../src/bytes.js';
 import { certSigKey } from '../src/device.js';
-
-const wasm = readFileSync(
-  fileURLToPath(
-    new URL(
-      '../../core/target/wasm32-unknown-unknown/release/stonechat_core.wasm',
-      import.meta.url,
-    ),
-  ),
-);
-const core = await StonechatCore.instantiate(
-  wasm.buffer.slice(wasm.byteOffset, wasm.byteOffset + wasm.byteLength),
-);
-
-// -- a mock relay ----------------------------------------------------------
-
-interface Queued {
-  id: string;
-  sealed: string;
-}
-
-/** One owner's mailbox: a prekey store and a per-device queue. */
-class FakeRelay {
-  /** Per device, like the real relay: each device publishes its own pool and
-   * its own certificate. One shared slot would let a sibling's publish clobber
-   * another's, and the mismatch it causes is exactly the bug per-device
-   * prekeys exist to prevent. */
-  prekeys = new Map<number, Record<string, unknown>>();
-  /** Per-device queues. A single shared queue would let a sibling drain mail
-   * addressed to another device, which is precisely what per-device fan-out
-   * exists to prevent — a mock that did that could not see a routing bug. */
-  queues = new Map<number, Queued[]>();
-  /** Every device this owner has, as `/prekeys/devices` reports them. */
-  devices: number[] = [1];
-  /** One-time prekeys handed out, so double-use is detectable. */
-  servedOpks: number[] = [];
-
-  bundle(device = 1): Record<string, unknown> {
-    const p = this.prekeys.get(device) as {
-      spk: unknown;
-      kspk: unknown;
-      opks: Array<{ id: number; pub: string }>;
-      kopks: Array<{ id: number; pub: string }>;
-      cert: SignedCert;
-    };
-    if (!p) throw new Error(`no prekeys published for device ${device}`);
-    // Consumed server-side, exactly like the real relay.
-    const opk = p.opks.shift();
-    const kopk = p.kopks.shift();
-    if (opk) this.servedOpks.push(opk.id);
-    return {
-      spk: p.spk,
-      kspk: p.kspk,
-      cert: p.cert,
-      ...(opk ? { opk } : {}),
-      ...(kopk ? { kopk } : {}),
-    };
-  }
-}
-
-/** A Mailbox-shaped object over a FakeRelay. */
-function fakeMailbox(relay: FakeRelay, drainDevice = 1): Mailbox {
-  const mailbox = {
-    closed: new Promise<void>(() => {}),
-    close() {},
-    async request() {
-      throw new Error('not used by these tests');
-    },
-    async json<T>(method: string, path: string, body?: unknown): Promise<T> {
-      const route = path.split('?')[0]!;
-      if (method === 'POST' && route === '/prekeys') {
-        relay.prekeys.set(drainDevice, body as Record<string, unknown>);
-        return null as T;
-      }
-      if (method === 'GET' && route === '/prekeys/devices') {
-        return { devices: relay.devices.map((d) => ({ device_id: d })) } as T;
-      }
-      if (method === 'GET' && route === '/prekeys/bundle') {
-        const want = Number(
-          new URLSearchParams(path.split('?')[1] ?? '').get('device') ?? 1,
-        );
-        return relay.bundle(want) as T;
-      }
-      if (method === 'POST' && route === '/inbox') {
-        const envelope = body as Queued & { device?: number };
-        const device = envelope.device ?? 1;
-        const q = relay.queues.get(device) ?? [];
-        q.push({ id: envelope.id, sealed: envelope.sealed });
-        relay.queues.set(device, q);
-        return { status: 'delivered' } as T;
-      }
-      throw new Error(`unmocked ${method} ${path}`);
-    },
-    async *socket() {
-      const q = relay.queues.get(drainDevice) ?? [];
-      for (const item of q.splice(0)) {
-        yield { kind: 'envelope' as const, envelope: item as unknown as Record<string, unknown> };
-      }
-    },
-    ack: async () => {},
-  };
-  return mailbox as unknown as Mailbox;
-}
-
-// -- identities ------------------------------------------------------------
-
-/** A phone: an identity that can certify devices. */
-function phone(seedFill: number) {
-  const seed = new Uint8Array(32).fill(seedFill);
-  const identity = core.identity(seed, false);
-  return {
-    id: identity.stonechat_id,
-    pub: identity.public,
-    certify(keys: DeviceKeys, deviceId: number): SignedCert {
-      return core.devcertSign(
-        {
-          stonechat_id: identity.stonechat_id,
-          device_id: deviceId,
-          sig_pub: b64encode(keys.sigPublic),
-          seal_pub: b64encode(keys.sealPublic),
-          not_after: Math.floor(Date.now() / 1000) + 604_800,
-        },
-        seed,
-      );
-    },
-  };
-}
-
-function grantFor(
-  owner: ReturnType<typeof phone>,
-  cert: SignedCert,
-  deviceId: number,
-): LinkGrant {
-  return {
-    identity_pub: owner.pub,
-    cert,
-    stonechat_id: owner.id,
-    display_name: '',
-    hub_url: 'https://hub.example',
-    relay_address: `https://relay.${deviceId}:8080`,
-    relay_tls_fp: 'ZnA=',
-    device_id: deviceId,
-    device_token: `tok-${deviceId}`.padEnd(32, 'x'),
-    bundle_token: `bundle-${owner.id}`,
-  };
-}
-
-/** Wire two sessions together through fake relays and a fake directory. */
-async function pair() {
-  // localStorage is per-process here, so the two sides cannot share one.
-  // Swapping the backing object between calls is how each gets its own.
-  const worlds = new Map<string, Record<string, string>>();
-  let active = 'a';
-  const backing: Storage = {
-    getItem: (k) => worlds.get(active)![k] ?? null,
-    setItem: (k, v) => {
-      worlds.get(active)![k] = v;
-    },
-    removeItem: (k) => {
-      delete worlds.get(active)![k];
-    },
-    clear: () => worlds.set(active, {}),
-    key: () => null,
-    length: 0,
-  };
-  worlds.set('a', {});
-  worlds.set('b', {});
-  (globalThis as { localStorage?: Storage }).localStorage = backing;
-
-  const alice = phone(7);
-  const bob = phone(9);
-  const aKeys = DeviceKeys.generate(core);
-  const bKeys = DeviceKeys.generate(core);
-  const aRelay = new FakeRelay();
-  const bRelay = new FakeRelay();
-  const relays: Record<string, FakeRelay> = {
-    [alice.id]: aRelay,
-    [bob.id]: bRelay,
-  };
-  const entries: Record<string, DirectoryEntry> = {
-    [alice.id]: { stonechat_id: alice.id, pubkey: alice.pub },
-    [bob.id]: { stonechat_id: bob.id, pubkey: bob.pub },
-  };
-  const hub = {
-    directory: async (id: string) => entries[id]!,
-  } as unknown as Hub;
-
-  const dial = async (entry: DirectoryEntry) =>
-    fakeMailbox(relays[entry.stonechat_id]!, entry.stonechat_id === alice.id ? 2 : 1);
-
-  // Alice is a browser session — device 2, like every web device. That is the
-  // case a reply has to reach, and it only does because the fan-out reads her
-  // bundle token rather than assuming device 1.
-  aRelay.devices = [2];
-  bRelay.devices = [1];
-  const A = new Protocol(core, hub, aKeys, grantFor(alice, alice.certify(aKeys, 2), 2), dial);
-  const B = new Protocol(core, hub, bKeys, grantFor(bob, bob.certify(bKeys, 1), 1), dial);
-
-  const as = <T>(who: 'a' | 'b', fn: () => Promise<T>): Promise<T> => {
-    active = who;
-    return fn();
-  };
-  return { alice, bob, A, B, aRelay, bRelay, as, entries };
-}
-
-/** Collect whatever a session can currently drain. */
-async function drain(p: Protocol): Promise<Array<{ text: string; peerId: string }>> {
-  const out: Array<{ text: string; peerId: string }> = [];
-  for await (const m of p.receive()) out.push({ text: m.text, peerId: m.peerId });
-  return out;
-}
+import {
+  core, drain, drainAll, entryOf, FakeRelay, GROUP, ownDevices, pair, phone, raw, world,
+} from './fixtures.js';
 
 // -- the tests -------------------------------------------------------------
 
@@ -367,7 +153,7 @@ test('an envelope for another device cannot be opened', async () => {
   const other = DeviceKeys.generate(core);
   bRelay.queues.set(1, [
     {
-      id: stray.id,
+      ...stray,
       sealed: b64encode(
         core.seal(
           other.sealPublic,
@@ -439,82 +225,6 @@ async function B_publish(relay: FakeRelay): Promise<void> {
  * to. This is the shape the slim client got wrong: each device only ever saw
  * what a *peer* sent it, so a message typed on one never appeared on the other.
  */
-async function ownDevices() {
-  const worlds = new Map<string, Record<string, string>>();
-  let active = 'phone';
-  (globalThis as { localStorage?: Storage }).localStorage = {
-    getItem: (k) => worlds.get(active)![k] ?? null,
-    setItem: (k, v) => {
-      worlds.get(active)![k] = v;
-    },
-    removeItem: (k) => {
-      delete worlds.get(active)![k];
-    },
-    clear: () => worlds.set(active, {}),
-    key: () => null,
-    length: 0,
-  } as Storage;
-  worlds.set('phone', {});
-  worlds.set('browser', {});
-  worlds.set('them', {});
-
-  const me = phone(7);
-  const them = phone(9);
-  const themKeys = DeviceKeys.generate(core);
-  const phoneKeys = DeviceKeys.generate(core);
-  const browserKeys = DeviceKeys.generate(core);
-  const myRelay = new FakeRelay();
-  const theirRelay = new FakeRelay();
-  // One identity, two devices, one mailbox — which is the whole point.
-  myRelay.devices = [1, 2];
-  theirRelay.devices = [1];
-  const relays: Record<string, FakeRelay> = {
-    [me.id]: myRelay,
-    [them.id]: theirRelay,
-  };
-  const entries: Record<string, DirectoryEntry> = {
-    [me.id]: { stonechat_id: me.id, pubkey: me.pub },
-    [them.id]: { stonechat_id: them.id, pubkey: them.pub },
-  };
-  const hub = { directory: async (id: string) => entries[id]! } as unknown as Hub;
-
-  const make = (keys: DeviceKeys, device: number, drain: number) =>
-    new Protocol(
-      core,
-      hub,
-      keys,
-      grantFor(me, me.certify(keys, device), device),
-      async (entry: DirectoryEntry) => fakeMailbox(relays[entry.stonechat_id]!, drain),
-    );
-
-  // The person being written to has to be a real participant: they publish
-  // prekeys and hold their own storage, exactly like the two devices do.
-  const themProtocol = new Protocol(
-    core,
-    hub,
-    themKeys,
-    grantFor(them, them.certify(themKeys, 1), 1),
-    async (entry: DirectoryEntry) => fakeMailbox(relays[entry.stonechat_id]!, 1),
-  );
-
-  const as = <T>(
-    who: 'phone' | 'browser' | 'them',
-    fn: () => Promise<T>,
-  ): Promise<T> => {
-    active = who;
-    return fn();
-  };
-  return {
-    me,
-    them,
-    themProtocol,
-    myRelay,
-    phone: make(phoneKeys, 1, 1),
-    browser: make(browserKeys, 2, 2),
-    as,
-  };
-}
-
 test('a self-sync does not make us our own contact', async () => {
   // sync_sent arrives *from* our own identity, and every sender was recorded
   // as a contact — so a browser listed its own owner as a conversation, with
@@ -593,101 +303,6 @@ test('a synced message is marked as ours, not as theirs', async () => {
 });
 
 // -- groups ------------------------------------------------------------------
-
-/**
- * Any number of identities, one device each, each with its own storage.
- *
- * Groups need at least three people to say anything: an admin, a member, and
- * somebody who is neither.
- */
-async function world<N extends string>(...names: N[]) {
-  const worlds = new Map<string, Record<string, string>>();
-  let active: string = names[0]!;
-  (globalThis as { localStorage?: Storage }).localStorage = {
-    getItem: (k) => worlds.get(active)![k] ?? null,
-    setItem: (k, v) => {
-      worlds.get(active)![k] = v;
-    },
-    removeItem: (k) => {
-      delete worlds.get(active)![k];
-    },
-    clear: () => worlds.set(active, {}),
-    key: () => null,
-    length: 0,
-  } as Storage;
-
-  const relays: Record<string, FakeRelay> = {};
-  const entries: Record<string, DirectoryEntry> = {};
-  const hub = { directory: async (id: string) => entries[id]! } as unknown as Hub;
-  const who = {} as Record<
-    N,
-    { id: string; pub: string; relay: FakeRelay; protocol: Protocol }
-  >;
-  names.forEach((name, i) => {
-    worlds.set(name, {});
-    const owner = phone(21 + i);
-    const keys = DeviceKeys.generate(core);
-    const relay = new FakeRelay();
-    relays[owner.id] = relay;
-    entries[owner.id] = { stonechat_id: owner.id, pubkey: owner.pub };
-    who[name] = {
-      id: owner.id,
-      pub: owner.pub,
-      relay,
-      protocol: new Protocol(
-        core,
-        hub,
-        keys,
-        grantFor(owner, owner.certify(keys, 1), 1),
-        async (entry: DirectoryEntry) => fakeMailbox(relays[entry.stonechat_id]!, 1),
-      ),
-    };
-  });
-  const as = <T>(name: N, fn: () => Promise<T>): Promise<T> => {
-    active = name;
-    return fn();
-  };
-  for (const name of names) await as(name, () => who[name].protocol.publishPrekeys());
-  return { who, as };
-}
-
-/**
- * Send an envelope of any type, with any payload.
- *
- * `sendTo` is private because the client only ever sends what it means to. An
- * attacker is not so limited, and neither is the phone, which sends types this
- * client has no send path for — so the tests reach past the visibility.
- */
-function raw(
-  from: Protocol,
-  to: string,
-  type: string,
-  payload: Record<string, unknown>,
-  device = 1,
-): Promise<void> {
-  return (
-    from as unknown as {
-      sendTo(
-        peer: string, device: number, id: string, sentAt: string,
-        type: string, payload: Record<string, unknown>,
-      ): Promise<void>;
-    }
-  ).sendTo(to, device, crypto.randomUUID(), new Date().toISOString(), type, payload);
-}
-
-async function drainAll(p: Protocol) {
-  const out = [];
-  for await (const m of p.receive()) out.push(m);
-  return out;
-}
-
-const entryOf = (p: { id: string; pub: string }, name?: string) => ({
-  stonechat_id: p.id,
-  pubkey: p.pub,
-  ...(name ? { display_name: name } : {}),
-});
-
-const GROUP = '3f0e6c1a-8f7e-4a53-9b6e-0d6f2f6f5a11';
 
 test('a group works end to end: create, talk both ways, add and remove', async () => {
   const { who, as } = await world('admin', 'bea', 'cal', 'dee');
@@ -800,8 +415,9 @@ test('a member cannot update a group, or make themselves its admin', async () =>
   assert.equal(held.version, 1);
   assert.equal(held.members.length, 3);
 
-  // Nor can the admin hand the group to someone: a roster naming another
-  // admin is not from the admin it names.
+  // The admin on record *can* hand the group to someone: a roster from him
+  // naming another member as admin is a handover (PROTOCOL.md "Handing over
+  // the admin role"), and from then on only she is listened to.
   await as('bob', () =>
     raw(bob.protocol, alice.id, 'group_update', {
       group_id: GROUP, name: 'Trip', version: 4, admin: mallory.id, members,
@@ -809,8 +425,27 @@ test('a member cannot update a group, or make themselves its admin', async () =>
   );
   await as('alice', () => drainAll(alice.protocol));
   const after = await as('alice', async () => store.groups()[GROUP]!);
-  assert.equal(after.admin, bob.id);
-  assert.equal(after.version, 1);
+  assert.equal(after.admin, mallory.id);
+  assert.equal(after.version, 4);
+  const handoverNotice = await as('alice', async () =>
+    (store.messages()[`group:${GROUP}`] ?? []).some((m) => m.notice && /now the group admin/.test(m.text)));
+  assert.equal(handoverNotice, true);
+
+  // The former admin stays a member and is no longer in charge.
+  await as('bob', () =>
+    raw(bob.protocol, alice.id, 'group_update', {
+      group_id: GROUP, name: 'Bob again', version: 5, admin: bob.id, members,
+    }),
+  );
+  await as('mallory', () =>
+    raw(mallory.protocol, alice.id, 'group_update', {
+      group_id: GROUP, name: 'Hers', version: 6, admin: mallory.id, members: [entryOf(alice), entryOf(mallory), entryOf(bob)],
+    }),
+  );
+  await as('alice', () => drainAll(alice.protocol));
+  const later = await as('alice', async () => store.groups()[GROUP]!);
+  assert.equal(later.name, 'Hers');
+  assert.equal(later.version, 6);
 });
 
 test('a stale or repeated roster version is ignored', async () => {
@@ -998,9 +633,10 @@ test('a roster wearing a contact\'s ID does not redirect their conversation', as
   const injected = await as('alice', () => drainAll(alice.protocol));
   assert.deepEqual(injected, [], 'nothing is filed in the conversation with bob');
   assert.equal(await as('alice', async () => alice.protocol.knowsGroup(bob.id)), false);
+  // Bob's own message is filed with Bob; nothing of Mallory's is.
   assert.deepEqual(
     (await as('alice', async () => store.messages()[bob.id] ?? [])).map((m) => m.text),
-    [],
+    ['hi alice'],
   );
   await assert.rejects(as('alice', () => alice.protocol.sendGroup(bob.id, 'x')));
 
