@@ -99,20 +99,9 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ],
         ),
+        // My code and the mailbox live at the top of Settings; the status
+        // strip below still opens the mailbox screen on tap.
         actions: [
-          IconButton(
-            icon: const Icon(Icons.qr_code_2, color: Zn.muted),
-            tooltip: 'My code',
-            onPressed: () => Navigator.pushNamed(context, '/my-id'),
-          ),
-          IconButton(
-            icon: const Icon(
-              Icons.markunread_mailbox_outlined,
-              color: Zn.muted,
-            ),
-            tooltip: 'Mailbox',
-            onPressed: () => Navigator.pushNamed(context, '/mailbox'),
-          ),
           IconButton(
             icon: const Icon(Icons.settings_outlined, color: Zn.muted),
             tooltip: 'Settings',

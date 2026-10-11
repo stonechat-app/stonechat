@@ -36,6 +36,24 @@ class SettingsScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Settings')),
       body: ListView(
         children: [
+          const _SectionLabel('You'),
+          ListTile(
+            title: const Text('My code'),
+            subtitle: const Text(
+                'Your Stonechat ID and QR code — share it to be added.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            leading: const Icon(Icons.qr_code_2, color: Zn.muted, size: 20),
+            onTap: () => Navigator.pushNamed(context, '/my-id'),
+          ),
+          ListTile(
+            title: const Text('My mailbox'),
+            subtitle: const Text(
+                'Where your messages wait while your phone is offline.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            leading: const Icon(Icons.markunread_mailbox_outlined,
+                color: Zn.muted, size: 20),
+            onTap: () => Navigator.pushNamed(context, '/mailbox'),
+          ),
           const _SectionLabel('Privacy'),
           SwitchListTile(
             value: app.sendReadReceipts,
