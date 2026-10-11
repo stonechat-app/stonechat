@@ -18,6 +18,8 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
+import 'push_drain.dart';
+
 /// OS notification-permission state, surfaced to the settings toggle.
 enum NotificationPermission { unavailable, notDetermined, denied, granted }
 
@@ -47,8 +49,12 @@ class PushService {
     }
   }
 
-  void _opened(RemoteMessage? m) {
-    final id = m?.data['conversation'];
+  void _opened(RemoteMessage? m) => openConversation(m?.data['conversation']);
+
+  /// A tap named this conversation. From the iOS payload above, or from the
+  /// local notification the Android drain posted (its payload is the id;
+  /// LocalNotices hands it here).
+  void openConversation(Object? id) {
     if (id is! String || id.isEmpty) return;
     final cb = _onOpen;
     if (cb == null) {
@@ -82,6 +88,13 @@ class PushService {
     }
     _firebaseReady = true;
     final messaging = FirebaseMessaging.instance;
+
+    // Android: the gateway's data message reaches this handler while the
+    // app is backgrounded or not running; it drains and posts the real
+    // notification (core/push_drain.dart). iOS has the extension instead.
+    if (Platform.isAndroid) {
+      FirebaseMessaging.onBackgroundMessage(pushBackgroundHandler);
+    }
 
     // A content-free wake-up: foreground arrival or the user tapping the
     // notification both mean "go check your mailbox"; a tap also says

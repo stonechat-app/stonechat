@@ -13,8 +13,11 @@ import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../core/api.dart';
+import '../core/backup.dart' show BackupService;
+import '../core/contact_sync.dart';
 import '../core/crypto.dart' show randomBytes;
 import '../core/db.dart';
+import '../core/handshake.dart';
 import '../core/device_keys.dart';
 import '../core/device_manifest.dart';
 import '../core/group_rules.dart';
@@ -139,6 +142,13 @@ class ChatState extends ChangeNotifier {
   /// accepting your request.
   void Function(String title, String body)? onNotice;
 
+  /// An incoming conversation message was just persisted. Set only by the
+  /// Android push drain (core/push_drain.dart), which runs this state
+  /// headless in a background isolate and turns each stored message into
+  /// the notification the iOS extension would have shown. The foreground
+  /// app leaves it null: the screen is the notification.
+  void Function(String conversationId, Message message)? onStoredIncoming;
+
   List<Contact> contacts = [];
 
   /// "Notes to self": the one conversation with nobody on the other end.
@@ -239,7 +249,7 @@ class ChatState extends ChangeNotifier {
   /// so the mailbox's 64 KB wire cap bounds them: after the payload-base64,
   /// ciphertext-base64 and seal-base64 layers, ~24 KB of raw image is the
   /// safe ceiling. Senders scale below it; receivers allow 2× for headroom.
-  static const maxAvatarBytes = 24 * 1024;
+  static const maxAvatarBytes = avatarBytesMax;
 
   // Push wake-ups: this device's token, registered with our mailbox once both
   // exist (order of arrival between the two is not guaranteed).
@@ -347,10 +357,12 @@ class ChatState extends ChangeNotifier {
     if (block == isBlocked(stonechatId)) return;
     final at = block ? DateTime.now().millisecondsSinceEpoch : null;
     await _applyBlock(stonechatId, at);
-    unawaited(_syncToSiblings(EnvelopeType.syncBlock, {
-      'peer': stonechatId,
-      'blocked_at': at,
-    }));
+    unawaited(
+      _syncToSiblings(EnvelopeType.syncBlock, {
+        'peer': stonechatId,
+        'blocked_at': at,
+      }),
+    );
   }
 
   Future<void> toggleBlock(Contact c) =>
@@ -463,8 +475,9 @@ class ChatState extends ChangeNotifier {
     }
     final notes = notesToSelf;
     if (notes != null) {
-      lastMessage[notes.stonechatId] =
-          await app.db.lastMessageFor(notes.stonechatId);
+      lastMessage[notes.stonechatId] = await app.db.lastMessageFor(
+        notes.stonechatId,
+      );
     }
     notifyListeners();
   }
@@ -545,14 +558,16 @@ class ChatState extends ChangeNotifier {
     if (saved['welcomed'] != true) {
       // Incoming and already read: it is ours to show, not a message owed a
       // receipt, and it must not light up the conversation as unread.
-      await app.db.insertMessage(Message(
-        id: _uuid.v4(),
-        contactId: id,
-        outgoing: false,
-        text: _welcomeNote,
-        sentAt: now,
-        status: MessageStatus.read,
-      ));
+      await app.db.insertMessage(
+        Message(
+          id: _uuid.v4(),
+          contactId: id,
+          outgoing: false,
+          text: _welcomeNote,
+          sentAt: now,
+          status: MessageStatus.read,
+        ),
+      );
       await _saveNotesToSelf();
     }
     lastMessage[id] = await app.db.lastMessageFor(id);
@@ -563,12 +578,16 @@ class ChatState extends ChangeNotifier {
     if (notes == null) return;
     await app.db.kvPut(
       _notesToSelfKey,
-      Uint8List.fromList(utf8.encode(jsonEncode({
-        'created_at': notes.createdAt,
-        'pinned_at': notes.pinnedAt,
-        'archived_at': notes.archivedAt,
-        'welcomed': true,
-      }))),
+      Uint8List.fromList(
+        utf8.encode(
+          jsonEncode({
+            'created_at': notes.createdAt,
+            'pinned_at': notes.pinnedAt,
+            'archived_at': notes.archivedAt,
+            'welcomed': true,
+          }),
+        ),
+      ),
     );
   }
 
@@ -580,15 +599,17 @@ class ChatState extends ChangeNotifier {
       unawaited(_syncSent(message, EnvelopeType.msg, _textPayload(message)));
     } else {
       final path = message.mediaPath!;
-      unawaited(_syncSentMedia(message, EnvelopeType.media, {
-        'mime': mime ?? _mimeFromPath(path),
-        'kind': message.kind,
-        'size': await File(path).length(),
-        if (message.durationMs != null) 'duration_ms': message.durationMs,
-        if (message.fileName != null) 'name': message.fileName,
-        if (_replyPayloadOf(message) != null)
-          'reply_to': _replyPayloadOf(message),
-      }));
+      unawaited(
+        _syncSentMedia(message, EnvelopeType.media, {
+          'mime': mime ?? _mimeFromPath(path),
+          'kind': message.kind,
+          'size': await File(path).length(),
+          if (message.durationMs != null) 'duration_ms': message.durationMs,
+          if (message.fileName != null) 'name': message.fileName,
+          if (_replyPayloadOf(message) != null)
+            'reply_to': _replyPayloadOf(message),
+        }),
+      );
     }
     notifyListeners();
   }
@@ -1000,7 +1021,9 @@ class ChatState extends ChangeNotifier {
     if (cert['stonechat_id'] != peerId) {
       // Genuine, and somebody else's. The signature only says an identity
       // vouched for this device; this is what says it was this peer's.
-      _dropLogPlain('device $deviceId of $peerId: certificate names another owner');
+      _dropLogPlain(
+        'device $deviceId of $peerId: certificate names another owner',
+      );
       _peerCerts[peerId]?.remove(deviceId);
       return;
     }
@@ -1009,7 +1032,9 @@ class ChatState extends ChangeNotifier {
       // Signed, so not forged — but a relay shuffling certificates between
       // devices would redirect mail, and the signature covers the id exactly
       // so it can be checked.
-      _dropLogPlain('device $deviceId of $peerId: certificate names another device');
+      _dropLogPlain(
+        'device $deviceId of $peerId: certificate names another device',
+      );
       return;
     }
     (_peerCerts[peerId] ??= {})[deviceId] = cert;
@@ -1089,7 +1114,11 @@ class ChatState extends ChangeNotifier {
         // we hold is serving a stale one, and we keep ours.
         held = fetched;
         _manifests[peerId] = fetched;
-        await app.db.putManifest(peerId, fetched.version, jsonEncode(fetched.toJson()));
+        await app.db.putManifest(
+          peerId,
+          fetched.version,
+          jsonEncode(fetched.toJson()),
+        );
         _peerDevices.remove(peerId); // the device set may have changed
       }
     } catch (_) {
@@ -1135,7 +1164,10 @@ class ChatState extends ChangeNotifier {
           address = entry.mailboxAddress!;
           tlsFp = entry.mailboxTlsFp!;
         }
-        final token = contact?.bundleToken ?? _memberBundleToken(peerId) ?? envelope.bundleToken;
+        final token =
+            contact?.bundleToken ??
+            _memberBundleToken(peerId) ??
+            envelope.bundleToken;
         _peerCerts[peerId]?.remove(deviceId);
         await _certFor(peerId, deviceId, pubkey, token, address, tlsFp);
         cert = await _heldCert(peerId, deviceId);
@@ -1143,7 +1175,10 @@ class ChatState extends ChangeNotifier {
         cert = null;
       }
       if (cert == null) {
-        _dropLog(envelope, 'sender device $deviceId: certificate expired or unknown');
+        _dropLog(
+          envelope,
+          'sender device $deviceId: certificate expired or unknown',
+        );
         return false;
       }
     }
@@ -1161,7 +1196,8 @@ class ChatState extends ChangeNotifier {
   String? _memberBundleToken(String peerId) {
     for (final members in groupMembers.values) {
       for (final m in members) {
-        if (m.stonechatId == peerId && m.bundleToken != null) return m.bundleToken;
+        if (m.stonechatId == peerId && m.bundleToken != null)
+          return m.bundleToken;
       }
     }
     return null;
@@ -1188,17 +1224,19 @@ class ChatState extends ChangeNotifier {
       final cert = _peerCerts[peerId]?[d];
       // Without a certificate the fan-out skips the device anyway; with one,
       // the key must be the listed one.
-      if (!unlisted(d) && (cert == null || manifest.lists(d, cert['sig_pub'] as String?))) {
+      if (!unlisted(d) &&
+          (cert == null || manifest.lists(d, cert['sig_pub'] as String?))) {
         allowed.add(d);
       } else {
-        _dropLogPlain('device $d of $peerId is not in their manifest — not encrypting to it');
+        _dropLogPlain(
+          'device $d of $peerId is not in their manifest — not encrypting to it',
+        );
       }
     }
     return allowed;
   }
 
-  static void _dropLogPlain(String reason) =>
-      debugPrint('stonechat: $reason');
+  static void _dropLogPlain(String reason) => debugPrint('stonechat: $reason');
 
   /// A peer's device set changed — drop the cached list so the next send
   /// re-reads it, and remember the version we saw.
@@ -1232,6 +1270,7 @@ class ChatState extends ChangeNotifier {
     bool transient = false,
     bool noPush = false,
     bool ring = false,
+
     /// Set for real messages: the fan-out then records exactly which of this
     /// peer's devices are still owed a copy. A peer whose phone took it but
     /// whose laptop did not is *not* delivered, and only per-device rows can
@@ -1318,7 +1357,9 @@ class ChatState extends ChangeNotifier {
           outbox.messageId,
           outbox.conversationId,
           peerId,
-          devices.where((d) => !accepted.contains(d) && !gone.contains(d)).toList(),
+          devices
+              .where((d) => !accepted.contains(d) && !gone.contains(d))
+              .toList(),
         );
       }
     }
@@ -1391,15 +1432,18 @@ class ChatState extends ChangeNotifier {
   /// bootstrapped from our own mailbox's per-device bundles. `push: false`
   /// throughout — our own laptop catching up is never worth lighting up our
   /// own phone.
-  Future<void> _syncToSiblings(String type, Map<String, Object?> payload) async =>
-      _syncToDevices(await _siblingDevices(), type, payload);
+  Future<void> _syncToSiblings(
+    String type,
+    Map<String, Object?> payload,
+  ) async => _syncToDevices(await _siblingDevices(), type, payload);
 
   Future<void> _syncToDevices(
     Iterable<int> devices,
     String type,
     Map<String, Object?> payload,
   ) async {
-    if (devices.isEmpty || mailboxAddress == null || mailboxTlsFp == null) return;
+    if (devices.isEmpty || mailboxAddress == null || mailboxTlsFp == null)
+      return;
     final address = mailboxAddress!;
     final tlsFp = mailboxTlsFp!;
     for (final device in devices) {
@@ -1442,7 +1486,11 @@ class ChatState extends ChangeNotifier {
 
   /// A message we just sent should appear on our other devices too. Incoming
   /// messages need no sync — every device gets its own copy from the sender.
-  Future<void> _syncSent(Message message, String type, Map<String, Object?> payload) async {
+  Future<void> _syncSent(
+    Message message,
+    String type,
+    Map<String, Object?> payload,
+  ) async {
     await _syncToSiblings(EnvelopeType.syncSent, {
       if (groupById(message.contactId) != null)
         'group_id': message.contactId
@@ -1504,8 +1552,8 @@ class ChatState extends ChangeNotifier {
     final inner = (payload['payload'] as Map?)?.cast<String, dynamic>();
     final id = payload['id'] as String?;
     if (inner == null || id == null) return;
-    final sentAt = (payload['sent_at'] as int?) ??
-        DateTime.now().millisecondsSinceEpoch;
+    final sentAt =
+        (payload['sent_at'] as int?) ?? DateTime.now().millisecondsSinceEpoch;
     final type = payload['type'] as String? ?? EnvelopeType.msg;
 
     String? mediaPath;
@@ -1592,7 +1640,11 @@ class ChatState extends ChangeNotifier {
   /// Ask our own mailbox which device we are and what token to hand peers.
   /// Best-effort: without it we still send, we just cannot tell anyone how to
   /// reach our siblings.
-  Future<void> _learnOwnDevice(String address, String token, String tlsFp) async {
+  Future<void> _learnOwnDevice(
+    String address,
+    String token,
+    String tlsFp,
+  ) async {
     final status = await mailboxStatus(address, tlsFp, token);
     if (status == null) return;
     myDeviceId = status.deviceId;
@@ -1616,9 +1668,269 @@ class ChatState extends ChangeNotifier {
       final listed = await _ownDeviceList();
       await _reconcileManifest(listed);
       await _renewLinkedCerts(listed);
+      await _bootstrapDevices(listed);
     } catch (e) {
       debugPrint('stonechat: device maintenance skipped: $e');
     }
+  }
+
+  // -- the contact list, and a new device's first fill ------------------------------
+
+  /// Tell our other devices about [contact] as we now hold it, or that it is
+  /// gone. Best-effort, like every sync: the next change re-converges.
+  Future<void> _syncContact(Contact contact, {bool removed = false}) async {
+    try {
+      await _syncToSiblings(
+        EnvelopeType.syncContact,
+        contactSyncPayload(contact, removed: removed),
+      );
+    } catch (_) {
+      // unreachable mailbox: the next change carries the current state
+    }
+  }
+
+  /// A sibling changed its contact list: do the same here. Authenticated by
+  /// the session and the `from` check in [handleIncoming]; the key is still
+  /// checked against the ID, so a sibling cannot be made to plant one.
+  Future<void> _applySyncContact(
+    Envelope envelope,
+    Map<String, dynamic> payload,
+  ) async {
+    final sync = parseContactSync(payload, app.crypto.pubkeyMatchesId);
+    if (sync == null) {
+      _dropLog(envelope, 'malformed sync_contact');
+      return;
+    }
+    if (sync.peer == app.stonechatId) return;
+    var contact = contactById(sync.peer);
+    if (sync.removed) {
+      if (contact == null) return;
+      await app.db.deleteContact(contact.stonechatId);
+      await app.db.deleteSession(contact.stonechatId);
+      contacts.removeWhere((c) => c.stonechatId == contact!.stonechatId);
+      _messages.remove(contact.stonechatId);
+      notifyListeners();
+      return;
+    }
+    if (contact == null) {
+      contact = Contact(
+        stonechatId: sync.peer,
+        displayName: sync.displayName ?? sync.peer.substring(3, 12),
+        pubkeyB64: sync.pubkeyB64,
+        status: sync.status,
+        hub: sync.hub,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      );
+      contacts.add(contact);
+    } else {
+      // The key is the one the ID commits to on both devices; what moves is
+      // the relationship and the display data.
+      contact.status = sync.status;
+      if (sync.displayName != null) contact.displayName = sync.displayName!;
+      contact.hub = sync.hub ?? contact.hub;
+    }
+    if (sync.avatarGiven) contact.avatar = sync.avatar;
+    if (sync.bundleToken != null && contact.bundleToken != sync.bundleToken) {
+      contact.bundleToken = sync.bundleToken;
+      _peerDevices.remove(contact.stonechatId);
+    }
+    await app.db.upsertContact(contact);
+    notifyListeners();
+  }
+
+  static String _bootstrapKey(int deviceId) => 'bootstrap.sent.$deviceId';
+
+  /// The shared blob holding our export, reused across attempts to hand it
+  /// to a device that has not published prekeys yet.
+  SharedBlob? _bootstrapBlob;
+  int _bootstrapBlobAt = 0;
+
+  /// Linked devices we have not yet filled in, by the relay's listing: the
+  /// primary's job on every connect, so a device that was not reachable
+  /// right after linking is caught up the next time (PROTOCOL.md "Linking a
+  /// device", step 4).
+  Future<void> _bootstrapDevices(List<Map<String, dynamic>> listed) async {
+    for (final d in listed) {
+      final id = d['device_id'];
+      if (id is! int || id == myDeviceId) continue;
+      if (await app.db.kvGet(_bootstrapKey(id)) != null) continue;
+      await _bootstrapOnce(id);
+    }
+  }
+
+  /// Hand a device we just linked everything it needs to be us: contacts,
+  /// blocks, groups and text history, as the backup carries them, sealed
+  /// under a fresh key and parked on our own mailbox. The new device
+  /// publishes prekeys moments after collecting its grant, so the first
+  /// attempts wait for that; [maintainDevices] keeps trying on later
+  /// connects for as long as the device is listed and was never filled.
+  Future<void> bootstrapDevice(int deviceId) async {
+    for (final delayS in [4, 8, 16, 32]) {
+      await Future<void>.delayed(Duration(seconds: delayS));
+      if (await app.db.kvGet(_bootstrapKey(deviceId)) != null) return;
+      if (await _bootstrapOnce(deviceId)) return;
+    }
+  }
+
+  Future<bool> _bootstrapOnce(int deviceId) async {
+    if (myDeviceId != ChatDb.primaryDevice || !app.crypto.hasIdentitySecret) {
+      return false;
+    }
+    final host = mailboxAddress;
+    final tlsFp = mailboxTlsFp;
+    if (host == null || tlsFp == null) return false;
+    try {
+      var blob = _bootstrapBlob;
+      // One export serves every attempt for a while; a stale one would miss
+      // what changed since, so it is remade after an hour.
+      if (blob == null ||
+          DateTime.now().millisecondsSinceEpoch - _bootstrapBlobAt > 3600 * 1000) {
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        final payload = BackupService.buildPayload(
+          contacts: await app.db.backupContacts(),
+          groups: await app.db.backupGroups(),
+          groupMembers: await app.db.backupGroupMembers(),
+          messages: await app.db.backupMessages(nowMs),
+          reactions: await app.db.backupReactions(nowMs),
+          blocked: await app.db.backupBlocked(),
+          nowMs: nowMs,
+        );
+        final plain = Uint8List.fromList(
+          gzip.encode(utf8.encode(jsonEncode(payload))),
+        );
+        final sealed = app.crypto.sealBlob(plain);
+        final up = await uploadSharedBlob(host, sealed.ciphertext, tlsFp);
+        blob = SharedBlob(
+          id: up.blobId,
+          fetchToken: up.fetchToken,
+          keyB64: base64Encode(sealed.key),
+          nonceB64: base64Encode(sealed.nonce),
+          size: plain.length,
+          host: host,
+          tlsFp: tlsFp,
+        );
+        _bootstrapBlob = blob;
+        _bootstrapBlobAt = nowMs;
+      }
+      // Our own devices are judged by the manifest too: only to a listed one.
+      final allowed = await _allowedDevices(app.stonechatId!, [deviceId]);
+      if (allowed.isEmpty) return false;
+      await _syncToDevicesOrThrow([deviceId], EnvelopeType.syncHistory, {
+        'blob_id': blob.id,
+        'key': blob.keyB64,
+        'blob_nonce': blob.nonceB64,
+        'fetch_token': blob.fetchToken,
+        'blob_host': blob.host,
+        'blob_tls_fp': blob.tlsFp,
+      });
+      await app.db.kvPut(_bootstrapKey(deviceId), Uint8List.fromList([1]));
+      return true;
+    } catch (e) {
+      debugPrint('stonechat: bootstrap of device $deviceId not yet: $e');
+      return false;
+    }
+  }
+
+  /// [_syncToDevices], but a failure is the caller's to see: the bootstrap
+  /// must know whether the device took it.
+  Future<void> _syncToDevicesOrThrow(
+    Iterable<int> devices,
+    String type,
+    Map<String, Object?> payload,
+  ) async {
+    final address = mailboxAddress!;
+    final tlsFp = mailboxTlsFp!;
+    for (final device in devices) {
+      final cert = await _certFor(
+        app.stonechatId!,
+        device,
+        app.crypto.publicKeyB64,
+        myBundleToken,
+        address,
+        tlsFp,
+      );
+      final sealKey = cert == null ? null : certSealKey(cert);
+      if (sealKey == null) {
+        throw ApiException('device $device has no usable certificate yet');
+      }
+      final envelope = await _sealFor(
+        type,
+        app.stonechatId!,
+        app.crypto.publicKeyB64,
+        payload,
+        mailboxAddress: address,
+        mailboxTlsFp: tlsFp,
+        deviceId: device,
+        bundleToken: myBundleToken,
+      );
+      await deliverEnvelope(
+        address,
+        _wireSeal(envelope, base64Encode(sealKey), noPush: true),
+        tlsFp,
+      );
+    }
+  }
+
+  /// Our primary's export, for this freshly linked device: fetch it from our
+  /// own mailbox, open it, merge it under the backup's rules (what we already
+  /// hold wins), and reload. A blob that cannot be fetched right now leaves
+  /// the envelope queued; one that is gone or will not open is dropped.
+  Future<void> _applySyncHistory(
+    Envelope envelope,
+    Map<String, dynamic> payload,
+  ) async {
+    final host = payload['blob_host'];
+    final tlsFp = payload['blob_tls_fp'];
+    final blobId = payload['blob_id'];
+    final token = payload['fetch_token'];
+    final keyB64 = payload['key'];
+    final nonceB64 = payload['blob_nonce'];
+    if (host is! String ||
+        tlsFp is! String ||
+        token is! String ||
+        keyB64 is! String ||
+        nonceB64 is! String ||
+        !isWireId(blobId)) {
+      _dropLog(envelope, 'malformed sync_history');
+      return;
+    }
+    // Our own mailbox, and nowhere else — the one host this device already
+    // trusts. Not knowing it yet is transient: the envelope waits.
+    if (mailboxAddress == null) throw StateError('mailbox info missing');
+    if (host != mailboxAddress) {
+      _dropLog(envelope, 'sync_history blob is not on our own mailbox');
+      return;
+    }
+    final List<int> ciphertext;
+    try {
+      ciphertext = await downloadBlob(host, blobId as String, token, tlsFp);
+    } on ApiException catch (e) {
+      if (e.status == 404 || e.status == 410 || e.status == 401) {
+        _dropLog(envelope, 'sync_history blob is gone (${e.status})');
+        return;
+      }
+      rethrow; // unreachable right now: redelivered on the next connect
+    }
+    final plain = app.crypto.openBlob(
+      Uint8List.fromList(ciphertext),
+      Uint8List.fromList(base64Decode(keyB64)),
+      Uint8List.fromList(base64Decode(nonceB64)),
+    );
+    if (plain == null) {
+      _dropLog(envelope, 'sync_history blob does not open');
+      return;
+    }
+    final summary = await BackupService(app.db).mergePayloadBytes(plain);
+    if (summary == null) {
+      _dropLog(envelope, 'sync_history payload is not a backup');
+      return;
+    }
+    debugPrint(
+      'stonechat: bootstrapped from our primary: '
+      '${summary.contactsAdded} contacts, ${summary.groupsAdded} groups, '
+      '${summary.messagesAdded} messages',
+    );
+    await reloadAfterRestore();
   }
 
   Future<void> _learnOwnManifest() async {
@@ -1678,16 +1990,21 @@ class ChatState extends ChangeNotifier {
   /// the one the directory holds — a primary restored from an export knows
   /// nothing, and a manifest numbered at or below the one on record is
   /// refused.
-  Future<void> publishDeviceManifest({Map<int, String> extra = const {}}) async {
+  Future<void> publishDeviceManifest({
+    Map<int, String> extra = const {},
+  }) async {
     final me = app.stonechatId;
-    if (me == null || myDeviceId != ChatDb.primaryDevice || !app.crypto.hasIdentitySecret) {
+    if (me == null ||
+        myDeviceId != ChatDb.primaryDevice ||
+        !app.crypto.hasIdentitySecret) {
       return;
     }
     final devices = _deviceKeysOf(await _ownDeviceList(), extra);
     if (devices.isEmpty) return;
     var version = myManifestVersion;
     final onRecord = await _manifestFor(me, wanted: version + 1);
-    if (onRecord != null && onRecord.version > version) version = onRecord.version;
+    if (onRecord != null && onRecord.version > version)
+      version = onRecord.version;
     for (var attempt = 0; attempt < 2; attempt++) {
       final manifest = DeviceManifest.sign(
         stonechatId: me,
@@ -1711,7 +2028,11 @@ class ChatState extends ChangeNotifier {
       }
       _manifests[me] = manifest;
       myManifestVersion = manifest.version;
-      await app.db.putManifest(me, manifest.version, jsonEncode(manifest.toJson()));
+      await app.db.putManifest(
+        me,
+        manifest.version,
+        jsonEncode(manifest.toJson()),
+      );
       _peerDevices.clear(); // our own siblings are peers too
       return;
     }
@@ -1731,7 +2052,8 @@ class ChatState extends ChangeNotifier {
       final old = cert.cast<String, dynamic>();
       final kind = (d['kind'] as String?) ?? 'web';
       final expiry = certExpiry(old);
-      if (expiry != null && expiry.difference(now) >= certRenewWindow(kind)) continue;
+      if (expiry != null && expiry.difference(now) >= certRenewWindow(kind))
+        continue;
       final sigPub = certSigKey(old);
       final sealPub = certSealKey(old);
       if (sigPub == null || sealPub == null) continue;
@@ -1753,7 +2075,10 @@ class ChatState extends ChangeNotifier {
   /// if it is ours in every respect — our identity, our slot, our keys —
   /// and later than the one we hold; then republished with our prekeys so
   /// peers pick it up.
-  Future<void> _applySyncCert(Envelope envelope, Map<String, dynamic> payload) async {
+  Future<void> _applySyncCert(
+    Envelope envelope,
+    Map<String, dynamic> payload,
+  ) async {
     final raw = payload['cert'];
     if (raw is! Map) return;
     final cert = raw.cast<String, dynamic>();
@@ -1992,24 +2317,39 @@ class ChatState extends ChangeNotifier {
     final session = await _loadSession(envelope.from, fromDevice);
 
     if (session != null) {
-      // Simultaneous add: both sides initiated. The lower Stonechat ID's session
-      // wins deterministically; if theirs wins, skip ours and adopt below.
-      final theirsWins =
-          block != null &&
-          !session.confirmed &&
-          session.initiatedByUs &&
-          envelope.from.compareTo(app.stonechatId!) < 0;
-      if (!theirsWins) {
-        final plain = session.decrypt(header, nonce, ciphertext, adPrefix);
-        if (plain != null) {
-          await _saveSession(session, fromDevice);
-          return plain;
-        }
-        if (block == null) {
+      // Simultaneous start, or a peer who reinstalled: which session survives
+      // is decided in one place (core/handshake.dart). The lower Stonechat ID's
+      // wins a race, the lower device number between two of our own; the
+      // loser's initial envelope is dropped rather than allowed to replace the
+      // session its sender is about to adopt.
+      String? plain;
+      final verdict = handshakeVerdict(
+        hasBlock: block != null,
+        heldConfirmed: session.confirmed,
+        heldInitiatedByUs: session.initiatedByUs,
+        from: envelope.from,
+        fromDevice: fromDevice,
+        self: app.stonechatId!,
+        selfDevice: myDeviceId,
+        heldDecrypts: () {
+          plain = session.decrypt(header, nonce, ciphertext, adPrefix);
+          return plain != null;
+        },
+      );
+      switch (verdict) {
+        case HandshakeVerdict.useHeld:
+          if (plain != null) {
+            await _saveSession(session, fromDevice);
+            return plain;
+          }
           _dropLog(envelope, 'session decrypt failed, no x3dh block');
           return null; // forged/undecryptable — drop
-        }
-        // fall through: maybe a fresh prekey message replacing a stale session
+        case HandshakeVerdict.dropTheirs:
+          _dropLog(envelope, 'simultaneous handshake, ours wins');
+          return null;
+        case HandshakeVerdict.adoptTheirs:
+        case HandshakeVerdict.replaceHeld:
+          break; // establish from the block below
       }
     }
     if (block == null) {
@@ -2035,7 +2375,10 @@ class ChatState extends ChangeNotifier {
     try {
       senderIdentityB64 = await _identityKeyFor(envelope.from);
     } catch (_) {
-      _dropLog(envelope, 'no identity key for the sender that commits to their ID');
+      _dropLog(
+        envelope,
+        'no identity key for the sender that commits to their ID',
+      );
       return null;
     }
     _recordCert(
@@ -2365,7 +2708,9 @@ class ChatState extends ChangeNotifier {
   Future<void> updateMyAvatar(Uint8List? bytes) async {
     await app.setAvatar(bytes);
     final payload = _profilePayload();
-    for (final contact in acceptedContacts.where((c) => !isBlocked(c.stonechatId))) {
+    for (final contact in acceptedContacts.where(
+      (c) => !isBlocked(c.stonechatId),
+    )) {
       try {
         await _deliver(
           contact,
@@ -2446,6 +2791,7 @@ class ChatState extends ChangeNotifier {
     await app.db.upsertContact(contact);
     contacts.add(contact);
     notifyListeners();
+    unawaited(_syncContact(contact));
 
     await _deliver(contact, EnvelopeType.contactRequest, _profilePayload());
     return contact;
@@ -2461,10 +2807,12 @@ class ChatState extends ChangeNotifier {
     contact.status = ContactStatus.accepted;
     await app.db.upsertContact(contact);
     notifyListeners();
+    unawaited(_syncContact(contact));
     await _deliver(contact, EnvelopeType.contactAccept, _profilePayload());
   }
 
   Future<void> declineContact(Contact contact) async {
+    unawaited(_syncContact(contact, removed: true));
     await app.db.deleteContact(contact.stonechatId);
     // Drop the ratchet too: a kept session would be silently reused if this
     // peer is ever re-added, and it may be pinned to prekeys the other side
@@ -2723,11 +3071,9 @@ class ChatState extends ChangeNotifier {
   }) async {
     final list = recipients.toList();
     if (list.isEmpty) return;
-    await app.db.oweRoster(
-      group.id,
-      [for (final m in list) m.stonechatId],
-      DateTime.now().millisecondsSinceEpoch,
-    );
+    await app.db.oweRoster(group.id, [
+      for (final m in list) m.stonechatId,
+    ], DateTime.now().millisecondsSinceEpoch);
     await _fanOutToMembers(list, (m) => _sendRoster(group, m, type: type));
     if (await _hasPendingWork()) _scheduleRetrySweep();
   }
@@ -3289,10 +3635,7 @@ class ChatState extends ChangeNotifier {
     // A DM is a fan-out too now, so it needs the same per-device bookkeeping
     // groups have: one of the recipient's three devices accepting is not the
     // message being delivered.
-    final outbox = (
-      messageId: message.id,
-      conversationId: contact.stonechatId,
-    );
+    final outbox = (messageId: message.id, conversationId: contact.stonechatId);
     try {
       if (message.kind == MessageKind.text) {
         // envelope id == message id → dedupe on the other side, and one id
@@ -3407,6 +3750,17 @@ class ChatState extends ChangeNotifier {
     if (_retrySweep != null) return;
     _retrySweep = Timer(const Duration(seconds: 60), () async {
       _retrySweep = null;
+      // Backgrounded on Android the Dart isolate keeps running, and the push
+      // drain (core/push_drain.dart) may be advancing sessions in the DB
+      // from its own isolate. Encrypting from this isolate's cached session
+      // would clobber that on save and fork the ratchet — so while
+      // backgrounded the drain owns the sessions and this just keeps time.
+      // (iOS suspends the isolate; the timer never fires there.)
+      final lifecycle = WidgetsBinding.instance.lifecycleState;
+      if (lifecycle != null && lifecycle != AppLifecycleState.resumed) {
+        _scheduleRetrySweep();
+        return;
+      }
       await retryPending();
       // Still owed? Keep the heartbeat. Otherwise it stops on its own.
       if (await _hasPendingWork()) _scheduleRetrySweep();
@@ -4472,6 +4826,7 @@ class ChatState extends ChangeNotifier {
               contact.profileAt = _sentAtMs(envelope);
             }
             await app.db.upsertContact(contact);
+            unawaited(_syncContact(contact));
             await _deliver(
               contact,
               EnvelopeType.contactAccept,
@@ -4518,6 +4873,9 @@ class ChatState extends ChangeNotifier {
         }
         await app.db.upsertContact(contact);
         contacts.add(contact);
+        // Every device receives the request itself; the sync is what keeps
+        // them agreeing once one of them answers it.
+        unawaited(_syncContact(contact));
 
       case EnvelopeType.contactAccept:
         if (contact == null || contact.status != ContactStatus.pendingOut) {
@@ -4531,6 +4889,7 @@ class ChatState extends ChangeNotifier {
           contact.profileAt = _sentAtMs(envelope);
         }
         await app.db.upsertContact(contact);
+        unawaited(_syncContact(contact));
         // Tell the requester their invite was accepted. Only when backgrounded
         // — a foregrounded user watches the contact flip live. Best-effort, and
         // bound by the same platform limits as any local notice: iOS may be
@@ -4716,6 +5075,20 @@ class ChatState extends ChangeNotifier {
           return;
         }
         await _applySyncCert(envelope, payload);
+
+      case EnvelopeType.syncContact:
+        if (envelope.from != app.stonechatId) {
+          _dropLog(envelope, 'sync from someone else\'s identity');
+          return;
+        }
+        await _applySyncContact(envelope, payload);
+
+      case EnvelopeType.syncHistory:
+        if (envelope.from != app.stonechatId) {
+          _dropLog(envelope, 'sync from someone else\'s identity');
+          return;
+        }
+        await _applySyncHistory(envelope, payload);
 
       case EnvelopeType.typing:
         _applyTyping(envelope, payload);
@@ -5203,6 +5576,7 @@ class ChatState extends ChangeNotifier {
     }
     lastMessage[conversationId] = message;
     if (message.expiresAt != null) _scheduleExpirySweep();
+    onStoredIncoming?.call(conversationId, message);
 
     // Tell the sender it arrived — "read" straight away if it's on screen
     // (and the privacy setting allows), else "delivered". Delivery receipts

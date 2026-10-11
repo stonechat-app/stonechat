@@ -207,9 +207,11 @@ class MailboxCountry {
   final String flag; // emoji
   /// What the country buys the user.
   final String jurisdiction;
+
   /// What it does not. Never render one without the other — a picker that
   /// shows only the flattering half is marketing, not a privacy feature.
   final String caveat;
+
   /// Plans that can place a mailbox here today ("machine", "mailbox").
   final List<String> plans;
 
@@ -224,14 +226,14 @@ class MailboxCountry {
   });
 
   factory MailboxCountry.fromJson(Map<String, dynamic> j) => MailboxCountry(
-        code: j['code'] as String,
-        name: j['name'] as String,
-        city: j['city'] as String,
-        flag: j['flag'] as String? ?? '',
-        jurisdiction: j['jurisdiction'] as String? ?? '',
-        caveat: j['caveat'] as String? ?? '',
-        plans: ((j['plans'] as List?) ?? const []).cast<String>(),
-      );
+    code: j['code'] as String,
+    name: j['name'] as String,
+    city: j['city'] as String,
+    flag: j['flag'] as String? ?? '',
+    jurisdiction: j['jurisdiction'] as String? ?? '',
+    caveat: j['caveat'] as String? ?? '',
+    plans: ((j['plans'] as List?) ?? const []).cast<String>(),
+  );
 
   bool allows(String? plan) => plan == null || plans.contains(plan);
 }
@@ -353,9 +355,12 @@ class HubApi {
   /// during onboarding before an account exists.
   Future<List<MailboxCountry>> getCountries() async {
     final r = await http.get(Uri.parse('$baseUrl/v1/countries'));
-    return _check(r, (j) => ((j['countries'] as List?) ?? const [])
-        .map((e) => MailboxCountry.fromJson(e as Map<String, dynamic>))
-        .toList());
+    return _check(
+      r,
+      (j) => ((j['countries'] as List?) ?? const [])
+          .map((e) => MailboxCountry.fromJson(e as Map<String, dynamic>))
+          .toList(),
+    );
   }
 
   /// Create the mailbox. Pass [country] — the hub resolves it against its
@@ -369,21 +374,25 @@ class HubApi {
     String? region,
     int diskGb = 10,
   }) async {
-    assert((country != null) != (provider != null),
-        'pass either a country or a provider+machine, not both');
+    assert(
+      (country != null) != (provider != null),
+      'pass either a country or a provider+machine, not both',
+    );
     final r = await http.post(
       Uri.parse('$baseUrl/v1/mailbox'),
       headers: _auth,
-      body: jsonEncode(country != null
-          ? {'country': country}
-          : {
-              'provider': provider,
-              'machine': {
-                'machine_type': machineType,
-                'region': region,
-                'disk_gb': diskGb,
+      body: jsonEncode(
+        country != null
+            ? {'country': country}
+            : {
+                'provider': provider,
+                'machine': {
+                  'machine_type': machineType,
+                  'region': region,
+                  'disk_gb': diskGb,
+                },
               },
-            }),
+      ),
     );
     await _check(r, (_) => null);
   }
@@ -410,11 +419,13 @@ class HubApi {
   /// Owner vouches for their mailbox's TLS key: publish the identity-key
   /// signature over its fingerprint so peers can pin it via the directory.
   Future<void> publishTlsSig(String tlsFp, String tlsSig) async {
-    final r = await http.post(
-      Uri.parse('$baseUrl/v1/mailbox/tls'),
-      headers: _auth,
-      body: jsonEncode({'tls_fp': tlsFp, 'tls_sig': tlsSig}),
-    ).timeout(const Duration(seconds: 10));
+    final r = await http
+        .post(
+          Uri.parse('$baseUrl/v1/mailbox/tls'),
+          headers: _auth,
+          body: jsonEncode({'tls_fp': tlsFp, 'tls_sig': tlsSig}),
+        )
+        .timeout(const Duration(seconds: 10));
     await _check(r, (_) => null);
   }
 
@@ -426,11 +437,13 @@ class HubApi {
     List<Map<String, dynamic>> certs,
     String wtSig,
   ) async {
-    final r = await http.post(
-      Uri.parse('$baseUrl/v1/mailbox/wt'),
-      headers: _auth,
-      body: jsonEncode({'certs': certs, 'wt_sig': wtSig}),
-    ).timeout(const Duration(seconds: 10));
+    final r = await http
+        .post(
+          Uri.parse('$baseUrl/v1/mailbox/wt'),
+          headers: _auth,
+          body: jsonEncode({'certs': certs, 'wt_sig': wtSig}),
+        )
+        .timeout(const Duration(seconds: 10));
     await _check(r, (_) => null);
   }
 
@@ -453,10 +466,7 @@ class HubApi {
 
   Future<void> deleteMailbox() async {
     final r = await http
-        .delete(
-          Uri.parse('$baseUrl/v1/mailbox'),
-          headers: _auth,
-        )
+        .delete(Uri.parse('$baseUrl/v1/mailbox'), headers: _auth)
         .timeout(const Duration(seconds: 10));
     await _check(r, (_) => null);
   }
@@ -464,8 +474,10 @@ class HubApi {
   /// Free tier: list a self-provisioned relay in the directory. The relay's
   /// token never goes to the hub — only the address does, plus the browser
   /// transport's `host:port` when the relay has one.
-  Future<void> registerExternalMailbox(String address,
-      {String? wtAddress}) async {
+  Future<void> registerExternalMailbox(
+    String address, {
+    String? wtAddress,
+  }) async {
     final r = await http.post(
       Uri.parse('$baseUrl/v1/mailbox/external'),
       headers: _auth,
@@ -476,10 +488,7 @@ class HubApi {
 
   /// What the hub's gate says about this account (PROTOCOL.md "Gate").
   Future<HubAccess> getAccess() async {
-    final r = await http.get(
-      Uri.parse('$baseUrl/v1/access'),
-      headers: _auth,
-    );
+    final r = await http.get(Uri.parse('$baseUrl/v1/access'), headers: _auth);
     return _check(r, HubAccess.fromJson);
   }
 
@@ -565,7 +574,10 @@ Future<Map<String, dynamic>?> fetchWtCerts(
         .timeout(const Duration(seconds: 10));
     if (r.statusCode == 404) return null; // browser transport disabled
     if (r.statusCode >= 400) {
-      throw ApiException('wt certs unavailable (${r.statusCode})', r.statusCode);
+      throw ApiException(
+        'wt certs unavailable (${r.statusCode})',
+        r.statusCode,
+      );
     }
     return jsonDecode(r.body) as Map<String, dynamic>;
   } finally {
@@ -616,9 +628,9 @@ Future<({int deviceId, String kind, String? expiresAt})> mintDevice(
   try {
     final r = await client
         .post(
-          Uri.parse('$mailboxAddress/devices').replace(
-            queryParameters: {'token': token},
-          ),
+          Uri.parse(
+            '$mailboxAddress/devices',
+          ).replace(queryParameters: {'token': token}),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             'device_token': newDeviceToken,
@@ -637,7 +649,10 @@ Future<({int deviceId, String kind, String? expiresAt})> mintDevice(
       );
     }
     if (r.statusCode >= 400) {
-      throw ApiException('could not add the device (${r.statusCode})', r.statusCode);
+      throw ApiException(
+        'could not add the device (${r.statusCode})',
+        r.statusCode,
+      );
     }
     final j = jsonDecode(r.body) as Map<String, dynamic>;
     return (
@@ -659,12 +674,17 @@ Future<({int devicesV, List<Map<String, dynamic>> devices})> listDevices(
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .get(Uri.parse('$mailboxAddress/devices').replace(
-          queryParameters: {'token': token},
-        ))
+        .get(
+          Uri.parse(
+            '$mailboxAddress/devices',
+          ).replace(queryParameters: {'token': token}),
+        )
         .timeout(const Duration(seconds: 10));
     if (r.statusCode >= 400) {
-      throw ApiException('could not list devices (${r.statusCode})', r.statusCode);
+      throw ApiException(
+        'could not list devices (${r.statusCode})',
+        r.statusCode,
+      );
     }
     final j = jsonDecode(r.body) as Map<String, dynamic>;
     return (
@@ -693,9 +713,11 @@ Future<void> revokeDevice(
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
-        .delete(Uri.parse('$mailboxAddress/devices/$deviceId').replace(
-          queryParameters: {'token': token},
-        ))
+        .delete(
+          Uri.parse(
+            '$mailboxAddress/devices/$deviceId',
+          ).replace(queryParameters: {'token': token}),
+        )
         .timeout(const Duration(seconds: 10));
     if (r.statusCode == 403) {
       throw ApiException(
@@ -739,7 +761,10 @@ Future<void> putLinkOffer(
     }),
   );
   if (r.statusCode >= 400) {
-    throw ApiException('could not publish the link code (${r.statusCode})', r.statusCode);
+    throw ApiException(
+      'could not publish the link code (${r.statusCode})',
+      r.statusCode,
+    );
   }
 }
 
@@ -752,7 +777,10 @@ Future<Map<String, dynamic>?> getLinkOffer(
   final r = await http.get(Uri.parse('$hubUrl/v1/link/offer/$commitmentHex'));
   if (r.statusCode == 404) return null;
   if (r.statusCode >= 400) {
-    throw ApiException('could not read the link code (${r.statusCode})', r.statusCode);
+    throw ApiException(
+      'could not read the link code (${r.statusCode})',
+      r.statusCode,
+    );
   }
   return (jsonDecode(r.body) as Map<String, dynamic>)['offer']
       as Map<String, dynamic>;
@@ -765,7 +793,10 @@ Future<void> putLinkGrant(String hubUrl, String key, String sealedB64) async {
     body: jsonEncode({'key': key, 'sealed': sealedB64}),
   );
   if (r.statusCode >= 400) {
-    throw ApiException('could not park the grant (${r.statusCode})', r.statusCode);
+    throw ApiException(
+      'could not park the grant (${r.statusCode})',
+      r.statusCode,
+    );
   }
 }
 
@@ -791,12 +822,10 @@ Future<String?> takeLinkGrant(String hubUrl, String key) async {
 /// the peer's bundle
 /// token; without it a sender can only reach their primary device, which is
 /// what a stranger sending a contact request gets.
-Future<({int devicesV, List<int> devices, Map<int, Map<String, dynamic>> certs})>
-fetchDeviceList(
-  String mailboxAddress,
-  String bundleToken,
-  String tlsFp,
-) async {
+Future<
+  ({int devicesV, List<int> devices, Map<int, Map<String, dynamic>> certs})
+>
+fetchDeviceList(String mailboxAddress, String bundleToken, String tlsFp) async {
   final client = pinnedClient(tlsFp);
   try {
     final r = await client
@@ -869,6 +898,7 @@ Future<void> uploadPrekeys(
   List<Map<String, Object?>> opks,
   Map<String, Object?> kspk,
   List<Map<String, Object?>> kopks, {
+
   /// This device's certificate. Goes up with the prekeys because it names
   /// the key that signed them — one without the other leaves a peer unable
   /// to check either.
@@ -1445,6 +1475,59 @@ class MailboxSocket {
     _channel?.sink.close();
     onStateChange?.call(false);
   }
+}
+
+/// One pass over the owner queue, for a process that must finish: attach,
+/// take what the mailbox has queued, ack each envelope once [onEnvelope]
+/// has persisted it, and go away. The iOS notification extension does the
+/// same from Swift; this is the Android push drain's transport.
+///
+/// The relay pushes the whole queue on attach and sends no end marker, so
+/// an idle window means drained. The first frame doubles as proof the
+/// pinned connection stood up — hence the longer wait for it (TLS
+/// handshake + queue read) and a short one after. Returns how many
+/// envelopes were handled.
+Future<int> drainMailboxOnce({
+  required String address,
+  required String token,
+  required String tlsFp,
+  required Future<void> Function(SealedEnvelope) onEnvelope,
+  Duration deadline = const Duration(seconds: 20),
+}) async {
+  final wsUrl = '${address.replaceFirst('http', 'ws')}/ws?token=$token';
+  final channel = IOWebSocketChannel.connect(
+    Uri.parse(wsUrl),
+    customClient: _pinnedHttpClient(tlsFp),
+  );
+  var handled = 0;
+  final end = DateTime.now().add(deadline);
+  try {
+    await channel.ready;
+    final frames = StreamIterator(channel.stream);
+    var window = const Duration(seconds: 8);
+    while (DateTime.now().isBefore(end)) {
+      final remaining = end.difference(DateTime.now());
+      final more = await frames.moveNext().timeout(
+        window < remaining ? window : remaining,
+        onTimeout: () => false,
+      );
+      if (!more) break; // idle → drained (or the socket closed)
+      window = const Duration(milliseconds: 1500);
+      try {
+        final envelope = SealedEnvelope.fromJson(
+          jsonDecode(frames.current as String) as Map<String, dynamic>,
+        );
+        await onEnvelope(envelope);
+        channel.sink.add(jsonEncode({'ack': envelope.id}));
+        handled++;
+      } catch (_) {
+        // Undecodable frame — left unacked; the app will see it again.
+      }
+    }
+  } finally {
+    await channel.sink.close();
+  }
+  return handled;
 }
 
 /// The account's standing on its hub. An open hub (no gate) needs no plan

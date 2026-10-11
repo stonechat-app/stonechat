@@ -35,8 +35,11 @@ Future<void> main() async {
 
   final chat = ChatState(app);
   final call = CallState(app, chat);
+  // PushService is initialised below; a tap on one of the Android drain's
+  // message notifications routes through it, held until the shell listens.
+  final push = PushService();
   final notices = LocalNotices();
-  await notices.init();
+  await notices.init(onTap: push.openConversation);
   // Surface backgrounded events (e.g. a contact accepting your request) as
   // local notifications.
   chat.onNotice = notices.show;
@@ -87,7 +90,6 @@ Future<void> main() async {
 
   // Optional content-free push wake-ups. No Firebase config → stays disabled,
   // and the app relies on live-socket / on-resume delivery as before.
-  final push = PushService();
   await push.init(
     onToken: chat.setPushToken,
     onWake: () {

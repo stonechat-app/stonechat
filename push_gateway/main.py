@@ -253,10 +253,16 @@ def _fcm_auth() -> tuple[str, str]:
 
 async def _send_fcm(device_token: str, key_id: str = "") -> None:
     access_token, project_id = _fcm_auth()
+    # Content-free by design, and a *data* message rather than a displayed
+    # one: Android has no notification extension, so the app's own background
+    # handler (app/lib/core/push_drain.dart) is what fetches + decrypts and
+    # posts the real notification. A `notification` block would have the OS
+    # show a generic alert and bypass that handler while the app is in the
+    # background. HIGH priority is what gets the handler run from Doze.
     message = {
         "message": {
             "token": device_token,
-            "notification": {"title": "Stonechat", "body": "You have new messages"},
+            "data": {"kind": "new_messages"},
             "android": {"collapse_key": "stonechat-new-messages", "priority": "HIGH"},
         }
     }

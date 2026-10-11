@@ -15,9 +15,14 @@ class LocalNotices {
   final _plugin = FlutterLocalNotificationsPlugin();
   bool _ready = false;
 
-  Future<void> init() async {
+  /// [onTap] receives the payload of a tapped notification — the message
+  /// notifications the Android push drain posts carry the conversation id
+  /// (core/push_drain.dart). Fires for a tap while running and for the one
+  /// that launched the app.
+  Future<void> init({void Function(String payload)? onTap}) async {
     try {
-      _ready = await _plugin.initialize(
+      _ready =
+          await _plugin.initialize(
             settings: const InitializationSettings(
               android: AndroidInitializationSettings('@mipmap/ic_launcher'),
               // Never prompt from here: notification permission is requested
@@ -29,8 +34,19 @@ class LocalNotices {
                 requestSoundPermission: false,
               ),
             ),
+            onDidReceiveNotificationResponse: (response) {
+              final payload = response.payload;
+              if (payload != null && payload.isNotEmpty) onTap?.call(payload);
+            },
           ) ??
           false;
+      final launch = await _plugin.getNotificationAppLaunchDetails();
+      final payload = launch?.notificationResponse?.payload;
+      if ((launch?.didNotificationLaunchApp ?? false) &&
+          payload != null &&
+          payload.isNotEmpty) {
+        onTap?.call(payload);
+      }
     } catch (_) {
       // Notifications unavailable — non-fatal, everything else works.
     }
