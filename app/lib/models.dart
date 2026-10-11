@@ -434,6 +434,9 @@ class ReceiptKind {
 class Group {
   final String id;
   String name;
+  /// The group's photo, set by the admin and carried by every roster
+  /// (PROTOCOL.md "Groups"), the same budget as a profile photo.
+  Uint8List? avatar;
   String adminId; // changes only by a handover from the admin on record
   int version;
   /// Hash of the roster as the admin issued it at [version]
@@ -454,6 +457,7 @@ class Group {
   Group({
     required this.id,
     required this.name,
+    this.avatar,
     required this.adminId,
     required this.version,
     this.rosterHash,
@@ -474,6 +478,7 @@ class Group {
   Map<String, Object?> toRow() => {
         'id': id,
         'name': name,
+        'avatar': avatar,
         'admin_id': adminId,
         'version': version,
         'roster_hash': rosterHash,
@@ -489,6 +494,9 @@ class Group {
   factory Group.fromRow(Map<String, Object?> r) => Group(
         id: r['id'] as String,
         name: r['name'] as String,
+        avatar: r['avatar'] == null
+            ? null
+            : Uint8List.fromList(r['avatar'] as List<int>),
         adminId: r['admin_id'] as String,
         version: r['version'] as int,
         rosterHash: r['roster_hash'] as String?,

@@ -2,6 +2,8 @@
 // created before it gains on open, rosters still owed to members, messages
 // parked until their roster arrives, and the `seen` list a group message
 // vouches for.
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:stonechat/core/db.dart';
@@ -43,6 +45,7 @@ void main() {
     for (final (table, column) in [
       ('groups', 'roster_hash'),
       ('groups', 'seen_version'),
+      ('groups', 'avatar'),
       ('messages', 'salt'),
       ('messages', 'content_hash'),
     ]) {
@@ -64,6 +67,13 @@ void main() {
     expect(group.version, 4);
     expect(group.rosterHash, isNull);
     expect(group.seenVersion, 0);
+    expect(group.avatar, isNull);
+    // The photo column round-trips once it exists.
+    group.avatar = Uint8List.fromList([1, 2, 3]);
+    await chat.upsertGroup(group);
+    expect((await chat.groups()).single.avatar, [1, 2, 3]);
+    // Backups leave it out, like contacts' photos.
+    expect((await chat.backupGroups()).single.containsKey('avatar'), isFalse);
     await chat.oweRoster('g1', ['SC-B'], 10);
     expect(await chat.rosterOwed(), hasLength(1));
   });

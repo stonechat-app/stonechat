@@ -459,7 +459,8 @@ class _GroupTile extends StatelessWidget {
     final memberCount = chat.groupMembers[group.id]?.length ?? 0;
 
     return ListTile(
-      leading: StonechatAvatar(stonechatId: group.id, name: '◈', size: 42),
+      leading: StonechatAvatar(
+          stonechatId: group.id, name: '◈', size: 42, image: group.avatar),
       title: Text(
         group.name,
         style: const TextStyle(fontWeight: FontWeight.w600),

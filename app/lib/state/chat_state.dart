@@ -2832,6 +2832,12 @@ class ChatState extends ChangeNotifier {
   ) => {
     'group_id': group.id,
     'name': group.name,
+    // Every roster carries the photo (null = none), so a member restored
+    // from a backup, or one that missed the change, has it after the next
+    // roster — the same self-healing contacts' photos get from profiles.
+    'avatar': group.avatar == null
+        ? null
+        : {'data': base64Encode(group.avatar!), 'mime': 'image/jpeg'},
     'version': group.version,
     'admin': group.adminId,
     'members': [
@@ -2937,9 +2943,13 @@ class ChatState extends ChangeNotifier {
   /// whose clients clear their membership on seeing a list without them
   /// (PROTOCOL.md "Groups"). Everyone it is sent to is owed it until every
   /// one of their devices has taken it ([_publishRoster]).
+  /// [avatar] sets the group photo, [clearAvatar] removes it; both ride
+  /// the next roster like a rename does.
   Future<void> updateGroupMembership(
     Group group, {
     String? name,
+    Uint8List? avatar,
+    bool clearAvatar = false,
     List<Contact> addContacts = const [],
     Set<String> removeIds = const {},
   }) async {
@@ -2955,7 +2965,13 @@ class ChatState extends ChangeNotifier {
     final newName = name?.trim();
     final renamed =
         newName != null && newName.isNotEmpty && newName != group.name;
-    if (added.isEmpty && removed.isEmpty && !renamed) return;
+    final photoChanged = clearAvatar
+        ? group.avatar != null
+        : avatar != null && avatar.length <= maxAvatarBytes;
+    if (added.isEmpty && removed.isEmpty && !renamed && !photoChanged) {
+      return;
+    }
+    if (photoChanged) group.avatar = clearAvatar ? null : avatar;
 
     final members = <GroupMember>[
       for (final m in current)
@@ -2980,6 +2996,12 @@ class ChatState extends ChangeNotifier {
 
     if (renamed) {
       await _insertNotice(group.id, 'You renamed "$oldName" to "$newName"');
+    }
+    if (photoChanged) {
+      await _insertNotice(
+        group.id,
+        clearAvatar ? 'You removed the group photo' : 'You changed the group photo',
+      );
     }
     for (final c in added) {
       await _insertNotice(group.id, 'You added ${c.displayName}');
@@ -5159,6 +5181,15 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
   }
 
+  static bool _sameBytes(Uint8List? a, Uint8List? b) {
+    if (a == null || b == null) return a == b;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   /// group_create / group_update: full-state membership replacement.
   /// Only the admin's word counts, versions only move forward, and every
   /// member key must hash to its claimed ID (offline commitment check).
@@ -5171,6 +5202,19 @@ class ChatState extends ChangeNotifier {
     final name = payload['name'] as String?;
     final version = payload['version'] as int?;
     final rawMembers = payload['members'] as List?;
+    // The group photo, in the profile-photo shape and budget; a roster from
+    // before photos (no field) or an oversized/undecodable one reads as
+    // none — the photo is cooperative display data, never a reason to
+    // refuse a roster.
+    Uint8List? avatar;
+    if (payload['avatar'] case {'data': final String data}) {
+      try {
+        final bytes = base64Decode(data);
+        if (bytes.length <= 2 * avatarBytesMax) avatar = bytes;
+      } catch (_) {
+        // malformed base64: no photo
+      }
+    }
     if (groupId == null ||
         admin == null ||
         name == null ||
@@ -5260,6 +5304,7 @@ class ChatState extends ChangeNotifier {
     final group = Group(
       id: groupId,
       name: name,
+      avatar: avatar,
       adminId: admin,
       version: version,
       rosterHash: hash,
@@ -5274,6 +5319,8 @@ class ChatState extends ChangeNotifier {
     );
     final before = groupMembers[groupId] ?? const <GroupMember>[];
     final oldName = existing?.name;
+    final photoChanged =
+        existing != null && !_sameBytes(existing.avatar, avatar);
     await app.db.upsertGroup(group);
     await app.db.replaceMembers(groupId, members);
     if (existing == null) {
@@ -5281,6 +5328,7 @@ class ChatState extends ChangeNotifier {
     } else {
       existing
         ..name = name
+        ..avatar = avatar
         ..version = version
         ..adminId = admin
         ..rosterHash = hash;
@@ -5305,6 +5353,13 @@ class ChatState extends ChangeNotifier {
           groupId,
           'Group renamed to "$name"',
           id: '${envelope.id}-rename',
+        );
+      }
+      if (photoChanged) {
+        await _insertNotice(
+          groupId,
+          avatar == null ? 'The group photo was removed' : 'The group photo was changed',
+          id: '${envelope.id}-photo',
         );
       }
       for (final m in members) {

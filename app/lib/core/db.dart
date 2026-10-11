@@ -185,6 +185,7 @@ class ChatDb {
 
     await addColumn('groups', 'roster_hash', 'TEXT');
     await addColumn('groups', 'seen_version', 'INTEGER NOT NULL DEFAULT 0');
+    await addColumn('groups', 'avatar', 'BLOB');
     await addColumn('messages', 'salt', 'TEXT');
     await addColumn('messages', 'content_hash', 'TEXT');
     for (final create in [_createRosterOwed, _createGroupParked]) {
@@ -265,6 +266,7 @@ class ChatDb {
     CREATE TABLE groups (
       id         TEXT PRIMARY KEY,
       name       TEXT NOT NULL,
+      avatar     BLOB,
       admin_id   TEXT NOT NULL,
       version    INTEGER NOT NULL,
       roster_hash TEXT,
@@ -1269,8 +1271,13 @@ class ChatDb {
   Future<List<Map<String, Object?>>> backupBlocked() =>
       _db.query('blocked', orderBy: 'blocked_at');
 
-  Future<List<Map<String, Object?>>> backupGroups() =>
-      _db.query('groups', orderBy: 'created_at');
+  /// Groups minus `avatar`, like contacts: every roster the admin sends
+  /// carries the photo, so a restored group gets it back with the next one.
+  Future<List<Map<String, Object?>>> backupGroups() => _db.rawQuery(
+    'SELECT id, name, admin_id, version, roster_hash, seen_version, '
+    'created_at, pinned_at, expire_timer_ms, expire_timer_at, muted_until, '
+    'archived_at FROM groups ORDER BY created_at',
+  );
 
   Future<List<Map<String, Object?>>> backupGroupMembers() =>
       _db.query('group_members', orderBy: 'group_id, stonechat_id');

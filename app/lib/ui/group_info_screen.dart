@@ -4,6 +4,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../core/group_rules.dart';
@@ -50,7 +51,31 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
             padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
             child: Row(
               children: [
-                StonechatAvatar(stonechatId: group.id, name: '◈ ${group.name}', size: 54),
+                // The admin taps the photo to change it.
+                GestureDetector(
+                  onTap: isAdmin ? () => _photoMenu(chat) : null,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      StonechatAvatar(
+                          stonechatId: group.id,
+                          name: '◈ ${group.name}',
+                          size: 54,
+                          image: group.avatar),
+                      if (isAdmin)
+                        const Positioned(
+                          right: -4,
+                          bottom: -4,
+                          child: CircleAvatar(
+                            radius: 10,
+                            backgroundColor: Zn.orange,
+                            child: Icon(Icons.photo_camera,
+                                size: 11, color: Zn.bg),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
@@ -123,6 +148,56 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         ],
       ),
     );
+  }
+
+  /// Choose or remove the group photo. Same picker and budget as the own
+  /// profile photo (my_id_screen); the change rides the next roster.
+  Future<void> _photoMenu(ChatState chat) async {
+    final group = widget.group;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Zn.surface,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined, color: Zn.muted),
+              title: const Text('Choose photo'),
+              onTap: () => Navigator.pop(sheetContext, 'pick'),
+            ),
+            if (group.avatar != null)
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Zn.danger),
+                title: const Text('Remove photo',
+                    style: TextStyle(color: Zn.danger)),
+                onTap: () => Navigator.pop(sheetContext, 'remove'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    if (action == 'remove') {
+      await chat.updateGroupMembership(group, clearAvatar: true);
+      return;
+    }
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 256,
+      maxHeight: 256,
+      imageQuality: 70,
+    );
+    if (picked == null) return;
+    final bytes = await picked.readAsBytes();
+    if (!mounted) return;
+    if (bytes.length > ChatState.maxAvatarBytes) {
+      showZnSnack(context, "That image didn't compress small enough — try another",
+          error: true);
+      return;
+    }
+    await chat.updateGroupMembership(group, avatar: bytes);
+    if (mounted) showZnSnack(context, 'Group photo updated');
   }
 
   Future<void> _rename(ChatState chat) async {

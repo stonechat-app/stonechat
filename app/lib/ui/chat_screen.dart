@@ -585,6 +585,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           stonechatId: g.id,
                           name: '◈ ${g.name}',
                           size: 34,
+                          image: g.avatar,
                         ),
                         title: Text(g.name),
                         onTap: () {
@@ -1148,7 +1149,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         stonechatId: conversationId,
                         name: isGroup ? '◈ ${widget.group!.name}' : title,
                         size: 32,
-                        image: widget.contact?.avatar,
+                        image: isGroup
+                            ? widget.group!.avatar
+                            : widget.contact?.avatar,
                       ),
                     const SizedBox(width: 10),
                     // A name is the contact's own choice and any length;

@@ -1343,7 +1343,7 @@ no durable retry.
 | `contact_request` | `{"display_name": "...", "avatar"?, "hub"?}` |
 | `contact_accept`  | `{"display_name": "...", "avatar"?, "hub"?}` |
 | `profile_update`  | `{"display_name"?, "avatar"?: {"data": "<base64>", "mime"} \| null}` — wire form SHOULD set `push: false` |
-| `group_create` / `group_update` | `{"group_id", "name", "version", "admin", "members": [{"stonechat_id", "pubkey", "display_name"}], "expire_ms"?}` |
+| `group_create` / `group_update` | `{"group_id", "name", "avatar"?: {"data", "mime"} \| null, "version", "admin", "members": [{"stonechat_id", "pubkey", "display_name"}], "expire_ms"?}` |
 | `group_sync`      | `{"group_id", "version"}` — "send me the roster"; `version` is the one the asker holds (0 for none). Wire form MUST set `push: false` |
 | `group_msg`       | `{"group_id", "text", "roster"?, "salt"?, "seen"?, "expire_after_ms"?, "reply_to"?}` — `roster`, `salt` and `seen` are described under "Groups" |
 | `group_media`     | `group_msg`'s fields minus `text`, plus `media`'s, plus `{"fetch_token", "blob_host", "blob_tls_fp"}` — see "Group media" |
@@ -1591,6 +1591,13 @@ own mailbox. Group traffic is therefore exactly as forward-secret as DMs.
   the *full* member list (including the admin and the recipient) and a
   `version` that increases on every change. The two types are applied
   identically.
+- **Name and photo** are the admin's, carried in full by every roster: `name`
+  always, `avatar` in the profile-photo shape and budget ("Profiles") when
+  the group has one, `null` or absent when it has none. A photo that is
+  oversized or does not decode is treated as none — it is display data and
+  never a reason to refuse a roster. Carrying it every time is what lets a
+  member restored from a backup (which excludes photos) get it back with the
+  next roster.
 - **Which roster a client accepts.** A client MUST ignore a roster:
   - whose `group_id` is not a UUID ("Envelope" — the id becomes a
     conversation key beside contacts' Stonechat IDs, and a "group" named
