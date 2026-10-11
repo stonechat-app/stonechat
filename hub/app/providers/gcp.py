@@ -15,8 +15,7 @@ from .bootstrap import (
     GUEST_PORT_RANGE,
     MAILBOX_HOST_PORT,
     SERVER_PORT,
-    TURN_PORT,
-    TURN_RELAY_PORTS,
+    TURN_PORTS,
     WT_PORT,
     build_startup_script,
 )
@@ -123,7 +122,7 @@ class GCPProvider(CloudProvider):
         from google.cloud import compute_v1
 
         # Two rules by name so pre-TURN deployments grow the UDP rule too:
-        # the mailbox itself, and coturn (TURN 3478 + its relay range).
+        # the mailbox itself, and its call relay (relay/src/turn.rs).
         self._ensure_firewall_rule(
             FIREWALL_NAME,
             [compute_v1.Allowed(I_p_protocol="tcp", ports=[str(SERVER_PORT)])],
@@ -133,10 +132,7 @@ class GCPProvider(CloudProvider):
             [
                 compute_v1.Allowed(
                     I_p_protocol="udp",
-                    ports=[
-                        str(TURN_PORT),
-                        f"{TURN_RELAY_PORTS[0]}-{TURN_RELAY_PORTS[1]}",
-                    ],
+                    ports=[f"{TURN_PORTS[0]}-{TURN_PORTS[1]}"],
                 )
             ],
         )

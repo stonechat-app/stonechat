@@ -33,14 +33,20 @@ impl Drop for Relay {
 }
 
 fn relay_with(max_queue_bytes: u64, limits: limit::Limits) -> Relay {
+    relay_full(max_queue_bytes, limits, None)
+}
+
+fn relay_full(
+    max_queue_bytes: u64,
+    limits: limit::Limits,
+    turn: Option<Arc<crate::turn::Turn>>,
+) -> Relay {
     let dir = std::env::temp_dir().join(format!("stonechat-api-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let state = Arc::new(AppState {
         cfg: Config {
             owner_id: OWNER.into(),
             owner_token: PRIMARY.into(),
-            turn_secret: "turn-secret".into(),
-            turn_port: 3478,
             push_gateway: String::new(),
             push_key: String::new(),
         },
@@ -50,6 +56,7 @@ fn relay_with(max_queue_bytes: u64, limits: limit::Limits) -> Relay {
         tls_fp: String::new(),
         build: String::new(),
         wt_certs: None,
+        turn,
         http: reqwest::Client::new(),
         last_gateway_ping: Mutex::new(HashMap::new()),
         limits,
@@ -256,7 +263,8 @@ async fn a_linked_device_keeps_everything_that_is_its_own() {
             200
         );
         assert_eq!(r.status_of("GET", &t("/devices"), None).await, 200);
-        assert_eq!(r.status_of("GET", &t("/turn-credentials"), None).await, 200);
+        // Past the token check; this harness runs no call relay.
+        assert_eq!(r.status_of("GET", &t("/turn-credentials"), None).await, 404);
         assert_eq!(r.status_of("GET", &t("/prekeys/devices"), None).await, 200);
     }
     // One device's prekeys are its own: the linked upload left the primary's.
@@ -446,4 +454,39 @@ async fn deposits_are_rate_limited_per_address_and_in_total() {
         let path = format!("/status?token={PRIMARY}");
         assert_eq!(r.call_from(from, "GET", &path, None).await.0, 200);
     }
+}
+
+/// The call relay's credentials: minted by the mailbox for any of the
+/// owner's devices, naming the relay at the host the device dialed.
+#[tokio::test]
+async fn turn_credentials_name_the_relay_where_the_device_dialed() {
+    let port = loop {
+        let a = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let p = a.local_addr().unwrap().port();
+        if p < u16::MAX && tokio::net::UdpSocket::bind(("127.0.0.1", p + 1)).await.is_ok() {
+            break p;
+        }
+    };
+    let turn = crate::turn::Turn::start("s".repeat(32), port, None).await.unwrap();
+    let r = relay_full(crate::MAX_QUEUE_BYTES, limit::Limits::off(), Some(Arc::new(turn)));
+    assert_eq!(r.state.mailbox.add_device(LINKED, "linked", None), 2);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!("/turn-credentials?token={LINKED}"))
+        .header("host", "203.0.113.7:42005")
+        .body(Body::empty())
+        .unwrap();
+    let response = crate::router(r.state.clone()).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["urls"], json!([format!("turn:203.0.113.7:{port}?transport=udp")]));
+    let username = body["username"].as_str().unwrap();
+    assert!(username.ends_with(":stonechat"));
+    assert_eq!(
+        body["credential"],
+        crate::turn::credential_for(&"s".repeat(32), username)
+    );
+    assert_eq!(body["ttl"], crate::turn::TTL.as_secs());
 }

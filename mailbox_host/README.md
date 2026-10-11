@@ -66,6 +66,11 @@ App Store / Google Play on your phone and each friend's.
   two. The UDP half carries the browser transport (QUIC): without it phones work
   perfectly and no browser can reach any mailbox on this box, which reads like a
   client bug and is not.
+- Also **43000–43049/udp** (`STONECHAT_MAILBOX_HOST_TURN_PORT_BASE` through base
+  + 2 × capacity − 1): each guest's call relay, two ports per guest. Without
+  them messaging is untouched and calls only connect where the two phones can
+  reach each other directly — which, from a phone on mobile data, they
+  usually cannot.
 - Hosting at home instead? Forward those same ports on your router to the box,
   and use your connection's public IP (or a dynamic-DNS name if it rotates).
 
@@ -133,6 +138,7 @@ All the knobs (in `.env`):
 | `STONECHAT_MAILBOX_HOST_ADVERTISE_HOST` | — (required) | Public host/IP guests connect to |
 | `STONECHAT_MAILBOX_HOST_CAPACITY` | `25` | Max guest mailboxes on this host |
 | `STONECHAT_MAILBOX_HOST_PORT_BASE` | `42000` | First guest mailbox port; guests get `base…base+capacity−1` |
+| `STONECHAT_MAILBOX_HOST_TURN_PORT_BASE` | `43000` | First call-relay port; guest *i* gets `base+2i` and the next (UDP, same numbers inside and out) |
 | `STONECHAT_MAILBOX_HOST_IMAGE` | `ghcr.io/stonechat-app/relay:latest` | Mailbox image; pulled if not already on the box. Ignored once a binary is uploaded through `POST /v1/relay`. Managed mode refuses this floating default — pin a digest or upload a binary, or the hub cannot say which relay its users run |
 | `STONECHAT_MAILBOX_HOST_MANAGED` | — | `1` → a hub places mailboxes here; invites are refused |
 | `STONECHAT_MAILBOX_HOST_RELAY_DIR` | the DB's directory | Where uploaded relay binaries are kept |
@@ -233,8 +239,8 @@ lives on their phones, and they can re-home their mailboxes anywhere.
 
 ### TL;DR
 
-1. Linux VM (or home box) with a **static public IP**; open inbound TCP
-   **8200** and **42000–42024**.
+1. Linux VM (or home box) with a **static public IP**; open inbound
+   **8200/tcp**, **42000–42024** (TCP and UDP) and **43000–43049/udp**.
 2. `curl -fsSL https://get.docker.com | sudo sh`, then
    `sudo git clone https://github.com/stonechat-app/stonechat.git /opt/stonechat`.
 3. In `/opt/stonechat/mailbox_host`: `cp .env.example .env`, set the admin

@@ -1,6 +1,6 @@
 [package]
 name = "stonechat-relay"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Stonechat routing server — a single user's encrypted mailbox (Rust port of server/main.py)"
 license = "AGPL-3.0-only"
@@ -33,6 +33,12 @@ sha2 = "0.10"
 time = { version = "0.3", default-features = false }
 wtransport = "0.7"
 tower = { version = "0.5.3", features = ["util"] }
+# The call relay (src/turn.rs): TURN in the mailbox itself, so a call that the
+# networks will not let through directly still connects. Pure Rust.
+turn = "0.17"
+util = { package = "webrtc-util", version = "0.17" }
+async-trait = "0.1"
+ring = "0.17"
 
 [dev-dependencies]
 # The end-to-end WebTransport test drives the relay binary over both of its

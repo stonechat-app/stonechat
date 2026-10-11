@@ -25,7 +25,8 @@ disables), `STONECHAT_WT_ADVERTISE` (comma-separated hosts/IPs the browser
 transport's certificates must name — see below), `STONECHAT_DB` (`mailbox.db`),
 `STONECHAT_BLOBS` (`blobs`),
 `STONECHAT_TLS_DIR` (DB's directory),
-`STONECHAT_TURN_SECRET`/`STONECHAT_TURN_PORT`, `STONECHAT_PUSH_GATEWAY`/`STONECHAT_PUSH_KEY`,
+`STONECHAT_TURN_PORT` (3478, UDP, plus the next port; `0` disables — see "The
+call relay"), `STONECHAT_PUSH_GATEWAY`/`STONECHAT_PUSH_KEY`,
 `STONECHAT_MAX_QUEUE_BYTES` and `STONECHAT_LIMIT_INBOX`/`_BLOB`/`_BUNDLE`
 (see "What a stranger can cost" below).
 
@@ -201,6 +202,33 @@ sealed sender means anyone can post to anyone's mailbox and a *sender* holds no
 token for the *recipient's* relay. Gating the session made delivery impossible
 for exactly the case this transport exists to serve; it was caught by writing
 the client. Each route authenticates itself, as it does over HTTP.
+
+### The call relay (`STONECHAT_TURN_PORT`)
+
+A call is WebRTC between the two phones and never passes through a mailbox's
+queue. When the networks will not let the phones reach each other (a carrier's
+NAT, hotel Wi-Fi), one side's packets need forwarding by something on a public
+address, and that is the owner's own mailbox: `src/turn.rs` is a TURN server
+(RFC 5766) inside this binary. No coturn beside it, no secret to share with
+one. The media is DTLS-SRTP keyed between the phones, so what it forwards is
+ciphertext, like the mail.
+
+Two UDP ports, `STONECHAT_TURN_PORT` (3478) and the next one. The first is
+where the owner's devices knock — it answers plain STUN too, so the app learns
+its own public address from its mailbox rather than from a third party. The
+second is the relay port, which exists as an allocation only while a call is
+up. One owner, one call, one port; `GET /turn-credentials` (which the app calls
+before every call) ends the allocation of the previous call, so an app that
+died mid-call never blocks the next one. The relay port must be published on
+the **same number** outside a container as inside: the relay tells the other
+phone which port to send to.
+
+Credentials are coturn's REST scheme, unchanged on the wire:
+`username = "<expiry>:stonechat"`, `credential = base64(HMAC-SHA1(secret,
+username))`, six hours. The secret is the mailbox's own, generated into
+`STONECHAT_TLS_DIR/turn-secret` on first start. `0` disables the whole thing;
+the route then answers 404 and the app places calls with no relay, which
+connect wherever a direct path exists.
 
 Docker: `docker build -t stonechat-relay:rust .` (self-building dev image;
 production ships a prebuilt binary — RUST_PORT.md "Packaging").

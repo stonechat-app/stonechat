@@ -148,6 +148,7 @@ jobs:
           STONECHAT_BLOBS="$DATA/blobs" \
           STONECHAT_TLS_DIR="$DATA" \
           STONECHAT_PORT=8477 \
+          STONECHAT_TURN_PORT=0 \
             "target/$TARGET/release/stonechat-relay" > "$DATA/relay.log" 2>&1 &
           RELAY_PID=$!
           trap 'kill "$RELAY_PID" 2>/dev/null || true' EXIT

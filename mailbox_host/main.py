@@ -45,6 +45,8 @@ Config (env):
     STONECHAT_MAILBOX_HOST_CAPACITY        max guest mailboxes (default 25)
     STONECHAT_MAILBOX_HOST_PORT_BASE       first guest mailbox port; guests are published
                                            on base..base+capacity-1 (default 42000)
+    STONECHAT_MAILBOX_HOST_TURN_PORT_BASE  first call-relay port; each guest gets two
+                                           UDP ports, base+2i and base+2i+1 (default 43000)
     STONECHAT_MAILBOX_HOST_IMAGE           mailbox image, pulled if not present locally
                                            (default ghcr.io/stonechat-app/relay:latest).
                                            Managed mode refuses the floating default —
@@ -104,6 +106,7 @@ RELAY_DIR = Path(os.environ.get(
     "STONECHAT_MAILBOX_HOST_RELAY_DIR", str(Path(DB_PATH).resolve().parent)))
 CAPACITY = int(os.environ.get("STONECHAT_MAILBOX_HOST_CAPACITY", "25"))
 PORT_BASE = int(os.environ.get("STONECHAT_MAILBOX_HOST_PORT_BASE", "42000"))
+TURN_PORT_BASE = int(os.environ.get("STONECHAT_MAILBOX_HOST_TURN_PORT_BASE", "43000"))
 DEFAULT_IMAGE = "ghcr.io/stonechat-app/relay:latest"
 IMAGE = os.environ.get("STONECHAT_MAILBOX_HOST_IMAGE", DEFAULT_IMAGE)
 RUNTIME = os.environ.get("STONECHAT_MAILBOX_HOST_RUNTIME", "")
@@ -120,6 +123,12 @@ SERVER_PORT = 8080
 # firewall rule for the guest range covers both protocols and there is no second
 # range to forget. TCP and UDP bindings of one number do not collide.
 WT_PORT = 8443
+# The call relay (relay/src/turn.rs): the port the owner's devices knock on
+# and the one after it, where the call is forwarded. The number the relay
+# tells a phone to send to must be the number the host publishes, so unlike
+# the two above these are the SAME inside and outside the container: guest i
+# gets TURN_PORT_BASE + 2i and the next one.
+TURN_PORTS_PER_GUEST = 2
 # Wire protocol version (PROTOCOL.md "Versioning"), reported in /health so a
 # prober can see what this mailbox host speaks.
 WIRE_VERSION = 1
@@ -487,10 +496,17 @@ def _ensure_image_present(image: str) -> None:
         _docker("pull", image)
 
 
+def turn_ports(port: int) -> tuple[int, int]:
+    """The guest on mailbox port `port` relays its calls on these two."""
+    first = TURN_PORT_BASE + TURN_PORTS_PER_GUEST * (port - PORT_BASE)
+    return first, first + TURN_PORTS_PER_GUEST - 1
+
+
 def _launch_container(owner_id: str, owner_token: str, port: int,
                       push_key: str, push_gateway: str) -> str:
     image = _relay_image()
     name = f"stonechat-hosted-{owner_id[3:11].lower().replace('-', '')}"
+    turn_first, turn_last = turn_ports(port)
     args = [
         "run", "-d",
         "--name", name,
@@ -498,6 +514,9 @@ def _launch_container(owner_id: str, owner_token: str, port: int,
         "-p", f"{port}:{SERVER_PORT}",
         # The browser transport. Same host port number, UDP — see WT_PORT.
         "-p", f"{port}:{WT_PORT}/udp",
+        # The call relay, same numbers on both sides — see TURN_PORTS_PER_GUEST.
+        "-p", f"{turn_first}-{turn_last}:{turn_first}-{turn_last}/udp",
+        "-e", f"STONECHAT_TURN_PORT={turn_first}",
         # The name the browser transport's certificates must carry. The relay
         # cannot discover it (inside the container it sees a private address),
         # and a certificate without a matching SAN is refused by browsers with

@@ -151,3 +151,31 @@ class RelayUpload(Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("openssl"), "openssl unavailable")
+class CallRelayPorts(unittest.TestCase):
+    """Each guest's call relay is two UDP ports of its own, published on the
+    same numbers inside and out: the relay names them to the other phone."""
+
+    def setUp(self):
+        self.state = Path(tempfile.mkdtemp(prefix="stonechat-host-test-"))
+        self.addCleanup(shutil.rmtree, self.state, ignore_errors=True)
+
+    def test_guests_get_two_ports_each_from_the_second_pool(self):
+        host = load(self.state, STONECHAT_MAILBOX_HOST_CAPACITY="3")
+        self.assertEqual(host.turn_ports(42000), (43000, 43001))
+        self.assertEqual(host.turn_ports(42002), (43004, 43005))
+        host = load(self.state, STONECHAT_MAILBOX_HOST_PORT_BASE="50000",
+                    STONECHAT_MAILBOX_HOST_TURN_PORT_BASE="51000")
+        self.assertEqual(host.turn_ports(50001), (51002, 51003))
+
+    def test_the_container_is_told_and_published_the_same_numbers(self):
+        host = load(self.state)
+        with mock.patch.object(host, "_docker") as docker, \
+                mock.patch.object(host, "_relay_image", return_value="img@sha256:x"):
+            host._launch_container("SC-ABCD-EFGH-IJKL", "tok", 42001, "pk", "")
+        args = docker.call_args.args
+        self.assertIn("43002-43003:43002-43003/udp", args)
+        self.assertEqual(args[args.index("-p") + 1], f"42001:{host.SERVER_PORT}")
+        self.assertIn("STONECHAT_TURN_PORT=43002", args)

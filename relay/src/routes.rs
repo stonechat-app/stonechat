@@ -11,17 +11,13 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use base64::engine::general_purpose::STANDARD as B64;
 use blake2::Digest;
-use base64::Engine;
 use futures_util::StreamExt;
-use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
-use sha1::Sha1;
 use tokio::io::AsyncReadExt;
 
 use crate::db::{OpkUpload, Put, SpkUpload, PRIMARY_DEVICE};
-use crate::{blobs, push, AppState, BLOB_CHUNK_BYTES, MAX_BLOB_BYTES, MAX_CERT_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, TURN_TTL_S, WIRE_VERSION};
+use crate::{blobs, push, AppState, BLOB_CHUNK_BYTES, MAX_BLOB_BYTES, MAX_CERT_BYTES, MAX_ENVELOPE_BYTES, MAX_KOPKS, MAX_OPKS, MAX_PREKEY_UPLOAD_BYTES, WIRE_VERSION};
 
 fn detail(status: StatusCode, msg: &str) -> Response {
     (status, Json(json!({"detail": msg}))).into_response()
@@ -563,24 +559,19 @@ pub async fn turn_credentials(
     if let Err(r) = auth_device(&state, &q) {
         return r;
     }
-    if state.cfg.turn_secret.is_empty() {
+    let Some(turn) = state.turn.as_ref() else {
         return detail(StatusCode::NOT_FOUND, "no TURN relay on this mailbox");
-    }
-    let expiry = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + TURN_TTL_S;
-    let username = format!("{expiry}:stonechat");
-    let mut mac = Hmac::<Sha1>::new_from_slice(state.cfg.turn_secret.as_bytes()).unwrap();
-    mac.update(username.as_bytes());
-    let credential = B64.encode(mac.finalize().into_bytes());
+    };
+    // The host the device dialed is where the relay port is too, and
+    // minting is what frees the port from a call that never hung up
+    // (turn.rs).
     let host = host_from_headers(&headers).unwrap_or_default();
+    let (username, credential) = turn.mint(&host).await;
     Json(json!({
-        "urls": [format!("turn:{host}:{}?transport=udp", state.cfg.turn_port)],
+        "urls": [format!("turn:{host}:{}?transport=udp", turn.port)],
         "username": username,
         "credential": credential,
-        "ttl": TURN_TTL_S,
+        "ttl": crate::turn::TTL.as_secs(),
     }))
     .into_response()
 }
@@ -813,9 +804,10 @@ mod tests {
     /// post-rebrand username: b64(HMAC-SHA1("test-turn-secret", "1760000000:stonechat"))
     #[test]
     fn turn_credential_vector() {
-        let mut mac = Hmac::<Sha1>::new_from_slice(b"test-turn-secret").unwrap();
-        mac.update(b"1760000000:stonechat");
-        assert_eq!(B64.encode(mac.finalize().into_bytes()), "LMWqjiuziEnqliLGAALmWl1Ka+E=");
+        assert_eq!(
+            crate::turn::credential_for("test-turn-secret", "1760000000:stonechat"),
+            "LMWqjiuziEnqliLGAALmWl1Ka+E="
+        );
     }
 
     #[test]

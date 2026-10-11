@@ -23,4 +23,8 @@ ENV STONECHAT_DB=/data/mailbox.db \
 EXPOSE 8080
 # The browser transport is QUIC, so UDP.
 EXPOSE 8443/udp
+# The call relay (src/turn.rs): where the owner's devices knock, and the one
+# port after it that carries a call. Publish both on the SAME host numbers —
+# the relay tells the other phone which port to send to.
+EXPOSE 3478-3479/udp
 ENTRYPOINT ["/stonechat-relay"]

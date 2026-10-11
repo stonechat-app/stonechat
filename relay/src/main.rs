@@ -34,6 +34,7 @@ mod link;
 mod push;
 mod routes;
 mod tls;
+mod turn;
 mod wt;
 mod wtcert;
 mod ws;
@@ -82,13 +83,10 @@ pub const PUSH_DEBOUNCE_RING: Duration = Duration::from_secs(2);
 // delivery. Call offers use the shorter window; ringing can't wait.
 pub const PUSH_ACK_GRACE: Duration = Duration::from_secs(10);
 pub const PUSH_ACK_GRACE_RING: Duration = Duration::from_secs(2);
-pub const TURN_TTL_S: u64 = 6 * 3600;
 
 pub struct Config {
     pub owner_id: String,
     pub owner_token: String,
-    pub turn_secret: String,
-    pub turn_port: u16,
     pub push_gateway: String,
     pub push_key: String,
 }
@@ -111,6 +109,8 @@ pub struct AppState {
     pub build: String,
     /// The browser transport's certificate schedule, if it is enabled.
     pub wt_certs: Option<Arc<wtcert::CertSchedule>>,
+    /// The call relay, if it is enabled (turn.rs).
+    pub turn: Option<Arc<turn::Turn>>,
     pub http: reqwest::Client,
     /// Keyed by (device, ring) — see push::ping_due.
     pub last_gateway_ping: Mutex<HashMap<(i64, bool), Instant>>,
@@ -233,11 +233,16 @@ async fn main() {
         .parse()
         .expect("bad STONECHAT_MAX_QUEUE_BYTES");
 
+    // The call relay: UDP, this port and the next one. 0 turns it off; a
+    // mailbox without it still routes mail, and calls connect only where
+    // the networks allow a direct path.
+    let turn_port: u16 = env_or("STONECHAT_TURN_PORT", "3478")
+        .parse()
+        .expect("bad STONECHAT_TURN_PORT");
+
     let cfg = Config {
         owner_id,
         owner_token,
-        turn_secret: env_or("STONECHAT_TURN_SECRET", ""),
-        turn_port: env_or("STONECHAT_TURN_PORT", "3478").parse().expect("bad STONECHAT_TURN_PORT"),
         push_gateway: env_or("STONECHAT_PUSH_GATEWAY", "").trim_end_matches('/').to_string(),
         push_key: env_or("STONECHAT_PUSH_KEY", ""),
     };
@@ -276,6 +281,28 @@ async fn main() {
             .expect("webtransport certificate schedule"),
         ))
     };
+    // Like the browser transport: failing to bind must not take the mailbox
+    // down, and the public name is the one the browser transport advertises
+    // until the first call tells us better (turn.rs).
+    let turn = if turn_port == 0 {
+        None
+    } else {
+        let secret = turn::load_or_generate_secret(&tls_dir).expect("turn secret");
+        let advertise = env_or("STONECHAT_WT_ADVERTISE", "")
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .find(|s| !s.is_empty());
+        match turn::Turn::start(secret, turn_port, advertise).await {
+            Ok(t) => {
+                log::info!("call relay on udp {turn_port} (relay port {})", turn_port + 1);
+                Some(Arc::new(t))
+            }
+            Err(e) => {
+                log::error!("call relay disabled: {e}");
+                None
+            }
+        }
+    };
     let state = Arc::new(AppState {
         mailbox: db::Mailbox::open(&db_path, &cfg.owner_token, max_queue_bytes)
             .expect("mailbox db"),
@@ -284,6 +311,7 @@ async fn main() {
         tls_fp: tls.fingerprint_b64.clone(),
         build: own_build_id(),
         wt_certs: wt_certs.clone(),
+        turn,
         http: reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()

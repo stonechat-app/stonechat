@@ -74,7 +74,8 @@ echo "{binary_sha256}  /opt/stonechat/stonechat-relay" | sha256sum -c -
 chmod +x /opt/stonechat/stonechat-relay
 
 # Cloud VMs behind 1:1 NAT (GCP, EC2) must advertise the *public* address —
-# coturn's external-ip and the mailbox host's invite URLs — and the only thing
+# the browser transport's certificate names, the call relay's address and the
+# mailbox host's invite URLs — and the only thing
 # that knows it is the cloud's own metadata service. Every cloud puts it
 # somewhere different, so ask them in turn, then fall back to the interface's
 # own global address, which IS the public one on every provider that does not
@@ -82,8 +83,8 @@ chmod +x /opt/stonechat/stonechat-relay
 #
 # -f on each probe is load-bearing. Several clouds serve a *different* metadata
 # tree at 169.254.169.254, and without it curl prints the 404 body and that
-# body becomes the "address" — a subjectAltName and a coturn external-ip built
-# out of an error page, on a box where every other check passes.
+# body becomes the "address" — a subjectAltName and a relay address built out
+# of an error page, on a box where every other check passes.
 PUBLIC_IP=""
 public_ip_ok() {{
   case "$1" in
@@ -114,35 +115,6 @@ if [ -z "$PUBLIC_IP" ]; then
   if public_ip_ok "$candidate"; then PUBLIC_IP="$candidate"; fi
 fi
 
-# TURN relay for calls (PROTOCOL.md "Calls"). Best-effort: a mailbox without
-# coturn still routes mail — the app just falls back to STUN-only calling.
-TURN_SECRET=""
-if command -v apt-get >/dev/null; then
-  apt-get update -y && apt-get install -y coturn openssl || true
-elif command -v dnf >/dev/null; then
-  dnf install -y coturn openssl || true
-fi
-if command -v turnserver >/dev/null; then
-  TURN_SECRET=$(openssl rand -hex 32)
-  cat > /etc/turnserver.conf <<TURN_EOF
-listening-port={turn_port}
-fingerprint
-use-auth-secret
-static-auth-secret=$TURN_SECRET
-realm=stonechat
-min-port={turn_min_port}
-max-port={turn_max_port}
-no-cli
-no-tls
-no-dtls
-TURN_EOF
-  if [ -n "$PUBLIC_IP" ]; then echo "external-ip=$PUBLIC_IP" >> /etc/turnserver.conf; fi
-  # Older Debian ships coturn disabled by default.
-  sed -i 's/^#TURNSERVER_ENABLED=1/TURNSERVER_ENABLED=1/' /etc/default/coturn 2>/dev/null || true
-  {{ systemctl enable coturn && systemctl restart coturn; }} 2>/dev/null || \\
-    {{ systemctl enable turnserver && systemctl restart turnserver; }} 2>/dev/null || true
-fi
-
 cat > /etc/systemd/system/stonechat.service <<UNIT_EOF
 [Unit]
 Description=Stonechat routing server
@@ -156,7 +128,7 @@ Environment=STONECHAT_DB=/var/lib/stonechat/mailbox.db
 Environment=STONECHAT_BLOBS=/var/lib/stonechat/blobs
 Environment=STONECHAT_PUSH_GATEWAY={push_gateway}
 Environment=STONECHAT_PUSH_KEY={push_key}
-Environment=STONECHAT_TURN_SECRET=$TURN_SECRET
+# The call relay (relay/src/turn.rs): this UDP port and the next.
 Environment=STONECHAT_TURN_PORT={turn_port}
 # The browser transport's certificates must name the address clients dial.
 # A certificate with no matching subjectAltName is refused by browsers with an
@@ -280,8 +252,11 @@ def replace_ports(args: list[str], tcp: int, udp: int) -> list[str]:
             out[i] = f"{udp}:{WT_PORT}/udp"
     return out
 
+# The call relay lives in the mailbox binary (relay/src/turn.rs): UDP on
+# TURN_PORT for the owner's devices to knock, and the one port after it for
+# the call itself.
 TURN_PORT = 3478
-TURN_RELAY_PORTS = (49152, 65535)  # coturn's default ephemeral relay range
+TURN_PORTS = (TURN_PORT, TURN_PORT + 1)
 MAILBOX_HOST_PORT = 8200
 # The mailbox host publishes guest mailboxes on fixed ports from
 # STONECHAT_MAILBOX_HOST_PORT_BASE (default 42000..42000+capacity-1, inside this
@@ -395,7 +370,5 @@ def build_startup_script(
         push_gateway=push_gateway,
         push_key=mint_push_key(),
         turn_port=TURN_PORT,
-        turn_min_port=TURN_RELAY_PORTS[0],
-        turn_max_port=TURN_RELAY_PORTS[1],
         mailbox_host_section=mailbox_host_section,
     )

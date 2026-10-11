@@ -1516,19 +1516,27 @@ relay, below).
 
 #### TURN (`/turn-credentials`)
 
-NAT-hostile paths need a relay: **the user's own mailbox box** runs a coturn
-beside `stonechat-relay`, sharing a secret via `STONECHAT_TURN_SECRET`. The
-mailbox mints ephemeral credentials (coturn's TURN REST API scheme —
+NAT-hostile paths need a relay: **the user's own mailbox is one.** The relay
+binary carries a TURN server (RFC 5766; `relay/src/turn.rs`) on UDP
+`STONECHAT_TURN_PORT` (default 3478), with the one port after it as the relay
+port. It answers plain STUN Binding too, so a client learns its reflexive
+address from its own mailbox and needs no third-party STUN server. The
+mailbox mints ephemeral credentials in coturn's TURN REST API scheme —
 `username = "<expiry>:stonechat"` with `expiry` = now + 21 600 s in Unix
-seconds, `credential = base64(HMAC-SHA1(secret, username))`):
+seconds, `credential = base64(HMAC-SHA1(secret, username))` — from a secret
+of its own, generated on first start:
 
 | Method | Path                | Auth      | Description |
 |--------|---------------------|-----------|-------------|
-| GET    | `/turn-credentials` | any device token | `{"urls": ["turn:<host>:<port>?transport=udp"], "username", "credential", "ttl": 21600}`. `<host>` is the host the client addressed the request to; `<port>` is `STONECHAT_TURN_PORT` (default 3478). 404 when the relay has no TURN (`STONECHAT_TURN_SECRET` unset). |
+| GET    | `/turn-credentials` | any device token | `{"urls": ["turn:<host>:<port>?transport=udp"], "username", "credential", "ttl": 21600}`. `<host>` is the host the client addressed the request to, which is also what the relay port is advertised at; `<port>` is `STONECHAT_TURN_PORT`. 404 when the relay has no TURN (`STONECHAT_TURN_PORT=0`). |
 
-Each side fetches credentials from its **own** mailbox and contributes its
-own relay candidates; either side's relay can carry the call. Clients fall
-back to STUN-only when their mailbox serves no TURN.
+A mailbox serves one owner, so it relays one call at a time: minting
+credentials ends any allocation earlier credentials still hold. Clients MUST
+fetch credentials per call, not cache them — the fetch is what frees the
+relay port after a call that never hung up. Each side fetches from its
+**own** mailbox and contributes its own relay candidates; either side's relay
+can carry the call. Clients fall back to a public STUN server when their
+mailbox serves no TURN.
 
 ### Media (photos, videos, voice notes, documents)
 

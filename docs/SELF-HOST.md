@@ -48,8 +48,9 @@ an always-on Linux box at home.
 - A Linux machine.
 - A **public IP or DNS name**. The address is published in the directory, and
   your contacts dial it directly.
-- Inbound **8080/tcp** (the mailbox) and **8443/udp** (the browser transport)
-  open in your cloud firewall, or forwarded on your router.
+- Inbound **8080/tcp** (the mailbox), **8443/udp** (the browser transport) and
+  **3478–3479/udp** (the call relay) open in your cloud firewall, or forwarded
+  on your router.
 - The Stonechat app, with an identity already created. Copy your Stonechat ID
   (`SC-…`) from it.
 
@@ -82,7 +83,7 @@ export STONECHAT_PUBLIC_ADDR=$(curl -s ifconfig.me)   # or your DNS name
 echo "$STONECHAT_PUBLIC_ADDR"
 
 docker run -d --name stonechat-mailbox --restart unless-stopped \
-  -p 8080:8080 -p 8443:8443/udp \
+  -p 8080:8080 -p 8443:8443/udp -p 3478-3479:3478-3479/udp \
   -v stonechat-mailbox:/data \
   -e STONECHAT_OWNER_ID="$STONECHAT_OWNER_ID" \
   -e STONECHAT_OWNER_TOKEN="$STONECHAT_MAILBOX_TOKEN" \
@@ -109,6 +110,14 @@ What each piece is for:
   (`relay/README.md` "The browser transport").
 - **Port 8443/udp.** The app assumes the browser transport is on 8443 of the same
   host, so publish it on that port.
+- **Ports 3478–3479/udp.** The call relay (`relay/README.md` "The call relay").
+  A call is between the two phones; when a carrier's NAT keeps them from
+  reaching each other, your mailbox forwards the (encrypted) packets. Publish
+  both on the **same numbers** — the mailbox tells the other phone which port
+  to send to. A relayed video call runs through your uplink at 1–2 Mbit/s each
+  way: fine on a VPS, worth knowing on a home line with slow upload. Leave the
+  ports out and messaging is untouched; calls then connect only where the two
+  phones can reach each other directly.
 
 Not using Docker? The release also ships the binary itself
 (`stonechat-relay-x86_64-linux-musl`, statically linked, no dependencies). Run
@@ -172,10 +181,11 @@ company.
 
 - A Linux VM (1 vCPU / 1 GB is plenty) or an always-on home box, with a
   **static public IP**. The IP is baked into every mailbox address on the host.
-- Open inbound **8200/tcp** (the mailbox host itself) and **42000–42024, TCP
+- Open inbound **8200/tcp** (the mailbox host itself), **42000–42024, TCP
   and UDP** (guest mailboxes: `STONECHAT_MAILBOX_HOST_PORT_BASE` through base +
-  capacity − 1). Each guest uses the same port number for both. The UDP half is
-  the browser transport.
+  capacity − 1; each guest uses the same port number for both, and the UDP
+  half is the browser transport) and **43000–43049/udp** (each guest's call
+  relay, two ports per guest from `STONECHAT_MAILBOX_HOST_TURN_PORT_BASE`).
 
 > **Browsers and mailboxes on a mailbox host.** Phones work fully. Browser access to
 > mailboxes on a mailbox host is not wired up in the app yet: a friend who joins

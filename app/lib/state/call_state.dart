@@ -323,26 +323,31 @@ class CallState extends ChangeNotifier {
     };
   }
 
-  /// Own mailbox's TURN (when it runs one) + public STUN. Either side's
-  /// relay candidates can carry the call, so we only need our own.
+  /// Own mailbox's call relay (relay/src/turn.rs). It answers STUN too, so
+  /// the phone learns its public address from its own mailbox and nothing
+  /// about a call leaves the user's infrastructure. Either side's relay can
+  /// carry the call, so we only need our own. A mailbox without one (an
+  /// older relay, or STONECHAT_TURN_PORT=0) leaves a public STUN server as
+  /// the fallback: calls then connect only where a direct path exists.
   Future<List<Map<String, Object?>>> _iceServers() async {
-    final mailboxes = <Map<String, Object?>>[
-      {'urls': 'stun:stun.l.google.com:19302'},
-    ];
     final address = chat.mailboxAddress;
     final token = chat.mailboxToken;
     final tlsFp = chat.mailboxTlsFp;
     if (address != null && token != null && tlsFp != null) {
       final turn = await fetchTurnCredentials(address, token, tlsFp);
       if (turn != null) {
-        mailboxes.add({
-          'urls': turn.urls,
-          'username': turn.username,
-          'credential': turn.credential,
-        });
+        return [
+          {
+            'urls': turn.urls,
+            'username': turn.username,
+            'credential': turn.credential,
+          },
+        ];
       }
     }
-    return mailboxes;
+    return [
+      {'urls': 'stun:stun.l.google.com:19302'},
+    ];
   }
 
   /// Trickle ICE, batched: one envelope per ~300 ms burst instead of one
