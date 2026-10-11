@@ -20,9 +20,10 @@ REVIEW_INVITE_CODES, REVIEW_TEST_CONTACT, REVIEW_CONTACT_FIRST_NAME,
 REVIEW_CONTACT_LAST_NAME, REVIEW_CONTACT_PHONE, REVIEW_CONTACT_EMAIL.
 
 Two things this deliberately does not do, because neither can be done honestly
-without a human: upload screenshots (they must depict the real app) and set the
-privacy "nutrition labels" (that questionnaire has no public API and must be
-answered in the web UI — src/pages/privacy.astro in the stonechat-app/landing repo is the source text).
+without a human: take screenshots (they must depict the real app — once taken,
+appstore_screenshots.py uploads them) and set the privacy "nutrition labels"
+(that questionnaire has no public API and must be answered in the web UI —
+src/pages/privacy.astro in the stonechat-app/landing repo is the source text).
 
 Requires: pip install 'pyjwt[crypto]' httpx
 """
