@@ -540,8 +540,28 @@ def main() -> int:
             f"appInfos/{info['id']}", "appInfos", info["id"], rels
         )
 
+    # -- content rights: an app-level yes/no Apple asks once ----------------
+    rights = app_info.get("content_rights")
+    if rights:
+        app = client.get(f"apps/{app_id}")["data"]
+        current_rights = app["attributes"].get("contentRightsDeclaration")
+        if current_rights == rights:
+            print(f"  contentRights: already {rights}")
+        else:
+            print(f"  contentRights\n      - {current_rights or '(unset)'}\n      + {rights}")
+            client.patch(f"apps/{app_id}", "apps", app_id,
+                         {"contentRightsDeclaration": rights})
+
     # -- version copy: description, keywords, URLs ------------------------
     ver = listing["version"]
+    # Copyright lives on the version itself, not its localization, and the
+    # version cannot be added for review without it.
+    if ver.get("copyright"):
+        changes = diff(version["attributes"], {"copyright": ver["copyright"].strip()})
+        report("version", changes, version["attributes"])
+        if changes:
+            client.patch(f"appStoreVersions/{version['id']}", "appStoreVersions",
+                         version["id"], changes)
     ver_loc = localization(client, "appStoreVersions", version["id"], locale)
     desired = {
         "description": ver["description"].strip(),
@@ -603,7 +623,8 @@ def main() -> int:
         f"appStoreVersionLocalizations/{ver_loc['id']}/appScreenshotSets", limit=10
     )["data"]
     if not screenshots:
-        print("STILL MANUAL — screenshots: none uploaded (Apple requires 6.9\" iPhone)")
+        print("STILL MISSING — screenshots: none uploaded; take them, then run "
+              "scripts/appstore_screenshots.py")
     print("STILL MANUAL — privacy nutrition labels: no public API; answer in the web UI")
     print(f"               https://appstoreconnect.apple.com/apps/{app_id}/distribution")
 
