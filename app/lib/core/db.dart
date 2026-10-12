@@ -71,6 +71,7 @@ class ChatDb {
         await ensureBlocked(db);
         await ensureGroupIntegrity(db);
         await ensureDeviceTrust(db);
+        await ensureContactVerification(db);
       },
     );
     return ChatDb._(db);
@@ -122,6 +123,7 @@ class ChatDb {
         reply_to_preview TEXT,
         salt             TEXT,
         content_hash     TEXT,
+        mentions         TEXT,
         blob             TEXT,
         fail_reason      TEXT,
         attempts         INTEGER NOT NULL DEFAULT 0,
@@ -188,6 +190,7 @@ class ChatDb {
     await addColumn('groups', 'avatar', 'BLOB');
     await addColumn('messages', 'salt', 'TEXT');
     await addColumn('messages', 'content_hash', 'TEXT');
+    await addColumn('messages', 'mentions', 'TEXT');
     for (final create in [_createRosterOwed, _createGroupParked]) {
       await db.execute(
         create.replaceFirst('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
@@ -205,6 +208,15 @@ class ChatDb {
         create.replaceFirst('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
       );
     }
+  }
+
+  /// Key verification (a contact the user compared codes with in person)
+  /// arrived after the schema shipped. Same approach as [ensureBlocked].
+  @visibleForTesting
+  static Future<void> ensureContactVerification(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(contacts)');
+    if (cols.any((c) => c['name'] == 'verified_at')) return;
+    await db.execute('ALTER TABLE contacts ADD COLUMN verified_at INTEGER');
   }
 
   // The signed device manifest held for each identity we deal with — ours
@@ -1264,7 +1276,7 @@ class ChatDb {
   Future<List<Map<String, Object?>>> backupContacts() => _db.rawQuery(
     'SELECT stonechat_id, display_name, pubkey, status, mailbox_address, tls_fp, '
     'hub, created_at, pinned_at, expire_timer_ms, expire_timer_at, '
-    'muted_until, archived_at, 0 AS profile_at '
+    'muted_until, archived_at, verified_at, 0 AS profile_at '
     'FROM contacts ORDER BY created_at',
   );
 

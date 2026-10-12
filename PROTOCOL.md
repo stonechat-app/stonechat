@@ -1303,7 +1303,7 @@ history.
 | `sync_clear` | `{"peer" \| "group_id"}` | deletes that conversation's history; the conversation itself stays |
 | `sync_cert` | `{"cert"}` | from the primary to one linked device: a renewed certificate over that device's keys ("Device certificates"). Adopted only if it verifies against the identity key, names this device's ID, slot and keys, and is later than the one held |
 | `sync_block` | `{"peer", "blocked_at": <ms> \| null}` | blocks (`blocked_at` set) or unblocks (`null`) that Stonechat ID |
-| `sync_contact` | `{"peer", "pubkey", "status": "pending_out" \| "pending_in" \| "accepted" \| "removed", "display_name"?, "avatar"?: {"data", "mime"} \| null, "bundle_token"?, "hub"?}` | the contact as the sending device now holds it: created if unknown (`pubkey` MUST hash to `peer`, else the envelope is dropped), updated otherwise; `removed` deletes it and its sessions. Sent on every change a device makes to its contact list — a request sent or received, an accept, a decline — so the user's devices hold one list |
+| `sync_contact` | `{"peer", "pubkey", "status": "pending_out" \| "pending_in" \| "accepted" \| "removed", "display_name"?, "avatar"?: {"data", "mime"} \| null, "bundle_token"?, "hub"?, "verified_at"?: <ms> \| null}` | the contact as the sending device now holds it: created if unknown (`pubkey` MUST hash to `peer`, else the envelope is dropped), updated otherwise; `removed` deletes it and its sessions. Sent on every change a device makes to its contact list — a request sent or received, an accept, a decline — so the user's devices hold one list |
 | `sync_history` | `{"blob_id", "key", "blob_nonce", "fetch_token", "blob_host", "blob_tls_fp"}` | the sender's contacts, blocks, groups, rosters and text history, as the backup payload ("Local containers", gzip-compressed JSON) encrypted like a media blob and parked on the sender's own mailbox as a shared blob ("Group media"). The receiver fetches it from its own mailbox (`blob_host` MUST be it), decrypts, and merges with the backup's rules: existing rows win, so nothing the receiver already holds is overwritten |
 
 Exactly one of `peer` (a DM, the peer's ID) or `group_id` names the
@@ -1345,7 +1345,7 @@ no durable retry.
 | `profile_update`  | `{"display_name"?, "avatar"?: {"data": "<base64>", "mime"} \| null}` — wire form SHOULD set `push: false` |
 | `group_create` / `group_update` | `{"group_id", "name", "avatar"?: {"data", "mime"} \| null, "version", "admin", "members": [{"stonechat_id", "pubkey", "display_name"}], "expire_ms"?}` |
 | `group_sync`      | `{"group_id", "version"}` — "send me the roster"; `version` is the one the asker holds (0 for none). Wire form MUST set `push: false` |
-| `group_msg`       | `{"group_id", "text", "roster"?, "salt"?, "seen"?, "expire_after_ms"?, "reply_to"?}` — `roster`, `salt` and `seen` are described under "Groups" |
+| `group_msg`       | `{"group_id", "text", "mentions"?: ["SC-…"], "roster"?, "salt"?, "seen"?, "expire_after_ms"?, "reply_to"?}` — `roster`, `salt` and `seen` are described under "Groups". `mentions` names the members the sender called out with `@` in `text`; receivers drop any ID not on their roster, and a mention of the receiver is shown even where the group is muted (display data, never a reason to refuse the message) |
 | `group_media`     | `group_msg`'s fields minus `text`, plus `media`'s, plus `{"fetch_token", "blob_host", "blob_tls_fp"}` — see "Group media" |
 | `group_leave`     | `{"group_id"}`                         |
 | `receipt`         | `{"kind": "delivered"\|"read", "ids": ["<message id>", …]}` |
@@ -1428,6 +1428,17 @@ locally, clients offer jump-to-original. The block is cooperative display
 data, like reactions: receivers cap the preview length and ignore malformed
 blocks, and a lying sender can only misquote inside a conversation the
 session already authenticates them into.
+
+### Verification
+
+A Stonechat ID commits to the identity key, so verifying a contact is
+confirming, in person, that the ID is theirs: scanning their code, or
+reading the two IDs side by side. The result (`verified_at`) is local
+trust: stored on the device, mirrored to the user's other devices in
+`sync_contact`, and never sent to the contact. Because the key cannot
+change under an ID, the only thing that can hollow a verification out is
+a device joining the contact's set (`devices_v` rising): a client SHOULD
+say so in the conversation of a verified contact.
 
 ### Profiles (`profile_update`)
 

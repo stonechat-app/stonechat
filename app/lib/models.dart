@@ -33,6 +33,10 @@ class Contact {
   int? mutedUntil; // ms epoch until which the conversation is muted
   int? archivedAt; // ms epoch when the user archived this conversation
   Uint8List? avatar; // their profile photo (PROTOCOL.md "Profiles")
+  /// When the user confirmed in person that this ID is this person
+  /// (compared codes); null = never. Local trust, mirrored between the
+  /// user's own devices with the rest of the contact.
+  int? verifiedAt;
   int profileAt; // sent_at ms of the last applied profile (last-writer-wins)
   /// The peer's device-set version, as last seen on an /inbox response. A bump
   /// means re-fetch their device list, X3DH to anything new, and drop sessions
@@ -60,6 +64,7 @@ class Contact {
     this.mutedUntil,
     this.archivedAt,
     this.avatar,
+    this.verifiedAt,
     this.profileAt = 0,
     this.devicesV = 0,
     this.bundleToken,
@@ -70,6 +75,8 @@ class Contact {
   bool get isMuted =>
       (mutedUntil ?? 0) > DateTime.now().millisecondsSinceEpoch;
   bool get isArchived => archivedAt != null;
+
+  bool get isVerified => verifiedAt != null;
 
   Map<String, Object?> toRow() => {
         'stonechat_id': stonechatId,
@@ -90,6 +97,7 @@ class Contact {
         'profile_at': profileAt,
         'devices_v': devicesV,
         'bundle_token': bundleToken,
+        'verified_at': verifiedAt,
       };
 
   factory Contact.fromRow(Map<String, Object?> r) => Contact(
@@ -113,6 +121,7 @@ class Contact {
         profileAt: r['profile_at'] as int,
         devicesV: (r['devices_v'] as int?) ?? 0,
         bundleToken: r['bundle_token'] as String?,
+        verifiedAt: r['verified_at'] as int?,
       );
 }
 
@@ -213,6 +222,10 @@ class Message {
   // what arrived, which later edits do not change.
   final String? salt;
   final String? contentHash;
+  /// Group messages: the members the sender called out with @
+  /// (PROTOCOL.md "group_msg"). Highlighted in the bubble; a mention of
+  /// us is shown even where the group is muted.
+  final List<String> mentions;
   /// Outgoing group media only: the one shared blob this message's fan-out
   /// points at (PROTOCOL.md "Group media"). Persisted because a retry to a
   /// member we couldn't reach must reference the *same* upload — re-encrypting
@@ -249,6 +262,7 @@ class Message {
     this.replyToPreview,
     this.salt,
     this.contentHash,
+    this.mentions = const [],
     this.blob,
     this.failReason,
     this.attempts = 0,
@@ -275,6 +289,7 @@ class Message {
         'reply_to_preview': replyToPreview,
         'salt': salt,
         'content_hash': contentHash,
+        'mentions': mentions.isEmpty ? null : jsonEncode(mentions),
         'blob': blob == null ? null : jsonEncode(blob!.toJson()),
         'fail_reason': failReason,
         'attempts': attempts,
@@ -301,6 +316,9 @@ class Message {
         replyToPreview: r['reply_to_preview'] as String?,
         salt: r['salt'] as String?,
         contentHash: r['content_hash'] as String?,
+        mentions: r['mentions'] == null
+            ? const []
+            : (jsonDecode(r['mentions'] as String) as List).cast<String>(),
         blob: r['blob'] == null
             ? null
             : SharedBlob.fromJson(

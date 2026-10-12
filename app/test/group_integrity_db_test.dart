@@ -48,6 +48,7 @@ void main() {
       ('groups', 'avatar'),
       ('messages', 'salt'),
       ('messages', 'content_hash'),
+      ('messages', 'mentions'),
     ]) {
       await db.execute('ALTER TABLE $table DROP COLUMN $column');
     }

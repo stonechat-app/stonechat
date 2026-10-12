@@ -36,6 +36,9 @@ Map<String, Object?> contactSyncPayload(
       : {'data': base64Encode(contact.avatar!), 'mime': 'image/jpeg'},
   if (contact.bundleToken != null) 'bundle_token': contact.bundleToken,
   if (contact.hub != null) 'hub': contact.hub,
+  // Trust travels too: the user verified them, not this phone. Always
+  // present, so removing a verification reaches the other devices.
+  'verified_at': contact.verifiedAt,
 };
 
 /// A parsed `sync_contact`. [avatar] is absent (unchanged), null (cleared)
@@ -49,6 +52,9 @@ class ContactSync {
   final Uint8List? avatar;
   final String? bundleToken;
   final String? hub;
+  /// `verified_at` absent (unchanged), null (unverified) or a time.
+  final bool verifiedGiven;
+  final int? verifiedAt;
 
   const ContactSync({
     required this.peer,
@@ -59,6 +65,8 @@ class ContactSync {
     this.avatar,
     this.bundleToken,
     this.hub,
+    this.verifiedGiven = false,
+    this.verifiedAt,
   });
 
   bool get removed => status == contactSyncRemoved;
@@ -102,6 +110,8 @@ ContactSync? parseContactSync(
       }
     }
   }
+  final verifiedGiven = payload.containsKey('verified_at');
+  final verifiedRaw = payload['verified_at'];
   return ContactSync(
     peer: peer,
     pubkeyB64: pubkey,
@@ -113,5 +123,7 @@ ContactSync? parseContactSync(
     hub: hub is String && (hub.startsWith('https://') || hub.startsWith('http://'))
         ? hub
         : null,
+    verifiedGiven: verifiedGiven,
+    verifiedAt: verifiedRaw is int && verifiedRaw > 0 ? verifiedRaw : null,
   );
 }

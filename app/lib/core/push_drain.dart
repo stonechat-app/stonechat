@@ -92,6 +92,15 @@ Future<void> pushBackgroundHandler(RemoteMessage message) async {
     final messages = entry.value;
     final last = messages.last;
     final group = chat.groupById(conversationId);
+    // Mute is honoured here, where the notification is made (the mailbox
+    // cannot know: sealed sender). A group message that names us cuts
+    // through (PROTOCOL.md "group_msg" mentions).
+    final muted =
+        group?.isMuted ?? chat.contactById(conversationId)?.isMuted ?? false;
+    final me = app.stonechatId;
+    if (muted && !messages.any((m) => me != null && m.mentions.contains(me))) {
+      continue;
+    }
     final sender = chat.contactById(last.senderId ?? conversationId);
     final senderName = sender?.displayName ?? 'Someone';
     final title = group != null ? '${group.name} · $senderName' : senderName;

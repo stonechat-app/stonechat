@@ -44,7 +44,15 @@ class NotificationService: UNNotificationServiceExtension {
   private func finish(with summary: DrainSummary?) {
     guard let handler = contentHandler, let content = bestAttempt else { return }
     contentHandler = nil
-    if let summary, let (title, body, thread) = summary.notification() {
+    if let summary, summary.shown.isEmpty, summary.silenced > 0 {
+      // Everything drained was for a muted conversation. An extension
+      // cannot cancel the alert, but content with no title, body or sound
+      // is not presented — mute, honoured where the notification is made.
+      content.title = ""
+      content.body = ""
+      content.sound = nil
+      content.badge = nil
+    } else if let summary, let (title, body, thread) = summary.notification() {
       content.title = title
       content.body = body
       content.threadIdentifier = thread
@@ -71,6 +79,8 @@ struct ShownMessage {
 
 struct DrainSummary {
   var shown: [ShownMessage] = []
+  /// Stored and acked, but for a muted conversation: nothing to show.
+  var silenced = 0
 
   /// Thread for a batch spanning conversations: grouped together, opens the list.
   static let mixedThread = "stonechat-mixed"
@@ -95,6 +105,7 @@ final class Drainer {
   private var ownId = ""
   private var edSeed = Data()
   private var pqSeed = Data()
+  private var silenced = 0
 
   func run(deadline: Date) -> DrainSummary? {
     // Identity + DB key from the shared keychain (first_unlock: readable
@@ -158,14 +169,20 @@ final class Drainer {
         }
       case .idle:
         nseLog.info("mailbox idle after \(frames) frame(s) — drained")
-        return summary.shown.isEmpty ? nil : summary
+        return done(summary)
       case .failed(let reason):
         nseLog.error("mailbox socket failed: \(reason, privacy: .public)")
-        return summary.shown.isEmpty ? nil : summary
+        return done(summary)
       }
     }
     nseLog.info("deadline reached after \(frames) frame(s), \(summary.shown.count) shown")
-    return summary.shown.isEmpty ? nil : summary
+    return done(summary)
+  }
+
+  private func done(_ summary: DrainSummary) -> DrainSummary? {
+    var s = summary
+    s.silenced = silenced
+    return s.shown.isEmpty && s.silenced == 0 ? nil : s
   }
 
   /// One sealed envelope. Returns a displayable line when the message was
@@ -259,6 +276,23 @@ final class Drainer {
       title = "\(group[0] ?? "Group") · \(member[0] ?? senderName)"
     }
 
+    // Mute is honoured here, where the notification is made (the mailbox
+    // cannot know: sealed sender). A group message that names us cuts
+    // through (PROTOCOL.md "group_msg" mentions).
+    let mutedUntil = db.query(
+      type == "group_msg"
+        ? "SELECT muted_until FROM groups WHERE id = ?"
+        : "SELECT muted_until FROM contacts WHERE stonechat_id = ?",
+      [conversationId])?.first ?? nil
+    let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+    let muted = (mutedUntil.flatMap { Int64($0) } ?? 0) > nowMs
+    let mentions = payload["mentions"] as? [String] ?? []
+    let silent = muted && !mentions.contains(ownId)
+    let mentionsJson: String? = mentions.isEmpty
+      ? nil
+      : (try? JSONSerialization.data(withJSONObject: mentions))
+          .flatMap { String(data: $0, encoding: .utf8) }
+
     let sentAt = Self.sentAtMs(inner["sent_at"] as? String)
     var expiresAt: Int64? = nil
     if let after = payload["expire_after_ms"] as? Int, after > 0 {
@@ -278,14 +312,16 @@ final class Drainer {
       """
       INSERT OR IGNORE INTO messages
         (id, contact_id, sender_id, outgoing, text, kind, sent_at, status,
-         deleted, expires_at, reply_to_id, reply_to_sender, reply_to_preview)
-      VALUES (?, ?, ?, 0, ?, 'text', ?, 'sent', 0, ?, ?, ?, ?)
+         deleted, expires_at, reply_to_id, reply_to_sender, reply_to_preview,
+         mentions)
+      VALUES (?, ?, ?, 0, ?, 'text', ?, 'sent', 0, ?, ?, ?, ?, ?)
       """,
       [
         .text(id), .text(conversationId), .text(senderId), .text(text),
         .int(sentAt), .int(expiresAt), .text(replyId),
         .text(replyId == nil ? nil : reply?["sender"] as? String),
         .text(replyId == nil ? nil : reply?["preview"] as? String),
+        .text(mentionsJson),
       ])
     guard let inserted else {
       nseLog.error("message insert failed: \(db.lastError, privacy: .public)")
@@ -309,6 +345,10 @@ final class Drainer {
       return nil
     }
     socket.ack(envelopeId)
+    if silent {
+      silenced += 1
+      return nil
+    }
     return ShownMessage(conversationId: conversationId, title: title, body: text)
   }
 

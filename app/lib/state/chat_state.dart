@@ -1242,6 +1242,16 @@ class ChatState extends ChangeNotifier {
   /// re-reads it, and remember the version we saw.
   void _noteDevicesV(Contact contact, int devicesV) {
     if (devicesV <= contact.devicesV) return;
+    // Their identity key cannot change (the ID commits to it), so the one
+    // thing verification can be fooled by is a device added to their set.
+    // Say so where they will see it; most apps whisper this.
+    if (contact.isVerified && contact.devicesV > 0) {
+      unawaited(_insertNotice(
+        contact.stonechatId,
+        "${contact.displayName}'s devices changed — if that's unexpected, "
+        'compare codes again',
+      ));
+    }
     contact.devicesV = devicesV;
     _peerDevices.remove(contact.stonechatId);
     unawaited(app.db.upsertContact(contact));
@@ -1678,6 +1688,16 @@ class ChatState extends ChangeNotifier {
 
   /// Tell our other devices about [contact] as we now hold it, or that it is
   /// gone. Best-effort, like every sync: the next change re-converges.
+  /// The user compared codes with this contact in person — or undid that.
+  /// Local trust, mirrored to the user's other devices like the rest of
+  /// the contact; nothing is sent to the contact.
+  Future<void> setVerified(Contact contact, bool verified) async {
+    contact.verifiedAt = verified ? DateTime.now().millisecondsSinceEpoch : null;
+    await app.db.upsertContact(contact);
+    notifyListeners();
+    unawaited(_syncContact(contact));
+  }
+
   Future<void> _syncContact(Contact contact, {bool removed = false}) async {
     try {
       await _syncToSiblings(
@@ -1730,6 +1750,7 @@ class ChatState extends ChangeNotifier {
       contact.hub = sync.hub ?? contact.hub;
     }
     if (sync.avatarGiven) contact.avatar = sync.avatar;
+    if (sync.verifiedGiven) contact.verifiedAt = sync.verifiedAt;
     if (sync.bundleToken != null && contact.bundleToken != sync.bundleToken) {
       contact.bundleToken = sync.bundleToken;
       _peerDevices.remove(contact.stonechatId);
@@ -3197,6 +3218,7 @@ class ChatState extends ChangeNotifier {
     Group group,
     String text, {
     Message? replyTo,
+    List<String> mentions = const [],
   }) async {
     _typingSentAt.remove(group.id); // the message itself says "stopped typing"
     final members = (groupMembers[group.id] ?? [])
@@ -3214,6 +3236,7 @@ class ChatState extends ChangeNotifier {
       replyToId: replyTo?.id,
       replyToSender: replyTo == null ? null : _quotedSenderOf(replyTo),
       replyToPreview: replyTo == null ? null : _clipPreview(replyTo.preview),
+      mentions: mentions,
       salt: base64Encode(randomBytes(16)),
     );
     await app.db.insertMessage(message);
@@ -3325,6 +3348,7 @@ class ChatState extends ChangeNotifier {
           for (final s in seen) {'id': s.id, 'h': s.hash},
         ],
       if (!isMedia) 'text': message.text,
+      if (message.mentions.isNotEmpty) 'mentions': message.mentions,
       if (isMedia) ...{
         'blob_id': blob!.id,
         'key': blob.keyB64,
@@ -5409,6 +5433,17 @@ class ChatState extends ChangeNotifier {
     }
   }
 
+  /// `mentions` on a group message: member IDs only. A stranger's ID, or
+  /// anything that is not a list of strings, is dropped — display data.
+  List<String> _mentionsFrom(Map<String, dynamic> payload, String groupId) {
+    final raw = payload['mentions'];
+    if (raw is! List) return const [];
+    return [
+      for (final id in raw)
+        if (id is String && memberOf(groupId, id) != null) id,
+    ];
+  }
+
   /// group_msg / group_media: rendered only from a current member of a group
   /// we hold. What the sender says about the roster and about the messages
   /// it has seen is checked against our own on the way.
@@ -5452,6 +5487,7 @@ class ChatState extends ChangeNotifier {
         outgoing: false,
         text: isMedia ? '' : (payload['text'] as String?) ?? '',
         kind: isMedia ? _mediaKindOf(payload) : MessageKind.text,
+        mentions: isMedia ? const [] : _mentionsFrom(payload, group.id),
         mediaPath: path,
         durationMs: isMedia ? payload['duration_ms'] as int? : null,
         fileName: isMedia ? _mediaNameOf(payload) : null,

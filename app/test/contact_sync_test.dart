@@ -98,4 +98,22 @@ void main() {
     expect(parseContactSync({...good, 'display_name': '  '}, _matches)!.displayName, isNull);
     expect(parseContactSync({...good, 'hub': 'hub.example'}, _matches)!.hub, isNull);
   });
+
+  test('verification travels, absent is unchanged, junk is unverified', () {
+    expect(contactSyncPayload(_contact())['verified_at'], isNull);
+    expect(contactSyncPayload(_contact()).containsKey('verified_at'), isTrue);
+    expect(contactSyncPayload(_contact()..verifiedAt = 5)['verified_at'], 5);
+
+    final base = {'peer': 'SC-A', 'pubkey': 'pk-SC-A', 'status': 'accepted'};
+    final none = parseContactSync(base, _matches)!;
+    expect(none.verifiedGiven, isFalse);
+    final cleared = parseContactSync({...base, 'verified_at': null}, _matches)!;
+    expect(cleared.verifiedGiven, isTrue);
+    expect(cleared.verifiedAt, isNull);
+    final set = parseContactSync({...base, 'verified_at': 1700000000000}, _matches)!;
+    expect(set.verifiedAt, 1700000000000);
+    final junk = parseContactSync({...base, 'verified_at': 'yes'}, _matches)!;
+    expect(junk.verifiedGiven, isTrue);
+    expect(junk.verifiedAt, isNull);
+  });
 }

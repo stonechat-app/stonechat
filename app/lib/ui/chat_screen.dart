@@ -30,6 +30,7 @@ import '../core/stickers.dart';
 import '../models.dart';
 import '../state/call_state.dart';
 import '../state/chat_state.dart';
+import 'contact_info_screen.dart';
 import 'group_info_screen.dart';
 import 'report_sheet.dart';
 import 'theme.dart';
@@ -60,6 +61,12 @@ class _ChatScreenState extends State<ChatScreen> {
   // Group messages from blocked members the user chose to look at anyway.
   // Per screen visit: leaving and coming back collapses them again.
   final _revealed = <String>{};
+
+  // Group @mentions: display name → Stonechat ID for every member picked
+  // from the suggestion strip since the last send. On send, only names
+  // still present in the text count (PROTOCOL.md "group_msg" mentions).
+  final _mentioned = <String, String>{};
+  String? _mentionQuery; // what follows a trailing '@' at the cursor
 
   // In-chat search: null query = closed. Matches are message ids; the
   // current one is scrolled to and every hit is highlighted in place.
@@ -120,6 +127,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final text = _input.text.trim();
     if (text.isEmpty) return;
     HapticFeedback.lightImpact();
+    final mentions = isGroup ? _mentionsIn(text) : const <String>[];
+    _mentioned.clear();
+    _mentionQuery = null;
     _input.clear();
     final chat = context.read<ChatState>();
     final editing = _editing;
@@ -138,10 +148,64 @@ class _ChatScreenState extends State<ChatScreen> {
     final replyTo = _replyingTo;
     if (replyTo != null) setState(() => _replyingTo = null);
     final sent = isGroup
-        ? await chat.sendGroupMessage(widget.group!, text, replyTo: replyTo)
+        ? await chat.sendGroupMessage(widget.group!, text,
+            replyTo: replyTo, mentions: mentions)
         : await chat.sendMessage(widget.contact!, text, replyTo: replyTo);
     _reportSendTrouble(sent);
     _scrollToEnd();
+  }
+
+  List<String> _mentionsIn(String text) => [
+        for (final e in _mentioned.entries)
+          if (text.contains('@${e.key}')) e.value,
+      ];
+
+  /// A trailing `@name` at the cursor opens the member strip.
+  void _onInputChanged(String text) {
+    final cursor = _input.selection.baseOffset;
+    final head = cursor < 0 || cursor > text.length ? text : text.substring(0, cursor);
+    final m = RegExp(r'(?:^|\s)@([^\s@]*)$').firstMatch(head);
+    final query = m?.group(1);
+    if (query != _mentionQuery) setState(() => _mentionQuery = query);
+  }
+
+  List<GroupMember> _mentionMatches(ChatState chat) {
+    final q = (_mentionQuery ?? '').toLowerCase();
+    return [
+      for (final m in chat.groupMembers[conversationId] ?? const <GroupMember>[])
+        if (m.stonechatId != chat.app.stonechatId &&
+            m.displayName.toLowerCase().contains(q))
+          m,
+    ].take(6).toList();
+  }
+
+  void _insertMention(GroupMember member) {
+    final text = _input.text;
+    final cursor = _input.selection.baseOffset.clamp(0, text.length);
+    final head = text.substring(0, cursor);
+    final at = head.lastIndexOf('@');
+    if (at < 0) return;
+    final replaced = '${head.substring(0, at)}@${member.displayName} ';
+    _input.value = TextEditingValue(
+      text: replaced + text.substring(cursor),
+      selection: TextSelection.collapsed(offset: replaced.length),
+    );
+    _mentioned[member.displayName] = member.stonechatId;
+    setState(() => _mentionQuery = null);
+  }
+
+  /// Display names for a message's mentions, so the bubble can mark them.
+  List<String> _mentionNamesOf(Message m, ChatState chat) {
+    if (m.mentions.isEmpty) return const [];
+    final members = chat.groupMembers[conversationId] ?? const <GroupMember>[];
+    return [
+      for (final id in m.mentions)
+        if (id == chat.app.stonechatId)
+          chat.app.displayName ?? ''
+        else
+          for (final member in members)
+            if (member.stonechatId == id) member.displayName,
+    ].where((n) => n.isNotEmpty).toList();
   }
 
   /// The first attempt just failed and the user is still looking at the
@@ -1136,7 +1200,9 @@ class _ChatScreenState extends State<ChatScreen> {
                     ? () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => GroupInfoScreen(group: widget.group!),
+                          builder: (_) => isGroup
+                              ? GroupInfoScreen(group: widget.group!)
+                              : ContactInfoScreen(contact: widget.contact!),
                         ),
                       )
                     : null,
@@ -1160,11 +1226,24 @@ class _ChatScreenState extends State<ChatScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 16),
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  title,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(fontSize: 16),
+                                ),
+                              ),
+                              // Compared codes in person (contact_info_screen).
+                              if (widget.contact?.isVerified ?? false)
+                                const Padding(
+                                  padding: EdgeInsets.only(left: 4),
+                                  child: Icon(Icons.verified_user,
+                                      size: 14, color: Zn.ok),
+                                ),
+                            ],
                           ),
                           Row(
                             children: [
@@ -1280,6 +1359,11 @@ class _ChatScreenState extends State<ChatScreen> {
                       const PopupMenuItem(
                         value: 'info',
                         child: Text('Group info'),
+                      ),
+                    if (!isGroup && !isNotes)
+                      const PopupMenuItem(
+                        value: 'info',
+                        child: Text('Contact info'),
                       ),
                     const PopupMenuItem(value: 'search', child: Text('Search')),
                     if (!isNotes)
@@ -1436,6 +1520,9 @@ class _ChatScreenState extends State<ChatScreen> {
                                   ? null
                                   : () => _jumpToMessage(m.replyToId!),
                               searchQuery: searchQuery,
+                              mentionNames: isGroup
+                                  ? _mentionNamesOf(m, chat)
+                                  : const [],
                               owed: isGroup ? chat.owedFor(m.id) : 0,
                               // Fan-out targets, so everyone but us.
                               memberCount: isGroup ? (memberCount ?? 1) - 1 : 0,
@@ -1531,6 +1618,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 ],
               ),
             ),
+          if (isGroup && _mentionQuery != null)
+            _MentionStrip(
+              members: _mentionMatches(chat),
+              onPick: _insertMention,
+            ),
           if (!isGroup && chat.isBlocked(widget.contact!.stonechatId))
             Container(
               decoration: const BoxDecoration(
@@ -1571,6 +1663,7 @@ class _ChatScreenState extends State<ChatScreen> {
             _Composer(
               controller: _input,
               onSend: _send,
+              onChanged: isGroup ? _onInputChanged : null,
               onTyping: _editing == null
                   ? () => context.read<ChatState>().notifyTyping(conversationId)
                   : null,
@@ -1595,6 +1688,7 @@ class _LedgerEntry extends StatelessWidget {
   final String? quoteSender; // display name for the reply_to header
   final VoidCallback? onQuoteTap;
   final String searchQuery; // non-empty → highlight matches in the text
+  final List<String> mentionNames; // @names to set off in the text
   /// Groups: members whose mailboxes haven't taken this message yet, and how
   /// many there are in total. 0 owed → it reached everyone.
   final int owed;
@@ -1612,6 +1706,7 @@ class _LedgerEntry extends StatelessWidget {
     this.quoteSender,
     this.onQuoteTap,
     this.searchQuery = '',
+    this.mentionNames = const [],
     this.owed = 0,
     this.memberCount = 0,
     this.onRetry,
@@ -1652,7 +1747,38 @@ class _LedgerEntry extends StatelessWidget {
   }
 
   /// The message text as spans, query matches tinted.
+  /// Mentions set off first, then the search highlight inside the rest.
   List<TextSpan> _highlighted(String text) {
+    if (mentionNames.isEmpty) return _searchHighlighted(text);
+    // Longest names first, so "Ann Lee" is not cut at "Ann".
+    final names = [...mentionNames]..sort((a, b) => b.length.compareTo(a.length));
+    final spans = <TextSpan>[];
+    var start = 0;
+    while (start < text.length) {
+      var at = -1;
+      var hit = '';
+      for (final n in names) {
+        final i = text.indexOf('@$n', start);
+        if (i >= 0 && (at < 0 || i < at)) {
+          at = i;
+          hit = n;
+        }
+      }
+      if (at < 0) {
+        spans.addAll(_searchHighlighted(text.substring(start)));
+        break;
+      }
+      if (at > start) spans.addAll(_searchHighlighted(text.substring(start, at)));
+      spans.add(TextSpan(
+        text: '@$hit',
+        style: const TextStyle(color: Zn.orange, fontWeight: FontWeight.w600),
+      ));
+      start = at + hit.length + 1;
+    }
+    return spans;
+  }
+
+  List<TextSpan> _searchHighlighted(String text) {
     if (searchQuery.isEmpty) return [TextSpan(text: text)];
     final lower = text.toLowerCase();
     final q = searchQuery.toLowerCase();
@@ -2455,6 +2581,7 @@ class _Composer extends StatefulWidget {
   final VoidCallback onSend;
   final VoidCallback?
   onTyping; // keystroke → typing indicator (throttled upstream)
+  final void Function(String text)? onChanged; // groups: the @mention strip
   final VoidCallback? onAttach; // null → no attachment button at all
   final VoidCallback?
   onSticker; // opens the sticker picker (DM-only, like media)
@@ -2464,6 +2591,7 @@ class _Composer extends StatefulWidget {
     required this.controller,
     required this.onSend,
     this.onTyping,
+    this.onChanged,
     required this.onAttach,
     required this.onSticker,
     required this.onVoiceRecorded,
@@ -2591,6 +2719,7 @@ class _ComposerState extends State<_Composer> {
                     textInputAction: TextInputAction.send,
                     onChanged: (text) {
                       if (text.trim().isNotEmpty) widget.onTyping?.call();
+                      widget.onChanged?.call(text);
                     },
                     onSubmitted: (_) => widget.onSend(),
                     style: const TextStyle(color: Zn.text, fontSize: 15),
@@ -2682,6 +2811,44 @@ class _BlockedMessage extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Members matching what follows the `@` at the cursor; a tap completes it.
+class _MentionStrip extends StatelessWidget {
+  final List<GroupMember> members;
+  final void Function(GroupMember) onPick;
+  const _MentionStrip({required this.members, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    if (members.isEmpty) return const SizedBox.shrink();
+    return Container(
+      height: 44,
+      decoration: const BoxDecoration(
+        color: Zn.surface,
+        border: Border(top: BorderSide(color: Zn.line)),
+      ),
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        children: [
+          for (final m in members)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
+              child: ActionChip(
+                avatar: StonechatAvatar(
+                    stonechatId: m.stonechatId, name: m.displayName, size: 20),
+                label: Text('@${m.displayName}',
+                    style: const TextStyle(color: Zn.text, fontSize: 13)),
+                backgroundColor: Zn.bg,
+                side: const BorderSide(color: Zn.line),
+                onPressed: () => onPick(m),
+              ),
+            ),
+        ],
       ),
     );
   }
