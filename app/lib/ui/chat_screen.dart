@@ -84,6 +84,8 @@ class _ChatScreenState extends State<ChatScreen> {
   int _searchPos = 0; // index into the match list (newest first)
   String? _flashId; // briefly tinted row after a jump (reply tap, search)
   Timer? _flashTimer;
+  Timer? _draftTimer; // debounces saving the composer as a draft
+  int _pinCursor = 0; // which pin the banner shows; advances on each tap
 
   // Arrival animation: only messages sent after the screen opened, and each
   // only once — scrolling back through history never replays it.
@@ -122,10 +124,25 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     _chat = context.read<ChatState>();
     _chat.openConversation(conversationId);
+    _input.text = _chat.drafts[conversationId] ?? '';
+    _input.addListener(_onComposerChanged);
+  }
+
+  /// Whatever sits unsent in the composer is kept as the chat's draft. Not
+  /// while editing: that text is the old message's, not something new.
+  void _onComposerChanged() {
+    if (_editing != null) return;
+    _draftTimer?.cancel();
+    _draftTimer = Timer(const Duration(milliseconds: 600), () {
+      if (_editing == null) _chat.saveDraft(conversationId, _input.text);
+    });
   }
 
   @override
   void dispose() {
+    _draftTimer?.cancel();
+    _input.removeListener(_onComposerChanged);
+    if (_editing == null) _chat.saveDraft(conversationId, _input.text);
     _flashTimer?.cancel();
     _searchInput.dispose();
     _chat.closeConversation(conversationId);
@@ -344,6 +361,7 @@ class _ChatScreenState extends State<ChatScreen> {
     // peer is withheld (forwarding elsewhere and delete-for-me stay).
     final blocked = !isGroup && chat.isBlocked(widget.contact!.stonechatId);
     final myEmoji = chat.myReactionTo(m);
+    final pinned = m.isPinnedAt(DateTime.now().millisecondsSinceEpoch);
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: Zn.surface,
@@ -422,6 +440,22 @@ class _ChatScreenState extends State<ChatScreen> {
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: m.text));
                   Navigator.pop(sheetContext);
+                },
+              ),
+            if (!isLocalRow && !blocked)
+              ListTile(
+                leading: Icon(
+                  pinned ? Icons.push_pin : Icons.push_pin_outlined,
+                  color: Zn.muted,
+                ),
+                title: Text(pinned ? 'Unpin' : 'Pin'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  if (pinned) {
+                    chat.setPin(m, null);
+                  } else {
+                    _showPinDurations(m);
+                  }
                 },
               ),
             if (!isLocalRow)
@@ -503,6 +537,104 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// How long a pin lasts — WhatsApp's three choices.
+  void _showPinDurations(Message m) {
+    final chat = context.read<ChatState>();
+    const choices = [
+      ('24 hours', Duration(hours: 24)),
+      ('7 days', Duration(days: 7)),
+      ('30 days', Duration(days: 30)),
+    ];
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Zn.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Text(
+                isNotes
+                    ? 'Pin for how long?'
+                    : 'Pin for how long? Everyone in this chat sees the pin.',
+                style: Zn.mono(size: 11, color: Zn.muted),
+              ),
+            ),
+            if (chat.pinsFor(conversationId).length >= ChatState.maxPins)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Text(
+                  'Only ${ChatState.maxPins} messages can be pinned — this '
+                  'replaces the oldest pin.',
+                  style: Zn.mono(size: 10, color: Zn.amber),
+                ),
+              ),
+            for (final (label, duration) in choices)
+              ListTile(
+                title: Text(label),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  chat.setPin(m, duration);
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The pinned-message bar under the app bar. Shows one pin at a time; a
+  /// tap jumps to it and moves the bar on to the next.
+  Widget _pinBanner(List<Message> pins, ChatState chat) {
+    final i = _pinCursor % pins.length;
+    final m = pins[i];
+    return Material(
+      color: Zn.surface,
+      child: InkWell(
+        onTap: () {
+          _jumpToMessage(m.id);
+          setState(() => _pinCursor = i + 1);
+        },
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          decoration: const BoxDecoration(
+            border: Border(bottom: BorderSide(color: Zn.line)),
+          ),
+          child: Row(
+            children: [
+              const Icon(Icons.push_pin, size: 14, color: Zn.amber),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      pins.length == 1
+                          ? 'Pinned message'
+                          : 'Pinned message ${i + 1} of ${pins.length}',
+                      style: Zn.mono(size: 9, color: Zn.amber, letterSpacing: 1),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      m.preview,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Zn.text, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -1201,6 +1333,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ? chat.groupMembers[conversationId]?.length
         : null;
     final searchQuery = _searching ? _searchInput.text.trim() : '';
+    final pins = chat.pinsFor(conversationId);
 
     // First frame with content: land on the newest message — or on the one
     // we were opened for, tinted so the eye finds it.
@@ -1438,6 +1571,7 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
       body: Column(
         children: [
+          if (!_searching && pins.isNotEmpty) _pinBanner(pins, chat),
           Expanded(
             // Starting to drag the history tucks the keyboard away.
             child: NotificationListener<ScrollStartNotification>(
@@ -2035,6 +2169,12 @@ class _LedgerEntry extends StatelessWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (message.isPinnedAt(
+                      DateTime.now().millisecondsSinceEpoch,
+                    )) ...[
+                      const Icon(Icons.push_pin, size: 10, color: Zn.amber),
+                      const SizedBox(width: 3),
+                    ],
                     if (message.isBookmarked) ...[
                       const Icon(Icons.bookmark, size: 10, color: Zn.amber),
                       const SizedBox(width: 3),

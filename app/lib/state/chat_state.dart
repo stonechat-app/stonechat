@@ -177,6 +177,8 @@ class ChatState extends ChangeNotifier {
   List<Group> groups = [];
   final Map<String, List<GroupMember>> groupMembers = {}; // by group id
   final Map<String, List<Message>> _messages = {}; // by conversation id
+  /// Unsent composer text by conversation id. Local-only.
+  final Map<String, String> drafts = {};
   final Map<String, Message?> lastMessage = {};
 
   // Own mailbox coordinates, set by MailboxState before the socket connects —
@@ -342,6 +344,21 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Remember what is sitting unsent in a conversation's composer. Only
+  /// notifies when a draft appears or goes, which is all the chat list shows.
+  Future<void> saveDraft(String conversationId, String text) async {
+    final had = drafts.containsKey(conversationId);
+    if (text.trim().isEmpty) {
+      if (!had) return;
+      drafts.remove(conversationId);
+    } else {
+      if (drafts[conversationId] == text) return;
+      drafts[conversationId] = text;
+    }
+    await app.db.setDraft(conversationId, text);
+    if (had != drafts.containsKey(conversationId)) notifyListeners();
+  }
+
   /// Bookmark a message, or drop the bookmark. Local-only, like pinning: no
   /// peer and none of our other devices is told.
   Future<void> toggleBookmark(Message message) async {
@@ -469,6 +486,9 @@ class ChatState extends ChangeNotifier {
       ..clear()
       ..addAll(await app.db.blocked());
     groups = await app.db.groups();
+    drafts
+      ..clear()
+      ..addAll(await app.db.drafts());
     for (final c in contacts) {
       lastMessage[c.stonechatId] = await app.db.lastMessageFor(c.stonechatId);
     }
@@ -540,6 +560,7 @@ class ChatState extends ChangeNotifier {
     groups = [];
     groupMembers.clear();
     _messages.clear();
+    drafts.clear();
     lastMessage.clear();
     _sessions.clear();
     _openConversationId = null;
@@ -1760,6 +1781,7 @@ class ChatState extends ChangeNotifier {
     if (sync.removed) {
       if (contact == null) return;
       await app.db.deleteContact(contact.stonechatId);
+      drafts.remove(contact.stonechatId);
       await app.db.deleteSession(contact.stonechatId);
       contacts.removeWhere((c) => c.stonechatId == contact!.stonechatId);
       _messages.remove(contact.stonechatId);
@@ -2890,6 +2912,7 @@ class ChatState extends ChangeNotifier {
   Future<void> declineContact(Contact contact) async {
     unawaited(_syncContact(contact, removed: true));
     await app.db.deleteContact(contact.stonechatId);
+    drafts.remove(contact.stonechatId);
     // Drop the ratchet too: a kept session would be silently reused if this
     // peer is ever re-added, and it may be pinned to prekeys the other side
     // no longer holds (the re-add does a fresh X3DH instead).
@@ -3596,6 +3619,7 @@ class ChatState extends ChangeNotifier {
           _deliverToMember(m, EnvelopeType.groupLeave, {'group_id': group.id}),
     );
     await app.db.deleteGroup(group.id);
+    drafts.remove(group.id);
     groups.removeWhere((g) => g.id == group.id);
     groupMembers.remove(group.id);
     _messages.remove(group.id);
@@ -4517,6 +4541,8 @@ class ChatState extends ChangeNotifier {
       m.text = '';
       m.mediaPath = null;
       m.bookmarkedAt = null;
+      m.pinnedAt = null;
+      m.pinnedUntil = null;
     }
   }
 
@@ -4706,6 +4732,125 @@ class ChatState extends ChangeNotifier {
     return message;
   }
 
+  // -- in-chat pins (PROTOCOL.md "pin") -----------------------------------------------
+
+  /// How many messages a conversation keeps pinned; a newer pin pushes the
+  /// oldest out.
+  static const maxPins = 3;
+  /// The longest pin a receiver accepts, measured from when it was sent.
+  static const _pinMaxMs = 31 * 24 * 3600 * 1000;
+
+  /// A conversation's live pins, most recently pinned first. Reads the
+  /// open conversation's cache, which holds its whole history.
+  List<Message> pinsFor(String conversationId) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    return [
+      for (final m in _messages[conversationId] ?? const <Message>[])
+        if (!m.deleted && m.isPinnedAt(now)) m,
+    ]..sort((a, b) => (b.pinnedAt ?? 0).compareTo(a.pinnedAt ?? 0));
+  }
+
+  /// Pin [message] for [duration], or unpin it (null). Everyone in the
+  /// conversation sees the pin; best-effort, like reactions.
+  Future<void> setPin(Message message, Duration? duration) async {
+    if (message.deleted) return;
+    final conversationId = message.contactId;
+    final group = groupById(conversationId);
+    // A blocked DM is read-only: nothing may leave for that peer.
+    if (group == null && isBlocked(conversationId)) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final until = duration == null ? null : now + duration.inMilliseconds;
+    await _applyPin(conversationId, message.id, until == null ? null : now,
+        until);
+    if (until != null) {
+      await _insertNotice(conversationId, 'You pinned a message');
+    }
+    notifyListeners();
+
+    final payload = {'id': message.id, 'until': until ?? 0};
+    try {
+      if (group == null) {
+        // Notes to self has no contact row: the pin stays here.
+        final contact = contactById(conversationId);
+        if (contact == null) return;
+        await _deliver(contact, EnvelopeType.pin, payload);
+      } else {
+        final groupPayload = {...payload, 'group_id': group.id};
+        await _fanOutToMembers(
+          _othersIn(group.id),
+          (m) async => _deliverToMember(m, EnvelopeType.groupPin, groupPayload),
+        );
+      }
+    } catch (_) {
+      // an unreachable peer keeps the old pin state — best-effort tier
+    }
+  }
+
+  /// Store a pin (or an unpin: both null), then hold the conversation to
+  /// [maxPins] by dropping the oldest.
+  Future<void> _applyPin(
+    String conversationId,
+    String messageId,
+    int? pinnedAt,
+    int? until,
+  ) async {
+    Future<void> store(String id, int? at, int? to) async {
+      await app.db.setMessagePin(id, at, to);
+      for (final m in _messages[conversationId] ?? const <Message>[]) {
+        if (m.id != id) continue;
+        m.pinnedAt = at;
+        m.pinnedUntil = to;
+      }
+    }
+
+    await store(messageId, pinnedAt, until);
+    if (until == null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final live = await app.db.activePins(conversationId, now);
+    for (final old in live.skip(maxPins)) {
+      await store(old.id, null, null);
+    }
+  }
+
+  /// A peer pinned or unpinned a message. Either side of a DM, or any current
+  /// group member, may; the target must be in that conversation.
+  Future<void> _applyRemotePin(
+    Envelope envelope,
+    Map<String, dynamic> payload, {
+    bool group = false,
+  }) async {
+    final id = payload['id'];
+    final until = payload['until'];
+    if (id is! String || until is! int || until < 0) return;
+    final message = await app.db.messageById(id);
+    if (message == null || message.deleted) return;
+    final String who;
+    if (group) {
+      final groupId = payload['group_id'] as String?;
+      if (groupId == null || message.contactId != groupId) return;
+      if (groupById(groupId) == null) return;
+      final member = memberOf(groupId, envelope.from);
+      if (member == null) return;
+      who = member.displayName;
+    } else {
+      if (message.contactId != envelope.from) return;
+      who = contactById(envelope.from)?.displayName ?? 'They';
+    }
+    final sentAt = _sentAtMs(envelope);
+    // Out of order: a pin or unpin older than the pin we hold changes nothing.
+    if ((message.pinnedAt ?? 0) > sentAt) return;
+    if (until == 0) {
+      await _applyPin(message.contactId, id, null, null);
+      notifyListeners();
+      return;
+    }
+    final capped = until.clamp(0, sentAt + _pinMaxMs);
+    if (capped <= DateTime.now().millisecondsSinceEpoch) return; // lapsed
+    await _applyPin(message.contactId, id, sentAt, capped);
+    await _insertNotice(message.contactId, '$who pinned a message',
+        id: envelope.id);
+  }
+
   // -- reactions (PROTOCOL.md "reaction") ---------------------------------------------
 
   String? myReactionTo(Message message) =>
@@ -4884,7 +5029,7 @@ class ChatState extends ChangeNotifier {
     // matter to the blocked person's presence are dropped here.
     if (isBlocked(envelope.from)) {
       switch (envelope.type) {
-        case EnvelopeType.groupReaction:
+        case EnvelopeType.groupReaction || EnvelopeType.groupPin:
           _dropLog(envelope, 'sender is blocked');
           return;
         case EnvelopeType.groupCreate || EnvelopeType.groupUpdate
@@ -4902,6 +5047,7 @@ class ChatState extends ChangeNotifier {
             EnvelopeType.msgEdit ||
             EnvelopeType.msgDelete ||
             EnvelopeType.reaction ||
+            EnvelopeType.pin ||
             EnvelopeType.profileUpdate ||
             EnvelopeType.timerUpdate ||
             EnvelopeType.callOffer ||
@@ -5217,6 +5363,13 @@ class ChatState extends ChangeNotifier {
 
       case EnvelopeType.groupReaction:
         await _applyRemoteReaction(envelope, payload, group: true);
+
+      case EnvelopeType.pin:
+        if (contact == null || !contact.isAccepted) return;
+        await _applyRemotePin(envelope, payload);
+
+      case EnvelopeType.groupPin:
+        await _applyRemotePin(envelope, payload, group: true);
 
       case EnvelopeType.timerUpdate:
         if (contact == null || !contact.isAccepted) return;

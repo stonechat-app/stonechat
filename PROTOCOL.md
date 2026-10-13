@@ -1356,6 +1356,8 @@ no durable retry.
 | `group_msg_delete`| `{"group_id", "id"}`                   |
 | `reaction`        | `{"id": "<message id>", "emoji": "👍"}` — `""` clears |
 | `group_reaction`  | `{"group_id", "id", "emoji"}`          |
+| `pin`             | `{"id": "<message id>", "until": <ms epoch>}` — `0` unpins |
+| `group_pin`       | `{"group_id", "id", "until"}`          |
 | `timer_update`    | `{"expire_ms": <int ms, 0 = off>}`     |
 | `group_timer_update` | `{"group_id", "expire_ms"}`         |
 | `call_offer`      | `{"call_id", "media": "audio"\|"video", "sdp"}` — wire form SHOULD set `ring: true` |
@@ -1410,6 +1412,17 @@ per-device and group fan-out reuse across every copy.
   key the stored reaction by the session-authenticated sender, so nobody
   can react in someone else's name, and ignore an `emoji` longer than 32
   UTF-16 units. Best-effort, like receipts.
+- **`pin`** — pins a message at the top of the conversation until `until`
+  (milliseconds since the epoch; senders offer 24 h, 7 days or 30 days), or
+  unpins it (`0`). Either side of a DM, or any current group member, may pin
+  or unpin any non-deleted message in that conversation. Receivers check the
+  message is held and in that conversation, cap `until` at the envelope's
+  `sent_at` + 31 days, ignore a pin already past `until`, and ignore a pin or
+  unpin sent earlier than the pin they hold. A conversation keeps at most
+  **3** pins: a fourth evicts the one pinned longest ago, on every client
+  independently. Deleting a message for everyone drops its pin. Clients show
+  a local notice ("… pinned a message") for a pin, not for an unpin. Not
+  mirrored to the sender's own devices. Best-effort, like reactions.
 
 ### Replies (`reply_to`)
 

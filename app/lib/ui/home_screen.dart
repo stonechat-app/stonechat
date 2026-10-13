@@ -263,6 +263,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+/// A conversation's unsent text, in place of its last message.
+Widget _draftLine(String draft) => Text.rich(
+  TextSpan(
+    children: [
+      const TextSpan(
+        text: 'Draft: ',
+        style: TextStyle(color: Zn.orange, fontWeight: FontWeight.w600),
+      ),
+      TextSpan(text: draft.replaceAll('\n', ' ')),
+    ],
+  ),
+  maxLines: 1,
+  overflow: TextOverflow.ellipsis,
+  style: const TextStyle(color: Zn.muted, fontSize: 13),
+);
+
 String _when(int ms) {
   final t = DateTime.fromMillisecondsSinceEpoch(ms);
   final now = DateTime.now();
@@ -465,7 +481,9 @@ class _GroupTile extends StatelessWidget {
         group.name,
         style: const TextStyle(fontWeight: FontWeight.w600),
       ),
-      subtitle: last == null
+      subtitle: chat.drafts[group.id] != null
+          ? _draftLine(chat.drafts[group.id]!)
+          : last == null
           ? Text('$memberCount members', style: Zn.mono(size: 11))
           : Text(
               !last.outgoing && chat.isBlocked(last.senderId ?? '')
@@ -637,7 +655,9 @@ class _ConversationTile extends StatelessWidget {
         contact.displayName,
         style: const TextStyle(fontWeight: FontWeight.w600),
       ),
-      subtitle: last == null
+      subtitle: chat.drafts[contact.stonechatId] != null
+          ? _draftLine(chat.drafts[contact.stonechatId]!)
+          : last == null
           ? Text(
               notes ? 'only you can see this' : 'say hello',
               style: Zn.mono(size: 11),
