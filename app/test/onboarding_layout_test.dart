@@ -2,7 +2,7 @@
 /// it has to survive the keyboard. The layout leans on Spacers to place the
 /// wordmark and the footer links, which silently overflows the moment the
 /// viewport shrinks — so the rule here is that it must lay out cleanly both
-/// with the keyboard up and with the Advanced section expanded.
+/// with the keyboard up and with the Change Hub section expanded.
 ///
 /// (No provider and no core library: AppState is only read when the user taps
 /// Create account, which these tests never do.)
@@ -45,16 +45,16 @@ void main() {
 
   testWidgets('lays out with Advanced expanded', (tester) async {
     await _pump(tester);
-    await tester.tap(find.text('Advanced'));
+    await tester.tap(find.text('Change Hub'));
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
-    expect(find.textContaining('self-hosters only'), findsOneWidget);
+    expect(find.text('Hub address'), findsOneWidget);
   });
 
   testWidgets('lays out with both at once', (tester) async {
     await _pump(tester, bottomInset: _keyboard);
-    await tester.tap(find.text('Advanced'), warnIfMissed: false);
+    await tester.tap(find.text('Change Hub'), warnIfMissed: false);
     await tester.pumpAndSettle();
 
     expect(tester.takeException(), isNull);
