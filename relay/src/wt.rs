@@ -381,7 +381,17 @@ async fn stream(
         return Err(format!("request body of {len} bytes exceeds the transport limit"));
     }
 
-    dispatch(router, method, &path, body_stream(recv, rest, len), peer, &mut send).await?;
+    let body = if len == 0 {
+        // No body to stream, so no route will ever poll one — and a receive
+        // stream dropped before its FIN is read answers the client with
+        // STOP_SENDING (see body_stream). Take the FIN here, first.
+        let mut fin = [0u8; 64];
+        let _ = tokio::time::timeout(FIN_TIMEOUT, recv.read(&mut fin)).await;
+        Body::empty()
+    } else {
+        body_stream(recv, rest, len)
+    };
+    dispatch(router, method, &path, body, peer, &mut send).await?;
     send.finish().await.map_err(|e| e.to_string())?;
     Ok(())
 }
