@@ -784,17 +784,28 @@ def publish_devices(body: DevicesIn, user: User):
     The version must move forward. A manifest that does not is a replay or
     a restored device that is behind; either way the one on record stands,
     and the caller is told which version that is."""
+    # A refused manifest is worth a line: the client that sent it swallows
+    # the error and silently keeps the devices it meant to announce out of
+    # the directory — which reads, on every contact's phone, as "that
+    # device does not exist".
+    def refuse(status: int, detail):
+        me = user["stonechat_id"]
+        log.warning("devices: refused v%s from %s…%s (%d devices): %s",
+                    body.version, me[:7], me[-4:], len(body.devices),
+                    detail if isinstance(detail, str) else detail.get("code"))
+        raise HTTPException(status, detail)
+
     if body.stonechat_id != user["stonechat_id"]:
-        raise HTTPException(400, "manifest names another identity")
+        refuse(400, "manifest names another identity")
     ids = [d.device_id for d in body.devices]
     if len(set(ids)) != len(ids):
-        raise HTTPException(400, "a device is listed twice")
+        refuse(400, "a device is listed twice")
     for d in body.devices:
         try:
             if len(base64.b64decode(d.sig_pub, validate=True)) != 32:
                 raise ValueError
         except Exception:
-            raise HTTPException(400, f"device {d.device_id}: sig_pub is not a 32-byte key")
+            refuse(400, f"device {d.device_id}: sig_pub is not a 32-byte key")
     manifest = body.model_dump()
     sig = manifest.pop("sig")
     try:
@@ -805,10 +816,10 @@ def publish_devices(body: DevicesIn, user: User):
             base64.b64decode(sig),
         )
     except Exception:
-        raise HTTPException(400, "signature does not verify against your identity key")
+        refuse(400, "signature does not verify against your identity key")
     current = json.loads(user["devices"]) if user.get("devices") else None
     if current and current["version"] >= body.version:
-        raise HTTPException(
+        refuse(
             409,
             {"code": "stale_version", "current": current["version"],
              "message": "a manifest at this version or later is already on record"},
