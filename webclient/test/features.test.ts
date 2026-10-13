@@ -15,6 +15,7 @@ import { test } from 'node:test';
 import { b64decode, b64encode, utf8 } from '../src/bytes.js';
 import { verifiedManifest } from '../src/manifest.js';
 import { DeviceKeys } from '../src/device.js';
+import { MailboxError } from '../src/mailbox.js';
 import { Protocol } from '../src/protocol.js';
 import { store, threadKey } from '../src/store.js';
 import {
@@ -299,6 +300,18 @@ test('mentions name members, and only members survive the trip', async () => {
   await as('bea', () => drainAll(bea.protocol));
   const held = await as('bea', async () => store.findMessage(sent.id)?.message);
   assert.deepEqual(held?.mentions, [bea.id]);
+});
+
+test('a browser its phone unlinked forgets itself instead of retrying', async () => {
+  const { browser, as } = await ownDevices();
+  // Our own mailbox refusing our token is the phone having removed us.
+  browser.publishPrekeys = async () => { throw new MailboxError('{"detail":"owner only"}', 401); };
+  let unlinked = 0;
+  browser.onUnlinked = () => { unlinked++; };
+  const statuses: string[] = [];
+  await as('browser', () => browser.start(() => {}, (kind, text) => statuses.push(`${kind}: ${text}`)));
+  assert.equal(unlinked, 1, 'handed over once');
+  assert.match(statuses.at(-1) ?? '', /unlinked from your phone/);
 });
 
 // -- typing -----------------------------------------------------------------------

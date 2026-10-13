@@ -410,6 +410,12 @@ export class App {
     setInterval(() => void this.protocol.retryPending(), 30_000);
     this.scheduleExpirySweep();
 
+    // Unlinked from the phone: forget everything this session held and come
+    // back as a fresh link code — the same as the Unlink button, unasked.
+    this.protocol.onUnlinked = () => {
+      store.clear();
+      location.reload();
+    };
     await this.protocol.start(
       (message) => {
         if (

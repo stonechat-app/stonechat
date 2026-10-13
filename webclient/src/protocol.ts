@@ -2729,6 +2729,10 @@ export class Protocol {
    * Keep receiving, reconnecting with backoff, and run the sweeps. For the
    * page; the tests drive `receive()` directly.
    */
+  /** Our own mailbox no longer knows this device: the phone unlinked it.
+   * The page forgets its keys and offers a new link code. */
+  onUnlinked?: () => void;
+
   async start(onMessage: (m: Message) => void, onStatus: (kind: 'live' | 'warn' | 'down', text: string) => void): Promise<void> {
     let delay = 1000;
     for (;;) {
@@ -2741,10 +2745,17 @@ export class Protocol {
         onStatus('warn', 'disconnected — reconnecting');
       } catch (e) {
         const text = (e as Error).message;
-        // 4001 is the relay saying this device is gone. Nothing here recovers
-        // from that, so say what to do rather than retrying forever.
-        if (/revoked/i.test(text) || (e instanceof MailboxError && (e.status === 410 || e.status === 403))) {
-          onStatus('down', 'This browser is no longer linked — open Settings and Unlink.');
+        // 4001 is the relay saying this device is gone, and so is our own
+        // mailbox refusing our token (401 "owner only" on the prekey
+        // publish, 403 on the socket): the phone unlinked this browser.
+        // Nothing here recovers from that, and retrying would only keep
+        // showing a dead session; hand it to whoever can forget it.
+        if (
+          /revoked/i.test(text) ||
+          (e instanceof MailboxError && (e.status === 410 || e.status === 403 || e.status === 401))
+        ) {
+          onStatus('down', 'This browser was unlinked from your phone.');
+          this.onUnlinked?.();
           return;
         }
         if (/took over/i.test(text)) {

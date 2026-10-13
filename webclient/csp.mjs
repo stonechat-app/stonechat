@@ -29,6 +29,9 @@ export function csp(extra = '') {
     "media-src blob:",
     "base-uri 'none'",
     "form-action 'none'",
-    "frame-ancestors 'none'",
+    // No frame-ancestors here: a <meta> policy cannot carry it (browsers
+    // ignore it and say so in the console). The server sends it as a
+    // header, where it is enforced — the Caddy site block in the main hub's
+    // compose file, and whatever a self-hoster puts in front of dist/.
   ].join('; ');
 }
