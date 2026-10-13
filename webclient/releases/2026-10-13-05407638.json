@@ -1,0 +1,10 @@
+{
+  "hash_root": "054076384d93213790eaaef8be984706ed41c2062bc402710fd63229f348a096",
+  "files": {
+    "index.html": "sha256-054076384d93213790eaaef8be984706ed41c2062bc402710fd63229f348a096",
+    "app.js": "sha384-c0E332n/+Il2AvQ3Evw6ULGCEQdEL+bhDRWLvF+pmL/w+gsnYoVUzcZDDQLmMO8O",
+    "theme.css": "sha384-P/VM3dCEOJIsqnyPzVBEzlk3eSyVAzgIShVSLuCzDYnB1DvDwq5u2OWJZDaBGxIa",
+    "stonechat_core.wasm": "sha384-66j8lYqjRbXJpIW6KF9im6OG0jfZKnYFt8Mv9i5FRgbLe2G9BHUy4a6ywZBuzlav",
+    "favicon.png": "sha384-6LD8rW4Doc8frt5w3uW0FhZZncUSBOOp6otkf+kvoZu4BmOvgMygg8uBZVAXrC0G"
+  }
+}

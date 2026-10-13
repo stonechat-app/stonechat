@@ -30,8 +30,9 @@ const WASM = join(
   root,
   '../core/target/wasm32-unknown-unknown/release/stonechat_core.wasm',
 );
+// CHROME names the browser; the default is the Mac install, CI sets Linux's.
 const CHROME =
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  process.env['CHROME'] ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const OWNER = 'SC-SMOKE-OWNER';
 const TOKEN = 'smoke-token-00000000000000000000';

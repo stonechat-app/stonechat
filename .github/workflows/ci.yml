@@ -1,0 +1,137 @@
+# Every commit: the protocol core, the relay, the app and the web client each
+# build and pass their own tests. The relay's release artifact (musl, the
+# image) is relay-build.yml; this is the "did we break it" check.
+#
+# Not here yet: scripts/e2e.py (hub + relay + mailbox host under Docker).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: core + pqcore (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/target
+            pqcore/target
+          key: core-${{ runner.os }}-${{ hashFiles('core/Cargo.lock', 'pqcore/Cargo.lock') }}
+      - name: pqcore
+        run: cargo test
+        working-directory: pqcore
+      - name: core (vectors, protocol, golden transcript, ABI)
+        run: cargo test
+        working-directory: core
+
+  relay:
+    name: relay (cargo test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            relay/target
+          key: relay-test-${{ runner.os }}-${{ hashFiles('relay/Cargo.lock') }}
+      - name: unit, router, WebTransport and TURN tests
+        run: cargo test
+        working-directory: relay
+
+  app:
+    name: app (flutter analyze + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/target
+          key: core-host-${{ runner.os }}-${{ hashFiles('core/Cargo.lock') }}
+      # The DB tests run SQLite through sqflite_common_ffi, which dlopens the
+      # system library.
+      - name: SQLite for the ffi tests
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.41.9
+          cache: true
+      # The app has no cryptography of its own: every test that touches a
+      # session loads stonechat-core over FFI (CLAUDE.md "Commands").
+      - name: Build the core for the host
+        run: ./scripts/build_core.sh host
+      - name: flutter pub get
+        run: flutter pub get
+        working-directory: app
+      # Warnings are not errors here; the analyzer's errors are.
+      - name: flutter analyze
+        run: flutter analyze --no-fatal-warnings
+        working-directory: app
+      - name: flutter test
+        run: flutter test
+        working-directory: app
+        env:
+          STONECHAT_CORE_LIB: ${{ github.workspace }}/core/target/release/libstonechat_core.so
+
+  webclient:
+    name: web client (typecheck, tests, build, browser smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/target
+            relay/target
+          key: webclient-${{ runner.os }}-${{ hashFiles('core/Cargo.lock', 'relay/Cargo.lock') }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webclient/package-lock.json
+      # The client's core is the same crate as the app's, built to wasm; the
+      # smoke test drives a real relay, so that is built too (a plain Linux
+      # build — the musl artifact is relay-build.yml's job).
+      - name: Build the core for the browser
+        run: cargo build --release --target wasm32-unknown-unknown
+        working-directory: core
+      - name: Build the relay for the smoke test
+        run: cargo build --release
+        working-directory: relay
+      - name: npm ci
+        run: npm ci
+        working-directory: webclient
+      # typecheck + tests + build + smoke. The smoke drives the runner's
+      # Chrome against the relay and a stub hub; it skips itself, loudly,
+      # when either is missing.
+      - name: npm run check
+        run: npm run check
+        working-directory: webclient
+        env:
+          CHROME: /usr/bin/google-chrome
