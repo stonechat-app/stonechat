@@ -25,6 +25,11 @@ export interface DeviceManifest {
   /** Device slot → the device's signing key (its certificate's `sig_pub`),
    * base64. A device is "listed" only with the key it was listed with. */
   devices: Record<number, string>;
+  /** The device slots in the order the primary listed — and signed — them.
+   * The signing bytes are over the list as given (devices.rs), and a JS
+   * object keyed by number re-orders ascending, so a manifest listed
+   * `[3, 1]` would stop verifying the moment it was parsed. */
+  order?: number[];
   sig: string;
 }
 
@@ -47,14 +52,16 @@ export function parseManifest(json: unknown): DeviceManifest | null {
     return null;
   }
   const map: Record<number, string> = {};
+  const order: number[] = [];
   for (const d of devices as unknown[]) {
     if (typeof d !== 'object' || d === null) return null;
     const deviceId = (d as Record<string, unknown>)['device_id'];
     const sigPub = (d as Record<string, unknown>)['sig_pub'];
     if (!isInt(deviceId) || typeof sigPub !== 'string') return null;
     map[deviceId] = sigPub;
+    order.push(deviceId);
   }
-  return { stonechat_id: id, version, issued_at: issuedAt, devices: map, sig };
+  return { stonechat_id: id, version, issued_at: issuedAt, devices: map, order, sig };
 }
 
 /** The form that is signed and published: `sig` beside it. */
@@ -63,9 +70,9 @@ export function manifestJson(m: DeviceManifest): Record<string, unknown> {
     stonechat_id: m.stonechat_id,
     version: m.version,
     issued_at: m.issued_at,
-    devices: Object.entries(m.devices).map(([id, sig_pub]) => ({
-      device_id: Number(id),
-      sig_pub,
+    devices: (m.order ?? Object.keys(m.devices).map(Number)).map((id) => ({
+      device_id: id,
+      sig_pub: m.devices[id]!,
     })),
     sig: m.sig,
   };

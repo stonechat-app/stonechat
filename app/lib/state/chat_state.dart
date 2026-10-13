@@ -2033,7 +2033,11 @@ class ChatState extends ChangeNotifier {
     }
     final own = app.deviceCert?['sig_pub'];
     if (own is String) keys[myDeviceId] = own;
-    return keys;
+    // Ascending by slot. The signature is over the list as given, so the
+    // order is part of what every verifier must reproduce; a canonical one
+    // leaves nothing for a careless parser to re-sort.
+    final ids = keys.keys.toList()..sort();
+    return {for (final id in ids) id: keys[id]!};
   }
 
   /// Publish a manifest when the one on record does not say what the relay

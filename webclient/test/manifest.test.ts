@@ -33,6 +33,20 @@ test('a manifest the identity signed verifies, for that identity only', () => {
   assert.equal(verifiedManifest(core, json, other.id, b64decode(owner.pub)), null);
 });
 
+test('a manifest listed out of order verifies as signed', () => {
+  // A phone that just linked device 3 lists it first; the signature is
+  // over that order, and an object keyed by number must not re-sort it.
+  const owner = phone(7);
+  const d1 = DeviceKeys.generate(core);
+  const d3 = DeviceKeys.generate(core);
+  const json = owner.manifest(5, [[3, d3], [1, d1]]);
+  assert.deepEqual(json.devices.map((d) => d.device_id), [3, 1]);
+  const m = verifiedManifest(core, json, owner.id, b64decode(owner.pub));
+  assert.ok(m, 'verifies in the order it was signed');
+  assert.deepEqual(m.order, [3, 1]);
+  assert.equal(manifestLists(m, 3, b64encode(d3.sigPublic)), true);
+});
+
 test('tampering with the list breaks the signature', () => {
   const owner = phone(7);
   const d1 = DeviceKeys.generate(core);
