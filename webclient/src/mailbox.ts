@@ -116,9 +116,19 @@ export class Mailbox {
     const header = utf8.encode(
       JSON.stringify({ method, path, len: body.length }) + '\n',
     );
-    await writer.write(header);
-    if (body.length > 0) await writer.write(body);
-    await writer.close();
+    // The relay has the whole request once `len` bytes are in; a relay that
+    // then stops reading (STOP_SENDING, which rejects the close — or the
+    // last write, over a real network) has not refused anything: the answer
+    // is on the readable, and that is what decides.
+    let wrote = false;
+    try {
+      await writer.write(header);
+      if (body.length > 0) await writer.write(body);
+      wrote = true;
+      await writer.close();
+    } catch (e) {
+      if (!wrote) throw e;
+    }
 
     const reader = stream.readable.getReader();
     // The header line, then exactly `len` more bytes. Reading to end-of-stream

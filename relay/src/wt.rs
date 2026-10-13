@@ -88,6 +88,9 @@ const CHUNK: usize = 64 * 1024;
 /// us. Generous enough that an ordinary slow upload never trips it: it bounds
 /// silence between chunks, not total transfer time.
 const BODY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long to wait for the FIN after the declared body: on any sane path it
+/// is already in the buffer.
+const FIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// How often to check whether the live certificate has changed. The schedule
 /// rotates on the order of days, so this is cheap; it exists so rotation
@@ -245,6 +248,14 @@ fn body_stream(recv: wtransport::RecvStream, have: Vec<u8>, len: usize) -> Body 
         |state| async move {
             let mut st = state?;
             if st.sent >= st.len {
+                // Read the client's FIN before this stream is dropped. A
+                // receive stream dropped short of its end answers the peer
+                // with STOP_SENDING, and a browser whose `close()` was still
+                // in flight sees that as the request failing — across a real
+                // network, every time. The FIN costs one more read; a client
+                // that keeps writing past `len` is cut off by the timeout.
+                let mut fin = [0u8; 64];
+                let _ = tokio::time::timeout(FIN_TIMEOUT, st.recv.read(&mut fin)).await;
                 return None;
             }
             // Bytes that came in with the header, before anything else.
