@@ -425,11 +425,15 @@ export class Protocol {
   private async applySyncHistory(body: Record<string, unknown>): Promise<void> {
     const host = body['blob_host'];
     if (typeof host !== 'string' || host !== this._grant.relay_address) {
-      log('sync_history blob is not on our own mailbox');
+      log(`sync_history blob is not on our own mailbox (${String(host)} vs ${this._grant.relay_address})`);
       return;
     }
+    log('sync_history: fetching our primary\'s export');
     const bytes = await this.fetchSharedBytes(body, this.stonechatId);
-    if (bytes === null) return; // gone, or tampered
+    if (bytes === null) {
+      log('sync_history: export not fetched or not opened — nothing applied');
+      return;
+    }
     let payload: unknown;
     try {
       payload = JSON.parse(fromUtf8.decode(await gunzip(bytes)));
@@ -437,9 +441,15 @@ export class Protocol {
       log('sync_history payload does not parse');
       return;
     }
-    if (typeof payload !== 'object' || payload === null) return;
+    if (typeof payload !== 'object' || payload === null) {
+      log('sync_history: export is not an object');
+      return;
+    }
     const p = payload as Record<string, unknown>;
-    if (p['format'] !== 'stonechat-backup') return;
+    if (p['format'] !== 'stonechat-backup') {
+      log(`sync_history: export format is ${String(p['format'])}, not stonechat-backup`);
+      return;
+    }
     const rows = (key: string): Array<Record<string, unknown>> =>
       Array.isArray(p[key]) ? p[key].filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null) : [];
     const merged = mergeBackup(
@@ -2644,6 +2654,7 @@ export class Protocol {
     } catch (e) {
       throw new TransientFailure(`blob not fetched: ${(e as Error).message}`);
     }
+    if (got.status !== 200) log(`shared blob ${blobId}: mailbox answered ${got.status}`);
     return got.status === 200 ? got.body : null;
   }
 
@@ -2657,6 +2668,7 @@ export class Protocol {
     try {
       return this.core.blobOpen(b64decode(keyB64), b64decode(nonceB64), got);
     } catch {
+      log(`shared blob ${String(body['blob_id'])}: does not open with the key sent for it`);
       return null;
     }
   }
