@@ -39,10 +39,19 @@ import 'widgets.dart';
 class ChatScreen extends StatefulWidget {
   final Contact? contact;
   final Group? group;
+  /// Open scrolled to this message (a bookmark) instead of the newest one.
+  final String? focusMessageId;
 
-  const ChatScreen({super.key, required Contact this.contact}) : group = null;
-  const ChatScreen.group({super.key, required Group this.group})
-    : contact = null;
+  const ChatScreen({
+    super.key,
+    required Contact this.contact,
+    this.focusMessageId,
+  }) : group = null;
+  const ChatScreen.group({
+    super.key,
+    required Group this.group,
+    this.focusMessageId,
+  }) : contact = null;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -413,6 +422,20 @@ class _ChatScreenState extends State<ChatScreen> {
                 onTap: () {
                   Clipboard.setData(ClipboardData(text: m.text));
                   Navigator.pop(sheetContext);
+                },
+              ),
+            if (!isLocalRow)
+              ListTile(
+                leading: Icon(
+                  m.isBookmarked
+                      ? Icons.bookmark_remove_outlined
+                      : Icons.bookmark_add_outlined,
+                  color: Zn.muted,
+                ),
+                title: Text(m.isBookmarked ? 'Remove bookmark' : 'Bookmark'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  chat.toggleBookmark(m);
                 },
               ),
             if (m.status == MessageStatus.failed)
@@ -1179,12 +1202,20 @@ class _ChatScreenState extends State<ChatScreen> {
         : null;
     final searchQuery = _searching ? _searchInput.text.trim() : '';
 
-    // First frame with content: land on the newest message.
+    // First frame with content: land on the newest message — or on the one
+    // we were opened for, tinted so the eye finds it.
     if (!_jumpedToEnd && messages.isNotEmpty) {
       _jumpedToEnd = true;
+      final focus = widget.focusMessageId == null
+          ? -1
+          : messages.indexWhere((m) => m.id == widget.focusMessageId);
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _itemScroll.isAttached) {
+        if (!mounted || !_itemScroll.isAttached) return;
+        if (focus < 0) {
           _itemScroll.jumpTo(index: messages.length - 1);
+        } else {
+          _itemScroll.jumpTo(index: focus, alignment: 0.3);
+          _flash(messages[focus].id);
         }
       });
     }
@@ -2004,6 +2035,10 @@ class _LedgerEntry extends StatelessWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (message.isBookmarked) ...[
+                      const Icon(Icons.bookmark, size: 10, color: Zn.amber),
+                      const SizedBox(width: 3),
+                    ],
                     Text(
                       DateFormat('HH:mm').format(
                         DateTime.fromMillisecondsSinceEpoch(message.sentAt),

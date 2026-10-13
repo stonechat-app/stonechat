@@ -1,6 +1,6 @@
 # Stonechat web client
 
-Design and threat analysis: [`docs/WEB_CLIENT.md`](../docs/WEB_CLIENT.md). This
+Design and threat analysis: WEB_CLIENT.md (the private design notes). This
 README is the build record and the open decisions.
 
 Status: **a working second device, served at https://webapp.stonechat.app** (a

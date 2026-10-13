@@ -17,6 +17,7 @@ import '../state/call_state.dart';
 import '../state/chat_state.dart';
 import '../state/mailbox_state.dart';
 import 'blocked_screen.dart';
+import 'bookmarks_screen.dart';
 import 'devices_screen.dart';
 import 'redeem_sheet.dart';
 import 'theme.dart';
@@ -53,6 +54,18 @@ class SettingsScreen extends StatelessWidget {
             leading: const Icon(Icons.markunread_mailbox_outlined,
                 color: Zn.muted, size: 20),
             onTap: () => Navigator.pushNamed(context, '/mailbox'),
+          ),
+          ListTile(
+            title: const Text('My bookmarked messages'),
+            subtitle: const Text(
+                'Messages you bookmarked, by chat. Kept on this device only.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            leading:
+                const Icon(Icons.bookmark_outline, color: Zn.muted, size: 20),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const BookmarksScreen()),
+            ),
           ),
           const _SectionLabel('Privacy'),
           SwitchListTile(

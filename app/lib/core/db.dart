@@ -72,6 +72,7 @@ class ChatDb {
         await ensureGroupIntegrity(db);
         await ensureDeviceTrust(db);
         await ensureContactVerification(db);
+        await ensureMessageMarks(db);
       },
     );
     return ChatDb._(db);
@@ -127,12 +128,17 @@ class ChatDb {
         blob             TEXT,
         fail_reason      TEXT,
         attempts         INTEGER NOT NULL DEFAULT 0,
-        last_attempt_at  INTEGER
+        last_attempt_at  INTEGER,
+        bookmarked_at    INTEGER,
+        pinned_at        INTEGER,
+        pinned_until     INTEGER
       )
     ''');
     await db.execute(
       'CREATE INDEX idx_messages_contact ON messages(contact_id, sent_at)',
     );
+    await db.execute(_createBookmarkIndex);
+    await db.execute(_createDrafts);
     await db.execute(
       'CREATE INDEX idx_messages_expires ON messages(expires_at)',
     );
@@ -218,6 +224,38 @@ class ChatDb {
     if (cols.any((c) => c['name'] == 'verified_at')) return;
     await db.execute('ALTER TABLE contacts ADD COLUMN verified_at INTEGER');
   }
+
+  /// Bookmarks, in-chat pins and drafts arrived after the schema shipped.
+  /// Same approach as [ensureBlocked].
+  @visibleForTesting
+  static Future<void> ensureMessageMarks(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(messages)');
+    for (final column in ['bookmarked_at', 'pinned_at', 'pinned_until']) {
+      if (cols.any((c) => c['name'] == column)) continue;
+      await db.execute('ALTER TABLE messages ADD COLUMN $column INTEGER');
+    }
+    await db.execute(
+      _createBookmarkIndex.replaceFirst(
+          'CREATE INDEX', 'CREATE INDEX IF NOT EXISTS'),
+    );
+    await db.execute(
+      _createDrafts.replaceFirst('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
+    );
+  }
+
+  // Partial: only the handful of bookmarked rows are in it.
+  static const _createBookmarkIndex =
+      'CREATE INDEX idx_messages_bookmarked ON messages(bookmarked_at) '
+      'WHERE bookmarked_at IS NOT NULL';
+
+  // What was typed into a conversation's composer and not sent. Local-only.
+  static const _createDrafts = '''
+    CREATE TABLE drafts (
+      conversation_id TEXT PRIMARY KEY,
+      text            TEXT NOT NULL,
+      updated_at      INTEGER NOT NULL
+    )
+  ''';
 
   // The signed device manifest held for each identity we deal with — ours
   // included — verified before it is stored (device_manifest.dart).
@@ -542,6 +580,7 @@ class ChatDb {
 
   Future<void> deleteContact(String stonechatId) async {
     await _purgeConversationExtras(stonechatId);
+    await setDraft(stonechatId, '');
     await _db.delete(
       'messages',
       where: 'contact_id = ?',
@@ -632,12 +671,92 @@ class ChatDb {
     );
   }
 
+  Future<void> setMessageBookmarked(String id, int? bookmarkedAt) async {
+    await _db.update(
+      'messages',
+      {'bookmarked_at': bookmarkedAt},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// Pin [id] until [until] (ms epoch), or unpin it (both null).
+  Future<void> setMessagePin(String id, int? pinnedAt, int? until) async {
+    await _db.update(
+      'messages',
+      {'pinned_at': pinnedAt, 'pinned_until': until},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// A conversation's live pins, the most recently pinned first.
+  Future<List<Message>> activePins(String conversationId, int nowMs) async {
+    final rows = await _db.query(
+      'messages',
+      where: 'contact_id = ? AND pinned_until > ? AND deleted = 0',
+      whereArgs: [conversationId, nowMs],
+      orderBy: 'pinned_at DESC',
+    );
+    return rows.map(Message.fromRow).toList();
+  }
+
+  Future<Map<String, String>> drafts() async {
+    final rows = await _db.query('drafts');
+    return {
+      for (final r in rows)
+        r['conversation_id'] as String: r['text'] as String,
+    };
+  }
+
+  /// Save the composer's unsent text; empty text drops the draft.
+  Future<void> setDraft(String conversationId, String text) async {
+    if (text.trim().isEmpty) {
+      await _db.delete(
+        'drafts',
+        where: 'conversation_id = ?',
+        whereArgs: [conversationId],
+      );
+      return;
+    }
+    await _db.insert(
+      'drafts',
+      {
+        'conversation_id': conversationId,
+        'text': text,
+        'updated_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Every bookmarked message, newest bookmark first. Expired rows are
+  /// excluded: the sweep may not have reached them yet.
+  Future<List<Message>> bookmarkedMessages(int nowMs) async {
+    final rows = await _db.query(
+      'messages',
+      where: 'bookmarked_at IS NOT NULL AND deleted = 0 '
+          'AND (expires_at IS NULL OR expires_at > ?)',
+      whereArgs: [nowMs],
+      orderBy: 'bookmarked_at DESC',
+    );
+    return rows.map(Message.fromRow).toList();
+  }
+
   /// Delete-for-everyone tombstone: the row stays (so the conversation shows
-  /// "message deleted"), the content goes.
+  /// "message deleted"), the content goes — and with it any bookmark or pin, since
+  /// there is nothing left to come back to.
   Future<void> tombstoneMessage(String id) async {
     await _db.update(
       'messages',
-      {'text': '', 'media_path': null, 'deleted': 1},
+      {
+        'text': '',
+        'media_path': null,
+        'deleted': 1,
+        'bookmarked_at': null,
+        'pinned_at': null,
+        'pinned_until': null,
+      },
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -873,6 +992,7 @@ class ChatDb {
 
   Future<void> deleteGroup(String groupId) async {
     await _purgeConversationExtras(groupId);
+    await setDraft(groupId, '');
     await _db.delete('messages', where: 'contact_id = ?', whereArgs: [groupId]);
     await _db.delete(
       'group_outbox',
@@ -1297,7 +1417,7 @@ class ChatDb {
   Future<List<Map<String, Object?>>> backupMessages(int nowMs) => _db.rawQuery(
     'SELECT id, contact_id, sender_id, outgoing, text, kind, duration_ms, '
     'sent_at, status, edited_at, expires_at, reply_to_id, reply_to_sender, '
-    'reply_to_preview FROM messages '
+    'reply_to_preview, bookmarked_at FROM messages '
     'WHERE ${_backupMessageWhere('messages')} ORDER BY sent_at',
     [nowMs],
   );
@@ -1366,6 +1486,7 @@ class ChatDb {
       'reply_to_id',
       'reply_to_sender',
       'reply_to_preview',
+      'bookmarked_at',
     },
     'reactions': {'message_id', 'peer_id', 'emoji', 'at'},
     'blocked': {'stonechat_id', 'blocked_at'},

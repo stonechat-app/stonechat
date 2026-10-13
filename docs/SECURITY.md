@@ -4,5 +4,5 @@
 
 If you want to report a vulnerability without disclosing it to the public, please email it to **security@stonechat.app**.
 
-There is no bug bounty (yet). We'll credit you in the fix's release notes unless you
+There is no bug bounty. We'll credit you in the fix's release notes unless you
 ask us not to.

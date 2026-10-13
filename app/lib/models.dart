@@ -241,6 +241,13 @@ class Message {
   /// message has cost and when the last one was. Outgoing messages only.
   int attempts;
   int? lastAttemptAt;
+  /// When the user bookmarked this message (ms epoch), null if not. A local
+  /// mark: it never leaves this device and nobody else is told.
+  int? bookmarkedAt;
+  /// Pinned in the chat (PROTOCOL.md "pin"): when, and until when (ms epoch).
+  /// Both null when not pinned; a pin past [pinnedUntil] has lapsed.
+  int? pinnedAt;
+  int? pinnedUntil;
 
   Message({
     required this.id,
@@ -267,7 +274,13 @@ class Message {
     this.failReason,
     this.attempts = 0,
     this.lastAttemptAt,
+    this.bookmarkedAt,
+    this.pinnedAt,
+    this.pinnedUntil,
   });
+
+  bool get isBookmarked => bookmarkedAt != null;
+  bool isPinnedAt(int nowMs) => (pinnedUntil ?? 0) > nowMs;
 
   Map<String, Object?> toRow() => {
         'id': id,
@@ -294,6 +307,9 @@ class Message {
         'fail_reason': failReason,
         'attempts': attempts,
         'last_attempt_at': lastAttemptAt,
+        'bookmarked_at': bookmarkedAt,
+        'pinned_at': pinnedAt,
+        'pinned_until': pinnedUntil,
       };
 
   factory Message.fromRow(Map<String, Object?> r) => Message(
@@ -327,6 +343,9 @@ class Message {
         failReason: r['fail_reason'] as String?,
         attempts: (r['attempts'] as int?) ?? 0,
         lastAttemptAt: r['last_attempt_at'] as int?,
+        bookmarkedAt: r['bookmarked_at'] as int?,
+        pinnedAt: r['pinned_at'] as int?,
+        pinnedUntil: r['pinned_until'] as int?,
       );
 
   String get preview => deleted
@@ -412,6 +431,8 @@ class EnvelopeType {
   static const groupMsgDelete = 'group_msg_delete';
   static const reaction = 'reaction'; // emoji on a message ('' clears)
   static const groupReaction = 'group_reaction';
+  static const pin = 'pin'; // pin a message in the chat until a time (0 unpins)
+  static const groupPin = 'group_pin';
   static const timerUpdate = 'timer_update'; // disappearing-messages setting (DM)
   static const groupTimerUpdate = 'group_timer_update'; // same, any member
   static const callOffer = 'call_offer'; // SDP; wire form rings
