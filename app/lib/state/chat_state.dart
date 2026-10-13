@@ -342,6 +342,40 @@ class ChatState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Bookmark a message, or drop the bookmark. Local-only, like pinning: no
+  /// peer and none of our other devices is told.
+  Future<void> toggleBookmark(Message message) async {
+    final at =
+        message.isBookmarked ? null : DateTime.now().millisecondsSinceEpoch;
+    await app.db.setMessageBookmarked(message.id, at);
+    for (final m in [message, ..._cachedCopies(message)]) {
+      m.bookmarkedAt = at;
+    }
+    notifyListeners();
+  }
+
+  /// Every bookmarked message across all conversations, newest bookmark
+  /// first. Read from storage: most conversations aren't in the cache.
+  Future<List<Message>> bookmarkedMessages() =>
+      app.db.bookmarkedMessages(DateTime.now().millisecondsSinceEpoch);
+
+  /// What a conversation id names right now, for lists that span chats.
+  /// Null once the contact or group is gone.
+  ({String name, Uint8List? image, bool notes})? conversationLabel(
+    String conversationId,
+  ) {
+    final group = groupById(conversationId);
+    if (group != null) {
+      return (name: group.name, image: group.avatar, notes: false);
+    }
+    if (isNotesToSelf(conversationId)) {
+      return (name: notesToSelfName, image: null, notes: true);
+    }
+    final contact = contactById(conversationId);
+    if (contact == null) return null;
+    return (name: contact.displayName, image: contact.avatar, notes: false);
+  }
+
   Future<void> togglePinGroup(Group g) async {
     g.pinnedAt = g.isPinned ? null : DateTime.now().millisecondsSinceEpoch;
     await app.db.setGroupPinned(g.id, g.pinnedAt);
@@ -1980,12 +2014,22 @@ class ChatState extends ChangeNotifier {
     Map<int, String> extra = const {},
   ]) {
     final keys = <int, String>{...extra};
+    // A device we linked and named in the manifest, that has not published
+    // its certificate to the relay yet (a browser whose first connect
+    // failed): still ours, still listed by the relay — it keeps the key the
+    // manifest already has, rather than falling out and taking every
+    // contact's willingness to talk to it along. Revoked = not listed.
+    final held = _manifests[app.stonechatId ?? '']?.devices ?? const <int, String>{};
     for (final d in listed) {
       final id = d['device_id'];
+      if (id is! int) continue;
       final cert = d['cert'];
-      if (id is! int || cert is! Map) continue;
-      final sigPub = cert['sig_pub'];
-      if (sigPub is String) keys[id] = sigPub;
+      final sigPub = cert is Map ? cert['sig_pub'] : null;
+      if (sigPub is String) {
+        keys[id] = sigPub;
+      } else if (held[id] case final String known) {
+        keys[id] = known;
+      }
     }
     final own = app.deviceCert?['sig_pub'];
     if (own is String) keys[myDeviceId] = own;
@@ -4461,6 +4505,7 @@ class ChatState extends ChangeNotifier {
       m.deleted = true;
       m.text = '';
       m.mediaPath = null;
+      m.bookmarkedAt = null;
     }
   }
 
