@@ -31,4 +31,9 @@ await esbuild.build({
   external: ['node:*'],
 });
 
-execFileSync(process.execPath, ['--test', out], { stdio: 'inherit' });
+// The built specs by name, not the directory: Node 22's `--test` takes
+// files and globs, and a directory argument is "Cannot find module".
+const built = readdirSync(out)
+  .filter((f) => f.endsWith('.js'))
+  .map((f) => join(out, f));
+execFileSync(process.execPath, ['--test', ...built], { stdio: 'inherit' });

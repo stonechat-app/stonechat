@@ -51,8 +51,12 @@ jobs:
             ~/.cargo/git
             relay/target
           key: relay-test-${{ runner.os }}-${{ hashFiles('relay/Cargo.lock') }}
+      # Release, as relay-build.yml runs them: the WebTransport tests stand up
+      # a real QUIC endpoint with a twelve-certificate schedule, and a debug
+      # build of that on a shared runner does not come up before the
+      # client's connect gives up.
       - name: unit, router, WebTransport and TURN tests
-        run: cargo test
+        run: cargo test --release
         working-directory: relay
 
   app:
@@ -84,9 +88,9 @@ jobs:
       - name: flutter pub get
         run: flutter pub get
         working-directory: app
-      # Warnings are not errors here; the analyzer's errors are.
+      # Infos and warnings are not errors here; the analyzer's errors are.
       - name: flutter analyze
-        run: flutter analyze --no-fatal-warnings
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
         working-directory: app
       - name: flutter test
         run: flutter test
