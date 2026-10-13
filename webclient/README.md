@@ -3,7 +3,9 @@
 Design and threat analysis: [`docs/WEB_CLIENT.md`](../docs/WEB_CLIENT.md). This
 README is the build record and the open decisions.
 
-Status: **a working second device; there is no deploy target yet.** A browser
+Status: **a working second device, served at https://webapp.stonechat.app** (a
+static site block in the main hub's Caddy, filled by `deploy.sh --webapp`
+from `dist/`; verify a deployment with the hash root below). A browser
 session can be linked — generate its own keys, show the offer, collect the
 grant, verify the certificate, be filled in by the phone — and then talks to
 relays over WebTransport.
@@ -332,7 +334,6 @@ security argument that justifies the whole project.
 
 ## Not started
 
-- **A deploy target.** Nothing serves this client yet.
 - **A transparency log** of release hash roots, which is what makes the hash
   root checkable by someone other than us.
 - **Moving `?token=` out of the query string.** A WebTransport request
