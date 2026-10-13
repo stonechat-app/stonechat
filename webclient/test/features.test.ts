@@ -281,6 +281,26 @@ test('a group message is delivered when every member has it', async () => {
   assert.equal((await as('admin', async () => store.findMessage(sent.id)))?.message.status, 'delivered');
 });
 
+test('mentions name members, and only members survive the trip', async () => {
+  const { who, as } = await world('admin', 'bea', 'cal');
+  const { admin, bea, cal } = who;
+  const roster = { group_id: GROUP, name: 'T', version: 1, admin: admin.id, members: [entryOf(admin), entryOf(bea), entryOf(cal)] };
+  await as('admin', async () => {
+    store.upsertGroup({ id: GROUP, name: 'T', admin: admin.id, version: 1, members: roster.members.map((m) => ({ stonechatId: m.stonechat_id, pubkey: m.pubkey })) });
+    await raw(admin.protocol, bea.id, 'group_create', roster);
+    await raw(admin.protocol, cal.id, 'group_create', roster);
+  });
+  await as('bea', () => drainAll(bea.protocol));
+  await as('cal', () => drainAll(cal.protocol));
+  const sent = await as('admin', () => admin.protocol.sendGroup(GROUP, '@bea look', { mentions: [bea.id, 'SC-NOBODY'] }));
+  assert.deepEqual(sent.mentions, [bea.id], 'a non-member is not a mention');
+  const deposit = bea.relay.deposits.find((d) => d['transient'] !== true);
+  assert.ok(deposit, 'bea got the message');
+  await as('bea', () => drainAll(bea.protocol));
+  const held = await as('bea', async () => store.findMessage(sent.id)?.message);
+  assert.deepEqual(held?.mentions, [bea.id]);
+});
+
 // -- typing -----------------------------------------------------------------------
 
 test('typing is transient, shown for a while, and only on existing sessions', async () => {

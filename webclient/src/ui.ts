@@ -511,6 +511,54 @@ export class App {
     }
   }
 
+  /** The text, with every `@name` the sender meant set off. */
+  private textBody(message: Message): HTMLElement {
+    const body = el('div', 'row__body');
+    const names = (message.mentions ?? [])
+      .map((id) => this.protocol.nameOf(id))
+      .filter((n) => n.length > 0)
+      .sort((a, b) => b.length - a.length); // longest first: "Ann Lee" before "Ann"
+    if (names.length === 0) {
+      body.textContent = message.text;
+      return body;
+    }
+    const text = message.text;
+    let start = 0;
+    while (start < text.length) {
+      let at = -1;
+      let hit = '';
+      for (const n of names) {
+        const i = text.indexOf(`@${n}`, start);
+        if (i >= 0 && (at < 0 || i < at)) { at = i; hit = n; }
+      }
+      if (at < 0) { body.append(text.slice(start)); break; }
+      if (at > start) body.append(text.slice(start, at));
+      const span = el('span', 'mention', `@${hit}`);
+      if (hit === this.protocol.nameOf(this.protocol.stonechatId)) span.classList.add('mention--me');
+      body.append(span);
+      start = at + hit.length + 1;
+    }
+    return body;
+  }
+
+  /** A group's photo, or a lettered square in its colour. */
+  private groupAvatar(group: Group, size = 26): HTMLElement {
+    if (group.avatar) {
+      const img = el('img', 'avatar');
+      img.src = `data:${group.avatar.mime};base64,${group.avatar.data}`;
+      img.alt = '';
+      img.width = size;
+      img.height = size;
+      return img;
+    }
+    const dot = el('div', 'avatar avatar--letter', group.name.slice(0, 1).toUpperCase());
+    dot.style.background = idColor(group.id);
+    dot.style.width = `${size}px`;
+    dot.style.height = `${size}px`;
+    dot.style.lineHeight = `${size}px`;
+    return dot;
+  }
+
   private avatar(contact: Contact | null, id: string, size = 26): HTMLElement {
     if (contact?.avatar) {
       const img = el('img', 'avatar');
@@ -598,7 +646,7 @@ export class App {
     preview.style.textOverflow = 'ellipsis';
     if (!last) preview.style.color = 'var(--faint)';
     main.append(meta, preview);
-    row.append(rail, main);
+    row.append(rail, this.groupAvatar(group), main);
     row.addEventListener('click', () => {
       this.setOpen({ group: true, id: group.id });
       this.render();
@@ -637,7 +685,7 @@ export class App {
       : open.id;
     const titles = el('div', 'pane__titles');
     titles.append(title, sub);
-    head.append(back, open.group ? el('span') : this.avatar(contact, open.id), titles);
+    head.append(back, openGroup ? this.groupAvatar(openGroup) : this.avatar(contact, open.id), titles);
 
     // Calls are 1:1, between accepted contacts. This browser refuses what it
     // knows is not one; the rest it offers.
@@ -773,7 +821,7 @@ export class App {
     } else if (message.media) {
       main.append(this.mediaBody(message.id, message.media));
     } else {
-      main.append(el('div', 'row__body', message.text));
+      main.append(this.textBody(message));
     }
 
     if (message.reactions && Object.keys(message.reactions).length) {
@@ -1098,9 +1146,49 @@ export class App {
         attach.textContent = previous;
       }
     });
+    // Group @mentions: a trailing `@name` at the cursor fills the strip with
+    // matching members; a pick completes the name and remembers its ID. On
+    // send, only names still in the text count.
+    const picked = new Map<string, string>(); // display name → SC- ID
+    const strip = el('div', 'mention-strip');
+    strip.hidden = true;
+    const refreshStrip = () => {
+      if (!group || group.removed) return;
+      const cursor = input.selectionStart ?? input.value.length;
+      const head = input.value.slice(0, cursor);
+      const m = /(?:^|\s)@([^\s@]*)$/.exec(head);
+      strip.replaceChildren();
+      if (!m) { strip.hidden = true; return; }
+      const q = m[1]!.toLowerCase();
+      const matches = group.members
+        .filter((mem) => mem.stonechatId !== this.protocol.stonechatId)
+        .map((mem) => ({ id: mem.stonechatId, name: this.protocol.nameOf(mem.stonechatId) }))
+        .filter((mem) => mem.name.toLowerCase().includes(q))
+        .slice(0, 6);
+      strip.hidden = matches.length === 0;
+      for (const mem of matches) {
+        const chip = el('button', 'mention-strip__chip', `@${mem.name}`);
+        chip.type = 'button';
+        chip.addEventListener('mousedown', (e) => e.preventDefault()); // keep focus
+        chip.addEventListener('click', () => {
+          const at = head.lastIndexOf('@');
+          const replaced = `${head.slice(0, at)}@${mem.name} `;
+          input.value = replaced + input.value.slice(cursor);
+          input.setSelectionRange(replaced.length, replaced.length);
+          picked.set(mem.name, mem.id);
+          strip.hidden = true;
+          strip.replaceChildren();
+          input.focus();
+        });
+        strip.append(chip);
+      }
+    };
     const submit = async () => {
       const text = input.value.trim();
       if (!text) return;
+      const mentions = [...picked.entries()].filter(([name]) => text.includes(`@${name}`)).map(([, id]) => id);
+      picked.clear();
+      strip.hidden = true;
       input.value = '';
       send.disabled = true;
       const replyTo = this.replyingTo ?? undefined;
@@ -1111,7 +1199,7 @@ export class App {
         // contact's SC- ID redirect what was typed to them.
         // The message is in the ledger, pending, before anything is sent;
         // a failure shows on it and is retried rather than handed back.
-        if (open.group) await this.protocol.sendGroup(open.id, text, replyTo ? { replyTo } : {});
+        if (open.group) await this.protocol.sendGroup(open.id, text, { ...(replyTo ? { replyTo } : {}), ...(mentions.length ? { mentions } : {}) });
         else await this.protocol.send(open.id, text, replyTo ? { replyTo } : {});
       } catch (e) {
         this.setStatus('down', (e as Error).message);
@@ -1127,10 +1215,14 @@ export class App {
     input.addEventListener('input', () => {
       if (input.value) this.protocol.notifyTyping(open.id, open.group);
       else this.protocol.stopTyping(open.id, open.group);
+      refreshStrip();
+    });
+    input.addEventListener('keyup', (e) => {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') refreshStrip();
     });
     send.addEventListener('click', () => void submit());
     row.append(picker, attach, input, send);
-    box.append(row);
+    box.append(strip, row);
     setTimeout(() => input.focus(), 0);
     return box;
   }

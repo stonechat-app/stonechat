@@ -865,3 +865,35 @@ select.timer {
 .notice--call {
   color: var(--muted);
 }
+
+/* @mentions (ui.ts textBody / composer strip) */
+.mention {
+  color: var(--orange);
+  font-weight: 600;
+}
+.mention--me {
+  background: color-mix(in srgb, var(--orange) 18%, transparent);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.mention-strip {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  overflow-x: auto;
+}
+.mention-strip__chip {
+  font: inherit;
+  font-size: 13px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.mention-strip__chip:hover {
+  border-color: var(--orange);
+}

@@ -1334,6 +1334,7 @@ export class Protocol {
       : { text: m.text };
     if (m.expiresAt) payload['expire_after_ms'] = m.expiresAt - sentAtMs(m.sentAt);
     if (m.replyTo) payload['reply_to'] = m.replyTo;
+    if (group && m.mentions?.length) payload['mentions'] = m.mentions;
     return payload;
   }
 
@@ -1429,7 +1430,7 @@ export class Protocol {
    *
    * Needs the roster, so it only works for a group we have been told about.
    */
-  async sendGroup(groupId: string, text: string, opts: { replyTo?: Message } = {}): Promise<Message> {
+  async sendGroup(groupId: string, text: string, opts: { replyTo?: Message; mentions?: string[] } = {}): Promise<Message> {
     const group = store.group(groupId);
     if (!group) {
       throw new Refused(
@@ -1442,11 +1443,15 @@ export class Protocol {
     const sentAt = new Date(this.now()).toISOString();
     const expiresAt = this.expiryFor(groupId, true, sentAt);
     const replyTo = this.quoteOf(opts.replyTo);
+    // Only members: a name picked from the strip that was then edited out
+    // of the text is the caller's business; a non-member is nobody's.
+    const mentions = (opts.mentions ?? []).filter((id) => group.members.some((m) => m.stonechatId === id));
     const message: Message = {
       id, peerId: groupId, mine: true, text, sentAt, group: true, status: 'pending',
       salt: b64encode(randomBytes(16)),
       ...(expiresAt ? { expiresAt } : {}),
       ...(replyTo ? { replyTo } : {}),
+      ...(mentions.length ? { mentions } : {}),
     };
     const payload = this.textPayload(message, true);
     const sent = await this.startSend(message, 'group_msg', payload);
@@ -2404,6 +2409,12 @@ export class Protocol {
     const body = groupMessageBody(payload);
     const expiresAt = expiresAtFrom(inner.sentAt, payload);
     const replyTo = replyFrom(payload);
+    // `mentions`: member IDs only; anything else is dropped — display data,
+    // never a reason to refuse the message.
+    const rawMentions = payload['mentions'];
+    const mentions = Array.isArray(rawMentions)
+      ? rawMentions.filter((id): id is string => typeof id === 'string' && group.members.some((m) => m.stonechatId === id))
+      : [];
     const message: Message = {
       id: inner.id,
       peerId: group.id,
@@ -2416,6 +2427,7 @@ export class Protocol {
       ...(media ? { media } : {}),
       ...(expiresAt ? { expiresAt } : {}),
       ...(replyTo ? { replyTo } : {}),
+      ...(mentions.length && !isMedia ? { mentions } : {}),
       ...(typeof salt === 'string' && body !== null
         ? {
             contentHash: groupMessageHash(this.hashB64, {

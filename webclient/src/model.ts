@@ -86,6 +86,9 @@ export interface Message {
   /** Reactor's SC- ID → emoji. One per person; the empty string clears. */
   reactions?: Record<string, string>;
   replyTo?: ReplyTo;
+  /** Group messages: the members the sender called out with @ (PROTOCOL.md
+   * "group_msg"). Set off in the ledger; a mention of us cuts through mute. */
+  mentions?: string[];
   /** Milliseconds. Deleted on every device once passed, read or not. */
   expiresAt?: number;
   /** A system row ("X was added"), not something anyone typed. */
