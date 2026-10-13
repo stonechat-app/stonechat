@@ -26,14 +26,44 @@ class DevicesScreen extends StatefulWidget {
 
 class _DevicesScreenState extends State<DevicesScreen> {
   List<Map<String, dynamic>>? _devices;
+  /// Linked devices still waiting for their first fill from this phone.
+  Set<int> _settingUp = const {};
   String? _error;
   bool _busy = false;
+  ChatState? _chat;
 
   @override
   void initState() {
     super.initState();
+    _chat = context.read<ChatState>();
+    // A fill completing (ChatState notifies) flips a tile from "setting up".
+    _chat!.addListener(_refreshSettingUp);
     unawaited(_load());
   }
+
+  @override
+  void dispose() {
+    _chat?.removeListener(_refreshSettingUp);
+    super.dispose();
+  }
+
+  Future<void> _refreshSettingUp() async {
+    final chat = _chat;
+    final devices = _devices;
+    if (chat == null || devices == null || !_isPrimary) return;
+    final pending = <int>{};
+    for (final d in devices) {
+      final id = d['device_id'];
+      if (id is! int || id == chat.myDeviceId) continue;
+      if (!await chat.isBootstrapped(id)) pending.add(id);
+    }
+    if (mounted && !_sameSet(pending, _settingUp)) {
+      setState(() => _settingUp = pending);
+    }
+  }
+
+  static bool _sameSet(Set<int> a, Set<int> b) =>
+      a.length == b.length && a.containsAll(b);
 
   ({String address, String token, String tlsFp})? get _mailbox {
     final chat = context.read<ChatState>();
@@ -61,6 +91,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
         mailbox.tlsFp,
       );
       if (mounted) setState(() => _devices = listed.devices);
+      await _refreshSettingUp();
     } on ApiException catch (e) {
       if (mounted) setState(() => _error = e.message);
     } finally {
@@ -254,7 +285,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
       // kept trying on later connects if it is not reachable now.
       unawaited(chat.bootstrapDevice(linked.deviceId));
       if (mounted) {
-        showZnSnack(context, 'Authorised — finish on the other device');
+        showZnSnack(
+          context,
+          'Linked — keep Stonechat open while it gets your contacts and history',
+        );
       }
       await _load();
     } on ApiException catch (e) {
@@ -334,6 +368,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
     final isThisDevice = id == context.read<ChatState>().myDeviceId;
     final expires = device['expires_at'] as String?;
     final lastSeen = device['last_seen'] as String?;
+    final settingUp = _settingUp.contains(id);
     return ListTile(
       contentPadding: EdgeInsets.zero,
       leading: Icon(switch (kind) {
@@ -347,12 +382,16 @@ class _DevicesScreenState extends State<DevicesScreen> {
         style: const TextStyle(color: Zn.text),
       ),
       subtitle: Text(
-        [
-          kind,
-          if (lastSeen != null) 'last seen ${_short(lastSeen)}',
-          if (expires != null) 'expires ${_short(expires)}',
-        ].join(' · '),
-        style: Zn.mono(size: 10),
+        settingUp
+            // The fill runs here, on the primary, and only while it is awake:
+            // the one thing the user can do for it is not leave.
+            ? 'Setting up — keep Stonechat open until this is done'
+            : [
+                kind,
+                if (lastSeen != null) 'last seen ${_short(lastSeen)}',
+                if (expires != null) 'expires ${_short(expires)}',
+              ].join(' · '),
+        style: Zn.mono(size: 10, color: settingUp ? Zn.amber : Zn.muted),
       ),
       // The primary removes linked devices; nobody removes the primary.
       trailing: isThisDevice || !_isPrimary || id == ChatDb.primaryDevice

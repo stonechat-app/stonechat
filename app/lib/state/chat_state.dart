@@ -1795,6 +1795,12 @@ class ChatState extends ChangeNotifier {
 
   static String _bootstrapKey(int deviceId) => 'bootstrap.sent.$deviceId';
 
+  /// Whether a linked device has been handed its first fill (contacts,
+  /// groups, history). Until then it is a device in name only, and the
+  /// Linked devices screen says so — the fill needs this app awake.
+  Future<bool> isBootstrapped(int deviceId) async =>
+      await app.db.kvGet(_bootstrapKey(deviceId)) != null;
+
   /// The shared blob holding our export, reused across attempts to hand it
   /// to a device that has not published prekeys yet.
   SharedBlob? _bootstrapBlob;
@@ -1879,6 +1885,7 @@ class ChatState extends ChangeNotifier {
         'blob_tls_fp': blob.tlsFp,
       });
       await app.db.kvPut(_bootstrapKey(deviceId), Uint8List.fromList([1]));
+      notifyListeners(); // Linked devices: "setting up" → done
       return true;
     } catch (e) {
       debugPrint('stonechat: bootstrap of device $deviceId not yet: $e');
