@@ -185,6 +185,14 @@ class MailboxState extends ChangeNotifier {
   }
 
   Future<void> refresh() async {
+    // A linked device holds no account token and manages nothing: its
+    // mailbox is the primary's, at the address the grant named and the
+    // public directory keeps current. The hub's record is not its to ask —
+    // asking got a 401 that read as "hub unreachable", forever.
+    if (app.isLinkedDevice) {
+      await _refreshLinked();
+      return;
+    }
     final wasProvisioning = isProvisioning;
     try {
       record = await app.api.getMailbox();
@@ -232,6 +240,64 @@ class MailboxState extends ChangeNotifier {
     } else {
       // No running record = nothing to be down. Turning the mailbox off is
       // the main way here, and it must never read as an outage.
+      await _clearOutage();
+      onMailbox?.call(null, null, null);
+      _dropSocket();
+    }
+    notifyListeners();
+  }
+
+  /// The linked device's refresh. The grant's coordinates are the anchor;
+  /// the directory may move them, but only with a fingerprint the identity
+  /// key vouched for — the same check a contact makes before pinning us.
+  Future<void> _refreshLinked() async {
+    var address = app.linkedRelayAddress;
+    var tlsFp = app.linkedRelayTlsFp;
+    final id = app.stonechatId;
+    if (id != null) {
+      try {
+        final entry = await app.api.directory(id);
+        final fp = entry.mailboxTlsFp;
+        final sig = entry.mailboxTlsSig;
+        final moved = entry.mailboxAddress != null &&
+            fp != null &&
+            sig != null &&
+            (entry.mailboxAddress != address || fp != tlsFp) &&
+            app.crypto.verifyTlsSig(
+              fp,
+              sig,
+              Uint8List.fromList(base64Decode(entry.pubkeyB64)),
+            );
+        if (moved) {
+          address = entry.mailboxAddress;
+          tlsFp = fp;
+          await app.setLinkedRelay(address!, tlsFp!);
+        }
+        hubUnreachable = false;
+      } on Exception {
+        // The grant's coordinates still serve; only say the hub is away
+        // when there is nothing else to go on.
+        hubUnreachable = address == null;
+      }
+    }
+    recordKnown = true;
+    _hubRetryTimer?.cancel();
+    _hubRetryTimer = null;
+    final token = app.deviceToken;
+    record = address == null || tlsFp == null || token == null
+        ? MailboxRecord(status: 'none')
+        : MailboxRecord(
+            status: 'running',
+            provider: 'linked',
+            address: address,
+            mailboxToken: token,
+            tlsFp: tlsFp,
+          );
+    if (isRunning) {
+      onMailbox?.call(address, token, tlsFp);
+      _ensureSocket(address!, token!, tlsFp!);
+      await _maybeAnnounceOutage();
+    } else {
       await _clearOutage();
       onMailbox?.call(null, null, null);
       _dropSocket();

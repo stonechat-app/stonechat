@@ -54,6 +54,17 @@ class AppState extends ChangeNotifier {
   // user's own mailbox. Pure UI distinction (both are `external` records on
   // the hub) — kept locally so the mailbox screen can say which one it is.
   bool externalMailboxFriendHosted = false;
+  /// Linked devices only: this device's own token on the identity's mailbox,
+  /// and where that mailbox is — the grant said, the directory keeps it
+  /// current. A linked device holds no account token, so this is the only
+  /// way it can know its mailbox at all.
+  String? deviceToken;
+  String? linkedRelayAddress;
+  String? linkedRelayTlsFp;
+
+  /// An identity without its secret: a device the primary linked.
+  bool get isLinkedDevice =>
+      stonechatId != null && !(_crypto?.hasIdentitySecret ?? false);
   // The user's own mailbox host ("host your circle"), if they run one. The
   // admin token is as sensitive as the mailbox token: keystore only, never
   // the hub. The fingerprint is trust-on-first-use, observed at connect.
@@ -143,6 +154,9 @@ class AppState extends ChangeNotifier {
       externalMailboxTlsFp = await _storage.read(key: 'sc_ext_tls_fp');
       externalMailboxFriendHosted =
           await _storage.read(key: 'sc_ext_friend') == '1';
+      deviceToken = await _storage.read(key: 'sc_device_token');
+      linkedRelayAddress = await _storage.read(key: 'sc_relay_address');
+      linkedRelayTlsFp = await _storage.read(key: 'sc_relay_tls_fp');
       mailboxHostAddress = await _storage.read(key: 'sc_mailbox_host_addr');
       mailboxHostAdminToken = await _storage.read(key: 'sc_mailbox_host_token');
       mailboxHostTlsFp = await _storage.read(key: 'sc_mailbox_host_tls_fp');
@@ -227,6 +241,9 @@ class AppState extends ChangeNotifier {
     externalMailboxToken = null;
     externalMailboxTlsFp = null;
     externalMailboxFriendHosted = false;
+    deviceToken = null;
+    linkedRelayAddress = null;
+    linkedRelayTlsFp = null;
     mailboxHostAddress = null;
     mailboxHostAdminToken = null;
     mailboxHostTlsFp = null;
@@ -629,11 +646,25 @@ class AppState extends ChangeNotifier {
     await _storage.write(key: 'sc_hub_url', value: grant.hubUrl);
     await _storage.write(key: 'sc_device_id', value: '${grant.deviceId}');
     await _storage.write(key: 'sc_device_token', value: grant.deviceToken);
+    deviceToken = grant.deviceToken;
+    // The mailbox this device drains: the grant names it, and MailboxState
+    // reads it from here rather than from the hub, which would want an
+    // account token this device does not hold.
+    await setLinkedRelay(grant.relayAddress, grant.relayTlsFp);
 
     _crypto = crypto;
     stonechatId = grant.stonechatId;
     displayName = grant.displayName;
     notifyListeners();
+  }
+
+  /// Where a linked device's mailbox is now. From the grant at link time;
+  /// later from the directory, when the primary moves the mailbox.
+  Future<void> setLinkedRelay(String address, String tlsFp) async {
+    linkedRelayAddress = address;
+    linkedRelayTlsFp = tlsFp;
+    await _storage.write(key: 'sc_relay_address', value: address);
+    await _storage.write(key: 'sc_relay_tls_fp', value: tlsFp);
   }
 
   /// **Existing device.** Authorise a scanned offer: mint the newcomer a

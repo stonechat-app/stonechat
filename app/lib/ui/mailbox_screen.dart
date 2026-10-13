@@ -283,7 +283,14 @@ class _MailboxScreenState extends State<MailboxScreen> {
                 onTap: () => Navigator.pushNamed(context, '/invites')),
             const SizedBox(height: 12),
           ],
-          if (mailbox.isRunning || mailbox.record.status == 'error') ...[
+          if (context.read<AppState>().isLinkedDevice) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'This device is linked to your phone, which manages the '
+              'mailbox. Turn it off, move it or rebuild it there.',
+              style: TextStyle(color: Zn.muted, fontSize: 12),
+            ),
+          ] else if (mailbox.isRunning || mailbox.record.status == 'error') ...[
             const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
