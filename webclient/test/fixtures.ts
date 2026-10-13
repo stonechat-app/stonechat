@@ -70,8 +70,11 @@ export class FakeRelay {
   failBundleFor = new Set<number>();
   /** Devices whose deposits fail with 503, for now. */
   failInboxFor = new Set<number>();
-  /** What `/turn-credentials` answers; null is a mailbox without TURN (404). */
-  turn: { urls: string[]; username: string; credential: string } | null = null;
+  /** What `/turn-credentials` answers; null is a mailbox without a call
+   * relay (404), which no 0.3.0+ relay is — so one is the default. */
+  turn: { urls: string[]; username: string; credential: string } | null = {
+    urls: ['turn:relay.test:3478?transport=udp'], username: '1:stonechat', credential: 'c',
+  };
 
   bundle(device = 1): Record<string, unknown> {
     if (this.failBundleFor.has(device)) throw new MailboxError('{"detail":"try later"}', 503);

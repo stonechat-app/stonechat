@@ -153,6 +153,8 @@ export interface GroupMember {
 export interface Group {
   id: string;
   name: string;
+  /** The group's photo, set by the admin and carried by every roster. */
+  avatar?: { data: string; mime: string };
   /** The admin on record. Only this identity's rosters are applied, and a
    * roster from it naming another member is a handover. */
   admin: string;

@@ -382,13 +382,15 @@ export class CallManager {
     };
   }
 
-  /** Own mailbox's TURN (when it runs one) + public STUN. Either side's
-   * relay candidates can carry the call, so we only need our own. */
+  /** Own mailbox's call relay (relay/src/turn.rs). It answers STUN too, so
+   * nothing about a call leaves the user's infrastructure. Either side's
+   * relay can carry the call, so we only need our own. A mailbox without
+   * one is not papered over with a third-party STUN server: the call
+   * fails and says why. */
   private async iceServers(): Promise<IceServer[]> {
-    const servers: IceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
     const turn = await this.protocol.turnCredentials();
-    if (turn) servers.push({ urls: turn.urls, username: turn.username, credential: turn.credential });
-    return servers;
+    if (!turn) throw new Error('your mailbox has no call relay');
+    return [{ urls: turn.urls, username: turn.username, credential: turn.credential }];
   }
 
   /** Trickle ICE, batched: one envelope per burst instead of one per
@@ -406,14 +408,17 @@ export class CallManager {
     }, this.iceFlushMs);
   }
 
-  /** Send the candidates gathered so far, in one transient envelope. */
+  /** Send the candidates gathered so far, in one queued envelope. */
   async flushIce(): Promise<void> {
     const peerId = this.peerId;
     const id = this.callId;
     if (peerId === null || id === null || this.iceOutbox.length === 0) return;
     const batch = this.iceOutbox.splice(0);
-    // Late or lost candidates are self-healing: transient, never queued.
-    await this.signal('call_ice', { call_id: id, candidates: batch }, { transient: true }).catch(() => {});
+    // Queued, not transient: the callee is routinely off its socket while
+    // the offer rings, and a transient envelope to an absent device is
+    // dropped — leaving them our offer and none of our addresses. No push:
+    // nobody needs waking for a candidate.
+    await this.signal('call_ice', { call_id: id, candidates: batch }, { noPush: true }).catch(() => {});
   }
 
   private async drainRemoteCandidates(): Promise<void> {
@@ -424,7 +429,7 @@ export class CallManager {
   private signal(
     type: string,
     payload: Record<string, unknown>,
-    opts: { transient?: boolean; ring?: boolean } = {},
+    opts: { transient?: boolean; noPush?: boolean; ring?: boolean } = {},
   ): Promise<void> {
     const peerId = this.peerId;
     if (peerId === null) return Promise.resolve();

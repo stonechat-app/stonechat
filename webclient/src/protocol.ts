@@ -1619,7 +1619,7 @@ export class Protocol {
     peerId: string,
     type: string,
     payload: Record<string, unknown>,
-    opts: { transient?: boolean; ring?: boolean } = {},
+    opts: { transient?: boolean; noPush?: boolean; ring?: boolean } = {},
   ): Promise<void> {
     if (this.isBlocked(peerId)) throw new Refused('You have blocked this person.');
     const r = await this.fanOut(
@@ -2290,9 +2290,13 @@ export class Protocol {
     const expireMs = body['expire_ms'];
     const bootstrapTimer = !held && typeof expireMs === 'number' && Number.isInteger(expireMs) && expireMs > 0;
     const before = held?.removed ? [] : held?.members ?? [];
+    // The group photo is display data in the profile-photo shape; oversized
+    // or undecodable reads as none, never as a reason to refuse the roster.
+    const avatar = avatarFrom(body) ?? null;
     const next: Group = {
       id,
       name,
+      ...(avatar ? { avatar } : {}),
       admin,
       version,
       members: roster,
@@ -2523,6 +2527,10 @@ export class Protocol {
     return {
       group_id: group.id,
       name: group.name,
+      // Every roster carries the photo (null = none): a member restored
+      // from a backup gets it back with the next one. An admin device that
+      // dropped the field would read as "photo removed" on every phone.
+      avatar: group.avatar ?? null,
       version: group.version,
       admin: group.admin,
       members: group.members.map((m) => ({

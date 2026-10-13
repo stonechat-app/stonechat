@@ -153,12 +153,13 @@ test('a call rings, connects, and ends with the same record on both sides', asyn
   assert.equal(a.calls.phase, 'connecting');
   assert.equal(a.pcs[0]!.remote?.sdp, 'v=0 answer');
 
-  // Trickle ICE: batched, transient, applied on the other side.
+  // Trickle ICE: batched, queued without a push, applied on the other side.
   await sleep(5); // the fake peer connections have produced a candidate each
   await as('alice', () => a.calls.flushIce());
   await as('bob', () => b.calls.flushIce());
-  const ice = bob.relay.deposits.filter((d) => d['transient'] === true);
-  assert.ok(ice.length >= 1, 'candidates went as transient envelopes');
+  const ice = bob.relay.deposits.filter((d) => d['push'] === false);
+  assert.ok(ice.length >= 1, 'candidates went as queued, push-free envelopes');
+  assert.equal(bob.relay.deposits.filter((d) => d['transient'] === true).length, 0, 'never transient');
   await as('bob', () => drainAll(bob.protocol));
   await as('alice', () => drainAll(alice.protocol));
   assert.deepEqual(b.pcs[0]!.added.map((c) => c.candidate), ['cand-offer']);
@@ -287,18 +288,20 @@ test('signals for another call, or from someone else, are ignored', async () => 
   void c;
 });
 
-test('the mailbox\'s TURN joins the ICE servers when it has one', async () => {
+test('the mailbox\'s call relay is the only ICE server; without one the call fails and says so', async () => {
   const { who, as, a, b } = await callers();
   const { alice, bob } = who;
   alice.relay.turn = { urls: ['turn:1.2.3.4:3478?transport=udp'], username: '1:stonechat', credential: 'c' };
   await as('alice', () => a.calls.startCall(bob.id, false));
   assert.deepEqual(a.pcs[0]!.iceServers, [
-    { urls: 'stun:stun.l.google.com:19302' },
     { urls: ['turn:1.2.3.4:3478?transport=udp'], username: '1:stonechat', credential: 'c' },
-  ]);
+  ], 'no third-party STUN');
   await as('bob', () => drainAll(bob.protocol));
+  bob.relay.turn = null;
   await as('bob', () => b.calls.acceptCall());
-  assert.deepEqual(b.pcs[0]!.iceServers, [{ urls: 'stun:stun.l.google.com:19302' }], 'no TURN: STUN only');
+  assert.equal(b.pcs.length, 0, 'no peer connection without a relay');
+  assert.equal(b.calls.phase, 'ended');
+  assert.match(b.calls.endNote ?? '', /no call relay/);
 });
 
 test('a lost connection ends the call with a note', async () => {
