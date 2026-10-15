@@ -1271,7 +1271,11 @@ A dropped envelope is still acked: it can never succeed, and leaving it
 queued would replay it on every connect. The sender's pending-outbox retry
 re-encrypts fresh. An envelope whose processing fails *transiently* (a blob
 that cannot be fetched right now) is left un-acked and redelivered on the
-next connect.
+next connect. Transient means the receiver's or the network's fault: a
+failure the envelope itself causes — a field of the wrong type, a payload
+that is not an object — is a drop, and MUST be acked; a receiver that let
+every error leave the envelope queued would replay a malformed one on
+every connect, forever, with it counted against the inbox cap meanwhile.
 
 ### Per-device fan-out
 

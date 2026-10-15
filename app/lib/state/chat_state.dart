@@ -20,6 +20,7 @@ import '../core/db.dart';
 import '../core/handshake.dart';
 import '../core/device_keys.dart';
 import '../core/device_manifest.dart';
+import '../core/envelope_fate.dart';
 import '../core/own_devices.dart';
 import '../core/group_rules.dart';
 import '../core/links.dart';
@@ -1674,7 +1675,9 @@ class ChatState extends ChangeNotifier {
     // Not knowing our own mailbox yet is transient: the envelope waits.
     final address = mailboxAddress;
     final fp = mailboxTlsFp;
-    if (address == null || fp == null) throw StateError('mailbox info missing');
+    if (address == null || fp == null) {
+      throw const EnvelopeDeferred('mailbox info missing');
+    }
     final blob = siblingBlobFrom(
       payload,
       mailboxAddress: address,
@@ -1987,7 +1990,9 @@ class ChatState extends ChangeNotifier {
     // envelope waits.
     final address = mailboxAddress;
     final fp = mailboxTlsFp;
-    if (address == null || fp == null) throw StateError('mailbox info missing');
+    if (address == null || fp == null) {
+      throw const EnvelopeDeferred('mailbox info missing');
+    }
     final blob = siblingBlobFrom(
       payload,
       mailboxAddress: address,
@@ -2665,7 +2670,7 @@ class ChatState extends ChangeNotifier {
   static void _dropLog(Envelope envelope, String reason) {
     debugPrint(
       'stonechat: dropped ${envelope.type} from '
-      '${envelope.from.substring(0, 12)}…: $reason',
+      '${abbreviateId(envelope.from)}: $reason',
     );
   }
 
@@ -5081,7 +5086,24 @@ class ChatState extends ChangeNotifier {
 
   /// Called by the mailbox socket for every envelope. Returning normally acks
   /// (and thus deletes) it mailbox-side, so persist before returning.
+  ///
+  /// Throwing leaves it queued, and only a failure that is ours or the
+  /// network's gets to do that (`envelope_fate.dart`). Anything else the
+  /// handler throws is the envelope's own doing — a field of the wrong
+  /// type, a payload that is not an object — and it is dropped and acked
+  /// like any other malformed envelope, instead of coming back on every
+  /// connect for good.
   Future<void> handleIncoming(SealedEnvelope wire) async {
+    try {
+      await _handleIncoming(wire);
+    } catch (e, stack) {
+      if (leavesQueued(e)) rethrow;
+      debugPrint('stonechat: dropped envelope ${wire.id}: handler threw $e');
+      debugPrintStack(stackTrace: stack, maxFrames: 8);
+    }
+  }
+
+  Future<void> _handleIncoming(SealedEnvelope wire) async {
     if (wire.to != app.stonechatId) return;
 
     // Unwrap the transport seal; anything not sealed to this identity is
@@ -5120,7 +5142,12 @@ class ChatState extends ChangeNotifier {
     final plaintext = await _openEnvelope(envelope);
     if (plaintext == null) return; // forged, corrupted, or no session — drop
 
-    final payload = jsonDecode(plaintext) as Map<String, dynamic>;
+    final decoded = jsonDecode(plaintext);
+    if (decoded is! Map<String, dynamic>) {
+      _dropLog(envelope, 'payload is not an object');
+      return;
+    }
+    final payload = decoded;
 
     // Anything they send tells us how to list their devices. Recorded before
     // the type switch so it is learned even from traffic we go on to drop.
@@ -5310,7 +5337,7 @@ class ChatState extends ChangeNotifier {
         if (mailboxAddress == null ||
             mailboxToken == null ||
             mailboxTlsFp == null) {
-          throw StateError('mailbox info missing'); // don't ack — retry later
+          throw const EnvelopeDeferred('mailbox info missing'); // keep queued
         }
         final blobId = payload['blob_id'];
         if (!isWireId(blobId)) {

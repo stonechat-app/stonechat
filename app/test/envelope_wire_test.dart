@@ -26,6 +26,18 @@ Envelope inner({
 
 void main() {
   group('inner envelope', () {
+    test('from and to must look like Stonechat IDs', () {
+      final good = inner().toJson();
+      expect(Envelope.fromJson(good).from, 'SC-ALICE');
+      for (final bad in [5, '', 'x', 'SC-', 'SC-ALICE BOB', 'sc/..', '\n',
+          'SC-${'A' * 9}', 'SC${'-ABCD' * 13}']) {
+        final j = Map<String, dynamic>.of(good)..['from'] = bad;
+        expect(() => Envelope.fromJson(j), throwsFormatException, reason: '$bad');
+      }
+      final j = Map<String, dynamic>.of(good)..['to'] = 'SC-ABCD-EFGH-IJKL';
+      expect(Envelope.fromJson(j).to, 'SC-ABCD-EFGH-IJKL');
+    });
+
     test('round-trips both device numbers', () {
       final back = Envelope.fromJson(inner(fromDevice: 2, device: 3).toJson());
       expect(back.fromDevice, 2);

@@ -672,14 +672,16 @@ class Envelope {
       };
 
   /// Throws on anything malformed, ids included: `id` names the media file
-  /// and `blob_id` is put in a URL, so neither is taken on trust.
+  /// and `blob_id` is put in a URL, so neither is taken on trust; `from` and
+  /// `to` are keys into local tables and log lines, so they are held to the
+  /// shape of a Stonechat ID before anything reads them.
   factory Envelope.fromJson(Map<String, dynamic> j) => Envelope(
         v: j['v'] as int,
         id: _wireId(j['id'], 'id'),
         type: j['type'] as String,
-        from: j['from'] as String,
+        from: _peerId(j['from'], 'from'),
         fromDevice: j['from_device'] as int,
-        to: j['to'] as String,
+        to: _peerId(j['to'], 'to'),
         device: j['device'] as int,
         sentAt: j['sent_at'] as String,
         ratchet: (j['ratchet'] as Map).cast<String, Object?>(),
@@ -697,6 +699,17 @@ class Envelope {
   static String _wireId(Object? value, String field) => isWireId(value)
       ? value as String
       : throw FormatException('envelope $field is not a UUID');
+
+  /// The shape of a Stonechat ID, loosely: `SC-`, then groups of letters and
+  /// digits joined by hyphens, bounded in length. Whether it is *somebody's*
+  /// is settled later by the certificate that must commit to it; this only
+  /// keeps arbitrary bytes out of the places the id goes before that.
+  static final _peerIdShape = RegExp(r'^SC(-[A-Za-z0-9]{1,8}){1,12}$');
+
+  static String _peerId(Object? value, String field) =>
+      value is String && _peerIdShape.hasMatch(value)
+      ? value
+      : throw FormatException('envelope $field is not a Stonechat ID');
 }
 
 /// The wire format (PROTOCOL.md "Envelope"). The recipient and the
