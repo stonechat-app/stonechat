@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../core/api.dart';
+import '../core/linked_mailbox.dart';
 import '../models.dart';
 import 'app_state.dart';
 
@@ -248,8 +249,9 @@ class MailboxState extends ChangeNotifier {
   }
 
   /// The linked device's refresh. The grant's coordinates are the anchor;
-  /// the directory may move them, but only with a fingerprint the identity
-  /// key vouched for — the same check a contact makes before pinning us.
+  /// the directory may move them, but only with a fingerprint *our* identity
+  /// key — the one this device holds, not the one in the answer — vouched
+  /// for (`linked_mailbox.dart`).
   Future<void> _refreshLinked() async {
     var address = app.linkedRelayAddress;
     var tlsFp = app.linkedRelayTlsFp;
@@ -257,21 +259,20 @@ class MailboxState extends ChangeNotifier {
     if (id != null) {
       try {
         final entry = await app.api.directory(id);
-        final fp = entry.mailboxTlsFp;
-        final sig = entry.mailboxTlsSig;
-        final moved = entry.mailboxAddress != null &&
-            fp != null &&
-            sig != null &&
-            (entry.mailboxAddress != address || fp != tlsFp) &&
-            app.crypto.verifyTlsSig(
-              fp,
-              sig,
-              Uint8List.fromList(base64Decode(entry.pubkeyB64)),
-            );
-        if (moved) {
-          address = entry.mailboxAddress;
-          tlsFp = fp;
-          await app.setLinkedRelay(address!, tlsFp!);
+        final moved = linkedMailboxMove(
+          entry,
+          askedFor: id,
+          identityPubkeyB64: app.crypto.publicKeyB64,
+          heldAddress: address,
+          heldTlsFp: tlsFp,
+          vouchedByIdentity: (fp, sig) =>
+              app.crypto.verifyTlsSig(fp, sig, app.crypto.publicKey),
+          reason: (why) => debugPrint('stonechat: linked refresh: $why'),
+        );
+        if (moved != null) {
+          address = moved.address;
+          tlsFp = moved.tlsFp;
+          await app.setLinkedRelay(address, tlsFp);
         }
         hubUnreachable = false;
       } on Exception {
