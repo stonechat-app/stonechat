@@ -133,6 +133,22 @@ class _DevicesScreenState extends State<DevicesScreen> {
     );
     if (confirmed != true || !mounted) return;
     final chat = context.read<ChatState>();
+    // Struck from our own record first: no manifest built from now on lists
+    // it, whatever the relay goes on listing (own_devices.dart).
+    await chat.revokeOwnDevice(deviceId);
+    // Tell everyone: a manifest without the device is what makes contacts
+    // stop accepting it, not the relay's refusal alone.
+    try {
+      await chat.publishDeviceManifest();
+    } on ApiException catch (e) {
+      if (mounted) {
+        showZnSnack(
+          context,
+          'Removed here, but contacts could not be told yet: ${e.message}',
+          error: true,
+        );
+      }
+    }
     try {
       await revokeDevice(
         mailbox.address,
@@ -140,23 +156,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
         mailbox.tlsFp,
         deviceId,
       );
-      // Tell everyone: a manifest without the device is what makes contacts
-      // stop accepting it, not the relay's refusal alone.
-      try {
-        await chat.publishDeviceManifest();
-      } on ApiException catch (e) {
-        if (mounted) {
-          showZnSnack(
-            context,
-            'Removed here, but contacts could not be told yet: ${e.message}',
-            error: true,
-          );
-        }
-      }
-      await _load();
     } on ApiException catch (e) {
       if (mounted) showZnSnack(context, e.message, error: true);
     }
+    await _load();
   }
 
   /// Link from a pasted code rather than a scan.
@@ -276,11 +279,10 @@ class _DevicesScreenState extends State<DevicesScreen> {
         bundleToken: chat.myBundleToken,
         kind: kind,
       );
-      // List it now, with the key from its code: contacts accept nothing
-      // from a device the manifest does not name.
-      await chat.publishDeviceManifest(
-        extra: {linked.deviceId: linked.sigPubB64},
-      );
+      // On record and listed now, with the key from its code: contacts
+      // accept nothing from a device the manifest does not name.
+      await chat.recordLinkedDevice(linked.deviceId, kind, linked.cert);
+      await chat.publishDeviceManifest();
       // Its contacts, groups and history, once it has published prekeys —
       // kept trying on later connects if it is not reachable now.
       unawaited(chat.bootstrapDevice(linked.deviceId));

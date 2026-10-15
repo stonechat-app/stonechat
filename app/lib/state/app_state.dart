@@ -693,10 +693,11 @@ class AppState extends ChangeNotifier {
     return linked.deviceId;
   }
 
-  /// [authoriseLink], also returning the new device's signing key so the
-  /// caller can list it in the device manifest before the device has
-  /// published anything itself.
-  Future<({int deviceId, String sigPubB64})> authoriseLinkDetailed(
+  /// [authoriseLink], also returning the certificate it minted, so the
+  /// caller can record the device as ours and list it in the device manifest
+  /// before the device has published anything itself.
+  Future<({int deviceId, String sigPubB64, Map<String, dynamic> cert})>
+      authoriseLinkDetailed(
     LinkOffer offer, {
     required String relayAddress,
     required String relayTlsFp,
@@ -780,6 +781,10 @@ class AppState extends ChangeNotifier {
       linkParkingKey(_hashHex, offer.lookup),
       base64Encode(sealed),
     );
-    return (deviceId: minted.deviceId, sigPubB64: base64Encode(sigPub));
+    return (
+      deviceId: minted.deviceId,
+      sigPubB64: base64Encode(sigPub),
+      cert: cert,
+    );
   }
 }

@@ -20,6 +20,7 @@ import '../core/db.dart';
 import '../core/handshake.dart';
 import '../core/device_keys.dart';
 import '../core/device_manifest.dart';
+import '../core/own_devices.dart';
 import '../core/group_rules.dart';
 import '../core/links.dart';
 import '../core/session.dart';
@@ -1731,6 +1732,8 @@ class ChatState extends ChangeNotifier {
     }
     try {
       final listed = await _ownDeviceList();
+      if (listed == null) return;
+      await _seedOwnDevices(listed);
       await _reconcileManifest(listed);
       await _renewLinkedCerts(listed);
       await _bootstrapDevices(listed);
@@ -2026,70 +2029,164 @@ class ChatState extends ChangeNotifier {
     }
   }
 
-  Future<List<Map<String, dynamic>>> _ownDeviceList() async {
+  /// Our devices as the relay lists them, or null when the mailbox is not
+  /// known yet — distinct from an empty list, which would read as "every
+  /// linked device is gone".
+  Future<List<Map<String, dynamic>>?> _ownDeviceList() async {
     final address = mailboxAddress;
     final token = mailboxToken;
     final tlsFp = mailboxTlsFp;
-    if (address == null || token == null || tlsFp == null) return const [];
+    if (address == null || token == null || tlsFp == null) return null;
     return (await listDevices(address, token, tlsFp)).devices;
   }
 
-  /// Our devices as the relay lists them, each with the signing key of the
-  /// certificate it published. A device that has not published one yet is
-  /// not included; [extra] adds devices whose key we know another way (one
-  /// we just linked).
-  Map<int, String> _deviceKeysOf(
-    List<Map<String, dynamic>> listed, [
-    Map<int, String> extra = const {},
-  ]) {
-    final keys = <int, String>{...extra};
-    // A device we linked and named in the manifest, that has not published
-    // its certificate to the relay yet (a browser whose first connect
-    // failed): still ours, still listed by the relay — it keeps the key the
-    // manifest already has, rather than falling out and taking every
-    // contact's willingness to talk to it along. Revoked = not listed.
-    final held = _manifests[app.stonechatId ?? '']?.devices ?? const <int, String>{};
-    for (final d in listed) {
-      final id = d['device_id'];
-      if (id is! int) continue;
-      final cert = d['cert'];
-      final sigPub = cert is Map ? cert['sig_pub'] : null;
-      if (sigPub is String) {
-        keys[id] = sigPub;
-      } else if (held[id] case final String known) {
-        keys[id] = known;
-      }
-    }
-    final own = app.deviceCert?['sig_pub'];
-    if (own is String) keys[myDeviceId] = own;
-    // Ascending by slot. The signature is over the list as given, so the
-    // order is part of what every verifier must reproduce; a canonical one
-    // leaves nothing for a careless parser to re-sort.
-    final ids = keys.keys.toList()..sort();
-    return {for (final id in ids) id: keys[id]!};
+  static Set<int> _listedIds(List<Map<String, dynamic>> listed) => {
+    for (final d in listed)
+      if (d['device_id'] case final int id) id,
+  };
+
+  static Map<int, Map<String, dynamic>?> _listedCerts(
+    List<Map<String, dynamic>> listed,
+  ) => {
+    for (final d in listed)
+      if (d['device_id'] case final int id)
+        id: d['cert'] is Map
+            ? (d['cert'] as Map).cast<String, dynamic>()
+            : null,
+  };
+
+  /// The core's verdict on a certificate against our own identity key.
+  String _ownCertStatus(Map<String, dynamic> cert) =>
+      app.crypto.core.devcertVerify(
+        cert,
+        Uint8List.fromList(base64Decode(app.crypto.publicKeyB64)),
+        DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000,
+      );
+
+  /// Whether a certificate is one this identity signed, run out or not. The
+  /// relay cannot forge one; it can only show us an old one.
+  bool _signedByUs(Map<String, dynamic> cert) {
+    final status = _ownCertStatus(cert);
+    return status == 'valid' || status == 'expired';
   }
 
-  /// Publish a manifest when the one on record does not say what the relay
-  /// says: a device was linked, revoked or expired, or none was ever
-  /// published.
+  /// Record a device we just linked, with the certificate we minted for it
+  /// (own_devices.dart). From here on the manifest lists it by this key,
+  /// and nothing the relay lists changes that.
+  Future<void> recordLinkedDevice(
+    int deviceId,
+    String kind,
+    Map<String, dynamic> cert,
+  ) async {
+    final sig = cert['sig_pub'];
+    final seal = cert['seal_pub'];
+    final notAfter = cert['not_after'];
+    if (sig is! String || seal is! String || notAfter is! int) {
+      throw ArgumentError('malformed device certificate');
+    }
+    await app.db.putOwnDevice(
+      OwnDevice(
+        deviceId: deviceId,
+        kind: kind,
+        sigPubB64: sig,
+        sealPubB64: seal,
+        notAfter: notAfter,
+      ),
+    );
+  }
+
+  /// Strike a device from our record. Done before the relay is told and
+  /// before the manifest is published, so that no manifest built from now
+  /// on lists it, whatever the relay goes on listing. A slot we never
+  /// recorded gets a tombstone, for the same reason.
+  Future<void> revokeOwnDevice(int deviceId) async {
+    final at = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+    final known = (await app.db.ownDevices()).any((d) => d.deviceId == deviceId);
+    if (known) {
+      await app.db.revokeOwnDevice(deviceId, at);
+    } else {
+      await app.db.putOwnDevice(
+        OwnDevice(
+          deviceId: deviceId,
+          kind: 'linked',
+          sigPubB64: '',
+          sealPubB64: '',
+          notAfter: 0,
+          revokedAt: at,
+        ),
+      );
+    }
+  }
+
+  /// Seed the record once, for a primary that has none: an upgrade from
+  /// before the record existed, or a primary restored from an export. Only
+  /// devices with a currently valid certificate this identity signed, and
+  /// — when we hold a manifest — only those it lists with that key
+  /// (own_devices.dart `seedFromListing`).
+  Future<void> _seedOwnDevices(List<Map<String, dynamic>> listed) async {
+    if ((await app.db.ownDevices()).isNotEmpty) return;
+    final certs = _listedCerts(listed);
+    final seeded = seedFromListing(
+      listed: [
+        for (final d in listed)
+          if (d['device_id'] case final int id)
+            (
+              deviceId: id,
+              kind: (d['kind'] as String?) ?? 'web',
+              cert: certs[id],
+            ),
+      ],
+      heldManifest: _manifests[app.stonechatId!]?.devices,
+      myDeviceId: myDeviceId,
+      stonechatId: app.stonechatId!,
+      signedByUs: (cert) => _ownCertStatus(cert) == 'valid',
+    );
+    for (final d in seeded) {
+      await app.db.putOwnDevice(d);
+    }
+    if (seeded.isNotEmpty) {
+      debugPrint(
+        'stonechat: device record seeded from certificates we signed: '
+        '${seeded.map((d) => d.deviceId).toList()}',
+      );
+    }
+  }
+
+  /// The manifest's devices: this one, plus every recorded device that is
+  /// not revoked and that the relay still lists — by the key we certified,
+  /// never by one the relay shows (own_devices.dart `manifestDevices`).
+  Future<Map<int, String>> _manifestDevices(
+    List<Map<String, dynamic>> listed,
+  ) async {
+    final own = app.deviceCert?['sig_pub'];
+    return manifestDevices(
+      own: await app.db.ownDevices(),
+      listed: _listedIds(listed),
+      myDeviceId: myDeviceId,
+      mySigPubB64: own is String ? own : null,
+    );
+  }
+
+  /// Publish a manifest when the one on record does not say what our record
+  /// and the relay's listing say together: a device was linked, revoked or
+  /// expired, or none was ever published.
   Future<void> _reconcileManifest(List<Map<String, dynamic>> listed) async {
-    final wanted = _deviceKeysOf(listed);
+    final wanted = await _manifestDevices(listed);
     if (wanted.isEmpty) return;
     final held = _manifests[app.stonechatId!];
     if (held != null && _sameDevices(held.devices, wanted)) return;
-    await publishDeviceManifest();
+    await publishDeviceManifest(listed: listed);
   }
 
   static bool _sameDevices(Map<int, String> a, Map<int, String> b) =>
       a.length == b.length && a.entries.every((e) => b[e.key] == e.value);
 
-  /// Sign and publish the manifest of our devices as the relay lists them
-  /// plus [extra]. Primary only. Numbered past both the version we know and
-  /// the one the directory holds — a primary restored from an export knows
-  /// nothing, and a manifest numbered at or below the one on record is
-  /// refused.
+  /// Sign and publish the manifest of our devices ([_manifestDevices]).
+  /// Primary only. Numbered past both the version we know and the one the
+  /// directory holds — a primary restored from an export knows nothing, and
+  /// a manifest numbered at or below the one on record is refused.
   Future<void> publishDeviceManifest({
-    Map<int, String> extra = const {},
+    List<Map<String, dynamic>>? listed,
   }) async {
     final me = app.stonechatId;
     if (me == null ||
@@ -2097,7 +2194,9 @@ class ChatState extends ChangeNotifier {
         !app.crypto.hasIdentitySecret) {
       return;
     }
-    final devices = _deviceKeysOf(await _ownDeviceList(), extra);
+    final listing = listed ?? await _ownDeviceList();
+    if (listing == null) return;
+    final devices = await _manifestDevices(listing);
     if (devices.isEmpty) return;
     var version = myManifestVersion;
     final onRecord = await _manifestFor(me, wanted: version + 1);
@@ -2136,36 +2235,40 @@ class ChatState extends ChangeNotifier {
     }
   }
 
-  /// Re-sign the certificate of every linked device that has less than half
-  /// its lifetime left — or has run out while we were away — and hand it
-  /// over by self-sync. A device still on the relay is still ours; one that
-  /// was revoked is not listed and gets nothing, which is the point of the
-  /// short lifetime.
+  /// Re-sign the certificate of every recorded, still-listed device that has
+  /// less than half its lifetime left — or has run out while we were away —
+  /// and hand it over by self-sync. Over the keys we certified at link time,
+  /// never keys the relay shows; the relay's listed certificate is consulted
+  /// only once it verifies as ours, and only to see how far the device's
+  /// last renewal got (own_devices.dart `renewalsDue`). A revoked device is
+  /// struck from the record and gets nothing, whatever the relay lists.
   Future<void> _renewLinkedCerts(List<Map<String, dynamic>> listed) async {
     final now = DateTime.now().toUtc();
-    for (final d in listed) {
-      final id = d['device_id'];
-      final cert = d['cert'];
-      if (id is! int || id == myDeviceId || cert is! Map) continue;
-      final old = cert.cast<String, dynamic>();
-      final kind = (d['kind'] as String?) ?? 'web';
-      final expiry = certExpiry(old);
-      if (expiry != null && expiry.difference(now) >= certRenewWindow(kind))
-        continue;
-      final sigPub = certSigKey(old);
-      final sealPub = certSealKey(old);
-      if (sigPub == null || sealPub == null) continue;
+    final due = renewalsDue(
+      own: await app.db.ownDevices(),
+      listedCerts: _listedCerts(listed),
+      myDeviceId: myDeviceId,
+      nowSeconds: now.millisecondsSinceEpoch ~/ 1000,
+      renewWindow: certRenewWindow,
+      signedByUs: _signedByUs,
+      stonechatId: app.stonechatId!,
+    );
+    for (final d in due) {
+      final notAfter = now.add(certLifetimeFor(d.kind));
       final renewed = app.crypto.core.devcertSign(
         unsignedCert(
           stonechatId: app.stonechatId!,
-          deviceId: id,
-          sigPublic: sigPub,
-          sealPublic: sealPub,
-          notAfter: now.add(certLifetimeFor(kind)),
+          deviceId: d.deviceId,
+          sigPublic: base64Decode(d.sigPubB64),
+          sealPublic: base64Decode(d.sealPubB64),
+          notAfter: notAfter,
         ),
         app.crypto.identitySeed,
       );
-      await _syncToDevices([id], EnvelopeType.syncCert, {'cert': renewed});
+      await app.db.putOwnDevice(
+        d.renewed(notAfter.millisecondsSinceEpoch ~/ 1000),
+      );
+      await _syncToDevices([d.deviceId], EnvelopeType.syncCert, {'cert': renewed});
     }
   }
 

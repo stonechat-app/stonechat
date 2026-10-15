@@ -16,6 +16,7 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite_sqlcipher/sqflite.dart';
 
 import '../models.dart';
+import 'own_devices.dart';
 
 const _native = MethodChannel('stonechat/native');
 
@@ -71,6 +72,7 @@ class ChatDb {
         await ensureBlocked(db);
         await ensureGroupIntegrity(db);
         await ensureDeviceTrust(db);
+        await ensureOwnDevices(db);
         await ensureContactVerification(db);
         await ensureMessageMarks(db);
       },
@@ -149,6 +151,7 @@ class ChatDb {
     await db.execute(_createGroupParked);
     await db.execute(_createDeviceManifests);
     await db.execute(_createPeerCerts);
+    await db.execute(_createOwnDevices);
     await db.execute(_createSessions);
     await db.execute(_createPrekeys);
     await db.execute(_createReceipts);
@@ -216,6 +219,16 @@ class ChatDb {
     }
   }
 
+  /// The primary's own record of its devices (own_devices.dart) arrived
+  /// after the schema shipped. Same approach as [ensureBlocked]; the record
+  /// is seeded by `ChatState.maintainDevices` on the next connect.
+  @visibleForTesting
+  static Future<void> ensureOwnDevices(Database db) async {
+    await db.execute(
+      _createOwnDevices.replaceFirst('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
+    );
+  }
+
   /// Key verification (a contact the user compared codes with in person)
   /// arrived after the schema shipped. Same approach as [ensureBlocked].
   @visibleForTesting
@@ -277,6 +290,20 @@ class ChatDb {
       cert      TEXT NOT NULL,
       not_after INTEGER NOT NULL,
       PRIMARY KEY (peer_id, device_id)
+    )
+  ''';
+
+  // The devices the primary linked, with the keys it certified, and the ones
+  // it revoked. The manifest is built from this record; the relay's listing
+  // can only remove a device from it (own_devices.dart). Primary only.
+  static const _createOwnDevices = '''
+    CREATE TABLE own_devices (
+      device_id  INTEGER PRIMARY KEY,
+      kind       TEXT NOT NULL,
+      sig_pub    TEXT NOT NULL,
+      seal_pub   TEXT NOT NULL,
+      not_after  INTEGER NOT NULL,
+      revoked_at INTEGER
     )
   ''';
 
@@ -467,6 +494,9 @@ class ChatDb {
         'reactions',
         'kv',
         'blocked',
+        'own_devices',
+        'device_manifests',
+        'peer_certs',
       ]) {
         await tx.delete(table);
       }
@@ -527,6 +557,47 @@ class ChatDb {
       'peer_certs',
       where: 'peer_id = ? AND device_id = ?',
       whereArgs: [peerId, deviceId],
+    );
+  }
+
+  // -- our own devices (own_devices.dart) --------------------------------------
+
+  Future<List<OwnDevice>> ownDevices() async {
+    final rows = await _db.query('own_devices', orderBy: 'device_id');
+    return [
+      for (final r in rows)
+        OwnDevice(
+          deviceId: r['device_id'] as int,
+          kind: r['kind'] as String,
+          sigPubB64: r['sig_pub'] as String,
+          sealPubB64: r['seal_pub'] as String,
+          notAfter: r['not_after'] as int,
+          revokedAt: r['revoked_at'] as int?,
+        ),
+    ];
+  }
+
+  /// Record a device as ours, replacing whatever the slot held: a relay
+  /// never reuses a slot, so a new record for one is a new device.
+  Future<void> putOwnDevice(OwnDevice d) async {
+    await _db.insert('own_devices', {
+      'device_id': d.deviceId,
+      'kind': d.kind,
+      'sig_pub': d.sigPubB64,
+      'seal_pub': d.sealPubB64,
+      'not_after': d.notAfter,
+      'revoked_at': d.revokedAt,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// Mark a device revoked. The row stays: a revoked slot must never come
+  /// back on the relay's say-so, and the row is what remembers that.
+  Future<void> revokeOwnDevice(int deviceId, int at) async {
+    await _db.update(
+      'own_devices',
+      {'revoked_at': at},
+      where: 'device_id = ?',
+      whereArgs: [deviceId],
     );
   }
 

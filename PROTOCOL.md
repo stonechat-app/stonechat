@@ -437,9 +437,25 @@ The primary publishes:
 - when it links a device, listing the new device by the key in its offer,
   before the device has published anything itself;
 - when it revokes a device;
-- on every connect to its mailbox, if the devices the relay lists (by the
-  certificates they published) are not the set the manifest on record
+- on every connect to its mailbox, if its own record of its devices, taken
+  together with what the relay lists, is not the set the manifest on record
   lists — which also covers a device the relay expired.
+
+The primary builds the manifest from **its own record** of the devices it
+linked (with the keys it certified) and revoked, never from the relay's
+listing: a manifest rebuilt from what the relay lists would be a manifest
+the relay writes, and a relay that kept a revoked device listed would get
+it listed again. The relay's listing can only *remove* a device from the
+manifest (one that revoked itself, or that the relay expired), never add
+one or change its key; a revoked slot never returns, whatever the relay
+lists. Certificates are renewed the same way — over the recorded keys, for
+recorded devices only — and a certificate the relay lists is consulted only
+once it verifies as one the identity signed for that slot over those keys,
+and then only to see how far the device's last renewal got. The one time
+the relay's listing seeds the record is a primary that has none (an upgrade
+or a restore from an identity export), and then only with devices holding a
+currently valid certificate the identity signed, listed in the held
+manifest if there is one.
 
 The next version is one past both the version the primary knows and the
 version on record, so a primary restored from an identity export, which
