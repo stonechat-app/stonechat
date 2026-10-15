@@ -11,6 +11,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
 
 import '../core/api.dart';
+import '../core/notification_preview.dart';
 import '../core/push.dart';
 import '../state/app_state.dart';
 import '../state/call_state.dart';
@@ -472,11 +473,56 @@ class _NotificationsSection extends StatefulWidget {
 
 class _NotificationsSectionState extends State<_NotificationsSection> {
   late Future<NotificationPermission> _state;
+  NotificationPreview? _preview; // null until loaded
 
   @override
   void initState() {
     super.initState();
     _state = context.read<PushService>().permissionState();
+    NotificationPreview.load(context.read<AppState>().db).then((v) {
+      if (mounted) setState(() => _preview = v);
+    });
+  }
+
+  Future<void> _choosePreview() async {
+    final current = _preview ?? NotificationPreview.full;
+    final chosen = await showDialog<NotificationPreview>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        backgroundColor: Zn.surface,
+        title: const Text('Show in notifications'),
+        children: [
+          for (final v in NotificationPreview.values)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, v),
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(
+                  v == current
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  color: v == current ? Zn.orange : Zn.muted,
+                  size: 20,
+                ),
+                title: Text(v.label),
+                subtitle: Text(
+                  switch (v) {
+                    NotificationPreview.full =>
+                      'Who wrote and what they said.',
+                    NotificationPreview.sender => 'Who wrote, not what.',
+                    NotificationPreview.none =>
+                      'Only that something arrived.',
+                  },
+                  style: const TextStyle(color: Zn.muted, fontSize: 12),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    await chosen.save(context.read<AppState>().db);
+    if (mounted) setState(() => _preview = chosen);
   }
 
   void _refresh() {
@@ -532,6 +578,17 @@ class _NotificationsSectionState extends State<_NotificationsSection> {
               subtitle: Text(subtitle,
                   style: const TextStyle(color: Zn.muted, fontSize: 12)),
             ),
+            if (on)
+              ListTile(
+                leading: const Icon(Icons.visibility_outlined,
+                    color: Zn.muted, size: 20),
+                title: const Text('Show in notifications'),
+                subtitle: Text(
+                    '${(_preview ?? NotificationPreview.full).label}. '
+                    'Decrypted on this phone; nothing leaves it.',
+                    style: const TextStyle(color: Zn.muted, fontSize: 12)),
+                onTap: _preview == null ? null : _choosePreview,
+              ),
           ],
         );
       },

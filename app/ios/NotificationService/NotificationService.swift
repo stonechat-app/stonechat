@@ -4,15 +4,25 @@
 // protocol core the app uses (stonechat-core), stores the messages, and
 // rewrites the notification to "Maria: see you at 8".
 //
-// Scope, deliberately narrow (v1):
-// - Processes only `msg` and `group_msg` from accepted, unblocked senders
-//   with an existing session. Everything else (prekey first-messages,
-//   media and group_media — whose payloads carry a blob key and a fetch the
-//   app must perform — receipts, group control traffic) is left UNACKED in the queue
-//   for the app; the ratchet's skipped-key stash absorbs the ordering gap.
-// - Write-then-ack: message row + advanced session state commit in one
-//   transaction BEFORE the ack frame. Dying mid-work never loses mail —
-//   the envelope redelivers, the app dedupes by id (INSERT OR IGNORE).
+// Scope, deliberately narrow:
+// - Stores and acks only DM text (`msg`) from accepted, unblocked senders
+//   with an existing session on the sending device. Write-then-ack: message
+//   row + advanced session state commit in one transaction BEFORE the ack
+//   frame. Dying mid-work never loses mail — the envelope redelivers, the
+//   app dedupes by id (INSERT OR IGNORE).
+// - Group text and media (`group_msg`, `media`, `group_media`) are opened
+//   for the preview only: decrypted from the stored state, which is then
+//   discarded, and left UNACKED for the app. The ratchet is state-in /
+//   state-out, so the app decrypts the same envelope from the same state
+//   later; what it does with it (transcript hash, roster bookkeeping, the
+//   blob fetch) is not reimplemented here.
+// - Everything else (handshake first-messages, receipts, group control
+//   traffic) is left untouched for the app; the ratchet's skipped-key
+//   stash absorbs the ordering gap.
+// - What the alert shows is the user's choice (Settings › Notifications,
+//   kv "notification_preview"): sender and message, sender only, or the
+//   generic text — in which case this still drains DM text so the app
+//   opens up to date.
 // - Every failure path falls back to the generic alert.
 
 import UserNotifications
@@ -77,18 +87,27 @@ struct ShownMessage {
   let body: String
 }
 
+/// How much of a message the alert may show. Written by the app
+/// (settings_screen.dart) into kv "notification_preview"; absent → full.
+enum PreviewMode: String {
+  case full  // "Maria: see you at 8"
+  case sender  // "Maria: New message"
+  case none  // the generic alert, untouched
+}
+
 struct DrainSummary {
   var shown: [ShownMessage] = []
-  /// Stored and acked, but for a muted conversation: nothing to show.
+  /// Drained, but for a muted conversation: nothing to show.
   var silenced = 0
+  var mode: PreviewMode = .full
 
   /// Thread for a batch spanning conversations: grouped together, opens the list.
   static let mixedThread = "stonechat-mixed"
 
   func notification() -> (title: String, body: String, thread: String)? {
-    guard let last = shown.last else { return nil }
+    guard mode != .none, let last = shown.last else { return nil }
     if shown.count == 1 {
-      return (last.title, last.body, last.conversationId)
+      return (last.title, mode == .full ? last.body : "New message", last.conversationId)
     }
     let conversations = Set(shown.map(\.conversationId))
     if conversations.count == 1 {
@@ -103,9 +122,11 @@ struct DrainSummary {
 final class Drainer {
   private var db: Database?
   private var ownId = ""
+  private var ownDevice = 1
   private var edSeed = Data()
   private var pqSeed = Data()
   private var silenced = 0
+  private var mode = PreviewMode.full
 
   func run(deadline: Date) -> DrainSummary? {
     // Identity + DB key from the shared keychain (first_unlock: readable
@@ -144,6 +165,10 @@ final class Drainer {
       nseLog.error("no mailbox coordinates in kv — open the app once to store them")
       return nil
     }
+    // Which of our devices this is: envelopes are addressed per device and
+    // the device number is bound into every message's associated data.
+    ownDevice = mailbox["device_id"] as? Int ?? 1
+    mode = PreviewMode(rawValue: db.kvGetString("notification_preview") ?? "") ?? .full
 
     let socket = PinnedWebSocket(address: address, token: token, tlsFp: tlsFp)
     guard socket.connect(timeout: 8) else {
@@ -182,11 +207,26 @@ final class Drainer {
   private func done(_ summary: DrainSummary) -> DrainSummary? {
     var s = summary
     s.silenced = silenced
+    s.mode = mode
     return s.shown.isEmpty && s.silenced == 0 ? nil : s
   }
 
+  /// What a media message reads as: a label for its kind, never the file.
+  /// Same words as the Android drain (core/push_drain.dart).
+  private static func mediaLabel(_ payload: [String: Any]) -> String {
+    switch payload["kind"] as? String {
+    case "image": return "📷 Photo"
+    case "sticker": return "Sticker"
+    case "audio": return "🎤 Voice message"
+    case "video": return "🎥 Video"
+    case "file": return "📎 \((payload["name"] as? String).map { ($0 as NSString).lastPathComponent } ?? "File")"
+    default: return "New message"
+    }
+  }
+
   /// One sealed envelope. Returns a displayable line when the message was
-  /// fully processed (stored + acked); nil when it was skipped for the app.
+  /// opened (DM text: stored + acked; anything else: previewed and left
+  /// for the app); nil when it was skipped.
   private func process(frame: String, socket: PinnedWebSocket) -> ShownMessage? {
     guard let db,
       let sealed = try? JSONSerialization.jsonObject(with: Data(frame.utf8))
@@ -198,16 +238,27 @@ final class Drainer {
       let inner = try? JSONSerialization.jsonObject(with: innerData) as? [String: Any],
       let type = inner["type"] as? String,
       let from = inner["from"] as? String,
+      let fromDevice = inner["from_device"] as? Int,
       let to = inner["to"] as? String, to == ownId,
+      let device = inner["device"] as? Int, device == ownDevice,
       let id = inner["id"] as? String, id == envelopeId
     else {
-      nseLog.info("envelope did not unseal to this identity — left for the app")
+      nseLog.info("envelope did not unseal to this identity and device — left for the app")
       return nil
     }
 
-    // Only plain text rides here; everything else waits for the app.
-    guard type == "msg" || type == "group_msg" else {
+    // Text and media only; DM text is the one kind this process keeps.
+    let stores = type == "msg"
+    let isGroup = type == "group_msg" || type == "group_media"
+    let isMedia = type == "media" || type == "group_media"
+    guard stores || isGroup || isMedia else {
       nseLog.info("type \(type, privacy: .public) is app-only — left unacked")
+      return nil
+    }
+    // A handshake first-message establishes or replaces a session; which
+    // one survives a race is the app's call (core/handshake.dart).
+    guard inner["x3dh"] == nil else {
+      nseLog.info("handshake envelope — left for the app")
       return nil
     }
     guard
@@ -233,14 +284,19 @@ final class Drainer {
       db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
                ["blocked"]) != nil,
       db.query("SELECT 1 FROM blocked WHERE stonechat_id = ?", [from]) == nil,
-      let stateJson = db.query("SELECT state FROM sessions WHERE peer_id = ?", [from])?
-        .first ?? nil
+      // Sessions are per sending device (PROTOCOL.md "Devices"); holding
+      // one means the app accepted that device off the sender's manifest.
+      let stateJson = db.query(
+        "SELECT state FROM sessions WHERE peer_id = ? AND device_id = ?",
+        [from, String(fromDevice)])?.first ?? nil
     else {
       nseLog.info("no accepted contact or no established session — left for the app")
       return nil
     }
     let senderName = contact[0] ?? from
 
+    // Both device numbers are bound, exactly as every sender binds them
+    // (chat_state.dart _openEnvelope); any other string decrypts nothing.
     guard
       let headerData = try? JSONSerialization.data(withJSONObject: header),
       let result = Core.sessionDecrypt(
@@ -248,22 +304,28 @@ final class Drainer {
         headerJson: headerData,
         nonce: nonce,
         ciphertext: ciphertext,
-        ad: "stonechat/v1|\(from)|\(to)|\(type)"),
+        ad: "stonechat/v1|\(from)|\(fromDevice)|\(to)|\(device)|\(type)"),
       let payload = try? JSONSerialization.jsonObject(with: result.plaintext)
-        as? [String: Any],
-      let text = payload["text"] as? String
+        as? [String: Any]
     else {
-      // Refusal is normal (out-of-order, prekey message, app got there
-      // first): the stored state is untouched and the app will retry.
+      // Refusal is normal (out-of-order, app got there first): the stored
+      // state is untouched and the app will retry.
       nseLog.info("ratchet decrypt refused — state untouched, left for the app")
       return nil
+    }
+    let text: String
+    if isMedia {
+      text = Self.mediaLabel(payload)
+    } else {
+      guard let t = payload["text"] as? String else { return nil }
+      text = t
     }
 
     // Group context (name + membership), resolved before committing.
     var conversationId = from
     var senderId: String? = nil
     var title = senderName
-    if type == "group_msg" {
+    if isGroup {
       guard
         let groupId = payload["group_id"] as? String,
         let group = db.query("SELECT name FROM groups WHERE id = ?", [groupId]),
@@ -280,7 +342,7 @@ final class Drainer {
     // cannot know: sealed sender). A group message that names us cuts
     // through (PROTOCOL.md "group_msg" mentions).
     let mutedUntil = db.query(
-      type == "group_msg"
+      isGroup
         ? "SELECT muted_until FROM groups WHERE id = ?"
         : "SELECT muted_until FROM contacts WHERE stonechat_id = ?",
       [conversationId])?.first ?? nil
@@ -292,6 +354,18 @@ final class Drainer {
       ? nil
       : (try? JSONSerialization.data(withJSONObject: mentions))
           .flatMap { String(data: $0, encoding: .utf8) }
+
+    // Preview-only kinds: the advanced state is dropped and the envelope
+    // stays queued. Once the app has stored it (it reads the same queue),
+    // the next drain must not announce it again.
+    if !stores {
+      if db.query("SELECT 1 FROM messages WHERE id = ?", [id]) != nil { return nil }
+      if silent {
+        silenced += 1
+        return nil
+      }
+      return ShownMessage(conversationId: conversationId, title: title, body: text)
+    }
 
     let sentAt = Self.sentAtMs(inner["sent_at"] as? String)
     var expiresAt: Int64? = nil
@@ -336,8 +410,8 @@ final class Drainer {
     guard
       let stateString = String(data: result.state, encoding: .utf8),
       db.execute(
-        "INSERT OR REPLACE INTO sessions (peer_id, state) VALUES (?, ?)",
-        [.text(from), .text(stateString)]) != nil,
+        "INSERT OR REPLACE INTO sessions (peer_id, device_id, state) VALUES (?, ?, ?)",
+        [.text(from), .int(Int64(fromDevice)), .text(stateString)]) != nil,
       db.execute("COMMIT") != nil
     else {
       nseLog.error("session write failed: \(db.lastError, privacy: .public)")

@@ -28,6 +28,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart'
     hide Message;
 
 import '../models.dart';
+import 'notification_preview.dart';
 import '../state/app_state.dart';
 import '../state/chat_state.dart';
 import 'api.dart';
@@ -81,6 +82,7 @@ Future<void> pushBackgroundHandler(RemoteMessage message) async {
   }
 
   if (landed.isEmpty) return;
+  final preview = await NotificationPreview.load(app.db);
   final notices = FlutterLocalNotificationsPlugin();
   await notices.initialize(
     settings: const InitializationSettings(
@@ -103,10 +105,17 @@ Future<void> pushBackgroundHandler(RemoteMessage message) async {
     }
     final sender = chat.contactById(last.senderId ?? conversationId);
     final senderName = sender?.displayName ?? 'Someone';
-    final title = group != null ? '${group.name} · $senderName' : senderName;
-    final body = messages.length == 1
-        ? _preview(last)
-        : '${messages.length} new messages';
+    // What the user allowed on the lock screen (Settings › Notifications).
+    final title = switch (preview) {
+      NotificationPreview.none => 'Stonechat',
+      _ => group != null ? '${group.name} · $senderName' : senderName,
+    };
+    final body = switch (preview) {
+      NotificationPreview.none => 'You have new messages',
+      _ when messages.length > 1 => '${messages.length} new messages',
+      NotificationPreview.sender => 'New message',
+      NotificationPreview.full => _preview(last),
+    };
     await notices.show(
       id: conversationId.hashCode,
       title: title,
