@@ -23,6 +23,20 @@ Privacy-first messaging app where **every user runs their own relay**.
 
 See [PROTOCOL.md](PROTOCOL.md) for the full wire protocol and threat notes.
 
+## How a message travels
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/how-a-message-travels-dark.svg">
+    <img src="docs/img/how-a-message-travels-light.svg" alt="Alice asks the hub where Bob's mailbox is, the hub answers with his public key and mailbox address, Alice sends a sealed envelope to Bob's mailbox, Bob fetches it and the mailbox deletes it." width="900">
+  </picture>
+</p>
+
+1. **Lookup.** Alice adds Bob by his Stonechat ID; her phone asks the hub where that ID lives.
+2. **Answer.** The hub replies with Bob's public key and mailbox address. Alice checks it against the ID she asked for.
+3. **Send.** Alice's phone seals the message for Bob and delivers it directly to his mailbox. The hub never sees it.
+4. **Retrieve.** Bob's phone fetches the envelope, decrypts it and acks; the mailbox deletes it.
+
 ## Components
 
 | Directory       | What it is                                                                                                                                                                                                                                                                                                                   |
