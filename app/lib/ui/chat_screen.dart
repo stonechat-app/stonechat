@@ -2959,6 +2959,27 @@ class _ComposerState extends State<_Composer> {
     }
   }
 
+  /// Throw the note away: stop, delete the file, back to the text field.
+  Future<void> _discardRecording() async {
+    if (!_recording) return;
+    _ticker?.cancel();
+    final path = await _recorder.stop();
+    HapticFeedback.lightImpact();
+    if (mounted) {
+      setState(() {
+        _recording = false;
+        _segmentStarted = null;
+        _recorded = Duration.zero;
+        _levels.clear();
+      });
+    }
+    if (path != null) {
+      try {
+        await File(path).delete();
+      } catch (_) {}
+    }
+  }
+
   Future<void> _toggleRecording() async {
     if (_recording) {
       final duration = _elapsed;
@@ -3044,9 +3065,19 @@ class _ComposerState extends State<_Composer> {
       ),
       child: Row(
         children: [
-          if (widget.onAttach != null)
+          if (_recording)
             IconButton(
-              onPressed: _recording ? null : widget.onAttach,
+              onPressed: _discardRecording,
+              tooltip: 'Discard',
+              icon: const Icon(
+                Icons.delete_outline,
+                color: Zn.muted,
+                size: 22,
+              ),
+            )
+          else if (widget.onAttach != null)
+            IconButton(
+              onPressed: widget.onAttach,
               icon: const Icon(
                 Icons.add_circle_outline,
                 color: Zn.muted,
@@ -3055,9 +3086,9 @@ class _ComposerState extends State<_Composer> {
             )
           else
             const SizedBox(width: 12),
-          if (widget.onSticker != null)
+          if (widget.onSticker != null && !_recording)
             IconButton(
-              onPressed: _recording ? null : widget.onSticker,
+              onPressed: widget.onSticker,
               icon: const Icon(
                 Icons.emoji_emotions_outlined,
                 color: Zn.muted,
