@@ -1272,7 +1272,10 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _scrollToEnd({Duration duration = const Duration(milliseconds: 200)}) {
+  void _scrollToEnd({
+    Duration duration = const Duration(milliseconds: 200),
+    bool landed = false, // second pass, after the jump below
+  }) {
     // Post-frame: a just-sent message is in state but not yet in the list.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final count = _chat.messagesFor(conversationId).length;
@@ -1303,12 +1306,15 @@ class _ChatScreenState extends State<ChatScreen> {
         }
         return;
       }
-      // Sent from far up in history: fall back to the index-based scroll.
-      _itemScroll.scrollTo(
-        index: count - 1,
-        duration: duration,
-        curve: Curves.easeOut,
-      );
+      if (landed) return;
+      // Sent from far up in history: the newest message is not laid out, so
+      // its height is unknown. An animated scrollTo over that distance
+      // cross-fades two copies of the list and then overshoots (it aims the
+      // item's TOP at the viewport top). Instead, jump so the item's top edge
+      // sits at the bottom of the viewport — laid out, just out of sight —
+      // and let the measured scroll above slide it into view.
+      _itemScroll.jumpTo(index: count - 1, alignment: 1.0);
+      _scrollToEnd(duration: duration, landed: true);
     });
   }
 
