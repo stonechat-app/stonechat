@@ -69,6 +69,12 @@ class _ChatScreenState extends State<ChatScreen> {
   Message? _editing; // composer is rewriting this message instead of sending
   Message? _replyingTo; // composer sends the next message as a reply to this
   bool _jumpedToEnd = false; // first non-empty build lands on the last message
+  // Whether the newest message's bottom edge is in view. Drives the
+  // jump-to-end button and decides if the list follows the keyboard up.
+  bool _atBottom = true;
+  double _bottomInset = 0; // the keyboard's height at the last build
+  bool _keyboardRising = false; // mid-animation: _followKeyboard is decided
+  bool _followKeyboard = false;
   // Group messages from blocked members the user chose to look at anyway.
   // Per screen visit: leaving and coming back collapses them again.
   final _revealed = <String>{};
@@ -128,6 +134,44 @@ class _ChatScreenState extends State<ChatScreen> {
     _chat.openConversation(conversationId);
     _input.text = _chat.drafts[conversationId] ?? '';
     _input.addListener(_onComposerChanged);
+    _itemPositions.itemPositions.addListener(_onPositions);
+  }
+
+  void _onPositions() {
+    final count = _chat.messagesFor(conversationId).length;
+    var atBottom = count == 0;
+    for (final pos in _itemPositions.itemPositions.value) {
+      if (pos.index == count - 1) {
+        // The list's 12px bottom padding keeps the true end a touch above
+        // the viewport edge; anything within a hair counts.
+        atBottom = pos.itemTrailingEdge <= 1.001;
+        break;
+      }
+    }
+    if (atBottom != _atBottom && mounted) setState(() => _atBottom = atBottom);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // The keyboard rising shrinks the viewport from the bottom, which would
+    // leave the newest messages under it. If the user was at the end, keep
+    // them there: each step of the keyboard's animation re-aims at the end.
+    //
+    // Whether to follow is decided once per rise, on its first frame: in
+    // later frames the catch-up scroll is still in flight, so the end is
+    // momentarily out of view and [_atBottom] would say no.
+    final inset = MediaQuery.viewInsetsOf(context).bottom;
+    if (inset > _bottomInset) {
+      if (!_keyboardRising) _followKeyboard = _atBottom;
+      _keyboardRising = true;
+      if (_followKeyboard) {
+        _scrollToEnd(duration: const Duration(milliseconds: 60));
+      }
+    } else if (inset < _bottomInset) {
+      _keyboardRising = false;
+    }
+    _bottomInset = inset;
   }
 
   /// Whatever sits unsent in the composer is kept as the chat's draft. Not
@@ -143,6 +187,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _draftTimer?.cancel();
+    _itemPositions.itemPositions.removeListener(_onPositions);
     _input.removeListener(_onComposerChanged);
     if (_editing == null) _chat.saveDraft(conversationId, _input.text);
     _flashTimer?.cancel();
@@ -1227,7 +1272,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _scrollToEnd() {
+  void _scrollToEnd({Duration duration = const Duration(milliseconds: 200)}) {
     // Post-frame: a just-sent message is in state but not yet in the list.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final count = _chat.messagesFor(conversationId).length;
@@ -1252,7 +1297,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (delta > 0) {
           _scrollOffset.animateScroll(
             offset: delta,
-            duration: const Duration(milliseconds: 200),
+            duration: duration,
             curve: Curves.easeOut,
           );
         }
@@ -1261,7 +1306,7 @@ class _ChatScreenState extends State<ChatScreen> {
       // Sent from far up in history: fall back to the index-based scroll.
       _itemScroll.scrollTo(
         index: count - 1,
-        duration: const Duration(milliseconds: 200),
+        duration: duration,
         curve: Curves.easeOut,
       );
     });
@@ -1579,134 +1624,169 @@ class _ChatScreenState extends State<ChatScreen> {
         children: [
           if (!_searching && pins.isNotEmpty) _pinBanner(pins, chat),
           Expanded(
-            // Starting to drag the history tucks the keyboard away.
-            child: NotificationListener<ScrollStartNotification>(
-              onNotification: (notification) {
-                if (notification.dragDetails != null) {
-                  FocusManager.instance.primaryFocus?.unfocus();
-                }
-                return false;
-              },
-              child: ScrollablePositionedList.builder(
-                key: _listKey,
-                itemScrollController: _itemScroll,
-                itemPositionsListener: _itemPositions,
-                scrollOffsetController: _scrollOffset,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                itemCount: messages.length,
-                itemBuilder: (context, i) {
-                  final m = messages[i];
-                  final previous = i > 0 ? messages[i - 1] : null;
-                  final senderName = m.outgoing
-                      ? 'YOU'
-                      : isGroup
-                      ? (chat
-                                .memberOf(conversationId, m.senderId ?? '')
-                                ?.displayName ??
-                            'former member')
-                      : title;
-                  final railColor = m.outgoing
-                      ? Zn.orange
-                      : Zn.idColor(
-                          isGroup ? (m.senderId ?? '') : conversationId,
-                        );
-                  if (m.kind == MessageKind.notice) {
-                    return _arrive(
-                      m,
-                      GestureDetector(
-                        onLongPress: () => _showMessageSheet(m),
-                        behavior: HitTestBehavior.opaque,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Icon(
-                                m.text.contains('disappearing messages')
-                                    ? Icons.timer_outlined
-                                    : Icons.info_outline,
-                                size: 11,
-                                color: Zn.muted,
+            // A tap on the history (not on a bubble's own controls) tucks
+            // the keyboard away; scrolling leaves it up so the user can
+            // read back while typing.
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+              child: Stack(
+                children: [
+                  ScrollablePositionedList.builder(
+                    key: _listKey,
+                    itemScrollController: _itemScroll,
+                    itemPositionsListener: _itemPositions,
+                    scrollOffsetController: _scrollOffset,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    itemCount: messages.length,
+                    itemBuilder: (context, i) {
+                      final m = messages[i];
+                      final previous = i > 0 ? messages[i - 1] : null;
+                      final senderName = m.outgoing
+                          ? 'YOU'
+                          : isGroup
+                          ? (chat
+                                    .memberOf(conversationId, m.senderId ?? '')
+                                    ?.displayName ??
+                                'former member')
+                          : title;
+                      final railColor = m.outgoing
+                          ? Zn.orange
+                          : Zn.idColor(
+                              isGroup ? (m.senderId ?? '') : conversationId,
+                            );
+                      if (m.kind == MessageKind.notice) {
+                        return _arrive(
+                          m,
+                          GestureDetector(
+                            onLongPress: () => _showMessageSheet(m),
+                            behavior: HitTestBehavior.opaque,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    m.text.contains('disappearing messages')
+                                        ? Icons.timer_outlined
+                                        : Icons.info_outline,
+                                    size: 11,
+                                    color: Zn.muted,
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Flexible(
+                                    child: Text(
+                                      m.text,
+                                      textAlign: TextAlign.center,
+                                      style: Zn.mono(size: 10, color: Zn.muted),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 5),
-                              Flexible(
-                                child: Text(
-                                  m.text,
-                                  textAlign: TextAlign.center,
-                                  style: Zn.mono(size: 10, color: Zn.muted),
+                            ),
+                          ),
+                        );
+                      }
+                      if (isGroup &&
+                          !m.outgoing &&
+                          chat.isBlocked(m.senderId ?? '') &&
+                          !_revealed.contains(m.id)) {
+                        return _arrive(
+                          m,
+                          _BlockedMessage(
+                            onReveal: () => setState(() => _revealed.add(m.id)),
+                          ),
+                        );
+                      }
+                      return _arrive(
+                        m,
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (previous != null)
+                              _GapMarker.between(previous, m),
+                            GestureDetector(
+                              onLongPress: () => _showMessageSheet(m),
+                              behavior: HitTestBehavior.opaque,
+                              child: AnimatedContainer(
+                                duration: const Duration(milliseconds: 300),
+                                color: _flashId == m.id
+                                    ? Zn.orange.withValues(alpha: 0.08)
+                                    : Colors.transparent,
+                                child: _LedgerEntry(
+                                  message: m,
+                                  peerName: senderName,
+                                  peerColor: railColor,
+                                  // A notice breaks the run: re-show the sender after it.
+                                  showSender:
+                                      previous == null ||
+                                      previous.kind == MessageKind.notice ||
+                                      previous.outgoing != m.outgoing ||
+                                      previous.senderId != m.senderId,
+                                  reactions:
+                                      chat.reactionsByMessage[m.id] ?? const {},
+                                  myEmoji: chat.myReactionTo(m),
+                                  onReact: (emoji) {
+                                    HapticFeedback.selectionClick();
+                                    chat.react(m, emoji);
+                                  },
+                                  quoteSender: m.replyToId == null
+                                      ? null
+                                      : _senderName(m.replyToSender, chat),
+                                  onQuoteTap: m.replyToId == null
+                                      ? null
+                                      : () => _jumpToMessage(m.replyToId!),
+                                  searchQuery: searchQuery,
+                                  mentionNames: isGroup
+                                      ? _mentionNamesOf(m, chat)
+                                      : const [],
+                                  owed: isGroup ? chat.owedFor(m.id) : 0,
+                                  // Fan-out targets, so everyone but us.
+                                  memberCount: isGroup
+                                      ? (memberCount ?? 1) - 1
+                                      : 0,
+                                  onRetry: m.status == MessageStatus.failed
+                                      ? () => chat.retryMessage(m)
+                                      : null,
                                 ),
                               ),
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
-                      ),
-                    );
-                  }
-                  if (isGroup &&
-                      !m.outgoing &&
-                      chat.isBlocked(m.senderId ?? '') &&
-                      !_revealed.contains(m.id)) {
-                    return _arrive(
-                      m,
-                      _BlockedMessage(
-                        onReveal: () => setState(() => _revealed.add(m.id)),
-                      ),
-                    );
-                  }
-                  return _arrive(
-                    m,
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        if (previous != null) _GapMarker.between(previous, m),
-                        GestureDetector(
-                          onLongPress: () => _showMessageSheet(m),
-                          behavior: HitTestBehavior.opaque,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 300),
-                            color: _flashId == m.id
-                                ? Zn.orange.withValues(alpha: 0.08)
-                                : Colors.transparent,
-                            child: _LedgerEntry(
-                              message: m,
-                              peerName: senderName,
-                              peerColor: railColor,
-                              // A notice breaks the run: re-show the sender after it.
-                              showSender:
-                                  previous == null ||
-                                  previous.kind == MessageKind.notice ||
-                                  previous.outgoing != m.outgoing ||
-                                  previous.senderId != m.senderId,
-                              reactions:
-                                  chat.reactionsByMessage[m.id] ?? const {},
-                              myEmoji: chat.myReactionTo(m),
-                              onReact: (emoji) {
-                                HapticFeedback.selectionClick();
-                                chat.react(m, emoji);
-                              },
-                              quoteSender: m.replyToId == null
-                                  ? null
-                                  : _senderName(m.replyToSender, chat),
-                              onQuoteTap: m.replyToId == null
-                                  ? null
-                                  : () => _jumpToMessage(m.replyToId!),
-                              searchQuery: searchQuery,
-                              mentionNames: isGroup
-                                  ? _mentionNamesOf(m, chat)
-                                  : const [],
-                              owed: isGroup ? chat.owedFor(m.id) : 0,
-                              // Fan-out targets, so everyone but us.
-                              memberCount: isGroup ? (memberCount ?? 1) - 1 : 0,
-                              onRetry: m.status == MessageStatus.failed
-                                  ? () => chat.retryMessage(m)
-                                  : null,
+                      );
+                    },
+                  ),
+                  // Jump back to the newest message once it is out of view.
+                  Positioned(
+                    right: 12,
+                    bottom: 12,
+                    child: AnimatedOpacity(
+                      opacity: _atBottom ? 0 : 1,
+                      duration: Zn.dur(context, Zn.fast),
+                      curve: Zn.ease,
+                      child: IgnorePointer(
+                        ignoring: _atBottom,
+                        child: GestureDetector(
+                          onTap: _scrollToEnd,
+                          child: Container(
+                            width: 36,
+                            height: 36,
+                            decoration: BoxDecoration(
+                              color: Zn.raised,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: Zn.line),
+                            ),
+                            child: const Icon(
+                              Icons.keyboard_arrow_down,
+                              size: 22,
+                              color: Zn.text,
                             ),
                           ),
                         ),
-                      ],
+                      ),
                     ),
-                  );
-                },
+                  ),
+                ],
               ),
             ),
           ),
