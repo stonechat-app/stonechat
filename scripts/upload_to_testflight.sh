@@ -13,7 +13,13 @@ cd "$(dirname "$0")/.."
 # Load environment variables from .env.appstore if it exists
 if [ -f ".env.appstore" ]; then
     echo "Loading credentials from .env.appstore..."
-    export $(grep -v '^#' .env.appstore | grep -v '^$' | xargs)
+    # Line by line, not word-split or sourced: values with spaces (the review
+    # contact's phone number) are unquoted there, as appstore_listing.py reads
+    # the file verbatim.
+    while IFS='=' read -r key value; do
+        case "$key" in ''|\#*) continue ;; esac
+        export "$key=$value"
+    done < .env.appstore
 fi
 
 # Find the IPA file automatically
