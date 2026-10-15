@@ -95,6 +95,12 @@
 	<string>Record voice notes to send to your contacts.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Choose photos to send to your contacts.</string>
+	<!-- WebRTC gathers the phone's own LAN address as an ICE candidate, and
+	     iOS treats the first packet to a private address as local network
+	     access. Without this string the system prompt comes up with no
+	     explanation, which review flags (5.1.1). -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect calls directly to a contact who is on the same network as you.</string>
 	<!-- Content-free push wake-ups (see PROTOCOL.md "Push gateway"). Enabling
 	     push also needs the Push Notifications capability + an aps-environment
 	     entitlement, added in Xcode / Runner.entitlements. -->

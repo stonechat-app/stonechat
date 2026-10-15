@@ -2799,6 +2799,17 @@ class _ComposerState extends State<_Composer> {
       setState(() => _recordingStarted = null);
       if (path != null) {
         final duration = DateTime.now().difference(started);
+        // A recorder that failed to start still leaves a file behind: on
+        // iOS AVAudioRecorder writes the 28-byte MPEG-4 header before it
+        // gives up, and the plugin reports neither failure. Refuse to send
+        // anything that cannot hold audio rather than ship a silent note.
+        final size = await File(path).length();
+        if (size < 1024) {
+          if (mounted) {
+            showZnSnack(context, "Couldn't record — try again", error: true);
+          }
+          return;
+        }
         if (duration.inMilliseconds > 500) {
           widget.onVoiceRecorded?.call(path, duration.inMilliseconds);
         }
@@ -2817,7 +2828,14 @@ class _ComposerState extends State<_Composer> {
     }
     final dir = await getTemporaryDirectory();
     await _recorder.start(
-      const RecordConfig(encoder: AudioEncoder.aacLc, bitRate: 48000),
+      // Mono: a phone microphone is one channel, and Apple's AAC encoder
+      // refuses 48 kbps for stereo (its stereo floor is 64 kbps), in which
+      // case AVAudioRecorder never starts and the file stays a bare header.
+      const RecordConfig(
+        encoder: AudioEncoder.aacLc,
+        bitRate: 48000,
+        numChannels: 1,
+      ),
       path:
           '${dir.path}/stonechat-voice-${DateTime.now().millisecondsSinceEpoch}.m4a',
     );

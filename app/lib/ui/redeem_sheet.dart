@@ -51,12 +51,12 @@ class _RedeemSheetState extends State<_RedeemSheet> {
       _error = null;
     });
     try {
-      final result =
-          await context.read<AppState>().api.claimCode(code);
+      await context.read<AppState>().api.claimCode(code);
       if (!mounted) return;
       Navigator.pop(context, true);
-      final plan = result.plan == 'machine' ? 'Machine' : 'Mailbox';
-      showZnSnack(context, '$plan access unlocked');
+      // "Invite accepted", not "access unlocked": nothing is sold, and copy
+      // that reads like a license key is what App Review rejects (3.1.1).
+      showZnSnack(context, 'Invite accepted');
     } on ApiException catch (e) {
       setState(() {
         _busy = false;

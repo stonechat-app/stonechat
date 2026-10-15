@@ -26,6 +26,10 @@ import 'widgets.dart';
 /// Where this app's source lives — the AGPL §13 offer to everyone using it.
 const sourceUrl = 'https://github.com/stonechat-app/stonechat';
 
+/// The policy the App Store listing points at. Guideline 5.1.1(i) wants it
+/// reachable from inside the app too, not only from the store page.
+const privacyPolicyUrl = 'https://stonechat.app/privacy';
+
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
@@ -182,6 +186,20 @@ class SettingsScreen extends StatelessWidget {
               await Clipboard.setData(const ClipboardData(text: sourceUrl));
               if (context.mounted) {
                 showZnSnack(context, 'Source code link copied');
+              }
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.policy_outlined, color: Zn.muted, size: 20),
+            title: const Text('Privacy policy'),
+            subtitle: const Text(
+                '$privacyPolicyUrl — what we can and cannot see. Tap to copy.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            onTap: () async {
+              await Clipboard.setData(
+                  const ClipboardData(text: privacyPolicyUrl));
+              if (context.mounted) {
+                showZnSnack(context, 'Privacy policy link copied');
               }
             },
           ),
@@ -432,7 +450,7 @@ class _AccessSectionState extends State<_AccessSection> {
     };
     return ListTile(
       leading:
-          const Icon(Icons.workspace_premium_outlined, color: Zn.muted, size: 20),
+          const Icon(Icons.verified_outlined, color: Zn.muted, size: 20),
       title: Text(label, style: TextStyle(color: color)),
       subtitle: Text(sub,
           style: const TextStyle(color: Zn.muted, fontSize: 12)),
