@@ -50,3 +50,14 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 strip = true
 lto = true
 codegen-units = 1
+
+# The published turn 0.17.2 keeps every nonce it issues in a map that nothing
+# sweeps, so anyone who can reach the TURN port can grow the relay's memory
+# without credentials. Our fork of webrtc-rs carries the stateless-nonce fix
+# (branch turn-stateless-nonce), offered upstream. turn's sibling crates come
+# from the same checkout so that there is one copy of each type. Drop these
+# lines once a release carries the fix.
+[patch.crates-io]
+turn = { git = "https://github.com/stonechat-app/webrtc", branch = "turn-stateless-nonce" }
+webrtc-util = { git = "https://github.com/stonechat-app/webrtc", branch = "turn-stateless-nonce" }
+stun = { git = "https://github.com/stonechat-app/webrtc", branch = "turn-stateless-nonce" }
