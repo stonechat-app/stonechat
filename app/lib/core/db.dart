@@ -75,6 +75,7 @@ class ChatDb {
         await ensureOwnDevices(db);
         await ensureContactVerification(db);
         await ensureMessageMarks(db);
+        await ensureVoiceWaveform(db);
       },
     );
     return ChatDb._(db);
@@ -115,6 +116,7 @@ class ChatDb {
         kind        TEXT NOT NULL DEFAULT 'text',
         media_path  TEXT,
         duration_ms INTEGER,
+        waveform    TEXT,
         file_name   TEXT,
         sent_at     INTEGER NOT NULL,
         status      TEXT NOT NULL,
@@ -254,6 +256,15 @@ class ChatDb {
     await db.execute(
       _createDrafts.replaceFirst('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
     );
+  }
+
+  /// The loudness envelope sent with a voice note arrived after the schema
+  /// shipped. Same approach as [ensureBlocked]; older notes keep a flat bar.
+  @visibleForTesting
+  static Future<void> ensureVoiceWaveform(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(messages)');
+    if (cols.any((c) => c['name'] == 'waveform')) return;
+    await db.execute('ALTER TABLE messages ADD COLUMN waveform TEXT');
   }
 
   // Partial: only the handful of bookmarked rows are in it.

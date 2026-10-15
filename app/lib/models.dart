@@ -204,6 +204,9 @@ class Message {
   final String kind; // MessageKind
   String? mediaPath; // local file for image/audio/video/file — never leaves the phone
   final int? durationMs; // audio / video only
+  /// kind=audio: the note's loudness envelope (PROTOCOL.md "media"),
+  /// base64 of up to [waveformSamples] bytes, 0..255 each. Display only.
+  final String? waveform;
   final String? fileName; // kind=file: the document's original name
   final int sentAt; // ms since epoch
   String status;
@@ -258,6 +261,7 @@ class Message {
     this.kind = MessageKind.text,
     this.mediaPath,
     this.durationMs,
+    this.waveform,
     this.fileName,
     required this.sentAt,
     required this.status,
@@ -279,6 +283,11 @@ class Message {
     this.pinnedUntil,
   });
 
+  /// How many bytes a [waveform] holds at most: one per equal slice of the
+  /// note. Anything longer from the wire is cut here, so a hostile peer can
+  /// pay for no more than this much drawing.
+  static const waveformSamples = 64;
+
   bool get isBookmarked => bookmarkedAt != null;
   bool isPinnedAt(int nowMs) => (pinnedUntil ?? 0) > nowMs;
 
@@ -291,6 +300,7 @@ class Message {
         'kind': kind,
         'media_path': mediaPath,
         'duration_ms': durationMs,
+        'waveform': waveform,
         'file_name': fileName,
         'sent_at': sentAt,
         'status': status,
@@ -321,6 +331,7 @@ class Message {
         kind: r['kind'] as String,
         mediaPath: r['media_path'] as String?,
         durationMs: r['duration_ms'] as int?,
+        waveform: r['waveform'] as String?,
         fileName: r['file_name'] as String?,
         sentAt: r['sent_at'] as int,
         status: r['status'] as String,

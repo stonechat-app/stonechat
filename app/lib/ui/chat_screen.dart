@@ -7,7 +7,9 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -986,6 +988,7 @@ class _ChatScreenState extends State<ChatScreen> {
     required String kind,
     required String mime,
     int? durationMs,
+    String? waveform,
     String? fileName,
   }) async {
     final chat = context.read<ChatState>();
@@ -997,6 +1000,7 @@ class _ChatScreenState extends State<ChatScreen> {
             kind: kind,
             mime: mime,
             durationMs: durationMs,
+            waveform: waveform,
             fileName: fileName,
             replyTo: replyTo,
           )
@@ -1006,6 +1010,7 @@ class _ChatScreenState extends State<ChatScreen> {
             kind: kind,
             mime: mime,
             durationMs: durationMs,
+            waveform: waveform,
             fileName: fileName,
             replyTo: replyTo,
           );
@@ -1212,12 +1217,13 @@ class _ChatScreenState extends State<ChatScreen> {
     await _sendAttachment(file.path, kind: MessageKind.sticker, mime: mime);
   }
 
-  Future<void> _sendVoice(String path, int durationMs) async {
+  Future<void> _sendVoice(String path, int durationMs, String? waveform) async {
     await _sendAttachment(
       path,
       kind: MessageKind.audio,
       mime: 'audio/mp4',
       durationMs: durationMs,
+      waveform: waveform,
     );
   }
 
@@ -2660,6 +2666,20 @@ class _AudioEntry extends StatefulWidget {
 class _AudioEntryState extends State<_AudioEntry> {
   final _player = AudioPlayer();
   bool _loaded = false;
+  // The sender's loudness envelope, 0..1 per bar; null → a plain line (a
+  // note from before waveforms, or from a client that sends none).
+  late final List<double>? _wave = _decodeWave(widget.message.waveform);
+
+  static List<double>? _decodeWave(String? raw) {
+    if (raw == null) return null;
+    try {
+      final bytes = base64Decode(raw);
+      if (bytes.isEmpty) return null;
+      return [for (final b in bytes) b / 255];
+    } on FormatException {
+      return null;
+    }
+  }
 
   @override
   void dispose() {
@@ -2667,11 +2687,20 @@ class _AudioEntryState extends State<_AudioEntry> {
     super.dispose();
   }
 
+  Future<void> _load() async {
+    if (_loaded) return;
+    await _player.setFilePath(widget.message.mediaPath!);
+    _loaded = true;
+  }
+
+  Future<void> _seekTo(double fraction, Duration total) async {
+    if (total == Duration.zero) return;
+    await _load();
+    await _player.seek(total * fraction.clamp(0.0, 1.0));
+  }
+
   Future<void> _toggle() async {
-    if (!_loaded) {
-      await _player.setFilePath(widget.message.mediaPath!);
-      _loaded = true;
-    }
+    await _load();
     if (_player.playing) {
       await _player.pause();
     } else {
@@ -2681,6 +2710,8 @@ class _AudioEntryState extends State<_AudioEntry> {
       unawaited(_player.play());
     }
   }
+
+  static const _waveWidth = 130.0;
 
   String _fmt(Duration d) =>
       '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
@@ -2719,29 +2750,44 @@ class _AudioEntryState extends State<_AudioEntry> {
             },
           ),
           const SizedBox(width: 10),
-          SizedBox(
-            width: 130,
-            child: StreamBuilder<Duration>(
-              stream: _player.positionStream,
-              builder: (context, snap) {
-                final pos = snap.data ?? Duration.zero;
-                final progress = total.inMilliseconds > 0
-                    ? (pos.inMilliseconds / total.inMilliseconds).clamp(
-                        0.0,
-                        1.0,
-                      )
-                    : 0.0;
-                return ClipRRect(
-                  borderRadius: BorderRadius.circular(2),
-                  child: LinearProgressIndicator(
-                    value: progress,
-                    minHeight: 3,
-                    backgroundColor: Zn.line,
-                    valueColor: AlwaysStoppedAnimation(widget.color),
+          StreamBuilder<Duration>(
+            stream: _player.positionStream,
+            builder: (context, snap) {
+              final pos = snap.data ?? Duration.zero;
+              final progress = total.inMilliseconds > 0
+                  ? (pos.inMilliseconds / total.inMilliseconds).clamp(0.0, 1.0)
+                  : 0.0;
+              final wave = _wave;
+              if (wave == null) {
+                return SizedBox(
+                  width: _waveWidth,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(2),
+                    child: LinearProgressIndicator(
+                      value: progress,
+                      minHeight: 3,
+                      backgroundColor: Zn.line,
+                      valueColor: AlwaysStoppedAnimation(widget.color),
+                    ),
                   ),
                 );
-              },
-            ),
+              }
+              // Tapping a bar seeks there.
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (d) =>
+                    _seekTo(d.localPosition.dx / _waveWidth, total),
+                child: CustomPaint(
+                  size: const Size(_waveWidth, 22),
+                  painter: _WavePainter(
+                    levels: wave,
+                    played: progress,
+                    color: widget.color,
+                    rest: widget.color.withValues(alpha: 0.3),
+                  ),
+                ),
+              );
+            },
           ),
           const SizedBox(width: 10),
           Text(_fmt(total), style: Zn.mono(size: 10)),
@@ -2749,6 +2795,56 @@ class _AudioEntryState extends State<_AudioEntry> {
       ),
     );
   }
+}
+
+/// Vertical bars, one per level, centred on the midline — the shape of a
+/// voice note. In a bubble the first [played] fraction is drawn in [color]
+/// and the rest in [rest]; in the composer everything is [color] and the
+/// bars are the live microphone level, newest on the right.
+class _WavePainter extends CustomPainter {
+  final List<double> levels; // 0..1
+  final double played; // 0..1
+  final Color color;
+  final Color rest;
+  const _WavePainter({
+    required this.levels,
+    required this.played,
+    required this.color,
+    required this.rest,
+  });
+
+  static const barWidth = 2.0;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (levels.isEmpty) return;
+    final step = size.width / levels.length;
+    final width = math.min(barWidth, step - 0.5).clamp(0.5, barWidth);
+    final mid = size.height / 2;
+    final playedPaint = Paint()
+      ..color = color
+      ..strokeWidth = width
+      ..strokeCap = StrokeCap.round;
+    final restPaint = Paint()
+      ..color = rest
+      ..strokeWidth = width
+      ..strokeCap = StrokeCap.round;
+    for (var i = 0; i < levels.length; i++) {
+      final x = step * i + step / 2;
+      // Never shorter than a dot: silence still reads as time passing.
+      final half = math.max(1.0, levels[i] * (mid - 1));
+      final paint =
+          (i + 0.5) / levels.length <= played ? playedPaint : restPaint;
+      canvas.drawLine(Offset(x, mid - half), Offset(x, mid + half), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WavePainter old) =>
+      old.played != played ||
+      old.color != color ||
+      old.rest != rest ||
+      !identical(old.levels, levels);
 }
 
 class _Composer extends StatefulWidget {
@@ -2760,7 +2856,8 @@ class _Composer extends StatefulWidget {
   final VoidCallback? onAttach; // null → no attachment button at all
   final VoidCallback?
   onSticker; // opens the sticker picker (DM-only, like media)
-  final void Function(String path, int durationMs)? onVoiceRecorded;
+  final void Function(String path, int durationMs, String? waveform)?
+      onVoiceRecorded;
 
   const _Composer({
     required this.controller,
@@ -2778,10 +2875,26 @@ class _Composer extends StatefulWidget {
 
 class _ComposerState extends State<_Composer> {
   final _recorder = AudioRecorder();
-  DateTime? _recordingStarted;
+  bool _recording = false;
+  // The note's length so far, in two parts: segments already recorded and
+  // the one running since [_segmentStarted] — null while paused. Pausing
+  // keeps the recorder's file open, so resuming continues the same note.
+  Duration _recorded = Duration.zero;
+  DateTime? _segmentStarted;
+  // One microphone level per tick while recording (not while paused), 0..1.
+  // Drawn live in the composer; summarised into the note's waveform on stop.
+  final List<double> _levels = [];
   Timer? _ticker;
 
-  bool get _recording => _recordingStarted != null;
+  bool get _paused => _recording && _segmentStarted == null;
+  Duration get _elapsed =>
+      _recorded +
+      (_segmentStarted == null
+          ? Duration.zero
+          : DateTime.now().difference(_segmentStarted!));
+
+  static const _tick = Duration(milliseconds: 100);
+  static const _liveBars = 40;
 
   @override
   void dispose() {
@@ -2790,15 +2903,76 @@ class _ComposerState extends State<_Composer> {
     super.dispose();
   }
 
+  /// A microphone reading in dBFS mapped onto 0..1: -50 dB and quieter is
+  /// the floor, 0 dB the top. Speech at arm's length sits around -30..-10.
+  static double _levelOf(double dbfs) {
+    if (!dbfs.isFinite) return 0;
+    return ((dbfs + 50) / 50).clamp(0.0, 1.0);
+  }
+
+  Future<void> _onTick() async {
+    if (!_recording || _paused) return;
+    try {
+      final amp = await _recorder.getAmplitude();
+      if (!_recording || _paused) return;
+      _levels.add(_levelOf(amp.current));
+    } catch (_) {
+      // A reading the platform declined is a missing bar, nothing more.
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// The note's envelope for the bubble: the levels folded into
+  /// [Message.waveformSamples] equal slices (peak of each), scaled so the
+  /// loudest slice fills the bar, as base64 bytes (PROTOCOL.md "media").
+  static String? _waveformOf(List<double> levels) {
+    if (levels.isEmpty) return null;
+    final n = Message.waveformSamples;
+    final peaks = List<double>.filled(n, 0);
+    for (var i = 0; i < n; i++) {
+      final from = (i * levels.length / n).floor();
+      final to = math.max(from + 1, ((i + 1) * levels.length / n).floor());
+      for (var j = from; j < to && j < levels.length; j++) {
+        peaks[i] = math.max(peaks[i], levels[j]);
+      }
+    }
+    final top = peaks.reduce(math.max);
+    if (top <= 0) return null;
+    return base64Encode([
+      for (final v in peaks) (v / top * 255).round().clamp(0, 255),
+    ]);
+  }
+
+  Future<void> _togglePause() async {
+    if (!_recording) return;
+    if (_paused) {
+      await _recorder.resume();
+      HapticFeedback.selectionClick();
+      setState(() => _segmentStarted = DateTime.now());
+    } else {
+      await _recorder.pause();
+      HapticFeedback.selectionClick();
+      setState(() {
+        _recorded = _elapsed;
+        _segmentStarted = null;
+      });
+    }
+  }
+
   Future<void> _toggleRecording() async {
     if (_recording) {
+      final duration = _elapsed;
+      final waveform = _waveformOf(_levels);
       final path = await _recorder.stop();
-      final started = _recordingStarted!;
       _ticker?.cancel();
       HapticFeedback.mediumImpact();
-      setState(() => _recordingStarted = null);
+      setState(() {
+        _recording = false;
+        _segmentStarted = null;
+        _recorded = Duration.zero;
+        _levels.clear();
+      });
       if (path != null) {
-        final duration = DateTime.now().difference(started);
         // A recorder that failed to start still leaves a file behind: on
         // iOS AVAudioRecorder writes the 28-byte MPEG-4 header before it
         // gives up, and the plugin reports neither failure. Refuse to send
@@ -2811,7 +2985,11 @@ class _ComposerState extends State<_Composer> {
           return;
         }
         if (duration.inMilliseconds > 500) {
-          widget.onVoiceRecorded?.call(path, duration.inMilliseconds);
+          widget.onVoiceRecorded?.call(
+            path,
+            duration.inMilliseconds,
+            waveform,
+          );
         }
       }
       return;
@@ -2840,18 +3018,18 @@ class _ComposerState extends State<_Composer> {
           '${dir.path}/stonechat-voice-${DateTime.now().millisecondsSinceEpoch}.m4a',
     );
     HapticFeedback.mediumImpact();
-    setState(() => _recordingStarted = DateTime.now());
-    _ticker = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => setState(() {}),
-    );
+    setState(() {
+      _recording = true;
+      _recorded = Duration.zero;
+      _segmentStarted = DateTime.now();
+      _levels.clear();
+    });
+    _ticker = Timer.periodic(_tick, (_) => _onTick());
   }
 
   @override
   Widget build(BuildContext context) {
-    final elapsed = _recording
-        ? DateTime.now().difference(_recordingStarted!)
-        : Duration.zero;
+    final elapsed = _elapsed;
 
     return Container(
       decoration: const BoxDecoration(
@@ -2890,18 +3068,53 @@ class _ComposerState extends State<_Composer> {
             child: _recording
                 ? Row(
                     children: [
-                      Container(
+                      AnimatedContainer(
+                        duration: Zn.dur(context, Zn.fast),
                         width: 8,
                         height: 8,
-                        decoration: const BoxDecoration(
-                          color: Zn.danger,
+                        decoration: BoxDecoration(
+                          color: _paused ? Zn.muted : Zn.danger,
                           shape: BoxShape.circle,
                         ),
                       ),
                       const SizedBox(width: 10),
                       Text(
-                        'Recording · ${elapsed.inMinutes}:${(elapsed.inSeconds % 60).toString().padLeft(2, '0')}',
-                        style: Zn.mono(size: 13, color: Zn.text),
+                        '${elapsed.inMinutes}:${(elapsed.inSeconds % 60).toString().padLeft(2, '0')}',
+                        style: Zn.mono(
+                          size: 13,
+                          color: _paused ? Zn.muted : Zn.text,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      // The last few seconds of microphone level, newest on
+                      // the right; a pause freezes and dims it.
+                      Expanded(
+                        child: CustomPaint(
+                          size: const Size(double.infinity, 22),
+                          painter: _WavePainter(
+                            levels: _levels.length > _liveBars
+                                ? _levels.sublist(_levels.length - _liveBars)
+                                : [
+                                    for (var i = _levels.length;
+                                        i < _liveBars;
+                                        i++)
+                                      0.0,
+                                    ..._levels,
+                                  ],
+                            played: 1,
+                            color: _paused ? Zn.muted : Zn.text,
+                            rest: Zn.line,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: _togglePause,
+                        tooltip: _paused ? 'Resume' : 'Pause',
+                        icon: Icon(
+                          _paused ? Icons.play_arrow : Icons.pause,
+                          color: _paused ? Zn.text : Zn.muted,
+                          size: 22,
+                        ),
                       ),
                     ],
                   )

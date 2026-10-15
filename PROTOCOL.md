@@ -1366,7 +1366,7 @@ no durable retry.
 | type              | payload                                |
 |-------------------|----------------------------------------|
 | `msg`             | `{"text": "...", "expire_after_ms"?, "reply_to"?}` |
-| `media`           | `{"blob_id", "key", "blob_nonce", "mime", "kind": "image"\|"audio"\|"video"\|"file"\|"sticker", "size", "duration_ms"?, "name"?, "expire_after_ms"?, "reply_to"?}` |
+| `media`           | `{"blob_id", "key", "blob_nonce", "mime", "kind": "image"\|"audio"\|"video"\|"file"\|"sticker", "size", "duration_ms"?, "waveform"?, "name"?, "expire_after_ms"?, "reply_to"?}` — `waveform` (kind `audio` only) is base64 of 1..64 bytes, one 0..255 loudness per equal slice of the note, scaled so the loudest is 255. Display data: a receiver draws it or ignores it, and never refuses a message over it |
 | `contact_request` | `{"display_name": "...", "avatar"?, "hub"?}` |
 | `contact_accept`  | `{"display_name": "...", "avatar"?, "hub"?}` |
 | `profile_update`  | `{"display_name"?, "avatar"?: {"data": "<base64>", "mime"} \| null}` — wire form SHOULD set `push: false` |

@@ -663,6 +663,7 @@ class ChatState extends ChangeNotifier {
           'kind': message.kind,
           'size': await File(path).length(),
           if (message.durationMs != null) 'duration_ms': message.durationMs,
+          if (message.waveform != null) 'waveform': message.waveform,
           if (message.fileName != null) 'name': message.fileName,
           if (_replyPayloadOf(message) != null)
             'reply_to': _replyPayloadOf(message),
@@ -1640,6 +1641,7 @@ class ChatState extends ChangeNotifier {
       kind: isMedia ? _mediaKindOf(inner) : MessageKind.text,
       mediaPath: mediaPath,
       durationMs: inner['duration_ms'] as int?,
+      waveform: _waveformOf(inner),
       fileName: _mediaNameOf(inner),
       sentAt: sentAt,
       // It left our other device; whether the peer has it is their receipt to
@@ -3456,6 +3458,7 @@ class ChatState extends ChangeNotifier {
     required String kind, // MessageKind.image | audio | video | file | sticker
     required String mime,
     int? durationMs,
+    String? waveform, // kind=audio: Message.waveform
     String? fileName, // kind=file: the document's original name
     Message? replyTo,
   }) async {
@@ -3477,6 +3480,7 @@ class ChatState extends ChangeNotifier {
       kind: kind,
       mediaPath: localPath,
       durationMs: durationMs,
+      waveform: waveform,
       fileName: fileName,
       sentAt: sentAt,
       status: MessageStatus.pending,
@@ -3556,6 +3560,7 @@ class ChatState extends ChangeNotifier {
         'kind': message.kind,
         'size': blob.size,
         if (message.durationMs != null) 'duration_ms': message.durationMs,
+        if (message.waveform != null) 'waveform': message.waveform,
         if (message.fileName != null) 'name': message.fileName,
       },
       if (message.expiresAt != null)
@@ -3804,6 +3809,7 @@ class ChatState extends ChangeNotifier {
         kind: m.kind,
         mime: _mimeFromPath(m.mediaPath!),
         durationMs: m.durationMs,
+        waveform: m.waveform,
         fileName: m.fileName,
       );
     } else {
@@ -3813,6 +3819,7 @@ class ChatState extends ChangeNotifier {
         kind: m.kind,
         mime: _mimeFromPath(m.mediaPath!),
         durationMs: m.durationMs,
+        waveform: m.waveform,
         fileName: m.fileName,
       );
     }
@@ -3826,6 +3833,7 @@ class ChatState extends ChangeNotifier {
     required String kind, // MessageKind.image | audio | video | file
     required String mime,
     int? durationMs,
+    String? waveform, // kind=audio: Message.waveform
     String? fileName, // kind=file: the document's original name
     Message? replyTo,
   }) async {
@@ -3843,6 +3851,7 @@ class ChatState extends ChangeNotifier {
       kind: kind,
       mediaPath: localPath,
       durationMs: durationMs,
+      waveform: waveform,
       fileName: fileName,
       sentAt: sentAt,
       status: MessageStatus.pending,
@@ -4071,6 +4080,7 @@ class ChatState extends ChangeNotifier {
       'kind': message.kind,
       'size': bytes.length,
       if (message.durationMs != null) 'duration_ms': message.durationMs,
+      if (message.waveform != null) 'waveform': message.waveform,
       if (message.fileName != null) 'name': message.fileName,
       if (message.expiresAt != null)
         'expire_after_ms': message.expiresAt! - message.sentAt,
@@ -4104,6 +4114,22 @@ class ChatState extends ChangeNotifier {
         MessageKind.sticker => payload['kind'] as String,
         _ => MessageKind.image,
       };
+
+  /// A voice note's loudness envelope, kept only when it is what PROTOCOL.md
+  /// says it is: base64 of 1..[Message.waveformSamples] bytes on an audio
+  /// payload. Anything else is dropped and the note gets a flat bar — it is
+  /// display data, never a reason to refuse the message.
+  static String? _waveformOf(Map<String, dynamic> payload) {
+    if (_mediaKindOf(payload) != MessageKind.audio) return null;
+    final raw = payload['waveform'];
+    if (raw is! String || raw.isEmpty || raw.length > 128) return null;
+    try {
+      final n = base64Decode(raw).length;
+      return n >= 1 && n <= Message.waveformSamples ? raw : null;
+    } on FormatException {
+      return null;
+    }
+  }
 
   /// A document's original filename, stripped to its basename — PROTOCOL.md
   /// requires receivers to drop any path components the sender put there.
@@ -5365,6 +5391,7 @@ class ChatState extends ChangeNotifier {
             kind: _mediaKindOf(payload),
             mediaPath: path,
             durationMs: payload['duration_ms'] as int?,
+            waveform: _waveformOf(payload),
             fileName: _mediaNameOf(payload),
             sentAt: _sentAtMs(envelope),
             status: MessageStatus.sent,
@@ -5836,6 +5863,7 @@ class ChatState extends ChangeNotifier {
         mentions: isMedia ? const [] : _mentionsFrom(payload, group.id),
         mediaPath: path,
         durationMs: isMedia ? payload['duration_ms'] as int? : null,
+        waveform: isMedia ? _waveformOf(payload) : null,
         fileName: isMedia ? _mediaNameOf(payload) : null,
         sentAt: _sentAtMs(envelope),
         status: MessageStatus.sent,
