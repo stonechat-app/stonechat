@@ -24,6 +24,7 @@ import '../core/own_devices.dart';
 import '../core/group_rules.dart';
 import '../core/links.dart';
 import '../core/session.dart';
+import '../core/sibling_blob.dart';
 import '../core/wire_ids.dart';
 import '../models.dart';
 import 'app_state.dart';
@@ -1627,7 +1628,7 @@ class ChatState extends ChangeNotifier {
         type == EnvelopeType.media || type == EnvelopeType.groupMedia;
     if (isMedia) {
       // Same shared-blob path as group media, pointed at our own mailbox.
-      mediaPath = await _fetchSyncedMedia(id, inner);
+      mediaPath = await _fetchSyncedMedia(envelope, id, inner);
     }
     final (replyId, replySender, replyPreview) = _replyFrom(inner);
     final message = Message(
@@ -1661,21 +1662,30 @@ class ChatState extends ChangeNotifier {
 
   /// Fetch a sibling's copy of media from our own mailbox. Null when it is
   /// gone or unreadable — the message still renders, without the file.
+  ///
+  /// The payload says where the blob is, and is not believed: it has to be
+  /// on our own mailbox, under its own certificate, with the blob's own
+  /// fetch token (`sibling_blob.dart`). Anything else is media we do without.
   Future<String?> _fetchSyncedMedia(
+    Envelope envelope,
     String messageId,
     Map<String, dynamic> payload,
   ) async {
-    final host = payload['blob_host'] as String?;
-    final tlsFp = payload['blob_tls_fp'] as String?;
-    final blobId = payload['blob_id'];
-    final token = payload['fetch_token'] as String? ?? mailboxToken;
-    if (host == null || tlsFp == null || token == null || !isWireId(blobId)) {
-      return null;
-    }
+    // Not knowing our own mailbox yet is transient: the envelope waits.
+    final address = mailboxAddress;
+    final fp = mailboxTlsFp;
+    if (address == null || fp == null) throw StateError('mailbox info missing');
+    final blob = siblingBlobFrom(
+      payload,
+      mailboxAddress: address,
+      mailboxTlsFp: fp,
+      reason: (why) => _dropLog(envelope, 'sync_sent media: $why'),
+    );
+    if (blob == null) return null;
     try {
       return await _persistMedia(
         messageId,
-        await downloadBlob(host, blobId as String, token, tlsFp),
+        await downloadBlob(blob.host, blob.blobId, blob.token, blob.tlsFp),
         payload,
       );
     } catch (_) {
@@ -1966,31 +1976,28 @@ class ChatState extends ChangeNotifier {
     Envelope envelope,
     Map<String, dynamic> payload,
   ) async {
-    final host = payload['blob_host'];
-    final tlsFp = payload['blob_tls_fp'];
-    final blobId = payload['blob_id'];
-    final token = payload['fetch_token'];
     final keyB64 = payload['key'];
     final nonceB64 = payload['blob_nonce'];
-    if (host is! String ||
-        tlsFp is! String ||
-        token is! String ||
-        keyB64 is! String ||
-        nonceB64 is! String ||
-        !isWireId(blobId)) {
+    if (keyB64 is! String || nonceB64 is! String) {
       _dropLog(envelope, 'malformed sync_history');
       return;
     }
-    // Our own mailbox, and nowhere else — the one host this device already
-    // trusts. Not knowing it yet is transient: the envelope waits.
-    if (mailboxAddress == null) throw StateError('mailbox info missing');
-    if (host != mailboxAddress) {
-      _dropLog(envelope, 'sync_history blob is not on our own mailbox');
-      return;
-    }
+    // Our own mailbox, under its own certificate, and nowhere else — the one
+    // host this device already trusts. Not knowing it yet is transient: the
+    // envelope waits.
+    final address = mailboxAddress;
+    final fp = mailboxTlsFp;
+    if (address == null || fp == null) throw StateError('mailbox info missing');
+    final blob = siblingBlobFrom(
+      payload,
+      mailboxAddress: address,
+      mailboxTlsFp: fp,
+      reason: (why) => _dropLog(envelope, 'sync_history: $why'),
+    );
+    if (blob == null) return;
     final List<int> ciphertext;
     try {
-      ciphertext = await downloadBlob(host, blobId as String, token, tlsFp);
+      ciphertext = await downloadBlob(blob.host, blob.blobId, blob.token, blob.tlsFp);
     } on ApiException catch (e) {
       if (e.status == 404 || e.status == 410 || e.status == 401) {
         _dropLog(envelope, 'sync_history blob is gone (${e.status})');

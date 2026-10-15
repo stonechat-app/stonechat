@@ -1343,6 +1343,13 @@ token. The sending device therefore uploads a second, separately encrypted
 copy to the user's **own** mailbox as a shared blob and sends `sync_sent`
 with `payload` rewritten to point at it (`blob_id`, `key`, `blob_nonce`,
 `fetch_token`, `blob_host`, `blob_tls_fp` — the group-media fields).
+A receiving device MUST check these the way it checks `sync_history`'s:
+`blob_host` MUST be its own mailbox address and `blob_tls_fp` that
+mailbox's own fingerprint, both as the device already holds them, and
+`fetch_token` MUST be present — a device never substitutes its own mailbox
+token, which is a login to the mailbox, not a capability on one blob. A
+sibling's device certificate does not make its payload a place to send this
+device.
 
 The admin of a group also sends `group_create` / `group_update` to its own
 sibling devices, which are not members and would otherwise never learn the
