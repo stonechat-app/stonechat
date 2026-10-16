@@ -192,6 +192,23 @@ class _MailboxSetupScreenState extends State<MailboxSetupScreen> {
         }
         return;
       }
+      // Before a code is redeemed the plan is unknown and every country is
+      // selectable; the redemption above may have just revealed that the
+      // chosen one cannot hold this plan. Asking the hub would only earn a
+      // refusal — drop the choice (the picker now greys out the rest) and
+      // ask again rather than choosing a jurisdiction for the user.
+      final chosen = _countries!.where((c) => c.code == _country).firstOrNull;
+      if (chosen != null && !chosen.allows(_plan)) {
+        setState(() => _country = null);
+        if (mounted) {
+          showZnSnack(
+            context,
+            "A mailbox can't be set up in ${chosen.name} yet — "
+            'choose another country',
+          );
+        }
+        return;
+      }
       await mailbox.create(country: _country);
     } on ApiException catch (e) {
       if (!mounted) return;
