@@ -1,0 +1,7 @@
+# Copy to key.properties (gitignored) to sign release builds with your upload
+# key. storeFile is relative to android/. Without key.properties, release
+# builds are signed with the debug key.
+storeFile=../credentials/upload-keystore.jks
+storePassword=
+keyAlias=upload
+keyPassword=

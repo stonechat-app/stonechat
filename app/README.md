@@ -63,6 +63,13 @@ the plist as a resource.
 Only push notifications need them. Messaging, linking, the relay and the hub
 all work without a Firebase project.
 
+## Android release signing
+
+Release builds sign with the upload key named in `android/key.properties`
+(gitignored). Copy `android/key.properties.example`, point `storeFile` at your
+keystore (relative to `android/`) and fill in the passwords. Without
+`key.properties`, release builds fall back to the debug key.
+
 ## Tests
 
 ```bash
