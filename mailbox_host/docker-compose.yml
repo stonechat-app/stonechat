@@ -1,4 +1,4 @@
-# The mailbox host on a box you own (README.md "Host your own Stonechat").
+# The mailbox host on a server you own (README.md "Step by step").
 #
 #     cp .env.example .env && $EDITOR .env
 #     docker compose up -d --build
@@ -20,12 +20,12 @@ services:
       STONECHAT_MAILBOX_HOST_DB: /var/lib/stonechat/mailbox_host.db
       STONECHAT_MAILBOX_HOST_TLS_DIR: /var/lib/stonechat
     # Host networking, so this behaves exactly like the systemd install: it
-    # listens on :8200 of the box itself, and after launching a guest it
+    # listens on :8200 of the server itself, and after launching a guest it
     # checks the mailbox came up by calling https://<ADVERTISE_HOST>:<port>
     # the same way from here as from the host. No `ports:` — nothing to map.
     network_mode: host
     volumes:
-      # Full control of the host's Docker, which is to say root on this box.
+      # Full control of the host's Docker, which is to say root on this server.
       # That is the point of the service: it is the only thing here that
       # starts and destroys mailboxes.
       - /var/run/docker.sock:/var/run/docker.sock

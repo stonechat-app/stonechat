@@ -26,7 +26,7 @@ obvious from the outside:
    program answers in your name, on your identity, to your contact.
 3. **It sees what is addressed to you.** Every envelope for this device
    decrypts here. That is what makes an agent useful and it is also the whole
-   of its exposure: a box holding this state file is a box that reads your
+   of its exposure: a server holding this state file is a server that reads your
    mail until the certificate is revoked.
 
 ## Why this is safe to put on a server at all
@@ -56,7 +56,7 @@ it.
 
 ## Link
 
-On the box, with `$STONECHAT_HUB` set (default `https://hub.stonechat.app`):
+On the server, with `$STONECHAT_HUB` set (default `https://hub.stonechat.app`):
 
 ```bash
 stonechat-agent link          # --no-qr for the line only
@@ -122,9 +122,9 @@ nothing to the host's exposure. The state file lives in the `state` named
 volume: `docker compose down` keeps it; `down -v` deletes it, which is `forget`
 and, like `forget`, revokes nothing.
 
-Where: a machine you control. **Not the hub box** — the hub holds the directory
+Where: a machine you control. **Not the hub server** — the hub holds the directory
 and provisioning credentials and its whole security story is one port with no
-extra tenants. And not a box that hosts
+extra tenants. And not a server that hosts
 other people's mailboxes: whatever holds this state file reads your mail.
 
 ## What it holds, and how well
@@ -145,7 +145,7 @@ which message keys it has already used.
 ## Certificate expiry is the thing that will bite you
 
 An agent gets **180 days** (`app/lib/core/device_keys.dart`, `agentCertLifetime`).
-Only the primary can renew, and there is no way to do it from the box. When it
+Only the primary can renew, and there is no way to do it from the server. When it
 lapses, peers *refuse to encrypt to this device* — correct behaviour, and a
 silent one: the agent simply stops receiving.
 

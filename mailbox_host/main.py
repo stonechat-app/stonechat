@@ -1,19 +1,19 @@
 """Stonechat mailbox host — the one thing that runs mailboxes.
 
-Every box that holds mailboxes runs this, and nothing else does. Two ways in,
+Every server that holds mailboxes runs this, and nothing else does. Two ways in,
 and they are the same machinery with different authority:
 
 * **Invite mode** (the default, "host your circle"): the host-owner runs this
   on a VM they own to host their OWN mailbox plus *invited* friends' — a shared
   host, but only with people they choose (PROTOCOL.md "Invite-hosted
   mailboxes"). From the directory's point of view a guest's mailbox is an
-  ordinary self-hosted ("external") relay that happens to live on a friend's box.
-* **Managed mode** (``STONECHAT_MAILBOX_HOST_MANAGED=1``): the box belongs to a
-  hub operator, and a hub places mailboxes on it over this same API — the
-  shared tier the Mailbox plan sells (hub/app/providers/mailbox_host.py).
+  ordinary self-hosted ("external") relay that happens to live on a friend's server.
+* **Managed mode** (``STONECHAT_MAILBOX_HOST_MANAGED=1``): the server belongs to a
+  hub operator, and a hub places mailboxes on it over this same API
+  (hub/app/providers/mailbox_host.py).
   Invites are refused outright: a managed host has exactly one authority, and a
-  box that answered to both the hub and whoever held an invite token would be a
-  box nobody is accountable for.
+  server that answered to both the hub and whoever held an invite token would be a
+  server nobody is accountable for.
 
 This replaced the `fleet` provider, which drove a bare Docker daemon over SSH
 from the hub. Same containers, same limits, same pinned ports — but the hub now
@@ -542,7 +542,7 @@ def _local_url(port: int) -> str:
     """How this process reaches a guest mailbox it just started.
 
     Loopback, not ADVERTISE_HOST: this is a liveness check on a container on
-    this box, and routing it out to the public address makes it fail on every
+    this server, and routing it out to the public address makes it fail on every
     host that cannot reach its own external IP (hairpin NAT — AWS, and most home
     routers). It says nothing about outside reachability, which is the cloud
     firewall's business and was never what this proved.
@@ -581,7 +581,7 @@ def _guest_owner_token(container: str) -> str:
 
     /status is owner-authenticated, and the point of the roll is to ask the
     relay which binary it is *running* — a hash of the file on disk would only
-    say the copy landed. The token is already on this box (this process created
+    say the copy landed. The token is already on this server (this process created
     it), so reading it back beats storing a second copy in the DB.
     """
     env = _docker("inspect", "-f",
@@ -730,7 +730,7 @@ def require_invites() -> None:
     A managed host answers to its hub and to nothing else. Leaving the invite
     door open there would put mailboxes on it that the hub's directory, billing
     and reaper know nothing about, on ports it thinks are free — and make the
-    box accountable to two parties at once.
+    server accountable to two parties at once.
     """
     if MANAGED:
         raise HTTPException(
@@ -759,7 +759,7 @@ class ProvisionIn(BaseModel):
     push_key: str | None = Field(default=None, max_length=256)
     # Where mailboxes send their wake-ups. The caller's, so the address has one
     # home per mode: a hub knows its own gateway and passes it here, while an
-    # invite host-owner configures STONECHAT_PUSH_GATEWAY on this box. Absent
+    # invite host-owner configures STONECHAT_PUSH_GATEWAY on this server. Absent
     # falls back to that, so nothing changes for invite hosts.
     push_gateway: str | None = Field(default=None, max_length=256)
 

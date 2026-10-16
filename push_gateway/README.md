@@ -33,13 +33,13 @@ The hub never calls the gateway and the gateway never calls the hub.
   without a push key minted from the same secret. Provisioning hubs mint one
   into each mailbox.
 
-Because only mailboxes talk to it, the gateway can run on the hub box, on a
+Because only mailboxes talk to it, the gateway can run on the hub server, on a
 mailbox host, or on its own machine.
 
 ## Run it
 
 ```bash
-# credentials, on the box that runs the gateway
+# credentials, on the server that runs the gateway
 sudo mkdir -p /etc/stonechat
 sudo cp /path/to/AuthKey_XXXX.p8 /etc/stonechat/apns.p8
 sudo cp /path/to/firebase-service-account.json /etc/stonechat/fcm.json   # Android
@@ -58,7 +58,7 @@ provisions them, together with the same `STONECHAT_PUSH_MINT_SECRET`.
 
 ## Network
 
-Reachable **from mailboxes, never from the internet**. Publish it on the box's
+Reachable **from mailboxes, never from the internet**. Publish it on the server's
 private address (`STONECHAT_PUSH_BIND`) and allow port 8100 from the machine
 hosts' internal addresses only, in the cloud firewall — `ufw` cannot do this,
 because Docker's published-port rules bypass it.

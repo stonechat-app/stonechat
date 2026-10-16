@@ -1,5 +1,5 @@
 # The mailbox host (README.md): hosts your own mailbox plus invited friends'
-# on one box, one relay container each. Run it with docker-compose.yml.
+# on one server, one relay container each. Run it with docker-compose.yml.
 #
 # Nothing is compiled, here or on the host. Guest mailboxes run either the
 # published relay image (ghcr.io/stonechat-app/relay), which main.py pulls on
@@ -33,6 +33,6 @@ ENV STONECHAT_MAILBOX_HOST_DB=/var/lib/stonechat/mailbox_host.db \
     STONECHAT_MAILBOX_HOST_RELAY_DIR=/var/lib/stonechat
 
 # Runs as root: whoever holds the Docker socket is root on the host anyway, and
-# the socket's group id differs from box to box.
+# the socket's group id differs from server to server.
 EXPOSE 8200
 CMD ["python", "main.py"]
