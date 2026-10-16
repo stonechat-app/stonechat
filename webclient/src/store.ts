@@ -1,7 +1,7 @@
 /**
  * What a browser session keeps, and what it deliberately does not.
  *
- * WEB_CLIENT.md blocker 3: a browser is a bad place for long-lived secrets.
+ * A browser is a bad place for long-lived secrets.
  * `localStorage` is readable by any XSS, any extension, anyone at the keyboard,
  * and WebCrypto non-extractable keys do not help because the ratchet runs in
  * WASM and needs raw bytes. That is not fixable here — it is why the web device

@@ -124,7 +124,7 @@ and, like `forget`, revokes nothing.
 
 Where: a machine you control. **Not the hub box** — the hub holds the directory
 and provisioning credentials and its whole security story is one port with no
-extra tenants (`deploy/README.md`, "Topology rule"). And not a box that hosts
+extra tenants. And not a box that hosts
 other people's mailboxes: whatever holds this state file reads your mail.
 
 ## What it holds, and how well

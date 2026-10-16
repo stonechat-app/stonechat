@@ -433,7 +433,7 @@ pub async fn mint_device(
         // token, and a second claimant to that role would be a lie.
         Some(_) => return detail(StatusCode::BAD_REQUEST, "bad kind"),
     };
-    // A bounded session ends by itself. WEB_CLIENT.md's whole defence is that
+    // A bounded session ends by itself. The web client's defence is that
     // a browser's authority is short-lived and revocable, so the lifetime is
     // set here, at mint time, by the device doing the authorising.
     let expires_at = match body.get("expires_in_s") {

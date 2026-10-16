@@ -10,7 +10,7 @@ code:
 | Flutter app | dart:ffi over the C ABI (`app/lib/core/core_ffi.dart`); `session.dart` is a thin wrapper |
 | iOS Notification Service Extension | Swift over the C ABI, static lib (`app/ios/NotificationService/`) |
 | Headless agent (`agent_client/`) | the Rust crate, linked directly |
-| Browser client (`webclient/`, docs/WEB_CLIENT.md) | wasm32 (`cargo build --release --target wasm32-unknown-unknown`), bound by hand in `webclient/src/core.ts` over the same C ABI |
+| Browser client (`webclient/`) | wasm32 (`cargo build --release --target wasm32-unknown-unknown`), bound by hand in `webclient/src/core.ts` over the same C ABI |
 | Python reference clients (`scripts/e2e.py`) | the KEM half only, over ctypes (`scripts/pqcore.py`); the rest is restated in Python against PROTOCOL.md |
 
 One artifact serves everything: the staticlib/cdylib carries this crate's
@@ -37,7 +37,7 @@ grow a dependency on protocol code.
   XChaCha20-Poly1305, BLAKE2b) — byte-identical output, pinned by
   `tests/vectors.rs` (vectors generated with hashlib.blake2b + PyNaCl).
 - **Sessions carry no owner/peer id.** Hosts key storage by
-  (peer, device) per MULTIDEVICE.md, so multi-device never touches the
+  (peer, device), so multi-device never touches the
   state shape.
 
 ## Layout
@@ -88,7 +88,7 @@ it is checked against.
 - `tests/abi.rs` — a full conversation driven through the C functions
   exactly as a foreign host would.
 
-Follow-ups (tracked in ROADMAP.md):
+Follow-ups:
 
 1. The NSE itself: app-group storage + shared keychain, then the Swift
    extension linking this same static lib.

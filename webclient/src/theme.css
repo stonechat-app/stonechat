@@ -13,7 +13,7 @@
  * One deliberate divergence from the landing site: **no webfonts.** The landing
  * page loads Bricolage Grotesque and IBM Plex Mono; this client loads nothing
  * from anywhere. Every external request is a request the hash root does not
- * cover and an origin that learns you are here — see WEB_CLIENT.md. System
+ * cover and an origin that learns you are here. System
  * stacks only, which also matches the app, whose mono family is Menlo.
  */
 
@@ -245,7 +245,7 @@ button.secondary {
 /* -- status banner ------------------------------------------------------ */
 
 /* The web client is a tethered session with an expiry. It says so, always —
- * "the phone shows web session active throughout" (WEB_CLIENT.md) is only
+ * "the phone shows web session active throughout" is only
  * half the promise; the browser should be honest about it too. */
 .banner {
   display: flex;

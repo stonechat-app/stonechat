@@ -107,7 +107,7 @@ export class StonechatCore {
    *
    * `WebAssembly.instantiateStreaming` with an `integrity`-checked Response is
    * the intended browser path: the hash of this module is part of the release
-   * hash root (see build.mjs and WEB_CLIENT.md's attestation argument).
+   * hash root (see build.mjs).
    */
   static async instantiate(
     source: BufferSource | Response | PromiseLike<Response>,

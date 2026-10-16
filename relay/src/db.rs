@@ -73,7 +73,7 @@ pub struct Device {
     pub kind: String,
     pub created_at: String,
     /// RFC-3339, or null for a device that lives until revoked. A web session
-    /// is bounded on purpose (WEB_CLIENT.md): the browser is a bad place for
+    /// is bounded on purpose: the browser is a bad place for
     /// long-lived authority, so its authority expires on its own.
     pub expires_at: Option<String>,
     pub last_seen: Option<String>,

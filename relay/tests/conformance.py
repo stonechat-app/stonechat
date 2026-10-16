@@ -222,7 +222,7 @@ CORPUS = [
     ("status-revoked-token", "GET", f"/status?token={DEV2}", None, None),
     ("inbox-revoked-device", "POST", "/inbox", {**ENV_OK, "id": "e-d2-2", "device": 2}, None),
     ("devices-list-after-revoke", "GET", f"/devices?token={TOKEN}", None, norm_devices),
-    # -- device lifetime (WEB_CLIENT.md: a browser session must end by itself)
+    # -- device lifetime (a browser session must end by itself)
     ("devices-mint-bad-kind", "POST", f"/devices?token={TOKEN}",
      {"device_token": DEV3, "kind": "primary"}, None),
     ("devices-mint-bad-expiry", "POST", f"/devices?token={TOKEN}",

@@ -4,7 +4,7 @@
 //! one drainer per device — over a different pipe, because a browser cannot
 //! open the pipe `ws.rs` uses. A relay is a self-signed certificate on a bare
 //! IP; `fetch` and `WebSocket` refuse that outright and expose no API to
-//! accept it (WEB_CLIENT.md blocker 1).
+//! accept it.
 //!
 //! WebTransport's `serverCertificateHashes` is the exception, and it is the
 //! *same* trust model Stonechat already has — pin the certificate, ignore CAs
@@ -190,7 +190,7 @@ pub async fn serve(
 /// The token is a bearer secret in a URL, which is the same compromise the
 /// WebSocket route makes and no better here — but a WebTransport request
 /// carries no headers a client can set, so there is nowhere else to put it
-/// yet. Noted in WEB_CLIENT.md's "smaller, fixable items".
+/// yet.
 fn token_of(path: &str) -> Option<&str> {
     let (_, query) = path.split_once('?')?;
     query.split('&').find_map(|pair| pair.strip_prefix("token="))

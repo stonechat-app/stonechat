@@ -5,7 +5,7 @@
 //! SHA-256 from `/wt/certs` — no CA, no system trust store, nothing but the
 //! hash — can connect to the mailbox and drain its queue.
 //!
-//! That is WEB_CLIENT.md blocker 1 in test form. It is a Rust client rather
+//! That is the browser transport's reason to exist, in test form. It is a Rust client rather
 //! than a browser because there is no browser here, but `serverCertificateHashes`
 //! is the same mechanism on both sides: pin the certificate, ignore CAs.
 use std::process::{Child, Command};

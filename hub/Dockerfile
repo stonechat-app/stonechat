@@ -1,5 +1,5 @@
 # The hub: a FastAPI process, one SQLite file, and no mailboxes — those never
-# run on the hub box (deploy/README.md "Topology rule").
+# run on the hub machine.
 #
 # Built from the REPO ROOT, not hub/: the image also carries
 # scripts/roll_relay.py so relay releases can be rolled with `compose exec`

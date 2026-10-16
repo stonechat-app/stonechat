@@ -1,7 +1,7 @@
 /**
  * Build the web client, and produce the thing that justifies it existing.
  *
- * WEB_CLIENT.md's argument, compressed: a web app is re-fetched from its origin
+ * The argument, compressed: a web app is re-fetched from its origin
  * on every load, so a coerced origin can serve one targeted user a modified
  * client. Nothing in-page fixes that — "a signature only helps if the verifier
  * lives outside the delivery channel being attacked". What *is* achievable is

@@ -1297,7 +1297,7 @@ def main():
     # will present; it cannot vouch for them, being the thing under
     # authentication. Until the owner signs, the directory serves nothing —
     # a browser that pinned an unsigned list has pinned whatever the network
-    # said (WEB_CLIENT.md "the code-delivery problem", relay/src/wtcert.rs).
+    # said (relay/src/wtcert.rs).
     entry = httpx.get(f"{HUB}/v1/directory/{alice.stonechat_id}").json()
     assert entry["mailbox"]["wt_certs"] is None, "unsigned schedule must not be served"
     certs = alice.publish_wt_certs()

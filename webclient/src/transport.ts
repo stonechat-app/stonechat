@@ -2,7 +2,7 @@
  * Reaching the mailbox from a browser.
  *
  * A relay is a self-signed certificate on a bare IP. `fetch` and `WebSocket`
- * refuse that outright, with no API to accept it — WEB_CLIENT.md blocker 1.
+ * refuse that outright, with no API to accept it.
  * WebTransport's `serverCertificateHashes` is the one exception, and it is the
  * *same* trust model Stonechat already has: pin the certificate, ignore CAs.
  *
