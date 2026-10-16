@@ -31,6 +31,10 @@ const sourceUrl = 'https://github.com/stonechat-app/stonechat';
 /// reachable from inside the app too, not only from the store page.
 const privacyPolicyUrl = 'https://stonechat.app/privacy';
 
+/// The terms users agree to when they create an account. Guideline 1.2
+/// (user-generated content) wants them agreed to and reachable in-app.
+const termsUrl = 'https://stonechat.app/terms';
+
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
@@ -201,6 +205,19 @@ class SettingsScreen extends StatelessWidget {
                   const ClipboardData(text: privacyPolicyUrl));
               if (context.mounted) {
                 showZnSnack(context, 'Privacy policy link copied');
+              }
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.gavel_outlined, color: Zn.muted, size: 20),
+            title: const Text('Terms of service'),
+            subtitle: const Text(
+                '$termsUrl — the rules, and what gets an account removed. Tap to copy.',
+                style: TextStyle(color: Zn.muted, fontSize: 12)),
+            onTap: () async {
+              await Clipboard.setData(const ClipboardData(text: termsUrl));
+              if (context.mounted) {
+                showZnSnack(context, 'Terms link copied');
               }
             },
           ),
@@ -446,7 +463,7 @@ class _AccessSectionState extends State<_AccessSection> {
       _ => (
           'Not invited yet',
           Zn.muted,
-          'An invite code unlocks a managed mailbox',
+          'An invite code gives you a hosted mailbox',
         ),
     };
     return ListTile(

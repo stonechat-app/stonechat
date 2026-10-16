@@ -126,7 +126,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     const SizedBox(height: 12),
                     const Text(
                       'No sign-up form. Your account is an encryption key created '
-                      'on this phone — we never learn who you are.',
+                      'on this phone — we never learn who you are.\n\n'
+                      'By continuing you agree to the terms at '
+                      'stonechat.app/terms: no abuse, no illegal content.',
                       style: TextStyle(
                         color: Zn.muted,
                         fontSize: 12,

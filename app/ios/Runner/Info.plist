@@ -92,7 +92,7 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>Unlock Stonechat with Face ID when app lock is on.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Record voice notes to send to your contacts.</string>
+	<string>Talk in voice and video calls, and record voice notes to send to your contacts.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Choose photos to send to your contacts.</string>
 	<!-- WebRTC gathers the phone's own LAN address as an ICE candidate, and

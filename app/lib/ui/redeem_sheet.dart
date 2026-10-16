@@ -87,7 +87,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
               style: Zn.mono(size: 10, letterSpacing: 2)),
           const SizedBox(height: 12),
           const Text(
-            'Got an invite code? Enter it to unlock a managed mailbox.',
+            'Got an invite code? Enter it and we set up a hosted mailbox for you.',
             style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.4),
           ),
           const SizedBox(height: 16),
@@ -119,7 +119,7 @@ class _RedeemSheetState extends State<_RedeemSheet> {
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('Unlock'),
+                  : const Text('Continue'),
             ),
           ),
         ],
