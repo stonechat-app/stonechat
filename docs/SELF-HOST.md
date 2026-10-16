@@ -9,7 +9,7 @@ The component READMEs go deeper; this is the path through them.
 | What                                 | What it gives you                                                             | Stays on the main network?       |
 | ------------------------------------ | ----------------------------------------------------------------------------- | -------------------------------- |
 | **A mailbox** (`relay/`)             | Your own mail lives on your own machine. One mailbox, one user: you.          | Yes                              |
-| **A mailbox host** (`mailbox_host/`) | One box that runs your mailbox plus your invited friends' mailboxes.          | Yes                              |
+| **A mailbox host** (`mailbox_host/`) | One server that runs your mailbox plus your invited friends' mailboxes.       | Yes                              |
 | **A hub** (`hub/`)                   | Your own directory: a private Stonechat network with its own users.           | **No**, it is a separate network |
 | **A push gateway** (`push_gateway/`) | Background wake-ups for phones running _your own build_ of the app. Optional. | n/a                              |
 
@@ -20,7 +20,7 @@ What each piece does:
   certificate is self-signed and pinned by your contacts through a fingerprint
   you sign with your identity key. No certificate authority is involved.
 - **Mailbox host.** The program that starts and stops mailbox containers on a
-  box. The hosted service's shared boxes run the same program.
+  server. The hosted service's shared servers run the same program.
 - **Hub.** The directory: it maps Stonechat IDs to public keys and mailbox
   addresses, and can provision mailboxes. It stores routing metadata, never
   content.
@@ -41,7 +41,7 @@ app build (see [Push gateway](#push-gateway-optional)).
 ## Self-hosting a mailbox
 
 Run a single mailbox, just for you, on any machine you control: a small VM or
-an always-on Linux box at home.
+an always-on Linux server at home.
 
 ### What you need
 
@@ -59,7 +59,7 @@ an always-on Linux box at home.
 > the IP changes, contacts keep dialing the old one until you connect the
 > mailbox again from the app, and you must recreate the container with the new
 > `STONECHAT_WT_ADVERTISE`. A static (reserved) IP, or a DNS name you keep
-> pointed at the box, avoids both. Dynamic DNS works if your home IP rotates.
+> pointed at the server, avoids both. Dynamic DNS works if your home IP rotates.
 > Your contacts' certificate pin is not tied to the address, so it survives
 > either way.
 
@@ -72,7 +72,7 @@ always know which build you run:
 ```bash
 curl -fsSL https://get.docker.com | sudo sh   # skip if Docker is already installed
 
-docker buildx imagetools inspect ghcr.io/stonechat-app/relay:0.1.0   # → Digest: sha256:…
+docker buildx imagetools inspect ghcr.io/stonechat-app/relay:0.3.1   # → Digest: sha256:…
 
 export STONECHAT_OWNER_ID=SC-XXXX-...   # replace with your Stonechat ID, copied from the app
 
@@ -132,7 +132,7 @@ and **Mailbox token** → **Connect my mailbox**.
 
 The app pins the mailbox's certificate, checks the token opens it, and lists
 the address in the directory. From then on your contacts deliver straight to
-your box.
+your server.
 
 ### Keep it running
 
@@ -162,7 +162,7 @@ your box.
 
 ## Self-hosting a mailbox host
 
-A mailbox host runs mailboxes for **you and friends you invite**, on one box you
+A mailbox host runs mailboxes for **you and friends you invite**, on one server you
 own. Each guest gets their own mailbox container, with its own port, token and
 TLS certificate. Everyone stays on the main Stonechat directory.
 
@@ -171,15 +171,15 @@ The full walkthrough is [`mailbox_host/README.md`](../mailbox_host/README.md)
 
 ### Trust model: tell your guests
 
-Messages stay end-to-end encrypted: even as root on the box, you cannot read
-your friends' chats. You _can_ see that a friend has a mailbox on your box, and
+Messages stay end-to-end encrypted: even as root on the server, you cannot read
+your friends' chats. You _can_ see that a friend has a mailbox on your server, and
 its traffic metadata: when, how much, and from which IPs. Only host people who
 are fine with that. They are choosing you as their operator instead of a
 company.
 
-### 1. Prepare the box
+### 1. Prepare the server
 
-- A Linux VM (1 vCPU / 1 GB is plenty) or an always-on home box, with a
+- A Linux VM (1 vCPU / 1 GB is plenty) or an always-on home server, with a
   **static public IP**. The IP is baked into every mailbox address on the host.
 - Open inbound **8200/tcp** (the mailbox host itself), **42000–42024, TCP
   and UDP** (guest mailboxes: `STONECHAT_MAILBOX_HOST_PORT_BASE` through base +
@@ -191,7 +191,7 @@ company.
 > mailboxes on a mailbox host is not wired up in the app yet: a friend who joins
 > by invite registers no browser address, and a mailbox you connect through
 > **Self-host** is registered as if its browser transport were on port 8443,
-> not on its own port. Open the UDP range anyway, so nothing changes on the box
+> not on its own port. Open the UDP range anyway, so nothing changes on the server
 > once the app catches up.
 
 ### 2. Install and start it
@@ -236,7 +236,7 @@ In the app, the Mailbox screen now shows **Invites**. Enter
 `https://<ip>:8200` and the admin token → **Connect** → **New invite**.
 Invites are single-use and valid for 3 days. **An invite is a secret**: it
 contains the token that redeems it, so whoever sees it first can claim a
-mailbox on your box with it. Send it privately, over a channel you trust.
+mailbox on your server with it. Send it privately, over a channel you trust.
 What the fingerprint inside it buys is different: the friend's app pins your
 host's certificate, so the redeem call itself cannot be intercepted or
 redirected.
@@ -255,7 +255,7 @@ would be an empty mailbox. Point `STONECHAT_MAILBOX_HOST_IMAGE` at the new
 digest, restart, then call `POST /v1/relay/roll`. The roll swaps one mailbox at
 a time and rolls back any that does not come up on the new build.
 
-If the box dies, nobody loses history: it lives on their phones, and each guest
+If the server dies, nobody loses history: it lives on their phones, and each guest
 can re-home their mailbox anywhere.
 
 ---
@@ -280,12 +280,12 @@ of `hub.stonechat.app`. The two directories share nothing.
 - **Mailboxes**: either users run their own (as in "Self-hosting a mailbox"
   above) and register them with your hub, or you run mailbox hosts that your
   hub fills. Mailboxes **never run on the hub's machine**: the hub holds the
-  directory, the mailbox boxes hold mail.
+  directory, the mailbox servers hold mail.
 - **Push gateway**: optional, see below.
 
 ### 1. Run the hub
 
-On a box with a domain name pointing at it:
+On a server with a domain name pointing at it:
 
 ```bash
 sudo git clone https://github.com/stonechat-app/stonechat.git /opt/stonechat
@@ -325,7 +325,7 @@ a plain `cp` of a running hub is not safe).
 ### 2. Point the app at it
 
 Users choose the hub when they **create their identity**. On the first screen:
-**Advanced** → **Service address (self-hosters only)** →
+**Change Hub** → **Hub address** →
 `https://hub.example.com` → then create the account as usual. An identity lives
 on the hub it was created on.
 
@@ -339,7 +339,7 @@ invite-mode mailbox host, and connects it from the app. Your hub only lists
 addresses; no machine of yours holds anyone's mail.
 
 **Your hub hands out mailboxes.** Run one or more mailbox hosts **in managed
-mode** on other boxes, and add them to the hub's pool. On each mailbox host,
+mode** on other servers, and add them to the hub's pool. On each mailbox host,
 add to its `.env` and restart:
 
 ```bash
@@ -395,7 +395,7 @@ How it fits:
   **Mailboxes** call it, when their owner's device is offline.
 - It is stateless and holds only the APNs/FCM credentials. It sees device
   tokens and timing, never identities or content.
-- It can run on the hub box, on a mailbox host, or on its own machine, as long
+- It can run on the hub server, on a mailbox host, or on its own machine, as long
   as mailboxes can reach it.
 
 Run it:
@@ -408,7 +408,7 @@ sudo cp firebase-service-account.json /etc/stonechat/fcm.json   # Android
 cd /opt/stonechat/push_gateway
 cp .env.example .env
 $EDITOR .env      # APNs key id, team id, topic (your bundle id); FCM path;
-                  # STONECHAT_PUSH_MINT_SECRET; STONECHAT_PUSH_BIND = this box's private IP
+                  # STONECHAT_PUSH_MINT_SECRET; STONECHAT_PUSH_BIND = this server's private IP
 docker compose up -d --build
 curl -s http://<private IP>:8100/health   # → {"apns": true, ...}
 ```
