@@ -13,12 +13,11 @@ The shared contract between the components:
 - **hub/** — provisioner + directory. Maps Stonechat IDs to public identity
   keys and current mailbox addresses, and is the dead drop for linking a
   device. Never sees message content.
-- **push_gateway/** — turns "this device has mail" into a content-free
-  APNs/FCM wake-up.
-- **mailbox_host/** — the program that runs mailbox containers on a server.
+- **push_gateway/** — used to send the content-free push notifications (APNs/FCM).
+- **mailbox_host/** — the program that runs multiple mailbox containers on a server.
 
 Sessions are **forward-secret and post-quantum hybrid**: PQXDH key agreement
-(X3DH + ML-KEM-768, docs/POST_QUANTUM.md) bootstrapped from prekeys served
+(X3DH + ML-KEM-768) bootstrapped from prekeys served
 by the recipient's own mailbox, then a double ratchet deriving a fresh key
 for every message, with a fresh ML-KEM secret mixed into it every so often
 ("Post-quantum ratchet"). Recorded traffic is opened neither by a future quantum
@@ -29,8 +28,7 @@ device** with a hybrid KEM ("Envelope"), so it names no sender on the wire.
 An identity may have **several devices**, each with its own keys, its own
 queue on the mailbox, and its own ratchet with every peer device
 ("Devices"). Which devices currently speak for an identity is a signed,
-numbered statement by the identity itself ("Device manifest"), not a
-relay's word.
+numbered statement by the identity itself ("Device manifest").
 
 The wire version is 1 ("Versioning").
 
@@ -55,32 +53,32 @@ The wire version is 1 ("Versioning").
 
 Domain-separation strings, all ASCII, no terminator:
 
-| String | Used for |
-|---|---|
-| `stonechat-v1-pqxdh-kdf` | key of the PQXDH shared-secret hash |
-| `stonechat-v1-hsealkdf` | key of the envelope-seal key derivation |
-| `stonechat-v1-hseal` | associated data of the envelope seal |
-| `stonechat/v1` | first field of the message associated data |
-| `stonechat-v1-spk` | signature over a signed prekey (device key) |
-| `stonechat-v1-kspk` | signature over a KEM signed prekey (device key) |
-| `stonechat-v1-devcert` | signature over a device certificate (identity key) |
-| `stonechat-v1-tls` | signature over a mailbox's TLS fingerprint (identity key) |
-| `stonechat-v1-wtcerts` | signature over a WebTransport certificate schedule (identity key) |
-| `stonechat-v1-pqpk` | signature over the identity's X-Wing key (identity key) |
-| `stonechat-v1-pqidseed` | key of the hash deriving that X-Wing key's seed |
-| `stonechat-v1-recover` | account-token recovery at the hub (identity key) |
-| `stonechat-v1-delete` | account deletion at the hub (identity key) |
-| `stonechat-v1-report` | abuse report (identity key) |
-| `stonechat-link-offer` | prefix of the link-offer commitment hash |
-| `stonechat-device-token\|` | prefix of the relay's stored device-token hash |
-| `\|stonechat-bundle\|` | derivation of the bundle token |
-| `\|stonechat-blob-fetch\|` | derivation of a blob fetch token |
+| String                     | Used for                                                          |
+| -------------------------- | ----------------------------------------------------------------- |
+| `stonechat-v1-pqxdh-kdf`   | key of the PQXDH shared-secret hash                               |
+| `stonechat-v1-hsealkdf`    | key of the envelope-seal key derivation                           |
+| `stonechat-v1-hseal`       | associated data of the envelope seal                              |
+| `stonechat/v1`             | first field of the message associated data                        |
+| `stonechat-v1-spk`         | signature over a signed prekey (device key)                       |
+| `stonechat-v1-kspk`        | signature over a KEM signed prekey (device key)                   |
+| `stonechat-v1-devcert`     | signature over a device certificate (identity key)                |
+| `stonechat-v1-tls`         | signature over a mailbox's TLS fingerprint (identity key)         |
+| `stonechat-v1-wtcerts`     | signature over a WebTransport certificate schedule (identity key) |
+| `stonechat-v1-pqpk`        | signature over the identity's X-Wing key (identity key)           |
+| `stonechat-v1-pqidseed`    | key of the hash deriving that X-Wing key's seed                   |
+| `stonechat-v1-recover`     | account-token recovery at the hub (identity key)                  |
+| `stonechat-v1-delete`      | account deletion at the hub (identity key)                        |
+| `stonechat-v1-report`      | abuse report (identity key)                                       |
+| `stonechat-link-offer`     | prefix of the link-offer commitment hash                          |
+| `stonechat-device-token\|` | prefix of the relay's stored device-token hash                    |
+| `\|stonechat-bundle\|`     | derivation of the bundle token                                    |
+| `\|stonechat-blob-fetch\|` | derivation of a blob fetch token                                  |
 
 ## Identity
 
 On account creation the client generates an **Ed25519 signing keypair** —
 the **identity key** — and registers the public half with the hub. The
-private half never leaves the device that generated it (the *primary*
+private half never leaves the device that generated it (the _primary_
 device), except in a passphrase-encrypted export the user makes explicitly
 ("Local containers").
 
@@ -99,7 +97,7 @@ Those are done with **device keys**.
 ### The identity's X-Wing key (`pq_pk`)
 
 Every identity has an X-Wing encapsulation key (X25519 + ML-KEM-768 as one
-hybrid KEM), whose 32-byte seed is *derived*, not stored:
+hybrid KEM), whose 32-byte seed is _derived_, not stored:
 
 ```
 pq_seed = H(identity_sk, key="stonechat-v1-pqidseed", 32)
@@ -119,11 +117,11 @@ invalid `pq_pk` as unusable; the agent ignores both fields.
 
 **Nothing is sealed to `pq_pk`.** No client encapsulates to it or attempts
 to open anything with its private half. Envelopes are sealed to the
-recipient *device's* certified X-Wing key ("Envelope").
+recipient _device's_ certified X-Wing key ("Envelope").
 
 ### Stonechat ID
 
-The user-facing identifier is a *commitment* to the Ed25519 identity public
+The user-facing identifier is a _commitment_ to the Ed25519 identity public
 key, so the directory cannot swap keys without detection:
 
 ```
@@ -146,25 +144,20 @@ whitespace and hyphens and verifies the checksum.
 Whenever a client obtains an identity key — from the directory, a link
 grant, or a group member list — it MUST recompute the hash and verify it
 matches the Stonechat ID **it was looking for** ("Directory resolution").
-Device keys do *not* hash to a Stonechat ID; a certificate ties them to one.
+Device keys do _not_ hash to a Stonechat ID; a certificate ties them to one.
 
 ### No handles — invite-only by ID
 
 There is no handle namespace. A user is reached only by their full SC- ID,
-shared out-of-band: a QR code, or a universal-link invite
-(`https://stonechat.app/add#<SC- ID>`) the app opens. The ID rides in the
-URL *fragment*, which a browser never sends to the server.
-
-This is deliberate: an unauthenticated directory over a low-entropy handle
-namespace is enumerable — walk it and you harvest every user's pubkey and
-mailbox address. A SC- ID is a 160-bit commitment, so the directory is not
-walkable: you can only resolve someone whose ID they gave you.
+shared out-of-band: as plain text, a QR code, or a universal-link invite
+(`https://stonechat.app/add#<SC- ID>`) that the app opens. The ID rides in the
+URL _fragment_, which a browser never sends to the server.
 
 ### Cross-hub resolution (experimental, off by default)
 
 Builds compiled with `--dart-define=STONECHAT_CROSS_HUB=true` can reach peers
 whose directory entry lives on a **different hub**. Nothing changes on the
-wire between clients and mailboxes; only *resolution* is extended:
+wire between clients and mailboxes; only _resolution_ is extended:
 
 - An invite may tag the ID with its home hub: `#SC-…@hub.example.com` in the
   link fragment (bare authority ⇒ https; a value containing `://` is taken
@@ -188,7 +181,7 @@ wire between clients and mailboxes; only *resolution* is extended:
 **This is not federation**:
 
 - **No server-to-server traffic.** Hubs never speak to each other. Only the
-  URL the *client* puts its `GET /v1/directory/{id}` to changes; a foreign
+  URL the _client_ puts its `GET /v1/directory/{id}` to changes; a foreign
   hub cannot tell it is being used this way, and has no peer relationship
   to accept or refuse.
 - **No shared namespace.** The only name is the SC- ID, a hash commitment
@@ -210,9 +203,7 @@ prekey pool, the push registration, the live socket.
   its row is re-seeded from that variable on every boot. It holds the
   identity secret, so only it can certify devices.
 - Further devices are **minted** by the primary (`POST /devices`). Ids are
-  assigned by the relay, increase monotonically and are **never reused**, so
-  an envelope still in flight to a revoked device can never land in a newer
-  device's queue.
+  assigned by the relay, increase monotonically and are **never reused**.
 - Each device has a **kind**: `primary`, `linked` (another of the owner's
   apps), `web` (a browser session) or `agent` (a headless program). `primary`
   cannot be minted. The kind is advisory — the relay and the protocol treat
@@ -231,10 +222,10 @@ Each device generates two keypairs on first run and keeps them for its
 lifetime. Only seeds are stored; public halves are derived. Neither key
 ever leaves the device — not in a link grant, not anywhere.
 
-| Key | Type | Used for |
-|---|---|---|
-| signing key (`sig_pub`) | Ed25519, 32-byte seed | signs this device's signed prekeys; converted to X25519, it is this device's long-term key in PQXDH |
-| seal key (`seal_pub`) | X-Wing, 32-byte seed, 1216-byte public key | envelopes to this device are sealed to it |
+| Key                     | Type                                       | Used for                                                                                            |
+| ----------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| signing key (`sig_pub`) | Ed25519, 32-byte seed                      | signs this device's signed prekeys; converted to X25519, it is this device's long-term key in PQXDH |
+| seal key (`seal_pub`)   | X-Wing, 32-byte seed, 1216-byte public key | envelopes to this device are sealed to it                                                           |
 
 ### Device certificates
 
@@ -267,18 +258,18 @@ signing_bytes = field(utf8(stonechat_id))
 sig           = Sign("stonechat-v1-devcert", signing_bytes, identity_sk)
 ```
 
-**Verification.** A certificate is *valid* for identity key `IK` at time
+**Verification.** A certificate is _valid_ for identity key `IK` at time
 `now` iff, in this order:
 
 1. `sig` verifies over `"stonechat-v1-devcert" || signing_bytes` under `IK`
    (else: bad signature);
 2. `IK` is the key `stonechat_id` commits to — `derive_id(IK) ==
-   stonechat_id` (else: wrong identity). Without this, a directory that
+stonechat_id` (else: wrong identity). Without this, a directory that
    answers with another user's key gets that user's certificates accepted
    under the wrong name;
 3. `now < not_after` (else: expired — `not_after` is exclusive).
 
-That makes the name in the certificate *true*, not the *right* one. The
+That makes the name in the certificate _true_, not the _right_ one. The
 client MUST additionally check:
 
 4. `stonechat_id` is the peer it meant to reach (or, on receive, the
@@ -294,12 +285,12 @@ skips that device rather than falling back to any other key.
 **Lifetimes.** The certifying (primary) device chooses `not_after`. The
 Flutter app uses, by kind:
 
-| Kind | Certificate lifetime | Renewed by the primary when less than |
-|---|---|---|
-| `primary` | 365 days | 3 days (re-signs its own) |
-| `linked` | 14 days | 7 days left |
-| `agent` | 14 days | 7 days left |
-| `web` (and any unknown kind) | 7 days | 3.5 days left |
+| Kind                         | Certificate lifetime | Renewed by the primary when less than |
+| ---------------------------- | -------------------- | ------------------------------------- |
+| `primary`                    | 365 days             | 3 days (re-signs its own)             |
+| `linked`                     | 14 days              | 7 days left                           |
+| `agent`                      | 14 days              | 7 days left                           |
+| `web` (and any unknown kind) | 7 days               | 3.5 days left                         |
 
 The Flutter app's link dialog asks which of the three a scanned code is for
 and sets no relay expiry (`expires_in_s`): a device's lifetime is bounded by
@@ -349,7 +340,7 @@ sender's device key without fetching anything.
 ### Device tokens, the bundle token and `devices_v`
 
 A **device token** is the device's login to its own mailbox: possession of
-the token *is* being that device. Device 1's token is the mailbox's owner
+the token _is_ being that device. Device 1's token is the mailbox's owner
 token. A minted device's token is chosen by the primary (at least 32
 characters; the app uses 32 random bytes, base64url without padding) and
 handed to the new device inside the link grant. The relay stores only
@@ -372,7 +363,7 @@ bundle_token = hex(BLAKE2b-256(owner_token || "|stonechat-bundle|"))
   device sends. Its audience is therefore everyone who has received
   something from this identity — contacts, fellow group members, and anyone
   who was sent a contact request.
-- It exists because the *unauthenticated* bundle request serves device 1
+- It exists because the _unauthenticated_ bundle request serves device 1
   only, at the cost of one one-time prekey per request. If listing were
   open, one anonymous request could burn a prekey on every device.
 - It does not change when the device set changes and cannot be revoked
@@ -387,9 +378,9 @@ re-reads it on the next send.
 
 ### Device manifest
 
-A certificate says a device *was* the identity's, until a date. The
+A certificate says a device _was_ the identity's, until a date. The
 **device manifest** is the identity's statement of which devices speak for
-it *now*: the primary signs the current set, numbered so a newer manifest
+it _now_: the primary signs the current set, numbered so a newer manifest
 supersedes an older, and publishes it to the hub, which serves it in the
 directory record (`devices`). A peer that holds it encrypts only to devices
 on it and accepts envelopes only from devices on it — so revoking a device
@@ -402,8 +393,8 @@ than only a queue deleted on a relay the contact has to trust.
   "version": 7,
   "issued_at": 1790000000,
   "devices": [
-    {"device_id": 1, "sig_pub": "<base64, 32 bytes>"},
-    {"device_id": 3, "sig_pub": "<base64, 32 bytes>"}
+    { "device_id": 1, "sig_pub": "<base64, 32 bytes>" },
+    { "device_id": 3, "sig_pub": "<base64, 32 bytes>" }
   ],
   "sig": "<base64, 64 bytes>"
 }
@@ -445,7 +436,7 @@ The primary builds the manifest from **its own record** of the devices it
 linked (with the keys it certified) and revoked, never from the relay's
 listing: a manifest rebuilt from what the relay lists would be a manifest
 the relay writes, and a relay that kept a revoked device listed would get
-it listed again. The relay's listing can only *remove* a device from the
+it listed again. The relay's listing can only _remove_ a device from the
 manifest (one that revoked itself, or that the relay expired), never add
 one or change its key; a revoked slot never returns, whatever the relay
 lists. Certificates are renewed the same way — over the recorded keys, for
@@ -495,7 +486,7 @@ drops it.
 can serve a stale one: a hub can hold a contact at an old version until
 something prompts a refetch, and even then only answer with what it has.
 The certificate lifetime bounds that. A manifest also says nothing about a
-device's *queue*: a hostile relay can go on accepting deposits for a
+device's _queue_: a hostile relay can go on accepting deposits for a
 revoked device and serving its certificate; a sender holding the manifest
 does not encrypt to it, and one that does not stops when the certificate
 expires.
@@ -550,7 +541,7 @@ of device this is. Then the primary:
 - builds the **grant** and seals it to the offered `seal_pub` with the same
   construction that seals envelopes ("Envelope");
 - parks it: `POST {hub}/v1/link` `{"key": "<parking_key>", "sealed":
-  "<base64>"}`;
+"<base64>"}`;
 - publishes a device manifest that lists the new device by the offered
   `sig_pub` ("Device manifest"), so contacts accept it as soon as it speaks.
 
@@ -601,14 +592,14 @@ once. Until then the new device knows nobody.
 **The dead drop.** Both hub tables are unauthenticated — a device being
 linked has no account — and bounded instead:
 
-| | Offers (`/v1/link/offer`) | Grants (`/v1/link`) |
-|---|---|---|
-| Key | 64 lowercase hex chars, and MUST equal the commitment to the body's keys (hub recomputes) | 64 lowercase hex chars |
-| Body | `seal` 1216 bytes, `sig` 32 bytes | `sealed`, non-empty, ≤ 65 536 characters |
-| Read | repeatable (the scanner may retry) | **returns and deletes** — single use |
-| Lifetime | 600 s | 600 s |
-| Pending at once, hub-wide | 8 (then 503) | 8 (then 503) |
-| Rate limit | 30 requests/minute per client address, shared by all four link routes | same |
+|                           | Offers (`/v1/link/offer`)                                                                 | Grants (`/v1/link`)                      |
+| ------------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------- |
+| Key                       | 64 lowercase hex chars, and MUST equal the commitment to the body's keys (hub recomputes) | 64 lowercase hex chars                   |
+| Body                      | `seal` 1216 bytes, `sig` 32 bytes                                                         | `sealed`, non-empty, ≤ 65 536 characters |
+| Read                      | repeatable (the scanner may retry)                                                        | **returns and deletes** — single use     |
+| Lifetime                  | 600 s                                                                                     | 600 s                                    |
+| Pending at once, hub-wide | 8 (then 503)                                                                              | 8 (then 503)                             |
+| Rate limit                | 30 requests/minute per client address, shared by all four link routes                     | same                                     |
 
 Re-posting an existing key replaces its body and restarts its clock.
 
@@ -637,12 +628,12 @@ Forward-secret sessions must start while the recipient is offline, so every
 halves never leave the device). Pools are per device; one device restocking
 never touches a sibling's pool.
 
-| Prekey | Type | Signed | Notes |
-|---|---|---|---|
-| **Signed prekey (SPK)** | X25519 | `sig = Sign("stonechat-v1-spk", spk_pub, device_sig_sk)` | signed by the **device** signing key |
-| **One-time prekeys (OPK)** | pool of X25519 | **unsigned** | the mailbox hands each public half out at most once (deleted on fetch) |
-| **KEM signed prekey (KSPK)** | **ML-KEM-768** (FIPS 203) | `sig = Sign("stonechat-v1-kspk", kspk_pub, device_sig_sk)` | the post-quantum half of PQXDH. Client-side the secret is a 64-byte seed; the public key is 1184 bytes |
-| **KEM one-time prekeys (KOPK)** | pool of ML-KEM-768 | **unsigned** | one-time exactly like OPKs |
+| Prekey                          | Type                      | Signed                                                     | Notes                                                                                                  |
+| ------------------------------- | ------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| **Signed prekey (SPK)**         | X25519                    | `sig = Sign("stonechat-v1-spk", spk_pub, device_sig_sk)`   | signed by the **device** signing key                                                                   |
+| **One-time prekeys (OPK)**      | pool of X25519            | **unsigned**                                               | the mailbox hands each public half out at most once (deleted on fetch)                                 |
+| **KEM signed prekey (KSPK)**    | **ML-KEM-768** (FIPS 203) | `sig = Sign("stonechat-v1-kspk", kspk_pub, device_sig_sk)` | the post-quantum half of PQXDH. Client-side the secret is a 64-byte seed; the public key is 1184 bytes |
+| **KEM one-time prekeys (KOPK)** | pool of ML-KEM-768        | **unsigned**                                               | one-time exactly like OPKs                                                                             |
 
 A mailbox can substitute a one-time prekey of either kind ("Known open
 gaps").
@@ -737,7 +728,7 @@ terminates at the Stonechat ID.
 
 - On first boot the mailbox generates an ECDSA P-256 keypair and a
   long-lived self-signed certificate (persisted beside its DB; the key lives
-  as long as the mailbox). The certificate authenticates the *pipe* only —
+  as long as the mailbox). The certificate authenticates the _pipe_ only —
   message security never depends on it; that is the ratchet's job.
 - Its fingerprint is `fp = BLAKE2b-256(cert_der)` over the DER-encoded
   certificate, reported as base64 in `/health`.
@@ -770,12 +761,12 @@ mailbox host ("Mailbox host").
 
 Where the fingerprint comes from:
 
-| Case | Source |
-|---|---|
+| Case                                                                | Source                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Bootstrap**: the owner's own mailbox, before any signature exists | The hub observed `tls_fp` via `/health` while waiting for the mailbox to become healthy and returns it in the owner's mailbox record — the channel that also delivers the owner token. The owner's app pins it for its own connection, signs it, and publishes the signature. |
-| Self-hosted relay | The app observes the certificate on first contact with the server the user themselves provisioned (trust-on-first-use), then signs and publishes identically. |
-| Linked device | Its link grant. |
-| Recreated mailbox (new TLS key) | The hub clears the old signature, the owner's app re-signs on the next refresh, and peers re-fetch the fingerprint through the directory re-resolve path that handles address changes. |
+| Self-hosted relay                                                   | The app observes the certificate on first contact with the server the user themselves provisioned (trust-on-first-use), then signs and publishes identically.                                                                                                                 |
+| Linked device                                                       | Its link grant.                                                                                                                                                                                                                                                               |
+| Recreated mailbox (new TLS key)                                     | The hub clears the old signature, the owner's app re-signs on the next refresh, and peers re-fetch the fingerprint through the directory re-resolve path that handles address changes.                                                                                        |
 
 ### Browser transport (WebTransport)
 
@@ -811,7 +802,8 @@ from the TLS listener) with its own short-lived certificates:
 
   `refresh_after` is the largest `not_after` in the list. 404 when the
   browser transport is disabled.
-- That endpoint *states*; it cannot *vouch*, being the thing under
+
+- That endpoint _states_; it cannot _vouch_, being the thing under
   authentication. The **owner signs the list**:
 
   ```
@@ -825,9 +817,10 @@ from the TLS listener) with its own short-lived certificates:
   ```
 
   The leading count stops a truncated list verifying as a prefix of the
-  signed one — dropping the *future* certificates is how an attacker would
+  signed one — dropping the _future_ certificates is how an attacker would
   strand a client on one they hold. Reordering changes the bytes.
   `refresh_after` is not signed.
+
 - The owner publishes `{certs, wt_sig}` with `POST /v1/mailbox/wt`; the
   directory serves `wt_certs` and `wt_sig` together, or both null. It also
   serves `wt_address` (`host:port`), which is **unsigned**: rewriting it
@@ -901,7 +894,7 @@ The directory is untrusted. A client that resolves an ID:
 
 1. MUST check the answer **against the ID it asked for** — both that the
    returned `stonechat_id` equals it and that `pubkey` hashes to it. Checking
-   the key against the ID *in the answer* proves nothing: a directory that
+   the key against the ID _in the answer_ proves nothing: a directory that
    returns somebody else's complete record is internally consistent.
 2. MUST verify `tls_sig` before using `address` ("Transport"), and `wt_sig`
    before pinning anything from `wt_certs`; and MUST verify `devices`, when
@@ -917,7 +910,7 @@ The directory is untrusted. A client that resolves an ID:
    ID; after that, only for where the mailbox is.
 
 The identity key is never learned from an envelope. The `ik` in an `x3dh`
-block is a *device* key and does not hash to anything.
+block is a _device_ key and does not hash to anything.
 
 ## Session crypto
 
@@ -1001,7 +994,7 @@ authenticated.
 Two collisions:
 
 - **Simultaneous initiation.** If a valid initial envelope arrives while `B`
-  holds an *unconfirmed* session it initiated itself to that same device,
+  holds an _unconfirmed_ session it initiated itself to that same device,
   the session initiated by the **lower Stonechat ID** (byte-wise comparison
   of the canonical ID strings) wins; the loser's initial envelopes are
   dropped, which the normal pending-outbox retry absorbs.
@@ -1157,11 +1150,11 @@ registry.
 `transient`, `push` and `ring` are optional **delivery hints** for the
 recipient's mailbox (booleans; absent means normal delivery):
 
-| Hint | Meaning | Used for |
-|---|---|---|
-| `transient: true` | Deliver only if the addressed device is connected right now; never queue, never trigger a push ping. | typing indicators and call ICE candidates, which are worthless late |
-| `push: false` | Queue and deliver normally, but never wake the device for it. | receipts, profile updates and self-sync |
-| `ring: true` | Queue and deliver normally, and mark the wake-up as a call. It shortens the mailbox's wait before it pings (2 s instead of 10 s) and is debounced on its own 2 s window; the flag is forwarded to the push gateway ("Push gateway"). | `call_offer` |
+| Hint              | Meaning                                                                                                                                                                                                                              | Used for                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `transient: true` | Deliver only if the addressed device is connected right now; never queue, never trigger a push ping.                                                                                                                                 | typing indicators and call ICE candidates, which are worthless late |
+| `push: false`     | Queue and deliver normally, but never wake the device for it.                                                                                                                                                                        | receipts, profile updates and self-sync                             |
+| `ring: true`      | Queue and deliver normally, and mark the wake-up as a call. It shortens the mailbox's wait before it pings (2 s instead of 10 s) and is debounced on its own 2 s window; the flag is forwarded to the push gateway ("Push gateway"). | `call_offer`                                                        |
 
 All are necessarily mailbox-visible, and all are honesty-only (a hostile
 mailbox already controls delivery). None tells an observer anything that
@@ -1196,7 +1189,7 @@ what the remaining buckets still tell apart is in "Threat notes". Blobs are
 not padded.
 
 X-Wing is draft-connolly-cfrg-xwing-kem, revision 06. The seal is
-*anonymous* and *hybrid* — a fresh encapsulation per envelope, no sender key
+_anonymous_ and _hybrid_ — a fresh encapsulation per envelope, no sender key
 anywhere in it, and X25519 + ML-KEM-768 in one KEM, so a recorded envelope
 stays sealed against a future quantum attacker. The wire form identifies no
 sender, carries no type, and cannot be linked to a session across envelopes.
@@ -1269,7 +1262,7 @@ are lower-case.
 
 A dropped envelope is still acked: it can never succeed, and leaving it
 queued would replay it on every connect. The sender's pending-outbox retry
-re-encrypts fresh. An envelope whose processing fails *transiently* (a blob
+re-encrypts fresh. An envelope whose processing fails _transiently_ (a blob
 that cannot be fetched right now) is left un-acked and redelivered on the
 next connect. Transient means the receiver's or the network's fault: a
 failure the envelope itself causes — a field of the wrong type, a payload
@@ -1279,7 +1272,7 @@ every connect, forever, with it counted against the inbox cap meanwhile.
 
 ### Per-device fan-out
 
-One logical message to a peer with *k* devices is *k* envelopes: each
+One logical message to a peer with _k_ devices is _k_ envelopes: each
 encrypted on its own ratchet, with its own associated data, sealed to its
 own device's key, addressed to its own queue. They all carry the **same
 `id`**; the mailbox keys its queue by `(id, device)`.
@@ -1313,18 +1306,18 @@ bundle token, sealed to the sibling's certified key. Self-sync envelopes are
 
 A receiver applies a `sync_*` envelope **only when `from` is its own
 Stonechat ID**. The session already proves the sender holds a device key
-that identity certified; this check stops a *peer* from writing the user's
+that identity certified; this check stops a _peer_ from writing the user's
 history.
 
-| type | payload | effect on the receiving sibling |
-|---|---|---|
-| `sync_sent` | `{"peer" \| "group_id", "type", "payload", "id", "sent_at"}` | stores an outgoing message. `type`/`payload` are the type and payload that were sent to the peer; `id` is the message id; `sent_at` is **milliseconds** since the epoch (unlike the envelope's ISO `sent_at`) |
-| `sync_read` | `{"peer" \| "group_id", "ids": ["<message id>", …]}` | marks those incoming messages read, without sending a receipt |
-| `sync_clear` | `{"peer" \| "group_id"}` | deletes that conversation's history; the conversation itself stays |
-| `sync_cert` | `{"cert"}` | from the primary to one linked device: a renewed certificate over that device's keys ("Device certificates"). Adopted only if it verifies against the identity key, names this device's ID, slot and keys, and is later than the one held |
-| `sync_block` | `{"peer", "blocked_at": <ms> \| null}` | blocks (`blocked_at` set) or unblocks (`null`) that Stonechat ID |
-| `sync_contact` | `{"peer", "pubkey", "status": "pending_out" \| "pending_in" \| "accepted" \| "removed", "display_name"?, "avatar"?: {"data", "mime"} \| null, "bundle_token"?, "hub"?, "verified_at"?: <ms> \| null}` | the contact as the sending device now holds it: created if unknown (`pubkey` MUST hash to `peer`, else the envelope is dropped), updated otherwise; `removed` deletes it and its sessions. Sent on every change a device makes to its contact list — a request sent or received, an accept, a decline — so the user's devices hold one list |
-| `sync_history` | `{"blob_id", "key", "blob_nonce", "fetch_token", "blob_host", "blob_tls_fp"}` | the sender's contacts, blocks, groups, rosters and text history, as the backup payload ("Local containers", gzip-compressed JSON) encrypted like a media blob and parked on the sender's own mailbox as a shared blob ("Group media"). The receiver fetches it from its own mailbox (`blob_host` MUST be it), decrypts, and merges with the backup's rules: existing rows win, so nothing the receiver already holds is overwritten |
+| type           | payload                                                                                                                                                                                               | effect on the receiving sibling                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sync_sent`    | `{"peer" \| "group_id", "type", "payload", "id", "sent_at"}`                                                                                                                                          | stores an outgoing message. `type`/`payload` are the type and payload that were sent to the peer; `id` is the message id; `sent_at` is **milliseconds** since the epoch (unlike the envelope's ISO `sent_at`)                                                                                                                                                                                                                       |
+| `sync_read`    | `{"peer" \| "group_id", "ids": ["<message id>", …]}`                                                                                                                                                  | marks those incoming messages read, without sending a receipt                                                                                                                                                                                                                                                                                                                                                                       |
+| `sync_clear`   | `{"peer" \| "group_id"}`                                                                                                                                                                              | deletes that conversation's history; the conversation itself stays                                                                                                                                                                                                                                                                                                                                                                  |
+| `sync_cert`    | `{"cert"}`                                                                                                                                                                                            | from the primary to one linked device: a renewed certificate over that device's keys ("Device certificates"). Adopted only if it verifies against the identity key, names this device's ID, slot and keys, and is later than the one held                                                                                                                                                                                           |
+| `sync_block`   | `{"peer", "blocked_at": <ms> \| null}`                                                                                                                                                                | blocks (`blocked_at` set) or unblocks (`null`) that Stonechat ID                                                                                                                                                                                                                                                                                                                                                                    |
+| `sync_contact` | `{"peer", "pubkey", "status": "pending_out" \| "pending_in" \| "accepted" \| "removed", "display_name"?, "avatar"?: {"data", "mime"} \| null, "bundle_token"?, "hub"?, "verified_at"?: <ms> \| null}` | the contact as the sending device now holds it: created if unknown (`pubkey` MUST hash to `peer`, else the envelope is dropped), updated otherwise; `removed` deletes it and its sessions. Sent on every change a device makes to its contact list — a request sent or received, an accept, a decline — so the user's devices hold one list                                                                                         |
+| `sync_history` | `{"blob_id", "key", "blob_nonce", "fetch_token", "blob_host", "blob_tls_fp"}`                                                                                                                         | the sender's contacts, blocks, groups, rosters and text history, as the backup payload ("Local containers", gzip-compressed JSON) encrypted like a media blob and parked on the sender's own mailbox as a shared blob ("Group media"). The receiver fetches it from its own mailbox (`blob_host` MUST be it), decrypts, and merges with the backup's rules: existing rows win, so nothing the receiver already holds is overwritten |
 
 Exactly one of `peer` (a DM, the peer's ID) or `group_id` names the
 conversation.
@@ -1342,7 +1335,7 @@ reach the siblings over `sync_contact`.
 
 Incoming messages need no sync — every device gets its own copy from the
 sender. Outgoing **media** cannot be mirrored verbatim, because DM media
-parks its ciphertext on the *recipient's* mailbox, where a sibling holds no
+parks its ciphertext on the _recipient's_ mailbox, where a sibling holds no
 token. The sending device therefore uploads a second, separately encrypted
 copy to the user's **own** mailbox as a shared blob and sends `sync_sent`
 with `payload` rewritten to point at it (`blob_id`, `key`, `blob_nonce`,
@@ -1363,35 +1356,35 @@ no durable retry.
 
 ### Plaintext payloads (JSON, encrypted)
 
-| type              | payload                                |
-|-------------------|----------------------------------------|
-| `msg`             | `{"text": "...", "expire_after_ms"?, "reply_to"?}` |
-| `media`           | `{"blob_id", "key", "blob_nonce", "mime", "kind": "image"\|"audio"\|"video"\|"file"\|"sticker", "size", "duration_ms"?, "waveform"?, "name"?, "expire_after_ms"?, "reply_to"?}` — `waveform` (kind `audio` only) is base64 of 1..64 bytes, one 0..255 loudness per equal slice of the note, scaled so the loudest is 255. Display data: a receiver draws it or ignores it, and never refuses a message over it |
-| `contact_request` | `{"display_name": "...", "avatar"?, "hub"?}` |
-| `contact_accept`  | `{"display_name": "...", "avatar"?, "hub"?}` |
-| `profile_update`  | `{"display_name"?, "avatar"?: {"data": "<base64>", "mime"} \| null}` — wire form SHOULD set `push: false` |
-| `group_create` / `group_update` | `{"group_id", "name", "avatar"?: {"data", "mime"} \| null, "version", "admin", "members": [{"stonechat_id", "pubkey", "display_name"}], "expire_ms"?}` |
-| `group_sync`      | `{"group_id", "version"}` — "send me the roster"; `version` is the one the asker holds (0 for none). Wire form MUST set `push: false` |
-| `group_msg`       | `{"group_id", "text", "mentions"?: ["SC-…"], "roster"?, "salt"?, "seen"?, "expire_after_ms"?, "reply_to"?}` — `roster`, `salt` and `seen` are described under "Groups". `mentions` names the members the sender called out with `@` in `text`; receivers drop any ID not on their roster, and a mention of the receiver is shown even where the group is muted (display data, never a reason to refuse the message) |
-| `group_media`     | `group_msg`'s fields minus `text`, plus `media`'s, plus `{"fetch_token", "blob_host", "blob_tls_fp"}` — see "Group media" |
-| `group_leave`     | `{"group_id"}`                         |
-| `receipt`         | `{"kind": "delivered"\|"read", "ids": ["<message id>", …]}` |
-| `typing`          | `{"group_id"?, "state": "started"\|"stopped"}` — wire form MUST set `transient: true` |
-| `msg_edit`        | `{"id": "<message id>", "text": "..."}` |
-| `msg_delete`      | `{"id": "<message id>"}`               |
-| `group_msg_edit`  | `{"group_id", "id", "text"}`           |
-| `group_msg_delete`| `{"group_id", "id"}`                   |
-| `reaction`        | `{"id": "<message id>", "emoji": "👍"}` — `""` clears |
-| `group_reaction`  | `{"group_id", "id", "emoji"}`          |
-| `pin`             | `{"id": "<message id>", "until": <ms epoch>}` — `0` unpins |
-| `group_pin`       | `{"group_id", "id", "until"}`          |
-| `timer_update`    | `{"expire_ms": <int ms, 0 = off>}`     |
-| `group_timer_update` | `{"group_id", "expire_ms"}`         |
-| `call_offer`      | `{"call_id", "media": "audio"\|"video", "sdp"}` — wire form SHOULD set `ring: true` |
-| `call_answer`     | `{"call_id", "sdp"}`                   |
-| `call_ice`        | `{"call_id", "candidates": [{"candidate", "sdp_mid", "sdp_mline_index"}, …]}` — wire form MUST set `transient: true` |
-| `call_end`        | `{"call_id", "reason": "hangup"\|"decline"\|"busy"\|"timeout"}` |
-| `sync_sent`, `sync_read`, `sync_clear`, `sync_block` | see "Self-sync" |
+| type                                                 | payload                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `msg`                                                | `{"text": "...", "expire_after_ms"?, "reply_to"?}`                                                                                                                                                                                                                                                                                                                                                                  |
+| `media`                                              | `{"blob_id", "key", "blob_nonce", "mime", "kind": "image"\|"audio"\|"video"\|"file"\|"sticker", "size", "duration_ms"?, "waveform"?, "name"?, "expire_after_ms"?, "reply_to"?}` — `waveform` (kind `audio` only) is base64 of 1..64 bytes, one 0..255 loudness per equal slice of the note, scaled so the loudest is 255. Display data: a receiver draws it or ignores it, and never refuses a message over it      |
+| `contact_request`                                    | `{"display_name": "...", "avatar"?, "hub"?}`                                                                                                                                                                                                                                                                                                                                                                        |
+| `contact_accept`                                     | `{"display_name": "...", "avatar"?, "hub"?}`                                                                                                                                                                                                                                                                                                                                                                        |
+| `profile_update`                                     | `{"display_name"?, "avatar"?: {"data": "<base64>", "mime"} \| null}` — wire form SHOULD set `push: false`                                                                                                                                                                                                                                                                                                           |
+| `group_create` / `group_update`                      | `{"group_id", "name", "avatar"?: {"data", "mime"} \| null, "version", "admin", "members": [{"stonechat_id", "pubkey", "display_name"}], "expire_ms"?}`                                                                                                                                                                                                                                                              |
+| `group_sync`                                         | `{"group_id", "version"}` — "send me the roster"; `version` is the one the asker holds (0 for none). Wire form MUST set `push: false`                                                                                                                                                                                                                                                                               |
+| `group_msg`                                          | `{"group_id", "text", "mentions"?: ["SC-…"], "roster"?, "salt"?, "seen"?, "expire_after_ms"?, "reply_to"?}` — `roster`, `salt` and `seen` are described under "Groups". `mentions` names the members the sender called out with `@` in `text`; receivers drop any ID not on their roster, and a mention of the receiver is shown even where the group is muted (display data, never a reason to refuse the message) |
+| `group_media`                                        | `group_msg`'s fields minus `text`, plus `media`'s, plus `{"fetch_token", "blob_host", "blob_tls_fp"}` — see "Group media"                                                                                                                                                                                                                                                                                           |
+| `group_leave`                                        | `{"group_id"}`                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `receipt`                                            | `{"kind": "delivered"\|"read", "ids": ["<message id>", …]}`                                                                                                                                                                                                                                                                                                                                                         |
+| `typing`                                             | `{"group_id"?, "state": "started"\|"stopped"}` — wire form MUST set `transient: true`                                                                                                                                                                                                                                                                                                                               |
+| `msg_edit`                                           | `{"id": "<message id>", "text": "..."}`                                                                                                                                                                                                                                                                                                                                                                             |
+| `msg_delete`                                         | `{"id": "<message id>"}`                                                                                                                                                                                                                                                                                                                                                                                            |
+| `group_msg_edit`                                     | `{"group_id", "id", "text"}`                                                                                                                                                                                                                                                                                                                                                                                        |
+| `group_msg_delete`                                   | `{"group_id", "id"}`                                                                                                                                                                                                                                                                                                                                                                                                |
+| `reaction`                                           | `{"id": "<message id>", "emoji": "👍"}` — `""` clears                                                                                                                                                                                                                                                                                                                                                               |
+| `group_reaction`                                     | `{"group_id", "id", "emoji"}`                                                                                                                                                                                                                                                                                                                                                                                       |
+| `pin`                                                | `{"id": "<message id>", "until": <ms epoch>}` — `0` unpins                                                                                                                                                                                                                                                                                                                                                          |
+| `group_pin`                                          | `{"group_id", "id", "until"}`                                                                                                                                                                                                                                                                                                                                                                                       |
+| `timer_update`                                       | `{"expire_ms": <int ms, 0 = off>}`                                                                                                                                                                                                                                                                                                                                                                                  |
+| `group_timer_update`                                 | `{"group_id", "expire_ms"}`                                                                                                                                                                                                                                                                                                                                                                                         |
+| `call_offer`                                         | `{"call_id", "media": "audio"\|"video", "sdp"}` — wire form SHOULD set `ring: true`                                                                                                                                                                                                                                                                                                                                 |
+| `call_answer`                                        | `{"call_id", "sdp"}`                                                                                                                                                                                                                                                                                                                                                                                                |
+| `call_ice`                                           | `{"call_id", "candidates": [{"candidate", "sdp_mid", "sdp_mline_index"}, …]}` — wire form MUST set `transient: true`                                                                                                                                                                                                                                                                                                |
+| `call_end`                                           | `{"call_id", "reason": "hangup"\|"decline"\|"busy"\|"timeout"}`                                                                                                                                                                                                                                                                                                                                                     |
+| `sync_sent`, `sync_read`, `sync_clear`, `sync_block` | see "Self-sync"                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 Member `pubkey` entries are Ed25519 **identity** keys (same commitment check
 as the directory). A client that does not implement a type decrypts it — to
@@ -1414,7 +1407,7 @@ per-device and group fan-out reuse across every copy.
   set `push: false`. Receivers apply a receipt only if the referenced
   message is outgoing and the receipt's sender is the DM peer (or, for
   groups, a current member — tracked per member; a group message counts
-  delivered/read when *every* other member is). Statuses only move forward.
+  delivered/read when _every_ other member is). Statuses only move forward.
   Best-effort: no durable retry.
 - **`typing`** — throttled to one `started` per ~8 s of continuous typing;
   receivers expire it after ~15 s without a refresh, on `stopped`, or when
@@ -1492,7 +1485,7 @@ trusts:
   sender's current profile (`avatar` in the same shape) so the first render
   is immediate; a requester's photo reaches the recipient with the request,
   the accepter's flows back with the accept.
-- **`avatar` field** — absent means *unchanged*, `null` means *cleared*,
+- **`avatar` field** — absent means _unchanged_, `null` means _cleared_,
   otherwise `{"data": "<base64 image bytes>", "mime": "image/jpeg"|…}`.
   Senders scale the image down (≤ 256 px, ≤ 24 KiB raw) so the envelope
   stays under the mailbox's 64 KiB envelope cap after the base64 layers;
@@ -1565,7 +1558,7 @@ relay, below).
   of the caller's addresses. A receiver discards candidates for a call it
   does not have.
 - IP privacy: exchanging ICE candidates reveals device addresses to the
-  *peer* (an accepted contact). Callers who consider that sensitive route
+  _peer_ (an accepted contact). Callers who consider that sensitive route
   through TURN/VPN; a relay-only mode is planned, not present.
 
 #### TURN (`/turn-credentials`)
@@ -1580,8 +1573,8 @@ mailbox mints ephemeral credentials in coturn's TURN REST API scheme —
 seconds, `credential = base64(HMAC-SHA1(secret, username))` — from a secret
 of its own, generated on first start:
 
-| Method | Path                | Auth      | Description |
-|--------|---------------------|-----------|-------------|
+| Method | Path                | Auth             | Description                                                                                                                                                                                                                                                                                          |
+| ------ | ------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/turn-credentials` | any device token | `{"urls": ["turn:<host>:<port>?transport=udp"], "username", "credential", "ttl": 21600}`. `<host>` is the host the client addressed the request to, which is also what the relay port is advertised at; `<port>` is `STONECHAT_TURN_PORT`. 404 when the relay has no TURN (`STONECHAT_TURN_PORT=0`). |
 
 A mailbox serves one owner, so it relays one call at a time: minting
@@ -1596,12 +1589,12 @@ call — there is no third-party STUN fallback — and tells the user why.
 
 `kind` says how to render:
 
-| `kind` | Rendering |
-|---|---|
-| `image` | an image; also how an unknown `kind` renders |
-| `audio` | voice note |
-| `video` | video |
-| `file` | arbitrary document; `name` carries its original filename — receivers MUST strip any path components and take only the basename |
+| `kind`    | Rendering                                                                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `image`   | an image; also how an unknown `kind` renders                                                                                                   |
+| `audio`   | voice note                                                                                                                                     |
+| `video`   | video                                                                                                                                          |
+| `file`    | arbitrary document; `name` carries its original filename — receivers MUST strip any path components and take only the basename                 |
 | `sticker` | a small transparent image — canonically 512×512 WebP — rendered inline without frame chrome; receivers treat it exactly like `image` otherwise |
 
 Sticker packs are a purely client-side concept: nothing about packs exists
@@ -1611,7 +1604,7 @@ Media never travels inside the envelope. The sender:
 
 1. generates a one-off XChaCha20-Poly1305 key (32 bytes) + nonce (24),
 2. encrypts the file with it (empty associated data) and `POST /blob`s the
-   ciphertext **once** to the *recipient's* mailbox → `blob_id`,
+   ciphertext **once** to the _recipient's_ mailbox → `blob_id`,
 3. sends a `media` envelope to each of the recipient's devices. The
    (session-encrypted) payload carries the `blob_id`, the `key`/`blob_nonce`
    (base64), and display metadata; the outer envelope carries the same
@@ -1639,7 +1632,7 @@ per member device, encrypted with that device's normal pairwise session
 own mailbox. Group traffic is therefore exactly as forward-secret as DMs.
 
 - **The creator is the admin.** `group_create` and every `group_update` carry
-  the *full* member list (including the admin and the recipient) and a
+  the _full_ member list (including the admin and the recipient) and a
   `version` that increases on every change. The two types are applied
   identically.
 - **Name and photo** are the admin's, carried in full by every roster: `name`
@@ -1667,7 +1660,7 @@ own mailbox. Group traffic is therefore exactly as forward-secret as DMs.
     against the payload's own `admin` instead would let any member take a
     group over by naming themselves.
 - **Handing over the admin role.** A roster from the admin on record that
-  names a *different* member as `admin` is a handover: the client records the
+  names a _different_ member as `admin` is a handover: the client records the
   new admin, and from then on listens only to them. The former admin stays a
   member. A member who never held the group cannot learn of it from the
   handover roster (it is not from the admin it names); it learns of it from
@@ -1689,7 +1682,7 @@ best-effort.
 - **Delivery.** The admin owes each roster to everyone it was addressed to —
   the members and anyone it just removed — until **every device** of each has
   accepted it, retrying with the same backoff and seven-day limit as a
-  message. A retry sends the roster as it stands *then*, so someone removed
+  message. A retry sends the roster as it stands _then_, so someone removed
   in the meantime receives the roster that no longer lists them.
 - **`roster` in every message.** `group_msg` and `group_media` carry the
   sender's view:
@@ -1706,6 +1699,7 @@ best-effort.
   hash is over the roster **as the admin issued it**: applying a
   `group_leave` locally does not change it. `h` is omitted by a client that
   does not hold one (a group restored from a backup).
+
 - **What a receiver does with it**, for a message from a current member:
   - `v` above its own: it is behind. It still renders the message, and sends
     the admin on record a `group_sync`.
@@ -1750,6 +1744,7 @@ others can notice.
   ```
 
   The hash is of the message as it first arrived; edits do not change it.
+
 - Every `group_msg` and `group_media` also carries `seen`: up to **4**
   `{"id", "h"}` pairs — the other members' messages that reached the sender
   since it last wrote to the group, newest first, with the content hashes it
@@ -1767,7 +1762,7 @@ asynchronous and a missing message is usually only late.
 
 #### Group media
 
-DM media parks the ciphertext on the *recipient's* mailbox ("Media"). Doing
+DM media parks the ciphertext on the _recipient's_ mailbox ("Media"). Doing
 that per member would re-upload the same file N times, so group media
 inverts it: **one blob, on the sender's own mailbox, N capability tokens'
 worth of reads** — upload cost O(1) in members instead of O(N). The sender:
@@ -1779,7 +1774,7 @@ worth of reads** — upload cost O(1) in members instead of O(N). The sender:
    `blob_host`/`blob_tls_fp` — where to fetch it and which pinned
    certificate to expect.
 
-Each member `GET /blob/{id}?token={fetch_token}` from the *sender's* mailbox,
+Each member `GET /blob/{id}?token={fetch_token}` from the _sender's_ mailbox,
 decrypts with the key from the payload, and persists locally before acking.
 
 Receivers MUST check `blob_host` against the sender's own mailbox address —
@@ -1818,7 +1813,7 @@ Each user's mailbox is their **inbox**. To send to Bob, Alice's device:
 4. if Bob has no mailbox or it's unreachable, queues locally and retries
    (the app backs off from 30 s to 30 min and gives up after 7 days).
 
-Each of Bob's devices keeps a socket to *his* mailbox, authenticated with its
+Each of Bob's devices keeps a socket to _his_ mailbox, authenticated with its
 own device token, and acks envelopes as it persists them locally; each ack
 deletes that device's copy from the mailbox's SQLite. On connect, a device
 also republishes its prekeys and certificate (`POST /prekeys` with the full
@@ -1830,43 +1825,43 @@ can wake it via the gateway while it's offline.
 
 Configured via env:
 
-| Variable | Meaning |
-|---|---|
-| `STONECHAT_OWNER_ID`, `STONECHAT_OWNER_TOKEN` | the owner, and device 1's token |
-| `STONECHAT_PORT` | TLS listener (default 8080) |
-| `STONECHAT_WT_PORT` | browser transport (default 8443, UDP; `0` disables it) |
-| `STONECHAT_WT_ADVERTISE` | the names the browser transport's certificates must carry |
-| `STONECHAT_DB`, `STONECHAT_BLOBS`, `STONECHAT_TLS_DIR` | storage locations |
-| `STONECHAT_TURN_SECRET` / `STONECHAT_TURN_PORT` | see "TURN" |
-| `STONECHAT_PUSH_GATEWAY` / `STONECHAT_PUSH_KEY` | see "Push gateway" |
-| `STONECHAT_MAX_QUEUE_BYTES` | see "Depositing" |
-| `STONECHAT_LIMIT_INBOX` / `_BLOB` / `_BUNDLE` | see "Limits" |
+| Variable                                               | Meaning                                                   |
+| ------------------------------------------------------ | --------------------------------------------------------- |
+| `STONECHAT_OWNER_ID`, `STONECHAT_OWNER_TOKEN`          | the owner, and device 1's token                           |
+| `STONECHAT_PORT`                                       | TLS listener (default 8080)                               |
+| `STONECHAT_WT_PORT`                                    | browser transport (default 8443, UDP; `0` disables it)    |
+| `STONECHAT_WT_ADVERTISE`                               | the names the browser transport's certificates must carry |
+| `STONECHAT_DB`, `STONECHAT_BLOBS`, `STONECHAT_TLS_DIR` | storage locations                                         |
+| `STONECHAT_TURN_SECRET` / `STONECHAT_TURN_PORT`        | see "TURN"                                                |
+| `STONECHAT_PUSH_GATEWAY` / `STONECHAT_PUSH_KEY`        | see "Push gateway"                                        |
+| `STONECHAT_MAX_QUEUE_BYTES`                            | see "Depositing"                                          |
+| `STONECHAT_LIMIT_INBOX` / `_BLOB` / `_BUNDLE`          | see "Limits"                                              |
 
 All endpoints are served exclusively over TLS, and identically over the
 browser transport (see "Transport").
 
-Tokens are passed as the `token` query parameter. "Device" below means *any
-valid, unexpired device token*; "primary" means device 1's.
+Tokens are passed as the `token` query parameter. "Device" below means _any
+valid, unexpired device token_; "primary" means device 1's.
 
-| Method | Path          | Auth      | Description |
-|--------|---------------|-----------|-------------|
-| GET    | `/health`     | none      | Liveness only: `{"status": "ok", "v": <wire version>, "tls_fp": "<base64>"}`. Deliberately identity-free (see below). |
-| GET    | `/status`     | device | The calling device's view: `{"status": "ok", "v", "queued": n, "prekeys": {"spk": bool, "opks": n, "kspk": bool, "kopks": n}, "device_id", "devices_v", "bundle_token", "build"}`. `queued` and `prekeys` are that device's own. `build` is the first 16 hex chars of BLAKE2b-256 of the running executable. |
-| GET    | `/owner`      | none      | `?stonechat_id=` → 200 `{"owner_matches": true}` iff the mailbox's owner equals the supplied ID, else 404 (400 if absent). Confirms a *known* ID; never reveals one. |
-| POST   | `/inbox`      | none      | Body: sealed envelope. See "Depositing" below. |
-| GET    | `/prekeys/bundle` | none, or bundle token with `?device=` | One device's prekey bundle; consumes the returned one-time prekeys. Without `device`: device 1. 404 until that device has uploaded both signed prekeys; 400 on a non-integer `device`. |
-| GET    | `/prekeys/devices` | bundle token (or device) | Every device's signed prekeys and certificate, plus `devices_v`. Consumes nothing. |
-| POST   | `/prekeys`    | device | The calling device uploads `{spk, opks, kspk, kopks, cert?}` — its full remaining stock ("Prekeys"). Replaces that device's store. At most 256 `opks` and 64 `kopks`, else 400. Body ≤ 256 KiB and `cert` ≤ 8 KiB serialized, else 413. → `{"status": "ok", "prekeys": {…}}`. |
-| GET    | `/devices`    | device | `{"devices_v", "devices": [{"device_id", "kind", "cert", "created_at", "expires_at", "last_seen"}]}`. Here `cert` is the stored certificate **as a JSON string** (or null), not an object. |
-| POST   | `/devices`    | primary | `{"device_token": "<≥ 32 chars>", "kind"?: "linked"\|"web"\|"agent", "expires_in_s"?: 1…31536000}` → `{"device_id", "kind", "expires_at", "devices_v"}`. `kind` defaults to `linked`. 400 on a short token, unknown kind or out-of-range lifetime; 409 if the token is already a device's. |
-| DELETE | `/devices/{id}` | see matrix | Revoke. → `{"status": "ok", "devices_v"}`. 400 non-integer id, 404 no such device. |
-| POST   | `/blob`       | none      | Body: raw encrypted bytes (≤ 64 MiB), streamed to disk. → `{"blob_id"}`. With `?shared=1` (or `true`) also returns `{"fetch_token"}` — a per-blob read capability. 400 empty or interrupted, 413 too large, 507 storage full. |
-| GET    | `/blob/{id}`  | device, or that blob's fetch token | Download a blob (`application/octet-stream`, with `Content-Length`). 400 malformed id, 404 no such blob. |
-| DELETE | `/blob/{id}`  | see matrix | Idempotent (`{"status": "ok"}` even if already gone). |
-| POST   | `/push-config`| device | The calling device registers `{"device_token", "platform": "ios"\|"android"}` for wake-up pings. Here `device_token` is the APNs/FCM token, not the mailbox device token. |
-| GET    | `/turn-credentials` | device | See "TURN". |
-| GET    | `/wt/certs`   | none      | The browser transport's certificate schedule ("Browser transport"). 404 when disabled. |
-| WS     | `/ws`         | device | The owner socket for the calling device. See below. A bad or missing token is refused at the handshake with 403. |
+| Method | Path                | Auth                                  | Description                                                                                                                                                                                                                                                                                                  |
+| ------ | ------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GET    | `/health`           | none                                  | Liveness only: `{"status": "ok", "v": <wire version>, "tls_fp": "<base64>"}`. Deliberately identity-free (see below).                                                                                                                                                                                        |
+| GET    | `/status`           | device                                | The calling device's view: `{"status": "ok", "v", "queued": n, "prekeys": {"spk": bool, "opks": n, "kspk": bool, "kopks": n}, "device_id", "devices_v", "bundle_token", "build"}`. `queued` and `prekeys` are that device's own. `build` is the first 16 hex chars of BLAKE2b-256 of the running executable. |
+| GET    | `/owner`            | none                                  | `?stonechat_id=` → 200 `{"owner_matches": true}` iff the mailbox's owner equals the supplied ID, else 404 (400 if absent). Confirms a _known_ ID; never reveals one.                                                                                                                                         |
+| POST   | `/inbox`            | none                                  | Body: sealed envelope. See "Depositing" below.                                                                                                                                                                                                                                                               |
+| GET    | `/prekeys/bundle`   | none, or bundle token with `?device=` | One device's prekey bundle; consumes the returned one-time prekeys. Without `device`: device 1. 404 until that device has uploaded both signed prekeys; 400 on a non-integer `device`.                                                                                                                       |
+| GET    | `/prekeys/devices`  | bundle token (or device)              | Every device's signed prekeys and certificate, plus `devices_v`. Consumes nothing.                                                                                                                                                                                                                           |
+| POST   | `/prekeys`          | device                                | The calling device uploads `{spk, opks, kspk, kopks, cert?}` — its full remaining stock ("Prekeys"). Replaces that device's store. At most 256 `opks` and 64 `kopks`, else 400. Body ≤ 256 KiB and `cert` ≤ 8 KiB serialized, else 413. → `{"status": "ok", "prekeys": {…}}`.                                |
+| GET    | `/devices`          | device                                | `{"devices_v", "devices": [{"device_id", "kind", "cert", "created_at", "expires_at", "last_seen"}]}`. Here `cert` is the stored certificate **as a JSON string** (or null), not an object.                                                                                                                   |
+| POST   | `/devices`          | primary                               | `{"device_token": "<≥ 32 chars>", "kind"?: "linked"\|"web"\|"agent", "expires_in_s"?: 1…31536000}` → `{"device_id", "kind", "expires_at", "devices_v"}`. `kind` defaults to `linked`. 400 on a short token, unknown kind or out-of-range lifetime; 409 if the token is already a device's.                   |
+| DELETE | `/devices/{id}`     | see matrix                            | Revoke. → `{"status": "ok", "devices_v"}`. 400 non-integer id, 404 no such device.                                                                                                                                                                                                                           |
+| POST   | `/blob`             | none                                  | Body: raw encrypted bytes (≤ 64 MiB), streamed to disk. → `{"blob_id"}`. With `?shared=1` (or `true`) also returns `{"fetch_token"}` — a per-blob read capability. 400 empty or interrupted, 413 too large, 507 storage full.                                                                                |
+| GET    | `/blob/{id}`        | device, or that blob's fetch token    | Download a blob (`application/octet-stream`, with `Content-Length`). 400 malformed id, 404 no such blob.                                                                                                                                                                                                     |
+| DELETE | `/blob/{id}`        | see matrix                            | Idempotent (`{"status": "ok"}` even if already gone).                                                                                                                                                                                                                                                        |
+| POST   | `/push-config`      | device                                | The calling device registers `{"device_token", "platform": "ios"\|"android"}` for wake-up pings. Here `device_token` is the APNs/FCM token, not the mailbox device token.                                                                                                                                    |
+| GET    | `/turn-credentials` | device                                | See "TURN".                                                                                                                                                                                                                                                                                                  |
+| GET    | `/wt/certs`         | none                                  | The browser transport's certificate schedule ("Browser transport"). 404 when disabled.                                                                                                                                                                                                                       |
+| WS     | `/ws`               | device                                | The owner socket for the calling device. See below. A bad or missing token is refused at the handshake with 403.                                                                                                                                                                                             |
 
 Errors are JSON `{"detail": "<message>"}`. A missing or invalid token is
 `401 {"detail": "owner only"}` on every authenticated route, whichever
@@ -1874,7 +1869,7 @@ credential was expected — a caller holding none learns nothing about what
 exists.
 
 `/health` carries no identity — only liveness, the wire version, and the
-(already-public) TLS fingerprint — and `/owner` merely *confirms* a supplied
+(already-public) TLS fingerprint — and `/owner` merely _confirms_ a supplied
 Stonechat ID, so neither lets a stranger scanning mailbox addresses learn or
 enumerate a mailbox's owner.
 
@@ -1883,17 +1878,17 @@ enumerate a mailbox's owner.
 A device token is a login to that device's own things. It is not authority
 over the mailbox; only device 1 manages it.
 
-| | primary (device 1) | linked device | no valid token |
-|---|---|---|---|
-| `GET /status`, `POST /prekeys`, `POST /push-config`, `GET /ws` | own | own | 401 (`/ws`: 403 handshake) |
-| `GET /devices`, `GET /turn-credentials` | yes | yes | 401 |
-| `POST /devices` | yes | **403** | 401 |
-| `DELETE /devices/{id}`, a linked device | yes | itself only, else **403** | 401 |
-| `DELETE /devices/1` | **403** | **403** | 401 |
-| `GET /blob/{id}` | yes | yes | that blob's fetch token, else 401 |
-| `DELETE /blob/{id}` | yes | unless a sibling still has it queued (**403**) | 401 |
-| `GET /prekeys/devices`, `GET /prekeys/bundle?device=` | yes | yes | the bundle token, else 401 |
-| `POST /inbox`, `POST /blob`, `GET /prekeys/bundle`, `GET /health`, `GET /owner`, `GET /wt/certs` | open | open | open |
+|                                                                                                  | primary (device 1) | linked device                                  | no valid token                    |
+| ------------------------------------------------------------------------------------------------ | ------------------ | ---------------------------------------------- | --------------------------------- |
+| `GET /status`, `POST /prekeys`, `POST /push-config`, `GET /ws`                                   | own                | own                                            | 401 (`/ws`: 403 handshake)        |
+| `GET /devices`, `GET /turn-credentials`                                                          | yes                | yes                                            | 401                               |
+| `POST /devices`                                                                                  | yes                | **403**                                        | 401                               |
+| `DELETE /devices/{id}`, a linked device                                                          | yes                | itself only, else **403**                      | 401                               |
+| `DELETE /devices/1`                                                                              | **403**            | **403**                                        | 401                               |
+| `GET /blob/{id}`                                                                                 | yes                | yes                                            | that blob's fetch token, else 401 |
+| `DELETE /blob/{id}`                                                                              | yes                | unless a sibling still has it queued (**403**) | 401                               |
+| `GET /prekeys/devices`, `GET /prekeys/bundle?device=`                                            | yes                | yes                                            | the bundle token, else 401        |
+| `POST /inbox`, `POST /blob`, `GET /prekeys/bundle`, `GET /health`, `GET /owner`, `GET /wt/certs` | open               | open                                           | open                              |
 
 The reasons are the threat model:
 
@@ -1912,21 +1907,21 @@ The reasons are the threat model:
 
 Checks, in order:
 
-| Check | Failure |
-|---|---|
-| body ≤ 64 KiB | 413 `envelope too large` |
-| body is JSON | 400 `not json` |
-| an object with `v`, `id`, `to`, `sealed` | 400 `missing fields` |
-| `v` is the integer 1 | 400 `unsupported protocol version (need v1)` |
-| `id` a non-empty string | 400 `bad id` |
-| `sealed` a non-empty string | 400 `bad sealed body` |
-| `blob_id`, if present and not null: 36 characters from `[a-f0-9-]` | 400 `bad blob_id` |
-| `transient`, `push`, `ring`, if present: booleans | 400 `bad <hint> flag` |
-| `to` equals the mailbox's owner | 403 `not this mailbox's owner` |
-| `device` is an integer | 400 `bad device` |
-| `device` is a current device | **410** `{"detail": "no such device", "devices_v": n}` |
+| Check                                                              | Failure                                                |
+| ------------------------------------------------------------------ | ------------------------------------------------------ |
+| body ≤ 64 KiB                                                      | 413 `envelope too large`                               |
+| body is JSON                                                       | 400 `not json`                                         |
+| an object with `v`, `id`, `to`, `sealed`                           | 400 `missing fields`                                   |
+| `v` is the integer 1                                               | 400 `unsupported protocol version (need v1)`           |
+| `id` a non-empty string                                            | 400 `bad id`                                           |
+| `sealed` a non-empty string                                        | 400 `bad sealed body`                                  |
+| `blob_id`, if present and not null: 36 characters from `[a-f0-9-]` | 400 `bad blob_id`                                      |
+| `transient`, `push`, `ring`, if present: booleans                  | 400 `bad <hint> flag`                                  |
+| `to` equals the mailbox's owner                                    | 403 `not this mailbox's owner`                         |
+| `device` is an integer                                             | 400 `bad device`                                       |
+| `device` is a current device                                       | **410** `{"detail": "no such device", "devices_v": n}` |
 
-The mailbox checks the *shape* of `id`, not that it is a UUID; that is the
+The mailbox checks the _shape_ of `id`, not that it is a UUID; that is the
 recipient's check. A `410` is permanent for that copy: the device was
 revoked, expired, or never existed.
 
@@ -1983,13 +1978,13 @@ Guarantees and limits:
 (anyone may deliver mail or start a session). What a stranger can make a
 mailbox hold is bounded:
 
-| Bound | Value |
-|---|---|
-| envelope size | 64 KiB |
-| queue depth and bytes, per device | see "Depositing" |
-| blob size | 64 MiB |
-| total blob storage | 1 GiB |
-| blob age | garbage-collected when older than 14 days |
+| Bound                             | Value                                     |
+| --------------------------------- | ----------------------------------------- |
+| envelope size                     | 64 KiB                                    |
+| queue depth and bytes, per device | see "Depositing"                          |
+| blob size                         | 64 MiB                                    |
+| total blob storage                | 1 GiB                                     |
+| blob age                          | garbage-collected when older than 14 days |
 
 The prekey store holds only public keys; the worst an anonymous reader can
 do is drain device 1's one-time pools, which degrades to 3-DH and the signed
@@ -1997,11 +1992,11 @@ KEM prekey.
 
 How fast is limited too, by token bucket, per source address and in total:
 
-| Route | Per address (rate/s, burst) | All addresses (rate/s, burst) |
-|---|---|---|
-| `POST /inbox` | 20, 200 | 100, 1000 |
-| `POST /blob` | 1, 60 | 4, 240 |
-| `GET /prekeys/bundle` | 0.5, 30 | 5, 300 |
+| Route                 | Per address (rate/s, burst) | All addresses (rate/s, burst) |
+| --------------------- | --------------------------- | ----------------------------- |
+| `POST /inbox`         | 20, 200                     | 100, 1000                     |
+| `POST /blob`          | 1, 60                       | 4, 240                        |
+| `GET /prekeys/bundle` | 0.5, 30                     | 5, 300                        |
 
 A request needs a token from both buckets; one refused by its own address's
 bucket does not spend from the shared one. Over the limit →
@@ -2014,7 +2009,7 @@ route is rate-limited.
 
 ### Derived tokens
 
-A blob's `fetch_token` is *derived*, never stored:
+A blob's `fetch_token` is _derived_, never stored:
 `hex(BLAKE2b-256(owner_token ‖ "|stonechat-blob-fetch|" ‖ blob_id))`. So the
 relay keeps no per-blob row, a token is valid exactly as long as its blob
 is, and it opens that blob and nothing else. It is only ever returned to
@@ -2054,7 +2049,7 @@ mailbox's**. A mailbox is one user, so that address identifies the user to
 anyone who can also read the directory; on a shared mailbox host it
 identifies the host. The gateway is sent no Stonechat ID and the hub is
 sent no push token, and neither service logs the other's half — but that
-separation is a property of what each is *given* and a **policy** about
+separation is a property of what each is _given_ and a **policy** about
 what each records, not something the protocol enforces. An operator running
 both, and logging source addresses at the gateway, could join them.
 
@@ -2077,15 +2072,15 @@ transport's UDP port are the same number on the host.
 
 Three ways to get one, one program:
 
-* **Invite-hosted** ("host your circle"): a user runs `mailbox_host/main.py` on a
+- **Invite-hosted** ("host your circle"): a user runs `mailbox_host/main.py` on a
   server they own, hosting their own mailbox plus friends they invite. A guest's
   mailbox is registered in the directory as an ordinary self-hosted (`external`)
   relay.
-* **Managed** (`STONECHAT_MAILBOX_HOST_MANAGED=1`): the server belongs to a hub
+- **Managed** (`STONECHAT_MAILBOX_HOST_MANAGED=1`): the server belongs to a hub
   operator, and the hub places mailboxes on it through this same API — the shared
   tier, provider `mailbox_host`. Invites are refused in this mode, so a server
   has exactly one authority.
-* **Dedicated VMs** the hub provisions come with the mailbox host
+- **Dedicated VMs** the hub provisions come with the mailbox host
   pre-installed on port 8200 — the hub mints the admin token at provision
   time, bakes it into the VM's startup script, and returns it in
   `GET /v1/mailbox` (`mailbox_host` field) so the app connects with zero
@@ -2098,11 +2093,11 @@ before the token is written to it, and refusing any address that is not
 `https`. It holds no shell or Docker access there.
 
 **The admin token** is `Authorization: Bearer <token>`. The host refuses to
-start with one shorter than 16 characters — the variable being *set* says
+start with one shorter than 16 characters — the variable being _set_ says
 nothing about it being filled in, and an empty token is one every request
 presents.
 
-**What the admin token is worth.** Authority over the *placement* of
+**What the admin token is worth.** Authority over the _placement_ of
 mailboxes on that host. Its holder can:
 
 - create mailboxes, choosing the owner ID and — when it supplies one — the
@@ -2123,7 +2118,7 @@ No route returns an existing mailbox's owner token; the host process reads it
 from the container's own configuration to query the relay, and keeps it to
 itself.
 
-For mailboxes the hub *provisions*, the hub is the party that chose the
+For mailboxes the hub _provisions_, the hub is the party that chose the
 owner token and it stores that token; "Threat notes" says what a hub can do
 with it. An invite host-owner's admin token never touches the hub.
 
@@ -2152,18 +2147,18 @@ for a mailbox of their own on that host. It must be shared privately.
 Invites are single-use by default (`uses` 1–100) and expire (`ttl_hours`
 1–720, default 72).
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET  | `/health` | none | Liveness + pinning only: `{status, v, tls_fp}`. Guest count and capacity are occupancy metadata, served admin-only via `/v1/guests`. |
-| POST | `/v1/invite` | admin | `{uses, ttl_hours}` → `{invite, uses, ttl_hours}`. 403 in managed mode |
-| GET  | `/v1/invites` | admin | `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by: [owner_id]}]}`. 403 in managed mode |
-| POST | `/v1/redeem` | the invite | `{invite: "<redeem token>", owner_id}` → `{address, mailbox_token, tls_fp, wt_address}`; launches a `stonechat-relay` container for `owner_id`. 403 invalid/expired/spent invite or managed mode, 409 if that ID already has a mailbox here, 507 host full |
-| POST | `/v1/guest` | admin | `{owner_id, owner_token?, push_key?, push_gateway?}` → same shape as redeem. Provision directly: the host-owner's own mailbox, or a hub placing one. A hub sends the `owner_token` it has already recorded for that mailbox, and the `push_key` and `push_gateway` only it knows. 409 already hosted, 507 full |
-| GET  | `/v1/guests` | admin | `{guests: [{owner_id, container_id, port, created_at}], count, capacity, managed}` — occupancy, which is how a hub picks the emptiest host in a country |
-| DELETE | `/v1/guest/{owner_id}` | admin | evict — destroy that guest's container. Idempotent: an unknown guest is `{"status": "gone"}` |
-| GET  | `/v1/relay` | admin | `{installed_build, image, managed, guests: [{owner_id, build}]}` — each `build` read from that relay's own `/status` |
-| POST | `/v1/relay` | admin | the relay binary (≤ 64 MiB) → `{build, bytes, image}`. 400 not an ELF; 413 too large |
-| POST | `/v1/relay/roll` | admin | `{only?, dry_run?, force?}` → `{build, rolled: [...], stopped}` — swap the pinned binary into running mailboxes, one at a time, verifying each reports the new build and rolling that one back if it does not; stops at the first failure |
+| Method | Path                   | Auth       | Description                                                                                                                                                                                                                                                                                                    |
+| ------ | ---------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/health`              | none       | Liveness + pinning only: `{status, v, tls_fp}`. Guest count and capacity are occupancy metadata, served admin-only via `/v1/guests`.                                                                                                                                                                           |
+| POST   | `/v1/invite`           | admin      | `{uses, ttl_hours}` → `{invite, uses, ttl_hours}`. 403 in managed mode                                                                                                                                                                                                                                         |
+| GET    | `/v1/invites`          | admin      | `{invites: [{invite, uses, uses_left, expires_at, created_at, redeemed_by: [owner_id]}]}`. 403 in managed mode                                                                                                                                                                                                 |
+| POST   | `/v1/redeem`           | the invite | `{invite: "<redeem token>", owner_id}` → `{address, mailbox_token, tls_fp, wt_address}`; launches a `stonechat-relay` container for `owner_id`. 403 invalid/expired/spent invite or managed mode, 409 if that ID already has a mailbox here, 507 host full                                                     |
+| POST   | `/v1/guest`            | admin      | `{owner_id, owner_token?, push_key?, push_gateway?}` → same shape as redeem. Provision directly: the host-owner's own mailbox, or a hub placing one. A hub sends the `owner_token` it has already recorded for that mailbox, and the `push_key` and `push_gateway` only it knows. 409 already hosted, 507 full |
+| GET    | `/v1/guests`           | admin      | `{guests: [{owner_id, container_id, port, created_at}], count, capacity, managed}` — occupancy, which is how a hub picks the emptiest host in a country                                                                                                                                                        |
+| DELETE | `/v1/guest/{owner_id}` | admin      | evict — destroy that guest's container. Idempotent: an unknown guest is `{"status": "gone"}`                                                                                                                                                                                                                   |
+| GET    | `/v1/relay`            | admin      | `{installed_build, image, managed, guests: [{owner_id, build}]}` — each `build` read from that relay's own `/status`                                                                                                                                                                                           |
+| POST   | `/v1/relay`            | admin      | the relay binary (≤ 64 MiB) → `{build, bytes, image}`. 400 not an ELF; 413 too large                                                                                                                                                                                                                           |
+| POST   | `/v1/relay/roll`       | admin      | `{only?, dry_run?, force?}` → `{build, rolled: [...], stopped}` — swap the pinned binary into running mailboxes, one at a time, verifying each reports the new build and rolling that one back if it does not; stops at the first failure                                                                      |
 
 After redeeming, the guest connects the returned mailbox exactly like a
 self-hosted relay: `POST /v1/mailbox/external` (the hub verifies the
@@ -2179,39 +2174,39 @@ never message content (E2EE). Same as any relay operator.
 User auth: `Authorization: Bearer <account_token>` (issued at registration).
 Only the primary device holds an account token; a linked device has none.
 
-| Method | Path                      | Auth   | Description |
-|--------|---------------------------|--------|-------------|
-| GET    | `/health`                 | none   | `{"status": "ok", "providers": [...]}` |
-| POST   | `/v1/register`            | none   | `{"pubkey": "<base64 Ed25519>", "pq_pk": "<base64 X-Wing, 1216 bytes>", "pq_sig": "<base64>"}` → 201 `{"stonechat_id", "account_token"}`. The hub verifies `pq_sig`. The client MUST compare the returned ID with the one its key derives. 400 malformed key or bad `pq_sig`, 409 key already registered. 10 per minute per client address. |
-| POST   | `/v1/recover`             | signature | `{"pubkey", "timestamp", "signature"}` → `{"stonechat_id", "account_token"}` — identity restore. `signature` is `Sign("stonechat-v1-recover", str(timestamp), identity_sk)` (unix seconds as decimal text, ±300 s). Rotates the account token: the recovering device becomes the account, any previous token dies. 400 stale timestamp, 401 bad signature, 404 if the key was never registered (client falls back to `/v1/register`). 10 per minute per address. |
-| GET    | `/v1/directory/{stonechat_id}` | none | Lookup by full SC- ID only. See "Directory resolution" for the response. 400 on a non-ID string, 404 if unknown. 120 per minute per address. |
-| GET    | `/v1/countries`           | none   | `{"countries": [{"code", "name", "city", "flag", "jurisdiction", "caveat", "plans": ["machine", "mailbox"]}]}` — where a mailbox can be placed. `code` is what `POST /v1/mailbox` is sent. Clients MUST show `caveat` wherever they show `jurisdiction`. |
-| POST   | `/v1/mailbox`             | bearer | `{"country": "DE"}` (the app's form — the hub resolves it against the catalog and the caller's tier; on an open hub, where nobody holds one, it picks a shared mailbox host when one declares that country, else a dedicated VM) **or** `{"provider", "machine": {"machine_type", "region", "disk_gb"}}` — exactly one of the two forms. For `mailbox_host`, `region` is the ISO country code: placement is least-loaded *within* that country and fails rather than falling back to another. → 202 `{"status": "provisioning"}`. One mailbox per user (409). 400 `{"code": "country_unavailable"}`; 400 `{"code": "provider_unavailable"}` for a provider the hub does not run (`STONECHAT_PROVIDERS`) and `{"code": "machine_unavailable"}` for an explicit machine shape the catalog never boots — the provider+machine form cannot choose a VM size; 403 `{"code": "account_suspended"}` for a banned account. On a gated hub, gated providers require a tier (see "Gate"): missing/insufficient → 402 `{"code": "access_required", "tier_required", "message"}`; gate unreachable → 503 `{"code": "gate_unavailable"}`. |
-| POST   | `/v1/mailbox/external`    | bearer | `{"address": "https://host[:port]", "wt_address"?: "host:port"}` → 201 `{"status": "running", "address", "tls_fp"}` — list a self-provisioned relay. The hub confirms ownership via `GET {address}/owner?stonechat_id=<caller>` — the mailbox confirms the supplied ID rather than exposing its owner. The relay's token never reaches the hub. 403 for a banned account. |
-| POST   | `/v1/mailbox/tls`         | bearer | `{"tls_fp", "tls_sig"}` — the owner publishes the signature over their mailbox's TLS fingerprint. The hub verifies the signature against the registered identity key and that `tls_fp` matches the fingerprint it observed. 404 no running mailbox. |
-| POST   | `/v1/devices`             | bearer | the signed device manifest, as "Device manifest" shows it. The hub verifies the signature against the registered identity key, that the manifest names the caller, lists 1–64 devices with 32-byte keys and no slot twice, and that `version` is above the one on record — else **409** `{"code": "stale_version", "current": n}`. Stored and served verbatim as the directory record's `devices`. |
-| POST   | `/v1/mailbox/wt`          | bearer | `{"certs": [{"sha256", "not_before", "not_after"}, …], "wt_sig"}` (at most 64 entries) — the owner publishes the signature over the browser transport's certificate schedule. The hub verifies the signature and stores list and signature together. It does **not** check the list against the relay. 404 no running mailbox. |
-| GET    | `/v1/mailbox`             | bearer | `{"status": "none"}` or `{"status": "provisioning"\|"running"\|"error", "provider", "machine", "address", "mailbox_token", "tls_fp", "error", "mailbox_host"}`. `mailbox_token` is the mailbox's owner token — device 1's token; null for an external mailbox. `mailbox_host` is `{"address", "admin_token"}` on running dedicated VMs, else `null`. |
-| DELETE | `/v1/mailbox`             | bearer | Destroys the machine and forgets it. → `{"status": "deleted"}`. 404 no mailbox, 502 if the provider could not destroy it (nothing is forgotten). |
-| POST   | `/v1/account/delete`      | bearer **and** signature | `{"timestamp", "signature"}` → `{"status": "deleted"}`. `signature` is `Sign("stonechat-v1-delete", str(timestamp), identity_sk)` (±300 s), so a token alone cannot erase an account and a linked device cannot at all. In order: on a gated hub, asks the gate to release the ID — the gate's 409 refusal is passed through and nothing is deleted; then destroys the mailbox's machine and drops the account. Afterwards the directory answers 404, as for an ID it never saw; peers are not notified. Registering the same key again yields the same ID as a new, empty account. |
-| GET    | `/v1/access`              | bearer | `{"gated", "tier", "status", "until", "notice"}`. `gated: false` → an open hub; nothing needs a tier and there is nothing to redeem. `tier` is `"mailbox"`, `"machine"` or null; `notice` is the gate's own text for the user, shown as-is. 503 if the gate is unreachable. |
-| POST   | `/v1/access/claim`        | bearer | `{"code"}` → forwarded to the gate for the caller's ID → same shape as `GET /v1/access`. The gate's 404/409 refusals pass through unchanged. 404 `not_gated` on an open hub. |
-| POST   | `/v1/link/offer`, GET `/v1/link/offer/{key}`, POST `/v1/link`, GET `/v1/link/{key}` | none | The link dead drop. See "Linking a device". 400 malformed key or body, 404 nothing parked, 503 too many pending. |
-| POST   | `/v1/report`              | signature | `{"reported_id", "reporter_pubkey", "timestamp", "category", "note", "evidence"\|null, "signature"}` → 202 `{"status": "received", "report_id"}`. See "Reporting". |
-| GET    | `/v1/relay-binary`        | bearer = a mailbox token | The static relay binary that dedicated-VM startup scripts fetch. The token gates egress cost only; integrity comes from the SHA-256 pinned in the script. 404 until the operator configures one. |
-| —      | `/v1/admin/*`             | `X-Admin-Token` | Operator routes. See "Operator routes". |
+| Method | Path                                                                                | Auth                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ------ | ----------------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/health`                                                                           | none                     | `{"status": "ok", "providers": [...]}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| POST   | `/v1/register`                                                                      | none                     | `{"pubkey": "<base64 Ed25519>", "pq_pk": "<base64 X-Wing, 1216 bytes>", "pq_sig": "<base64>"}` → 201 `{"stonechat_id", "account_token"}`. The hub verifies `pq_sig`. The client MUST compare the returned ID with the one its key derives. 400 malformed key or bad `pq_sig`, 409 key already registered. 10 per minute per client address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| POST   | `/v1/recover`                                                                       | signature                | `{"pubkey", "timestamp", "signature"}` → `{"stonechat_id", "account_token"}` — identity restore. `signature` is `Sign("stonechat-v1-recover", str(timestamp), identity_sk)` (unix seconds as decimal text, ±300 s). Rotates the account token: the recovering device becomes the account, any previous token dies. 400 stale timestamp, 401 bad signature, 404 if the key was never registered (client falls back to `/v1/register`). 10 per minute per address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| GET    | `/v1/directory/{stonechat_id}`                                                      | none                     | Lookup by full SC- ID only. See "Directory resolution" for the response. 400 on a non-ID string, 404 if unknown. 120 per minute per address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/v1/countries`                                                                     | none                     | `{"countries": [{"code", "name", "city", "flag", "jurisdiction", "caveat", "plans": ["machine", "mailbox"]}]}` — where a mailbox can be placed. `code` is what `POST /v1/mailbox` is sent. Clients MUST show `caveat` wherever they show `jurisdiction`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| POST   | `/v1/mailbox`                                                                       | bearer                   | `{"country": "DE"}` (the app's form — the hub resolves it against the catalog and the caller's tier; on an open hub, where nobody holds one, it picks a shared mailbox host when one declares that country, else a dedicated VM) **or** `{"provider", "machine": {"machine_type", "region", "disk_gb"}}` — exactly one of the two forms. For `mailbox_host`, `region` is the ISO country code: placement is least-loaded _within_ that country and fails rather than falling back to another. → 202 `{"status": "provisioning"}`. One mailbox per user (409). 400 `{"code": "country_unavailable"}`; 400 `{"code": "provider_unavailable"}` for a provider the hub does not run (`STONECHAT_PROVIDERS`) and `{"code": "machine_unavailable"}` for an explicit machine shape the catalog never boots — the provider+machine form cannot choose a VM size; 403 `{"code": "account_suspended"}` for a banned account. On a gated hub, gated providers require a tier (see "Gate"): missing/insufficient → 402 `{"code": "access_required", "tier_required", "message"}`; gate unreachable → 503 `{"code": "gate_unavailable"}`. |
+| POST   | `/v1/mailbox/external`                                                              | bearer                   | `{"address": "https://host[:port]", "wt_address"?: "host:port"}` → 201 `{"status": "running", "address", "tls_fp"}` — list a self-provisioned relay. The hub confirms ownership via `GET {address}/owner?stonechat_id=<caller>` — the mailbox confirms the supplied ID rather than exposing its owner. The relay's token never reaches the hub. 403 for a banned account.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| POST   | `/v1/mailbox/tls`                                                                   | bearer                   | `{"tls_fp", "tls_sig"}` — the owner publishes the signature over their mailbox's TLS fingerprint. The hub verifies the signature against the registered identity key and that `tls_fp` matches the fingerprint it observed. 404 no running mailbox.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| POST   | `/v1/devices`                                                                       | bearer                   | the signed device manifest, as "Device manifest" shows it. The hub verifies the signature against the registered identity key, that the manifest names the caller, lists 1–64 devices with 32-byte keys and no slot twice, and that `version` is above the one on record — else **409** `{"code": "stale_version", "current": n}`. Stored and served verbatim as the directory record's `devices`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| POST   | `/v1/mailbox/wt`                                                                    | bearer                   | `{"certs": [{"sha256", "not_before", "not_after"}, …], "wt_sig"}` (at most 64 entries) — the owner publishes the signature over the browser transport's certificate schedule. The hub verifies the signature and stores list and signature together. It does **not** check the list against the relay. 404 no running mailbox.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| GET    | `/v1/mailbox`                                                                       | bearer                   | `{"status": "none"}` or `{"status": "provisioning"\|"running"\|"error", "provider", "machine", "address", "mailbox_token", "tls_fp", "error", "mailbox_host"}`. `mailbox_token` is the mailbox's owner token — device 1's token; null for an external mailbox. `mailbox_host` is `{"address", "admin_token"}` on running dedicated VMs, else `null`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| DELETE | `/v1/mailbox`                                                                       | bearer                   | Destroys the machine and forgets it. → `{"status": "deleted"}`. 404 no mailbox, 502 if the provider could not destroy it (nothing is forgotten).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| POST   | `/v1/account/delete`                                                                | bearer **and** signature | `{"timestamp", "signature"}` → `{"status": "deleted"}`. `signature` is `Sign("stonechat-v1-delete", str(timestamp), identity_sk)` (±300 s), so a token alone cannot erase an account and a linked device cannot at all. In order: on a gated hub, asks the gate to release the ID — the gate's 409 refusal is passed through and nothing is deleted; then destroys the mailbox's machine and drops the account. Afterwards the directory answers 404, as for an ID it never saw; peers are not notified. Registering the same key again yields the same ID as a new, empty account.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| GET    | `/v1/access`                                                                        | bearer                   | `{"gated", "tier", "status", "until", "notice"}`. `gated: false` → an open hub; nothing needs a tier and there is nothing to redeem. `tier` is `"mailbox"`, `"machine"` or null; `notice` is the gate's own text for the user, shown as-is. 503 if the gate is unreachable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| POST   | `/v1/access/claim`                                                                  | bearer                   | `{"code"}` → forwarded to the gate for the caller's ID → same shape as `GET /v1/access`. The gate's 404/409 refusals pass through unchanged. 404 `not_gated` on an open hub.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| POST   | `/v1/link/offer`, GET `/v1/link/offer/{key}`, POST `/v1/link`, GET `/v1/link/{key}` | none                     | The link dead drop. See "Linking a device". 400 malformed key or body, 404 nothing parked, 503 too many pending.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| POST   | `/v1/report`                                                                        | signature                | `{"reported_id", "reporter_pubkey", "timestamp", "category", "note", "evidence"\|null, "signature"}` → 202 `{"status": "received", "report_id"}`. See "Reporting".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| GET    | `/v1/relay-binary`                                                                  | bearer = a mailbox token | The static relay binary that dedicated-VM startup scripts fetch. The token gates egress cost only; integrity comes from the SHA-256 pinned in the script. 404 until the operator configures one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| —      | `/v1/admin/*`                                                                       | `X-Admin-Token`          | Operator routes. See "Operator routes".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 Every rate-limited route answers `429` over its limit. Limits are counted
 per client address, in memory.
 
 **Providers.**
 
-| Provider | What it is |
-|---|---|
+| Provider                                         | What it is                                                                                                                 |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
 | `gcp`, `aws`, `digitalocean`, `hetzner`, `vultr` | a dedicated VM, each booted from the same startup script, which downloads the relay binary and verifies its pinned SHA-256 |
-| `mailbox_host` | a container on a shared host |
-| `local` | a container on the hub operator's own Docker, for development |
-| `external` | not a provider a client can ask for; it is what a self-provisioned mailbox's record says |
+| `mailbox_host`                                   | a container on a shared host                                                                                               |
+| `local`                                          | a container on the hub operator's own Docker, for development                                                              |
+| `external`                                       | not a provider a client can ask for; it is what a self-provisioned mailbox's record says                                   |
 
 ### Reporting
 
@@ -2241,19 +2236,19 @@ to survive a round trip through JSON, which preserves neither field order nor
 whitespace. `0x1F` (unit separator) prevents a note that ends in what looks
 like the next field from colliding with a different report.
 
-| Field | Rule |
-|---|---|
-| `category` | one of `spam`, `harassment`, `impersonation`, `illegal_content`, `csam`, `other` |
-| `note` | at most 2000 characters |
-| `evidence` | **null by default**: a report carries no message content unless the reporter explicitly attaches one. When present, a client-composed JSON document (`{"v":1,"messages":[{"sent_at","kind","text"}]}`, at most 65 536 characters) that the hub stores verbatim and never parses. Only messages the *reported* party sent are eligible, media is described rather than uploaded, and the signature covers the attachment's exact bytes |
+| Field      | Rule                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `category` | one of `spam`, `harassment`, `impersonation`, `illegal_content`, `csam`, `other`                                                                                                                                                                                                                                                                                                                                                      |
+| `note`     | at most 2000 characters                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `evidence` | **null by default**: a report carries no message content unless the reporter explicitly attaches one. When present, a client-composed JSON document (`{"v":1,"messages":[{"sent_at","kind","text"}]}`, at most 65 536 characters) that the hub stores verbatim and never parses. Only messages the _reported_ party sent are eligible, media is described rather than uploaded, and the signature covers the attachment's exact bytes |
 
 Responses: 400 malformed / self-report / unknown category / stale timestamp,
 401 bad signature, 404 `{"code": "not_our_account"}` if this hub does not
 host the reported ID, 429 over 20 reports per hour per address or 10 per
 hour per reporter.
 
-A report is an edge in a contact graph — *this ID complained about that
-one* — that the hub otherwise never holds. Rows are deleted after
+A report is an edge in a contact graph — _this ID complained about that
+one_ — that the hub otherwise never holds. Rows are deleted after
 `STONECHAT_REPORT_RETENTION_DAYS` (default 180), and resolving a report
 drops its evidence at once.
 
@@ -2264,15 +2259,15 @@ disabled entirely (403) unless the hub is started with
 `STONECHAT_ADMIN_TOKEN`. They are the abuse desk's verbs, not part of the
 client protocol:
 
-| Method | Path | Does |
-|---|---|---|
-| GET | `/v1/admin/whois?host=` | address → the account(s) whose mailbox is there, with ban state and count of prior destroys |
-| POST | `/v1/admin/mailboxes/{stonechat_id}/destroy` | `{"reason"}` — destroy that account's machine, recording a tombstone first. The account and its access are untouched |
-| POST | `/v1/admin/users/{stonechat_id}/ban` | `{"reason"}` — refuse the account further mailboxes (`POST /v1/mailbox` and `/v1/mailbox/external`). Destroys nothing |
-| POST | `/v1/admin/users/{stonechat_id}/unban` | lift it |
-| GET | `/v1/admin/reports?status=&limit=` | the report queue; evidence shown as a byte count |
-| GET | `/v1/admin/reports/{id}` | one report in full, evidence included |
-| POST | `/v1/admin/reports/{id}/resolve` | `{"status": "actioned"\|"dismissed", "resolution"}` — close it and drop its evidence |
+| Method | Path                                         | Does                                                                                                                  |
+| ------ | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/v1/admin/whois?host=`                      | address → the account(s) whose mailbox is there, with ban state and count of prior destroys                           |
+| POST   | `/v1/admin/mailboxes/{stonechat_id}/destroy` | `{"reason"}` — destroy that account's machine, recording a tombstone first. The account and its access are untouched  |
+| POST   | `/v1/admin/users/{stonechat_id}/ban`         | `{"reason"}` — refuse the account further mailboxes (`POST /v1/mailbox` and `/v1/mailbox/external`). Destroys nothing |
+| POST   | `/v1/admin/users/{stonechat_id}/unban`       | lift it                                                                                                               |
+| GET    | `/v1/admin/reports?status=&limit=`           | the report queue; evidence shown as a byte count                                                                      |
+| GET    | `/v1/admin/reports/{id}`                     | one report in full, evidence included                                                                                 |
+| POST   | `/v1/admin/reports/{id}/resolve`             | `{"status": "actioned"\|"dismissed", "resolution"}` — close it and drop its evidence                                  |
 
 A ban is narrow on purpose: a banned identity still resolves in the
 directory and can still recover its account. None of these routes returns a
@@ -2292,11 +2287,11 @@ keeps no copy of the answer. Payment, coupons, invite codes, an allowlist: all
 of it lives behind this contract, every call carrying
 `Authorization: Bearer <STONECHAT_GATE_TOKEN>`:
 
-| Method | Path | Body → response |
-|--------|------|-----------------|
-| GET  | `/v1/access/{stonechat_id}` | → access object |
-| POST | `/v1/access/{stonechat_id}/claim` | `{"code"}` → access object; 404/409 with a `{"detail": …}` body the hub passes to the client verbatim |
-| POST | `/v1/access/{stonechat_id}/release` | the account is being deleted: end what it grants → 2xx; 409 `{"detail": …}` refuses the deletion |
+| Method | Path                                | Body → response                                                                                       |
+| ------ | ----------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| GET    | `/v1/access/{stonechat_id}`         | → access object                                                                                       |
+| POST   | `/v1/access/{stonechat_id}/claim`   | `{"code"}` → access object; 404/409 with a `{"detail": …}` body the hub passes to the client verbatim |
+| POST   | `/v1/access/{stonechat_id}/release` | the account is being deleted: end what it grants → 2xx; 409 `{"detail": …}` refuses the deletion      |
 
 Access object: `{"tier": "mailbox"|"machine"|null, "status", "until",
 "revoked_at", "notice"}`. A tier the hub does not know reads as null.
@@ -2323,17 +2318,17 @@ of paying, and it is borne by the gate, not the hub.
 
 ### What the hub stores
 
-| Scope | Stored |
-|---|---|
-| Per **account** | the Stonechat ID; the identity public key; `pq_pk` and `pq_sig`; the signed device manifest, if published; a SHA-256 hash of the account token; when the account was created; and, if an operator banned it, when and why |
-| Per **mailbox** (at most one per account) | provider; status; the machine spec that was asked for; the provider-side resource id and whatever else the provider needs to destroy it; the address; the **mailbox's owner token**, in the clear, for mailboxes the hub provisioned (never for external ones); the mailbox host's admin token, for dedicated VMs; the TLS fingerprint it observed and the owner's signature over it; the browser transport's address, certificate schedule and the owner's signature over that; the last provisioning error; when it was created |
-| **Link offers and grants** in flight | public keys, and ciphertext the hub cannot open; 600 s at most |
-| **Tombstones** of machines an operator destroyed for abuse | ID, provider, resource, address, reason, dates; kept indefinitely |
-| **Abuse reports** | reported ID, reporter ID, category, note, optional evidence, status; kept for the retention window |
+| Scope                                                      | Stored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per **account**                                            | the Stonechat ID; the identity public key; `pq_pk` and `pq_sig`; the signed device manifest, if published; a SHA-256 hash of the account token; when the account was created; and, if an operator banned it, when and why                                                                                                                                                                                                                                                                                                         |
+| Per **mailbox** (at most one per account)                  | provider; status; the machine spec that was asked for; the provider-side resource id and whatever else the provider needs to destroy it; the address; the **mailbox's owner token**, in the clear, for mailboxes the hub provisioned (never for external ones); the mailbox host's admin token, for dedicated VMs; the TLS fingerprint it observed and the owner's signature over it; the browser transport's address, certificate schedule and the owner's signature over that; the last provisioning error; when it was created |
+| **Link offers and grants** in flight                       | public keys, and ciphertext the hub cannot open; 600 s at most                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Tombstones** of machines an operator destroyed for abuse | ID, provider, resource, address, reason, dates; kept indefinitely                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| **Abuse reports**                                          | reported ID, reporter ID, category, note, optional evidence, status; kept for the retention window                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 It stores no names, no emails, no payment data, no message data, no device
 lists, no prekeys and no push tokens. It stores no contact graph — with the
-one named exception of abuse reports. What it can *observe* without storing
+one named exception of abuse reports. What it can _observe_ without storing
 is a separate matter: see "Threat notes".
 
 ## Local containers
@@ -2391,11 +2386,9 @@ know ignores it.
 
 ## Threat notes
 
-What the design gives, and where it stops.
-
 - **Forward secrecy.** Message keys are single-use and deleted on use;
   root and chain keys advance with every round trip, and a fresh DH heals a
-  compromised chain. Recorded ciphertext plus *later* key theft does not
+  compromised chain. Recorded ciphertext plus _later_ key theft does not
   yield plaintext — with two caveats. First, an **initial message** is
   protected by the recipient's signed prekeys (and one-time prekeys, when
   the pools had any): a device keeps the private halves of its two most
@@ -2415,14 +2408,14 @@ What the design gives, and where it stops.
   with a key generated after the theft — and indefinitely on a session
   where only one side ever writes, which the DH ratchet does not heal
   either. The exchange is authenticated only by the session's own keys, so
-  it does not stop an attacker who holds the state *and* is actively in the
+  it does not stop an attacker who holds the state _and_ is actively in the
   path. Everything that authenticates — identity, device certificates,
   prekey signatures, TLS and WebTransport pins — is Ed25519: an attacker
   with a quantum computer at the time of an attack can forge signatures.
   None of this harms what was recorded before.
 - **Sealed sender, and what it does not hide.** The wire envelope names
   only the recipient and the recipient device. A mailbox does not learn the
-  sender's *identity* from an envelope. It does see the **sender's network
+  sender's _identity_ from an envelope. It does see the **sender's network
   address** on every deposit, and delivery is direct — so a mailbox
   operator learns which addresses write to its owner, when, and how much. On
   a hosted tier one operator may run the mailboxes at **both** ends of a
@@ -2579,10 +2572,10 @@ This specification is licensed under
 [Creative Commons Attribution 4.0 International](licenses/CC-BY-4.0.txt)
 (CC-BY-4.0), not under the AGPL-3.0 that covers the code in this repository.
 
-That is deliberate. An independent implementation of this protocol is a
-*good* outcome for Stonechat: every client that speaks it reaches the same
-directory and the same users, and a protocol nobody else can implement is a
-protocol nobody can check. Build one, and attribute the spec.
+We want people to write their own Stonechat clients: every client
+that speaks the protocol can reach the same users. And a protocol
+only we could implement is a protocol nobody could check.
+So go ahead and build one. Just credit the spec.
 
 Implementing this document grants no right to use the Stonechat name or
 marks — see the trademark note in the repository README.
