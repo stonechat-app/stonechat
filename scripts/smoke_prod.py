@@ -19,8 +19,8 @@ Usage (the code never lives in the repo — it's GATE_TEST_CODES in the gate's e
 
 Env: STONECHAT_HUB (default https://hub.stonechat.app), STONECHAT_TEST_CODE
 (required). Needs httpx + pynacl (both in the hub venv) and the core library
-for the X-Wing identity key — `scripts/build_core.sh host` if pqcore cannot
-find one.
+for the device's X-Wing seal key — `scripts/build_core.sh host` if pqcore
+cannot find one.
 """
 import os
 import sys

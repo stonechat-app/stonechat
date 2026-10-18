@@ -21,7 +21,6 @@ class Contact {
   final String stonechatId;
   String displayName;
   final String pubkeyB64;
-  String? pqPkB64; // directory pq_pk, sig-verified on resolve; nothing is sealed to it
   String status;
   String? mailboxAddress; // last known, refreshed from directory on demand
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
@@ -52,7 +51,6 @@ class Contact {
     required this.stonechatId,
     required this.displayName,
     required this.pubkeyB64,
-    this.pqPkB64,
     required this.status,
     this.mailboxAddress,
     this.tlsFp,
@@ -82,7 +80,6 @@ class Contact {
         'stonechat_id': stonechatId,
         'display_name': displayName,
         'pubkey': pubkeyB64,
-        'pq_pk': pqPkB64,
         'status': status,
         'mailbox_address': mailboxAddress,
         'tls_fp': tlsFp,
@@ -104,7 +101,6 @@ class Contact {
         stonechatId: r['stonechat_id'] as String,
         displayName: r['display_name'] as String,
         pubkeyB64: r['pubkey'] as String,
-        pqPkB64: r['pq_pk'] as String?,
         status: r['status'] as String,
         mailboxAddress: r['mailbox_address'] as String?,
         tlsFp: r['tls_fp'] as String?,
@@ -564,7 +560,6 @@ class GroupMember {
   final String groupId;
   final String stonechatId;
   final String pubkeyB64;
-  String? pqPkB64; // directory pq_pk, sig-verified on resolve; nothing is sealed to it
   String displayName;
   String? mailboxAddress; // cached, refreshed on delivery failure
   String? tlsFp; // pinned relay cert fingerprint, travels with the address
@@ -577,7 +572,6 @@ class GroupMember {
     required this.groupId,
     required this.stonechatId,
     required this.pubkeyB64,
-    this.pqPkB64,
     required this.displayName,
     this.mailboxAddress,
     this.tlsFp,
@@ -588,7 +582,6 @@ class GroupMember {
         'group_id': groupId,
         'stonechat_id': stonechatId,
         'pubkey': pubkeyB64,
-        'pq_pk': pqPkB64,
         'display_name': displayName,
         'mailbox_address': mailboxAddress,
         'tls_fp': tlsFp,
@@ -599,7 +592,6 @@ class GroupMember {
         groupId: r['group_id'] as String,
         stonechatId: r['stonechat_id'] as String,
         pubkeyB64: r['pubkey'] as String,
-        pqPkB64: r['pq_pk'] as String?,
         displayName: r['display_name'] as String,
         mailboxAddress: r['mailbox_address'] as String?,
         tlsFp: r['tls_fp'] as String?,

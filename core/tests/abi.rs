@@ -240,39 +240,12 @@ fn abi_rejects_malformed_input_without_allocating() {
 
 #[test]
 fn envelope_helpers_round_trip() {
-    // pq seed derivation matches the app's domain-separated KDF, unseal
-    // opens what envelope::seal_to produced, fingerprint is BLAKE2b-256.
-    // The app hashes the FULL 64-byte libsodium secret key (crypto.dart
-    // `_pqSeed`); this vector comes from PyNaCl + hashlib.blake2b so the
-    // derivation is pinned to libsodium's, not merely self-consistent.
-    let seed: [u8; 32] = (0u8..32).collect::<Vec<_>>().try_into().unwrap();
-    let mut ed_secret = [0u8; 64];
-    ed_secret[..32].copy_from_slice(&seed);
-    ed_secret[32..].copy_from_slice(&stonechat_core::primitives::ed25519_pk_from_seed(&seed));
-    let mut pq_seed = [0u8; 32];
-    assert_eq!(
-        unsafe { stonechat_pq_seed_from_ed_secret(ed_secret.as_ptr(), pq_seed.as_mut_ptr()) },
-        0
-    );
-    let expected: Vec<u8> = (0..32)
-        .map(|i| {
-            u8::from_str_radix(
-                &"ef97ecd5bf14eddfeed2c5410f605bd104f5f6efbcd2103247d5e8305addbd9b"
-                    [i * 2..i * 2 + 2],
-                16,
-            )
-            .unwrap()
-        })
-        .collect();
-    assert_eq!(
-        pq_seed.to_vec(),
-        expected,
-        "must match libsodium-derived pq seed"
-    );
-
-    let pq_pk = pqcore::xwing_pk_from_seed(&pq_seed);
+    // unseal opens what envelope::seal_to produced for a device's own seal
+    // seed, refuses for another seed, and fingerprint is BLAKE2b-256.
+    let seal_seed = rnd32("env/seal");
+    let seal_pub = pqcore::xwing_pk_from_seed(&seal_seed);
     let sealed = stonechat_core::envelope::seal_to(
-        &pq_pk,
+        &seal_pub,
         b"{\"v\":1}",
         &rnd64("env/r"),
         &rnd64("env/n")[..24].try_into().unwrap(),
@@ -282,7 +255,7 @@ fn envelope_helpers_round_trip() {
     let mut out = Out::new();
     let rc = unsafe {
         stonechat_unseal(
-            pq_seed.as_ptr(),
+            seal_seed.as_ptr(),
             sealed.as_ptr(),
             sealed.len(),
             &mut out.ptr,

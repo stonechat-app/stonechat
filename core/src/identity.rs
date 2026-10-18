@@ -1,20 +1,17 @@
 //! The Stonechat identity and everything derived from it
-//! (PROTOCOL.md "Identity"): an Ed25519 keypair, the X-Wing identity for
-//! the envelope seal, the SC- ID, and every context-prefixed signature the
-//! protocol defines.
+//! (PROTOCOL.md "Identity"): an Ed25519 keypair, the SC- ID, and every
+//! context-prefixed signature the protocol defines.
 //!
 //! This is the layer that used to live in the app's `crypto.dart` on
 //! libsodium. It moved here so the app, the notification extension and any
 //! future client derive identical values by construction — a value two
-//! processes compute separately is a bug waiting (the extension once
-//! hashed the 32-byte seed where the app hashes the 64-byte secret key,
-//! and no sealed envelope opened).
+//! processes compute separately is a bug waiting.
 //!
 //! The libsodium secret-key layout is kept: 64 bytes, `seed || public`.
 
 use crate::primitives::{
-    PQID_SEED_KEY, PQPK_SIG_CONTEXT, RECOVER_SIG_CONTEXT, REPORT_SIG_CONTEXT, ed25519_pk_from_seed,
-    hash_var, keyed_hash_32, sign_with_context, verify_with_context,
+    RECOVER_SIG_CONTEXT, REGISTER_SIG_CONTEXT, REPORT_SIG_CONTEXT, ed25519_pk_from_seed, hash_var,
+    sign_with_context, verify_with_context,
 };
 
 pub const SECRET_KEY_BYTES: usize = 64;
@@ -24,8 +21,6 @@ pub struct IdentityKeys {
     /// `seed || public`, as libsodium's `crypto_sign` keeps it.
     pub secret: [u8; SECRET_KEY_BYTES],
     pub public: [u8; 32],
-    /// X-Wing identity seed (`pq_pk` is derived from it, never stored).
-    pub pq_seed: [u8; 32],
 }
 
 impl IdentityKeys {
@@ -45,9 +40,6 @@ impl IdentityKeys {
         IdentityKeys {
             secret: *secret,
             public,
-            // Derived from the WHOLE secret key — matching what the app
-            // has always published as `pq_pk`.
-            pq_seed: keyed_hash_32(secret, PQID_SEED_KEY),
         }
     }
 
@@ -55,10 +47,6 @@ impl IdentityKeys {
         let mut seed = [0u8; 32];
         seed.copy_from_slice(&self.secret[..32]);
         seed
-    }
-
-    pub fn pq_public(&self) -> [u8; pqcore::XWING_PUBLIC_BYTES] {
-        pqcore::xwing_pk_from_seed(&self.pq_seed)
     }
 
     pub fn stonechat_id(&self) -> String {
@@ -70,10 +58,11 @@ impl IdentityKeys {
         sign_with_context(&self.seed(), context, message)
     }
 
-    /// The owner vouching for their X-Wing identity key; published beside
-    /// it in the hub directory and verified by every resolver.
-    pub fn sign_pq_pk(&self) -> [u8; 64] {
-        self.sign(PQPK_SIG_CONTEXT, &self.pq_public())
+    /// Proof of key possession for `POST /v1/register`: a signature over
+    /// the context and the current unix time, so nobody can register a
+    /// public key they merely know and hold the account token for it.
+    pub fn sign_registration(&self, unix_seconds: i64) -> [u8; 64] {
+        self.sign(REGISTER_SIG_CONTEXT, unix_seconds.to_string().as_bytes())
     }
 
     /// Proof of key possession for `POST /v1/recover`: a signature over

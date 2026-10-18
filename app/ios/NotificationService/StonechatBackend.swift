@@ -44,25 +44,15 @@ enum Keychain {
 // MARK: - stonechat-core wrappers
 
 enum Core {
-  /// `edSecret` is the full 64-byte libsodium secret key (what the app
-  /// hashes — crypto.dart `_pqSeed`), not the 32-byte seed.
-  static func pqSeed(fromEdSecret edSecret: Data) -> Data? {
-    guard edSecret.count == 64 else { return nil }
-    var out = Data(count: 32)
-    let rc = edSecret.withUnsafeBytes { secret in
-      out.withUnsafeMutableBytes { o in
-        stonechat_pq_seed_from_ed_secret(
-          secret.bindMemory(to: UInt8.self).baseAddress,
-          o.bindMemory(to: UInt8.self).baseAddress)
-      }
-    }
-    return rc == 0 ? out : nil
-  }
-
-  static func unseal(pqSeed: Data, sealed: Data) -> Data? {
+  /// Open an envelope sealed to this device's X-Wing seal key, `sealSeed`
+  /// being the 32-byte seed the app keeps under `sc_device_keys` — the
+  /// same key `crypto.unseal` in the app uses. Envelopes are sealed per
+  /// device (PROTOCOL.md "Envelope"), never to the identity.
+  static func unseal(sealSeed: Data, sealed: Data) -> Data? {
+    guard sealSeed.count == 32 else { return nil }
     var ptr: UnsafeMutablePointer<UInt8>?
     var len = 0
-    let rc = pqSeed.withUnsafeBytes { seed in
+    let rc = sealSeed.withUnsafeBytes { seed in
       sealed.withUnsafeBytes { s in
         stonechat_unseal(
           seed.bindMemory(to: UInt8.self).baseAddress,

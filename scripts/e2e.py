@@ -163,8 +163,6 @@ def check_directory_entry(asked_for: str, entry: dict) -> dict:
             raise Rejected(f"directory answered for {asked_for} with a record "
                            "that does not commit to it")
         verify = VerifyKey(identity)
-        verify.verify(PQPK_SIG_CONTEXT + base64.b64decode(entry["pq_pk"]),
-                      base64.b64decode(entry["pq_sig"]))
         mailbox = entry.get("mailbox")
         # A mailbox nobody vouched for is one to stay away from, not one to
         # connect to unpinned. An owner who has not signed yet (just
@@ -211,8 +209,7 @@ import pqcore  # noqa: E402  (scripts/pqcore.py — ctypes over the Rust core)
 X3DH_KDF_KEY = b"stonechat-v1-pqxdh-kdf"
 SPK_SIG_CONTEXT = b"stonechat-v1-spk"
 KSPK_SIG_CONTEXT = b"stonechat-v1-kspk"
-PQPK_SIG_CONTEXT = b"stonechat-v1-pqpk"
-PQID_SEED_KEY = b"stonechat-v1-pqidseed"
+REGISTER_SIG_CONTEXT = b"stonechat-v1-register"
 HSEAL_KDF_KEY = b"stonechat-v1-hsealkdf"
 HSEAL_AD = b"stonechat-v1-hseal"
 MAX_SKIP = 256
@@ -701,16 +698,10 @@ class Phone:
         self.derive_pq()
 
     def derive_pq(self):
-        """The X-Wing identity is derived from the Ed25519 secret exactly as
-        the app does (crypto.dart): seed = H(sk64, key="stonechat-v1-pqidseed").
-        Re-call after replacing self.identity (echo_bot restore path)."""
-        sk64 = bytes(self.identity) + bytes(self.identity.verify_key)
-        self.pq_seed = H(sk64, PQID_SEED_KEY, 32)
-        self.pq_pk = pqcore.xwing_pk_from_seed(self.pq_seed)
-        self.pq_pk_b64 = b64(self.pq_pk)
-        # This device's OWN keys. Envelopes are sealed to dev_seal_pk and this
-        # device's prekeys are signed by dev_sig — neither is the identity,
-        # which now only signs the certificate tying them to this SC- ID.
+        """This device's OWN keys. Envelopes are sealed to dev_seal_pk and
+        this device's prekeys are signed by dev_sig — neither is the
+        identity, which only signs the certificate tying them to this SC-
+        ID. Re-call after replacing self.identity (echo_bot restore path)."""
         if not hasattr(self, "dev_sig"):
             self.dev_sig = SigningKey.generate()
             self.dev_seal_seed = nacl_random(32)
@@ -763,11 +754,15 @@ class Phone:
         return manifest
 
     def register(self):
-        pq_sig = self.identity.sign(PQPK_SIG_CONTEXT + self.pq_pk).signature
+        # Proof of possession, as /v1/recover: a signature over the context
+        # and the current unix time, so a key one merely knows cannot be
+        # registered and its account token held.
+        now = int(time.time())
+        sig = self.identity.sign(REGISTER_SIG_CONTEXT + str(now).encode()).signature
         r = httpx.post(f"{HUB}/v1/register", json={
             "pubkey": self.pubkey_b64,
-            "pq_pk": self.pq_pk_b64,
-            "pq_sig": b64(pq_sig),
+            "timestamp": now,
+            "signature": b64(sig),
         })
         r.raise_for_status()
         data = r.json()
@@ -1225,7 +1220,6 @@ def main():
         (alices, "somebody else's record, complete and self-consistent"),
         ({**entry, "pubkey": alices["pubkey"]}, "Bob's ID over another key"),
         ({**alices, "stonechat_id": bob.stonechat_id}, "another record relabelled"),
-        ({**entry, "pq_sig": alices["pq_sig"]}, "a pq_pk the identity did not sign"),
         ({**entry, "mailbox": {"address": "https://203.0.113.9:8080",
                                "tls_fp": b64(nacl_random(32)),
                                "tls_sig": b64(nacl_random(64))}},
@@ -1236,25 +1230,32 @@ def main():
         except Rejected:
             continue
         raise AssertionError(f"a lying directory was believed: {why}")
-    print("  ok   five lying answers refused")
+    print("  ok   four lying answers refused")
     assert stonechat_id_from_pubkey(base64.b64decode(entry["pubkey"])) == bob.stonechat_id
-    # The X-Wing identity key rides in the directory under an Ed25519
-    # signature — resolvers verify it before sealing anything to it.
-    assert entry["pq_pk"] == bob.pq_pk_b64
-    VerifyKey(unb64(entry["pubkey"])).verify(
-        PQPK_SIG_CONTEXT + unb64(entry["pq_pk"]), unb64(entry["pq_sig"]))
+    # The record is the identity key and what the owner signed, nothing an
+    # identity-level KEM key would add: envelopes go to device keys.
+    assert "pq_pk" not in entry and "pq_sig" not in entry
     assert entry["mailbox"] is None
 
-    print("2a2) registration rejects a pq_pk the identity key didn't sign")
-    mallory = Phone("mallory")
+    print("2a2) registration rejects a key its holder did not sign for")
+    mallory, eve = Phone("mallory"), Phone("eve")
+    now = int(time.time())
     sig_by_other_key = mallory.identity.sign(
-        PQPK_SIG_CONTEXT + b"\x00" * 1216).signature
+        REGISTER_SIG_CONTEXT + str(now).encode()).signature
     r = httpx.post(f"{HUB}/v1/register", json={
-        "pubkey": Phone("eve").pubkey_b64,
-        "pq_pk": b64(b"\x00" * 1216),
-        "pq_sig": b64(sig_by_other_key),
+        "pubkey": eve.pubkey_b64,
+        "timestamp": now,
+        "signature": b64(sig_by_other_key),
     })
-    assert r.status_code == 400, f"forged pq_sig: expected 400, got {r.status_code}"
+    assert r.status_code == 401, f"forged registration: expected 401, got {r.status_code}"
+    stale = now - 600
+    r = httpx.post(f"{HUB}/v1/register", json={
+        "pubkey": eve.pubkey_b64,
+        "timestamp": stale,
+        "signature": b64(eve.identity.sign(
+            REGISTER_SIG_CONTEXT + str(stale).encode()).signature),
+    })
+    assert r.status_code == 400, f"stale registration: expected 400, got {r.status_code}"
     lower = bob.stonechat_id.lower().replace("-", "")
     assert httpx.get(f"{HUB}/v1/directory/{lower}").status_code == 200, "sloppy input should normalize"
     assert "handle" not in entry, "directory must not return a handle"

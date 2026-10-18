@@ -65,8 +65,6 @@ String? _builtCoreLibrary(String name) {
   return null;
 }
 
-typedef _PqSeedNative = Int32 Function(Pointer<Uint8>, Pointer<Uint8>);
-typedef _PqSeed = int Function(Pointer<Uint8>, Pointer<Uint8>);
 
 typedef _TlsFpNative = Int32 Function(Pointer<Uint8>, Size, Pointer<Uint8>);
 typedef _TlsFp = int Function(Pointer<Uint8>, int, Pointer<Uint8>);
@@ -463,7 +461,6 @@ const coreAbiVersion = 3;
 
 class StonechatCore {
   final _Free _free;
-  final _PqSeed _pqSeed;
   final _TlsFp _tlsFp;
   final _Identity _identity;
   final _DevcertSign _devcertSign;
@@ -493,9 +490,6 @@ class StonechatCore {
 
   StonechatCore._(DynamicLibrary lib)
     : _free = lib.lookupFunction<_FreeNative, _Free>('stonechat_free'),
-      _pqSeed = lib.lookupFunction<_PqSeedNative, _PqSeed>(
-        'stonechat_pq_seed_from_ed_secret',
-      ),
       _tlsFp = lib.lookupFunction<_TlsFpNative, _TlsFp>(
         'stonechat_tls_fingerprint',
       ),
@@ -813,23 +807,6 @@ class StonechatCore {
     }
   }
 
-  /// The X-Wing identity seed derived from the full 64-byte Ed25519
-  /// secret key (seed ‖ public) — the same KDF crypto.dart applies. Exposed so the app
-  /// and the notification extension can be proven to agree
-  /// (test/core_parity_test.dart); the app itself still derives its own.
-  Uint8List pqSeedFromEdSecret(Uint8List edSecret) {
-    final secret = _in(edSecret, 'edSecret', expected: 64);
-    final out = calloc<Uint8>(32);
-    try {
-      final rc = _pqSeed(secret, out);
-      if (rc != 0) throw StateError('stonechat-core pq seed failed ($rc)');
-      return Uint8List.fromList(out.asTypedList(32));
-    } finally {
-      calloc.free(secret);
-      calloc.free(out);
-    }
-  }
-
   /// What clients pin: base64(BLAKE2b-256(cert DER)) — the extension's
   /// copy of api.dart's check, kept honest by test/core_parity_test.dart.
   String tlsFingerprintB64(Uint8List certDer) {
@@ -850,16 +827,11 @@ class StonechatCore {
   // -- identity, signatures, IDs (PROTOCOL.md "Identity") ---------------------
 
   /// Expand a fresh 32-byte CSPRNG seed, or re-expand a stored 64-byte
-  /// secret key, into the full identity: keys, published `pq_pk` with its
-  /// signature, and the SC- ID.
-  ({
-    Uint8List secret,
-    Uint8List public,
-    Uint8List pqPublic,
-    String pqPublicSigB64,
-    String stonechatId,
-  })
-  identity({Uint8List? seed, Uint8List? secretKey}) {
+  /// secret key, into the full identity: keys and the SC- ID.
+  ({Uint8List secret, Uint8List public, String stonechatId}) identity({
+    Uint8List? seed,
+    Uint8List? secretKey,
+  }) {
     final input = secretKey ?? seed!;
     final p = _in(
       input,
@@ -878,8 +850,6 @@ class StonechatCore {
       return (
         secret: base64Decode(json['secret'] as String),
         public: base64Decode(json['public'] as String),
-        pqPublic: base64Decode(json['pq_pk'] as String),
-        pqPublicSigB64: json['pq_pk_sig'] as String,
         stonechatId: json['stonechat_id'] as String,
       );
     } finally {
@@ -1189,12 +1159,12 @@ class StonechatCore {
   // -- envelope seal + media blobs --------------------------------------------
 
   Uint8List sealTo(
-    Uint8List pqPublic,
+    Uint8List sealPub,
     Uint8List message,
     Uint8List random,
     Uint8List nonce,
   ) {
-    final pk = _in(pqPublic, 'pqPublic', expected: 1216);
+    final pk = _in(sealPub, 'sealPub', expected: 1216);
     final msg = _in(message, 'message');
     final rnd = _in(random, 'random', expected: 64);
     final n = _in(nonce, 'nonce', expected: 24);
@@ -1216,9 +1186,9 @@ class StonechatCore {
     }
   }
 
-  /// Null when the envelope was not sealed to this identity.
-  Uint8List? unseal(Uint8List pqSeed, Uint8List sealed) {
-    final seed = _in(pqSeed, 'pqSeed', expected: 32);
+  /// Null when the envelope was not sealed to this device's seal key.
+  Uint8List? unseal(Uint8List sealSeed, Uint8List sealed) {
+    final seed = _in(sealSeed, 'sealSeed', expected: 32);
     final data = _in(sealed, 'sealed');
     final outPtr = calloc<Pointer<Uint8>>();
     final outLen = calloc<Size>();

@@ -64,8 +64,7 @@ Domain-separation strings, all ASCII, no terminator:
 | `stonechat-v1-devcert`     | signature over a device certificate (identity key)                |
 | `stonechat-v1-tls`         | signature over a mailbox's TLS fingerprint (identity key)         |
 | `stonechat-v1-wtcerts`     | signature over a WebTransport certificate schedule (identity key) |
-| `stonechat-v1-pqpk`        | signature over the identity's X-Wing key (identity key)           |
-| `stonechat-v1-pqidseed`    | key of the hash deriving that X-Wing key's seed                   |
+| `stonechat-v1-register`    | registration at the hub (identity key)                            |
 | `stonechat-v1-recover`     | account-token recovery at the hub (identity key)                  |
 | `stonechat-v1-delete`      | account deletion at the hub (identity key)                        |
 | `stonechat-v1-report`      | abuse report (identity key)                                       |
@@ -87,37 +86,32 @@ The identity key is a **root**, not a messaging key. It signs:
 - one certificate per device ("Device certificates");
 - the mailbox's TLS fingerprint and WebTransport certificate schedule
   ("Transport");
-- the identity's X-Wing key (below);
-- requests to the hub that must prove possession of the identity: recovery,
-  account deletion, abuse reports.
+- requests to the hub that must prove possession of the identity:
+  registration, recovery, account deletion, abuse reports.
 
 It takes no part in key agreement, signs no prekeys, and opens no envelopes.
 Those are done with **device keys**.
 
-### The identity's X-Wing key (`pq_pk`)
+The identity has no encryption key of its own. Envelopes are sealed to the
+recipient _device's_ certified X-Wing key ("Envelope"), and sessions are
+agreed between device keys ("Sessions"). An identity-level X-Wing key
+(`pq_pk`, with its `pq_sig`) was part of the registration body and the
+directory record until 2026-10-18; nothing was ever sealed to it, and a hub
+of this version neither accepts nor serves the fields.
 
-Every identity has an X-Wing encapsulation key (X25519 + ML-KEM-768 as one
-hybrid KEM), whose 32-byte seed is _derived_, not stored:
+### Registration
+
+Registering is proving possession of the identity key:
 
 ```
-pq_seed = H(identity_sk, key="stonechat-v1-pqidseed", 32)
-pq_pk   = XWing-expand(pq_seed).public    # 1216 bytes
-pq_sig  = Sign("stonechat-v1-pqpk", pq_pk, identity_sk)
+signature = Sign("stonechat-v1-register", str(timestamp), identity_sk)
 ```
 
-(`identity_sk` is the full 64-byte secret key, seed ‖ pubkey — hashing only
-the 32-byte seed yields a different key.)
-
-`pq_pk` and `pq_sig` are **required at registration** and served in every
-directory record. The hub checks the length of `pq_pk` (1216 bytes) and the
-signature, and refuses the registration otherwise. A client MAY verify
-`pq_sig` against the (commitment-checked) identity key when it resolves a
-record: the Flutter app and the browser client do, and treat a record with an
-invalid `pq_pk` as unusable; the agent ignores both fields.
-
-**Nothing is sealed to `pq_pk`.** No client encapsulates to it or attempts
-to open anything with its private half. Envelopes are sealed to the
-recipient _device's_ certified X-Wing key ("Envelope").
+where `timestamp` is the current unix time as decimal text, and the hub
+accepts it within ±300 s. Without this, anyone who knew a public key could
+register it first and hold the account token for an ID they cannot
+otherwise use. The hub answers with the Stonechat ID and the account token;
+the client MUST compare that ID with the one its own key derives.
 
 ### Stonechat ID
 
@@ -871,8 +865,6 @@ uses.
 {
   "stonechat_id": "SC-…",
   "pubkey": "<base64 Ed25519 identity key>",
-  "pq_pk": "<base64, 1216 bytes>",
-  "pq_sig": "<base64>",
   "devices": { …device manifest, "Device manifest"… } | null,
   "mailbox": {
     "address": "https://203.0.113.7:8080",
@@ -2177,7 +2169,7 @@ Only the primary device holds an account token; a linked device has none.
 | Method | Path                                                                                | Auth                     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ------ | ----------------------------------------------------------------------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/health`                                                                           | none                     | `{"status": "ok", "providers": [...]}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| POST   | `/v1/register`                                                                      | none                     | `{"pubkey": "<base64 Ed25519>", "pq_pk": "<base64 X-Wing, 1216 bytes>", "pq_sig": "<base64>"}` → 201 `{"stonechat_id", "account_token"}`. The hub verifies `pq_sig`. The client MUST compare the returned ID with the one its key derives. 400 malformed key or bad `pq_sig`, 409 key already registered. 10 per minute per client address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| POST   | `/v1/register`                                                                      | none                     | `{"pubkey": "<base64 Ed25519>", "timestamp", "signature"}` → 201 `{"stonechat_id", "account_token"}`. `signature` is `Sign("stonechat-v1-register", str(timestamp), identity_sk)` (unix seconds as decimal text, ±300 s) — proof of possession, so a key one merely knows cannot be registered ("Registration"). The client MUST compare the returned ID with the one its key derives. 400 malformed key or stale timestamp, 401 bad signature, 409 key already registered. 10 per minute per client address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | POST   | `/v1/recover`                                                                       | signature                | `{"pubkey", "timestamp", "signature"}` → `{"stonechat_id", "account_token"}` — identity restore. `signature` is `Sign("stonechat-v1-recover", str(timestamp), identity_sk)` (unix seconds as decimal text, ±300 s). Rotates the account token: the recovering device becomes the account, any previous token dies. 400 stale timestamp, 401 bad signature, 404 if the key was never registered (client falls back to `/v1/register`). 10 per minute per address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/v1/directory/{stonechat_id}`                                                      | none                     | Lookup by full SC- ID only. See "Directory resolution" for the response. 400 on a non-ID string, 404 if unknown. 120 per minute per address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/v1/countries`                                                                     | none                     | `{"countries": [{"code", "name", "city", "flag", "jurisdiction", "caveat", "plans": ["machine", "mailbox"]}]}` — where a mailbox can be placed. `code` is what `POST /v1/mailbox` is sent. Clients MUST show `caveat` wherever they show `jurisdiction`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -2320,7 +2312,7 @@ of paying, and it is borne by the gate, not the hub.
 
 | Scope                                                      | Stored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Per **account**                                            | the Stonechat ID; the identity public key; `pq_pk` and `pq_sig`; the signed device manifest, if published; a SHA-256 hash of the account token; when the account was created; and, if an operator banned it, when and why                                                                                                                                                                                                                                                                                                         |
+| Per **account**                                            | the Stonechat ID; the identity public key; the signed device manifest, if published; a SHA-256 hash of the account token; when the account was created; and, if an operator banned it, when and why                                                                                                                                                                                                                                                                                                         |
 | Per **mailbox** (at most one per account)                  | provider; status; the machine spec that was asked for; the provider-side resource id and whatever else the provider needs to destroy it; the address; the **mailbox's owner token**, in the clear, for mailboxes the hub provisioned (never for external ones); the mailbox host's admin token, for dedicated VMs; the TLS fingerprint it observed and the owner's signature over it; the browser transport's address, certificate schedule and the owner's signature over that; the last provisioning error; when it was created |
 | **Link offers and grants** in flight                       | public keys, and ciphertext the hub cannot open; 600 s at most                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **Tombstones** of machines an operator destroyed for abuse | ID, provider, resource, address, reason, dates; kept indefinitely                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |

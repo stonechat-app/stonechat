@@ -106,8 +106,6 @@ export class Hub {
 export interface DirectoryEntry {
   stonechat_id: string;
   pubkey: string;
-  pq_pk?: string;
-  pq_sig?: string;
   mailbox?: {
     address?: string;
     tls_fp?: string;

@@ -45,9 +45,8 @@ grow a dependency on protocol code.
 - `src/primitives.rs` — KDFs, AEAD, X25519, Ed25519↔X25519 conversions,
   context-prefixed signatures.
 - `src/identity.rs` — the identity and everything derived from it: keygen
-  from a caller-supplied seed, the X-Wing derivation (hash of the **full
-  64-byte** secret key), `pq_pk` signature, recovery and abuse-report
-  signatures.
+  from a caller-supplied seed, the SC- ID, and the registration, recovery
+  and abuse-report signatures.
 - `src/vault.rs` — the passphrase container behind `.stonechatbackup` and
   the identity-export string: Argon2id whose parameters ride inside the
   container and are authenticated as the AEAD's associated data.

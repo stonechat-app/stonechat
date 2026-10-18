@@ -63,12 +63,6 @@ test('one malformed envelope does not wedge the session', async () => {
   assert.deepEqual(got.map((m) => m.text), ['after the junk']);
 });
 
-test('a directory record carrying a bad pq_pk is refused', async () => {
-  const { bob, A, as, entries } = await pair();
-  entries[bob.id] = { stonechat_id: bob.id, pubkey: bob.pub, pq_pk: b64encode(new Uint8Array(1216)), pq_sig: b64encode(new Uint8Array(64)) };
-  await assert.rejects(as('a', () => A.send(bob.id, 'x')), /bad pq_pk/);
-});
-
 // -- device manifests ---------------------------------------------------------
 
 test('a revoked device is dropped on receive and left out on send', async () => {

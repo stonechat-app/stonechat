@@ -37,8 +37,6 @@ class Store:
             CREATE TABLE IF NOT EXISTS users (
                 stonechat_id    TEXT PRIMARY KEY,
                 pubkey     TEXT NOT NULL,          -- base64
-                pq_pk      TEXT,                   -- base64 X-Wing identity key
-                pq_sig     TEXT,                   -- Ed25519 sig over "stonechat-v1-pqpk"||pq_pk
                 token_hash TEXT NOT NULL UNIQUE,
                 created_at TEXT NOT NULL,
                 banned_at  TEXT,                   -- abuse: no more provisioning
@@ -274,12 +272,6 @@ class Store:
         for column, ddl in (
             ("banned_at", "ALTER TABLE users ADD COLUMN banned_at TEXT"),
             ("ban_reason", "ALTER TABLE users ADD COLUMN ban_reason TEXT"),
-            # Nullable by necessity (SQLite can't ALTER-in NOT NULL): rows
-            # from before the PQ cutover have no X-Wing key. Registration
-            # always writes both; resolvers refuse entries without a valid
-            # pq_pk, so legacy junk rows are unreachable, not insecure.
-            ("pq_pk", "ALTER TABLE users ADD COLUMN pq_pk TEXT"),
-            ("pq_sig", "ALTER TABLE users ADD COLUMN pq_sig TEXT"),
             # The signed device manifest, as published (PROTOCOL.md "Device
             # manifest"). Null until the owner publishes one.
             ("devices", "ALTER TABLE users ADD COLUMN devices TEXT"),
@@ -331,16 +323,14 @@ class Store:
         self,
         stonechat_id: str,
         pubkey_b64: str,
-        pq_pk_b64: str,
-        pq_sig_b64: str,
         token: str,
     ) -> bool:
         """True on success, False if the key is already registered."""
         try:
             self._db.execute(
-                "INSERT INTO users (stonechat_id, pubkey, pq_pk, pq_sig, token_hash,"
-                " created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (stonechat_id, pubkey_b64, pq_pk_b64, pq_sig_b64, hash_token(token), _now()),
+                "INSERT INTO users (stonechat_id, pubkey, token_hash, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (stonechat_id, pubkey_b64, hash_token(token), _now()),
             )
             return True
         except sqlite3.IntegrityError:

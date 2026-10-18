@@ -27,6 +27,7 @@ import 'pqcore.dart';
 final spkSigContext = utf8.encode('stonechat-v1-spk');
 final kspkSigContext = utf8.encode('stonechat-v1-kspk');
 final tlsSigContext = utf8.encode('stonechat-v1-tls');
+final registerSigContext = utf8.encode('stonechat-v1-register');
 final recoverSigContext = utf8.encode('stonechat-v1-recover');
 final deleteSigContext = utf8.encode('stonechat-v1-delete');
 
@@ -52,28 +53,14 @@ class CryptoService {
   /// which holds no identity secret at all — see [CryptoService.publicOnly].
   final Uint8List? _secretKey;
   final Uint8List publicKey;
-  /// The identity's own X-Wing key, still published in the directory as
-  /// `pq_pk` and still signature-verified on resolve — but **nothing seals to
-  /// it any more**. Envelopes go to a device's certified seal key instead.
-  /// Its private half used to live here as `_pqSeed`; that field became
-  /// unused the moment unsealing moved to the device key, which is a fair
-  /// summary of what device certificates changed. Retiring the directory
-  /// field itself is a separate cleanup — it touches registration and the
-  /// hub schema.
-  /// Null on a linked device: it is derived from the identity secret, and is
-  /// only ever needed at registration, which is the primary's job.
-  final Uint8List? pqPublicKey;
   final String stonechatId;
-  final String? _pqPkSig;
 
   CryptoService._(
     this.core,
     this.pq,
     this._secretKey,
     this.publicKey,
-    this.pqPublicKey,
     this.stonechatId,
-    this._pqPkSig,
   );
 
   factory CryptoService._from(Uint8List secretKey, {PqCore? pqCore}) {
@@ -84,9 +71,7 @@ class CryptoService {
       pqCore ?? PqCore(),
       id.secret,
       id.public,
-      id.pqPublic,
       id.stonechatId,
-      id.pqPublicSigB64,
     );
   }
 
@@ -123,9 +108,7 @@ class CryptoService {
       pqCore ?? PqCore(),
       null,
       publicKey,
-      null,
       core.stonechatId(publicKey),
-      null,
     );
   }
 
@@ -143,12 +126,6 @@ class CryptoService {
   }
 
   String get publicKeyB64 => base64Encode(publicKey);
-  /// Registration only, and registration is the primary's. Throws on a
-  /// linked device rather than returning something that would be published as
-  /// this identity's post-quantum key.
-  String get pqPublicKeyB64 => base64Encode(
-    pqPublicKey ?? (throw StateError('no identity secret: cannot derive pq_pk')),
-  );
 
   /// The 32-byte Ed25519 seed — the identity root.
   ///
@@ -160,39 +137,27 @@ class CryptoService {
 
   // -- sealed envelopes (PROTOCOL.md "Envelope") --------------------------------
 
-  /// Anonymous hybrid seal to a peer's X-Wing identity key (`pq_pk` in the
-  /// directory, signature-verified against their Ed25519 key on resolve) —
-  /// the wrap that hides the sender (and every other envelope field) from
-  /// the recipient's mailbox. X-Wing is X25519 + ML-KEM-768 in one KEM, so
-  /// a recorded envelope stays sealed against a future quantum attacker.
-  /// Like crypto_box_seal, encapsulation is fresh-randomness-per-envelope
-  /// and involves no sender key: nothing on the wire identifies or links
-  /// senders.
-  Uint8List sealTo(Uint8List recipientPqPk, Uint8List message) => core.sealTo(
-    recipientPqPk,
-    message,
-    randomBytes(xwingEncapsRandomBytes),
-    randomBytes(24),
-  );
+  /// Anonymous hybrid seal to a peer **device's** X-Wing seal key (the
+  /// `seal_pub` of its verified certificate) — the wrap that hides the
+  /// sender (and every other envelope field) from the recipient's mailbox.
+  /// X-Wing is X25519 + ML-KEM-768 in one KEM, so a recorded envelope stays
+  /// sealed against a future quantum attacker. Like crypto_box_seal,
+  /// encapsulation is fresh-randomness-per-envelope and involves no sender
+  /// key: nothing on the wire identifies or links senders.
+  Uint8List sealTo(Uint8List recipientSealPub, Uint8List message) =>
+      core.sealTo(
+        recipientSealPub,
+        message,
+        randomBytes(xwingEncapsRandomBytes),
+        randomBytes(24),
+      );
 
-  /// Returns null when the envelope wasn't sealed to this identity (or is
-  /// garbage): a wrong recipient decapsulates to a wrong shared secret and
-  /// the AEAD refuses.
-  /// Open an envelope sealed to this **device's** key.
-  ///
-  /// [deviceSealSeed] is our own X-Wing seed. It used to be the identity's
-  /// (`_pqSeed`), which is why every device needed the identity secret to
-  /// read anything.
+  /// Open an envelope sealed to this **device's** key, [deviceSealSeed]
+  /// being our own X-Wing seed. Returns null when the envelope wasn't sealed
+  /// to it (or is garbage): a wrong recipient decapsulates to a wrong shared
+  /// secret and the AEAD refuses.
   Uint8List? unseal(Uint8List deviceSealSeed, Uint8List sealed) =>
       core.unseal(deviceSealSeed, sealed);
-
-  /// The owner vouching for their X-Wing identity key; published beside it
-  /// in the hub directory and verified by every resolver.
-  String signPqPk() =>
-      _pqPkSig ?? (throw StateError('no identity secret: cannot sign pq_pk'));
-
-  bool verifyPqPkSig(Uint8List pqPk, Uint8List sig, Uint8List identityEdPub) =>
-      core.verify(identityEdPub, utf8.encode('stonechat-v1-pqpk'), pqPk, sig);
 
   // -- Stonechat ID ----------------------------------------------------------------
 
@@ -230,6 +195,14 @@ class CryptoService {
     required String returnedId,
     required String pubkeyB64,
   }) => returnedId == askedFor && pubkeyMatchesId(pubkeyB64, askedFor);
+
+  /// Proof of key possession for POST /v1/register: a signature over the
+  /// context and the current unix time, so nobody can register a public key
+  /// they merely know and hold the account token for it. Registration is the
+  /// primary's job; a linked device throws here.
+  String signRegistration(int unixSeconds) => base64Encode(
+    core.sign(_root, registerSigContext, utf8.encode('$unixSeconds')),
+  );
 
   /// Proof of key possession for POST /v1/recover (identity restore): a
   /// signature over the context and the current unix time, so the hub can
