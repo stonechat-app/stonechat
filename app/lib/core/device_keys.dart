@@ -49,9 +49,8 @@ const webCertLifetime = Duration(days: 7);
 /// sitting at it, usually on a mailbox rather than in a pocket.
 ///
 /// Same as a linked device: the primary renews it over self-sync
-/// (`sync_cert`) for as long as the agent is listed. An agent that does not
-/// handle `sync_cert` (`agent_client/` does not yet) is linked again when
-/// this runs out.
+/// (`sync_cert`) for as long as the agent is listed, and `agent_client/`
+/// adopts the renewal and republishes its prekeys under it.
 const agentCertLifetime = Duration(days: 14);
 
 /// The lifetime for a device of the given kind, matching the relay's

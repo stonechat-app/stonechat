@@ -34,6 +34,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # randomness as an argument (its rule), so this is the only place entropy is
 # drawn.
 getrandom = "0.3"
+# The primary's history export arrives gzip-compressed (`sync_history`). The
+# pure-Rust backend: nothing links libz, and the musl build stays static.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # Terminal QR for the link code. default-features off drops `image`/`svg`/`pic`
 # — we render half-block Unicode to a terminal and want none of that weight.
 qrcode = { version = "0.14.1", default-features = false }

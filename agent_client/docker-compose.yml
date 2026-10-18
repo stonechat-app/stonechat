@@ -23,6 +23,9 @@ services:
     environment:
       # Only `link` reads it; `run` uses the hub recorded in the state file.
       STONECHAT_HUB: ${STONECHAT_HUB:-https://hub.stonechat.app}
+      # 1 logs message text. Off by default: `docker compose logs` is kept by
+      # the host, and the owner's mail does not belong in it.
+      STONECHAT_AGENT_SHOW_TEXT: ${STONECHAT_AGENT_SHOW_TEXT:-0}
     volumes:
       # A named volume, not a host directory: it takes the image's ownership
       # (the unprivileged user), which a bind-mounted root-owned directory

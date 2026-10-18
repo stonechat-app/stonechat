@@ -326,9 +326,9 @@ who does not.
   republishes its prekeys with it. A linked device thus stays certified for
   as long as its primary connects at least once per half-lifetime and it is
   still on the relay. A device that was revoked is not listed and gets
-  nothing. A linked device that does not handle `sync_cert` (the agent does
-  not yet; the browser client does) is linked again when its certificate
-  runs out.
+  nothing. A linked device that does not handle `sync_cert` is linked again
+  when its certificate runs out; the browser client and the agent both
+  handle it.
 - Senders re-fetch a peer's certificates when the one they hold has less
   than 3 days left, which is after the primary would have renewed it. A
   sender MUST NOT encrypt to a device whose certificate has expired,

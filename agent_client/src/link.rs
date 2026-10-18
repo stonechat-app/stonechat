@@ -143,6 +143,9 @@ pub async fn link(hub_url: &str, no_qr: bool) -> Result<()> {
     state::save(&published)?;
     println!("  Published prekeys — this device can now be messaged.");
     println!();
+    println!("  The phone sends its contact list the next time it connects and finds");
+    println!("  this device listed. Until then, nobody gets an answer.");
+    println!();
     println!("  Next: stonechat-agent run");
     Ok(())
 }
@@ -235,13 +238,9 @@ fn adopt(
             .get("bundle_token")
             .and_then(Value::as_str)
             .map(str::to_string),
-        spk: None,
-        kspk: None,
-        opks: Default::default(),
-        kopks: Default::default(),
         next_prekey_id: 1,
-        sessions: Default::default(),
-        peer_certs: Default::default(),
-        bundle_tokens: Default::default(),
+        // Contacts, blocks and manifests arrive from the phone once we are
+        // listed with prekeys: nothing to seed here.
+        ..Default::default()
     })
 }

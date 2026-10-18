@@ -8,10 +8,11 @@ authorises it from their primary — and then speaks the protocol through
 an *agent* is only that nobody is sitting at it: no screen, no camera, no user,
 usually a server rather than a pocket.
 
-The first version answers messages with one of ten canned sentences. That is
-deliberately dull; the point of v1 is to prove the device is real — that it
-links, receives, decrypts, ratchets, and answers on the same session — not to
-be interesting. `src/replies.rs` is where anything cleverer goes.
+What it says is deliberately dull: one of ten canned sentences. The point is
+to be a device the phone can live with — one that links, stays certified,
+knows who the owner's contacts are, receives, decrypts, ratchets, answers,
+and tells the phone what it said. `src/replies.rs` is where anything cleverer
+goes.
 
 ## Read this before you deploy one
 
@@ -22,12 +23,13 @@ obvious from the outside:
    else it *is* you; there is no separate SC- ID and no thread. If what you
    want is someone to talk to for testing, you want `scripts/echo_bot.py`,
    which is a separate identity, not this.
-2. **A reply it sends is a message from you.** Somebody messages you, this
-   program answers in your name, on your identity, to your contact.
+2. **A reply it sends is a message from you.** One of your contacts messages
+   you, this program answers in your name, on your identity, to your contact
+   — and the answer shows up on your phone as something you said.
 3. **It sees what is addressed to you.** Every envelope for this device
    decrypts here. That is what makes an agent useful and it is also the whole
    of its exposure: a server holding this state file is a server that reads your
-   mail until the certificate is revoked.
+   mail until the device is revoked.
 
 ## Why this is safe to put on a server at all
 
@@ -39,8 +41,11 @@ recover or export the identity, or manage or destroy the mailbox — there is no
 hub account token in a link grant.
 
 So a stolen agent is bounded by exactly one certificate, which the owner can
-revoke immediately from the phone. Before certificates this idea would have
-required copying an identity root onto a rented VM, which is indefensible.
+revoke immediately from the phone — and since the device manifest
+(2026-10-14), a revocation is something every contact can check for
+themselves, not only a queue deleted on the mailbox. Before certificates this
+idea would have required copying an identity root onto a rented VM, which is
+indefensible.
 
 ## Build
 
@@ -89,17 +94,68 @@ themselves, which is why it fits a terminal at all. The old form carried a
 `link` exits once it has collected the grant, made its three checks, and
 published prekeys. One command leaves a device that can actually be reached.
 
+**It knows nobody yet.** The next time the phone connects to the mailbox and
+finds the new device listed with prekeys, it sends it the contact list
+(`sync_history`). Until that has happened, every message is from a stranger
+and gets no answer. Opening the app once after linking is enough.
+
 ## Run
 
 ```bash
-stonechat-agent run       # holds the socket, answers messages
-stonechat-agent status    # what this agent is, when its certificate lapses
-stonechat-agent forget    # deletes local state — does NOT revoke
+stonechat-agent run               # holds the socket, answers contacts
+stonechat-agent run --show-text   # also logs message text (see below)
+stonechat-agent status            # what this agent is, when its certificate lapses
+stonechat-agent forget            # deletes local state — does NOT revoke
 ```
 
 `forget` is named that way because it does not unlink anything: the device row
 and its certificate live on the mailbox and in the directory, and only the
 primary can revoke them. Revoke on the phone.
+
+**The log carries no message text** unless you ask for it with `--show-text`
+(or `STONECHAT_AGENT_SHOW_TEXT=1`). A container's stdout is kept by the host,
+and the owner's mail does not belong in it; by default a message is logged
+as who sent it and how long it was.
+
+## What it does
+
+As a device of its owner's identity it behaves the way the phone expects a
+linked device to:
+
+- **Answers accepted contacts only.** It learns who those are from the phone
+  — the `sync_history` export after linking, then `sync_contact` and
+  `sync_block` for every change — and never decides for itself. A stranger's
+  message is decrypted (which keeps the ratchet current) and otherwise
+  ignored: no reply, no receipt, nothing that says an agent is running. A
+  blocked sender is ignored too. A contact the phone removes loses their
+  sessions here as well, as the protocol says.
+- **Mirrors what it said.** Every reply goes to the owner's other devices as
+  `sync_sent`, so the phone's transcript shows the answer where it belongs.
+  A contact's message gets a `delivered` receipt, like from any device.
+- **Stays certified.** The phone renews a linked device's certificate over
+  `sync_cert` while the device is still listed; the agent adopts one that
+  verifies, names its own slot and keys, and is later than the one held,
+  then republishes its prekeys under it.
+- **Checks the sending device on every envelope**, not only when a session
+  begins: its certificate must be unexpired (an expired one is refetched
+  from the sender's mailbox, and the envelope dropped if nothing newer is
+  published), and when the sender has published a device manifest the
+  device must be on it with that certificate's key. It encrypts only to
+  devices a peer's manifest lists, and states its own identity's manifest
+  version on everything it sends.
+- **Checks what arrives where it enters**: the inner envelope's id must be
+  a UUID and equal the id on the wire, it must be addressed to this identity
+  and this device, both device numbers must be present, and a directory
+  answer is checked against the ID that was asked for.
+- **Leaves an envelope queued** rather than acking it when handling failed
+  because the hub or a mailbox could not be reached, and drops it — acked —
+  when the envelope itself is the problem. A transient failure is retried
+  across a few connections, then given up on, so one dead sender cannot hold
+  the queue behind it.
+- **Republishes its prekeys on every connect** with the full remaining
+  stock, rotating the signed prekeys weekly (keeping the previous pair for
+  handshakes in flight), so a fresh or recreated mailbox converges on what it
+  holds.
 
 ## Deploying
 
@@ -122,6 +178,10 @@ nothing to the host's exposure. The state file lives in the `state` named
 volume: `docker compose down` keeps it; `down -v` deletes it, which is `forget`
 and, like `forget`, revokes nothing.
 
+If the phone revokes the device, `run` exits with a sentence saying so rather
+than reconnecting forever; the same if another connection takes the device
+over, which means two copies are running against one state file.
+
 Where: a machine you control. **Not the hub server** — the hub holds the directory
 and provisioning credentials and its whole security story is one port with no
 extra tenants. And not a server that hosts
@@ -131,8 +191,8 @@ other people's mailboxes: whatever holds this state file reads your mail.
 
 | | |
 |---|---|
-| `~/.stonechat/agent.json` (or `$STONECHAT_AGENT_STATE`; `/state/agent.json` in the container) | device keys, certificate, device token, ratchet sessions, cached peer certificates |
-| mode | `0600`, written atomically via temp-and-rename |
+| `~/.stonechat/agent.json` (or `$STONECHAT_AGENT_STATE`; `/state/agent.json` in the container) | device keys, certificate, device token, ratchet sessions, cached peer certificates, the owner's contacts and blocks, device manifests |
+| mode | `0600` from the first byte, written atomically via temp-and-rename |
 
 A phone keeps this in a keystore; here it is a file. That is a real downgrade
 and worth stating rather than implying away. What bounds it is scope — no
@@ -142,44 +202,59 @@ The atomic write is not tidiness. The double ratchet advances on every
 message, and a half-written state file is a device that has lost track of
 which message keys it has already used.
 
-## Certificate expiry is the thing that will bite you
+## Certificates: 14 days, renewed by the phone
 
-An agent gets **180 days** (`app/lib/core/device_keys.dart`, `agentCertLifetime`).
-Only the primary can renew, and there is no way to do it from the server. When it
-lapses, peers *refuse to encrypt to this device* — correct behaviour, and a
-silent one: the agent simply stops receiving.
+An agent's certificate lasts **14 days** (`app/lib/core/device_keys.dart`,
+`agentCertLifetime`), like any linked device's. Only the primary can renew
+it, and it does: on every connect to the mailbox the phone re-signs the
+certificate of any listed device with less than seven days left and sends it
+over `sync_cert`. So an agent stays certified for as long as the phone opens
+the app at least once a week and the device is still listed.
 
-`run` warns on startup and on every reconnect once it is inside seven days, and
-`status` prints the date. Re-linking is the renewal: `forget`, revoke on the
-phone, `link` again.
+When it lapses anyway — the phone was off for a fortnight, or the device was
+revoked — peers *refuse to encrypt to this device*. Correct behaviour, and a
+silent one: the agent simply stops receiving. `run` warns on startup and on
+every reconnect once it is inside three days (the phone would have renewed by
+then, so the warning means "open the app"), and `status` prints the date. If
+the device is gone from Linked devices, re-linking is the only renewal:
+`forget`, then `link` again.
 
 ## Known gaps
 
-Real absences, not oversights — v1 is scoped to "links and answers".
+Real absences, not oversights.
 
-- **No `sync_sent`.** The agent does not mirror its replies to the owner's
-  other devices, so what it said will not appear on the phone. The phone's
-  transcript of that conversation has holes in it.
-- **No contact handling.** A `contact_request` is logged and left alone.
-  Accepting one adds a contact to the identity on every device, and a program
-  guessing at that on its owner's behalf eventually guesses wrong.
-- **No media, no groups, no calls, no receipts.** Those envelope types are
-  decrypted (which keeps the ratchet current) and otherwise ignored.
-- **No history.** It starts empty and learns only what arrives.
+- **No media, no groups, no calls.** `media` from a contact is answered like
+  text, but the attachment is never fetched. Group, call, typing, reaction,
+  edit and pin envelopes are decrypted (which keeps the ratchet current) and
+  otherwise ignored.
+- **No history.** It keeps no messages, so `sync_sent`, `sync_read` and
+  `sync_clear` from the phone have nothing to apply to. It starts with the
+  contacts in the phone's export and learns only what arrives after.
+- **No contact handling.** A `contact_request` is logged and left alone, and
+  a `contact_accept` is applied only once the phone says so over
+  `sync_contact`. Accepting adds a contact to the identity on every device,
+  and that is the phone's decision.
 - **No push config.** It holds its socket, so it never needs the gateway.
+- **No read receipts, no typing.** Nobody is reading or typing.
 
 ## Testing
 
 ```bash
+cd agent_client && cargo test             # unit tests
 cd agent_client && cargo build --release
 cd ../relay && cargo build --release
-../scripts/build_core.sh host      # the Python side's KEM
-python3 agent_client/tests/e2e_agent.py
+../scripts/build_core.sh host             # the Python side's KEM
+hub/.venv/bin/python agent_client/tests/e2e_agent.py
 ```
 
 A live run against a live hub and two live mailboxes, no Docker. The primary is
 simulated with `scripts/e2e.py`'s `Phone` — the reference implementation the
 Dart client must interoperate with — so what it proves is that this Rust agent
 and the Python reference agree on the wire: offer, commitment, grant, the three
-checks, PQXDH against a certified device key, and a ratchet that advances
-identically on both sides through two messages.
+checks, PQXDH against a certified device key, a ratchet that advances
+identically on both sides, and then the device behaviour around it — a
+stranger gets no answer, a contact learned over `sync_history` does, the
+answer is mirrored to the primary as `sync_sent` under the same message id, a
+renewed certificate arrives over `sync_cert` and is republished, a device the
+sender's manifest does not list is dropped, and a contact the phone removes
+is a stranger again.

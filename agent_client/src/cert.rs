@@ -11,7 +11,12 @@ use stonechat_core::devcert::{CertStatus, DeviceCert};
 use stonechat_core::pqcore::XWING_PUBLIC_BYTES;
 
 use crate::err;
-use crate::util::{Result, unb64_n};
+use crate::util::{Result, now_s, unb64_n};
+
+/// Refetch a peer's certificate once it has less than this left. Matches the
+/// app's `certRefreshWindow`: it is after the primary would have renewed it,
+/// so a device still linked has a newer one by then.
+pub const REFRESH_WINDOW_S: u64 = 3 * 24 * 3600;
 
 pub fn parse(cert: &Value) -> Result<(DeviceCert, [u8; 64])> {
     let stonechat_id = cert
@@ -103,6 +108,17 @@ pub fn verify(cert: &Value, identity_pub: &[u8; 32], device: Option<u32>) -> Res
         ));
     }
     Ok(parsed)
+}
+
+/// When a certificate runs out, or 0 if it does not say.
+pub fn not_after(cert: &Value) -> u64 {
+    cert.get("not_after").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// Whether a held certificate is close enough to expiry that the peer's
+/// mailbox should be asked for a renewed one before the next send.
+pub fn needs_refresh(cert: &Value) -> bool {
+    not_after(cert) < now_s() + REFRESH_WINDOW_S
 }
 
 /// The seal key a certificate vouches for — where an envelope to that device

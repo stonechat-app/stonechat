@@ -11,14 +11,16 @@
 //!
 //! Usage:
 //!     stonechat-agent link [--hub URL]   show a QR + code, wait to be authorised
-//!     stonechat-agent run                hold the socket and answer messages
+//!     stonechat-agent run [--show-text]  hold the socket and answer contacts
 //!     stonechat-agent status             what this agent is
 //!     stonechat-agent forget             delete local state (see the warning)
 
 mod cert;
+mod contacts;
 mod hub;
 mod link;
 mod mailbox;
+mod manifest;
 mod pin;
 mod prekeys;
 mod proto;
@@ -52,7 +54,13 @@ async fn dispatch() -> Result<()> {
         Some("link") => {
             link::link(&hub_url(&args), args.iter().any(|a| a == "--no-qr")).await
         }
-        Some("run") => run::run().await,
+        Some("run") => {
+            // Off by default: a container's stdout is kept by the host, and
+            // the owner's mail does not belong in it.
+            let show_text = args.iter().any(|a| a == "--show-text")
+                || std::env::var("STONECHAT_AGENT_SHOW_TEXT").is_ok_and(|v| v == "1");
+            run::run(show_text).await
+        }
         Some("status") => run::status(),
         Some("forget") => forget(),
         Some("--help" | "-h" | "help") | None => {
@@ -112,11 +120,14 @@ stonechat-agent — a headless Stonechat device
                      watching, and always as a line you can paste — then wait
                      for the owner's phone to authorise it. Choose \"Agent\"
                      there. --no-qr prints only the line.
-  run                Hold the receive socket and answer messages.
+  run [--show-text]  Hold the receive socket and answer messages from accepted
+                     contacts. --show-text also logs message text, which is
+                     otherwise kept out of the log.
   status             Show what this agent is and when its certificate lapses.
   forget             Delete local state. Does NOT revoke — do that on the phone.
 
 Environment:
-  STONECHAT_HUB          Hub URL for `link` (default https://hub.stonechat.app)
-  STONECHAT_AGENT_STATE  State file (default ~/.stonechat/agent.json)
+  STONECHAT_HUB              Hub URL for `link` (default https://hub.stonechat.app)
+  STONECHAT_AGENT_STATE      State file (default ~/.stonechat/agent.json)
+  STONECHAT_AGENT_SHOW_TEXT  1 is the same as --show-text
 ";

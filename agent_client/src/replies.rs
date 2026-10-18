@@ -1,9 +1,12 @@
 //! What the agent says.
 //!
 //! A fixed set, picked at random. This is the whole of its behaviour for now
-//! and it is deliberately dumb: the point of the first version is to prove the
-//! device works — that it links, receives, decrypts, ratchets and answers —
-//! not to be interesting. Anything cleverer plugs in exactly here.
+//! and it is deliberately dumb: the point of the device is to prove it is a
+//! real one — that it links, stays certified, receives, decrypts, ratchets
+//! and answers — not to be interesting. Anything cleverer plugs in exactly
+//! here: [`answer`] sees the kind of message and its text, and whatever it
+//! returns goes out in the owner's name, to an accepted contact, and is
+//! mirrored to the owner's other devices.
 
 use crate::util::random;
 
@@ -19,6 +22,12 @@ pub const SENTENCES: &[&str] = &[
     "Noted. Filing that under 'important'.",
     "Say that again and I'll say this again.",
 ];
+
+/// The reply to one message. `kind` is `msg` or `media`; `text` is the
+/// message's text, empty for media.
+pub fn answer(_kind: &str, _text: &str) -> String {
+    pick().to_string()
+}
 
 pub fn pick() -> &'static str {
     let n = u64::from_be_bytes(random::<8>()) as usize;
