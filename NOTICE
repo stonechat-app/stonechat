@@ -27,8 +27,7 @@ files. Complete generated listings with full license texts:
   Python  pip-licenses          (hub/, push_gateway/, mailbox_host/)
 
 The shipped mobile applications additionally link native SDKs that are not
-open source, including Google ML Kit (barcode scanning) and Google Play
-Services. These are governed by their own terms, not by this repository's
-license. A redistributable fork of the client must strip or replace them:
-they are not AGPL-compatible, and only the copyright holder can ship them
-linked against this codebase.
+open source, notably Google Play Services (push). These are governed by
+their own terms, not by this repository's license. A redistributable fork of
+the client must strip or replace them: they are not AGPL-compatible, and only
+the copyright holder can ship them linked against this codebase.

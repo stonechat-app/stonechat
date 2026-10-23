@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 
 import '../core/links.dart';
@@ -75,13 +74,12 @@ class _AddContactScreenState extends State<AddContactScreen> {
   Widget _buildScanner() {
     return Stack(
       children: [
-        MobileScanner(
-          onDetect: (capture) {
+        QrScanView(
+          onCode: (raw) {
             if (_scanHandled) return;
-            final raw = capture.barcodes.firstOrNull?.rawValue;
             // Pass the raw scan through: addContact re-parses it, so a hub
             // tag on a hub-tagged invite survives to resolution.
-            if (raw != null && stonechatInviteFromInput(raw) != null) {
+            if (stonechatInviteFromInput(raw) != null) {
               _scanHandled = true;
               _add(raw);
             }
