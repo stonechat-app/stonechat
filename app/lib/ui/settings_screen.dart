@@ -3,6 +3,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -495,7 +496,9 @@ class _NotificationsSectionState extends State<_NotificationsSection> {
   @override
   void initState() {
     super.initState();
-    _state = context.read<PushService>().permissionState();
+    _state = context.read<PushService>().permissionState(
+      asked: context.read<AppState>().pushPrompted,
+    );
     NotificationPreview.load(context.read<AppState>().db).then((v) {
       if (mounted) setState(() => _preview = v);
     });
@@ -544,7 +547,9 @@ class _NotificationsSectionState extends State<_NotificationsSection> {
 
   void _refresh() {
     setState(() {
-      _state = context.read<PushService>().permissionState();
+      _state = context.read<PushService>().permissionState(
+        asked: context.read<AppState>().pushPrompted,
+      );
     });
   }
 
@@ -558,6 +563,17 @@ class _NotificationsSectionState extends State<_NotificationsSection> {
       await push.requestPermission();
       if (mounted) _refresh();
       return;
+    }
+    if (current == NotificationPermission.denied &&
+        wantOn &&
+        Platform.isAndroid) {
+      // Android may still show its dialog after a "Not now" or one refusal;
+      // only when it won't any more does the user have to go to Settings.
+      final push = context.read<PushService>();
+      final granted = await push.requestPermission();
+      if (!mounted) return;
+      _refresh();
+      if (granted) return;
     }
     // Granted→off or denied→on: the OS won't let us change it from inside the
     // app; send the user to system Settings.

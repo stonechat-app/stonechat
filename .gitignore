@@ -18,6 +18,7 @@ __pycache__/
 
 # App Store Connect credentials
 .env.appstore
+.env.play
 credentials/
 
 # Deploy config (hub/.env, push_gateway/.env): the admin token, the push mint
