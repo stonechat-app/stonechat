@@ -2,7 +2,7 @@ name: stonechat
 description: "Stonechat — privacy-first messaging over your own server."
 publish_to: 'none'
 
-version: 0.1.0+66
+version: 0.1.0+67
 
 environment:
   sdk: ^3.11.5
@@ -43,6 +43,7 @@ dependencies:
   share_plus: ^12.0.2
   scrollable_positioned_list: ^0.3.8
   emoji_picker_flutter: ^4.4.0
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:

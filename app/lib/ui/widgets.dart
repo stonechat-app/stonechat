@@ -2,10 +2,11 @@
 library;
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../state/mailbox_state.dart';
 import 'theme.dart';
@@ -377,6 +378,19 @@ void showZnSnack(BuildContext context, String message, {bool error = false}) {
       ),
     ),
   );
+}
+
+/// Opens a web page (terms, privacy policy, source) in the browser. If no
+/// browser takes it, the link is copied instead so it is never a dead end.
+Future<void> openLink(BuildContext context, String url) async {
+  var opened = false;
+  try {
+    opened = await launchUrl(Uri.parse(url),
+        mode: LaunchMode.externalApplication);
+  } catch (_) {}
+  if (opened) return;
+  await Clipboard.setData(ClipboardData(text: url));
+  if (context.mounted) showZnSnack(context, 'Link copied: $url');
 }
 
 /// A selectable "where does your mailbox live" card: radio-style marker,
