@@ -50,7 +50,7 @@ from .countries import catalog as country_catalog
 from .countries import resolve as resolve_country
 from .countries import shared_host_countries
 from .deps import UnbannedUser, User, store
-from .identity import PQ_PK_LEN, PUBKEY_LEN, normalize_stonechat_id, stonechat_id_from_pubkey
+from .identity import PUBKEY_LEN, normalize_stonechat_id, stonechat_id_from_pubkey
 from .ratelimit import RateLimiter
 from .report import RETENTION_DAYS as REPORT_RETENTION_DAYS
 from .report import router as report_router
@@ -182,12 +182,9 @@ def enabled_providers() -> list[str]:
 # -- schemas --------------------------------------------------------------------
 
 class RegisterIn(BaseModel):
-    pubkey: str  # base64-encoded Ed25519 identity public key
-    # X-Wing identity encryption key (1216 bytes → 1622 base64 chars) and the
-    # Ed25519 signature over "stonechat-v1-pqpk" || pq_pk that lets every resolver
-    # trust it (docs/POST_QUANTUM.md — hybrid envelope seal).
-    pq_pk: str = Field(max_length=1700)
-    pq_sig: str = Field(max_length=128)
+    pubkey: str = Field(max_length=64)  # base64 Ed25519 identity public key
+    timestamp: int  # unix seconds, signed by the client
+    signature: str = Field(max_length=128)  # sig over "stonechat-v1-register"||str(timestamp)
 
 
 class RecoverIn(BaseModel):
@@ -329,27 +326,29 @@ def register(body: RegisterIn, request: Request):
         raise HTTPException(400, "pubkey is not valid base64")
     if len(pubkey) != PUBKEY_LEN:
         raise HTTPException(400, f"pubkey must be {PUBKEY_LEN} bytes")
-    # The X-Wing identity key rides in the directory only under a valid
-    # Ed25519 signature. Clients re-verify on every resolve (the directory
-    # is untrusted); rejecting garbage here just fails fast at signup.
-    try:
-        pq_pk = base64.b64decode(body.pq_pk, validate=True)
-    except Exception:
-        raise HTTPException(400, "pq_pk is not valid base64")
-    if len(pq_pk) != PQ_PK_LEN:
-        raise HTTPException(400, f"pq_pk must be {PQ_PK_LEN} bytes")
+    # Proof of possession, in the same shape as /v1/recover: a signature over
+    # "stonechat-v1-register" || the current unix time. Without it anyone who
+    # knew a public key could register it first and hold the account token
+    # for an ID they cannot otherwise use — a squat the owner would have to
+    # undo through recovery. The ±5-minute window bounds replay to the TLS
+    # channel it was heard on, and a replay within it only re-registers the
+    # same key, which 409s.
+    now = int(datetime.now(timezone.utc).timestamp())
+    if abs(now - body.timestamp) > 300:
+        raise HTTPException(400, "signature timestamp out of range — check the device clock")
     try:
         from nacl.signing import VerifyKey
 
         VerifyKey(pubkey).verify(
-            b"stonechat-v1-pqpk" + pq_pk, base64.b64decode(body.pq_sig)
+            b"stonechat-v1-register" + str(body.timestamp).encode(),
+            base64.b64decode(body.signature),
         )
     except Exception:
-        raise HTTPException(400, "bad pq_sig")
+        raise HTTPException(401, "bad signature")
 
     stonechat_id = stonechat_id_from_pubkey(pubkey)
     token = secrets.token_urlsafe(32)
-    if not store.create_user(stonechat_id, body.pubkey, body.pq_pk, body.pq_sig, token):
+    if not store.create_user(stonechat_id, body.pubkey, token):
         raise HTTPException(409, "this key is already registered")
     log.info("registered %s", stonechat_id[:12])
     return {"stonechat_id": stonechat_id, "account_token": token}
@@ -540,8 +539,6 @@ def directory(stonechat_id: str, request: Request):
     return {
         "stonechat_id": user["stonechat_id"],
         "pubkey": user["pubkey"],
-        "pq_pk": user["pq_pk"],
-        "pq_sig": user["pq_sig"],
         # The identity's signed device manifest, exactly as published, or
         # null when the owner has not published one. Clients verify it
         # against `pubkey`; we only checked it on the way in.

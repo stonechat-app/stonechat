@@ -479,16 +479,16 @@ export class StonechatCore {
   // -- sealed envelopes ---------------------------------------------------
 
   seal(
-    recipientPqPk: Uint8Array,
+    recipientSealPub: Uint8Array,
     message: Uint8Array,
     random: Uint8Array,
     nonce: Uint8Array,
   ): Uint8Array {
-    fixed(recipientPqPk, XWING_PUBLIC, 'x-wing public key');
+    fixed(recipientSealPub, XWING_PUBLIC, 'x-wing public key');
     fixed(random, XWING_ENCAPS_RANDOM, 'encapsulation randomness');
     fixed(nonce, 24, 'nonce');
     return this.callOut('stonechat_seal', (a) => [
-      a(recipientPqPk),
+      a(recipientSealPub),
       a(message),
       message.length,
       a(random),

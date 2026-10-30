@@ -855,23 +855,6 @@ class ChatState extends ChangeNotifier {
       );
     }
     _identityKeys[stonechatId] = entry.pubkeyB64;
-    // Nothing is sealed to the identity's X-Wing key any more — envelopes
-    // go to each device's certified seal key — but a record is still
-    // required to carry one, signed by the (commitment-verified) Ed25519
-    // key. Absent or forged → the entry is treated as unusable.
-    final pqOk =
-        entry.pqPkB64 != null &&
-        entry.pqSigB64 != null &&
-        app.crypto.verifyPqPkSig(
-          Uint8List.fromList(base64Decode(entry.pqPkB64!)),
-          Uint8List.fromList(base64Decode(entry.pqSigB64!)),
-          Uint8List.fromList(base64Decode(entry.pubkeyB64)),
-        );
-    if (!pqOk) {
-      throw ApiException.refusing(
-        'Directory entry lacks a valid post-quantum key — refusing.',
-      );
-    }
     if (entry.mailboxAddress != null) {
       final fp = entry.mailboxTlsFp;
       final sig = entry.mailboxTlsSig;
@@ -913,10 +896,7 @@ class ChatState extends ChangeNotifier {
   }
 
   Future<String> _addressFor(Contact contact, {bool refresh = false}) async {
-    if (!refresh &&
-        contact.mailboxAddress != null &&
-        contact.tlsFp != null &&
-        contact.pqPkB64 != null) {
+    if (!refresh && contact.mailboxAddress != null && contact.tlsFp != null) {
       return contact.mailboxAddress!;
     }
     final entry = await _resolve(contact.stonechatId);
@@ -927,7 +907,6 @@ class ChatState extends ChangeNotifier {
     }
     contact.mailboxAddress = entry.mailboxAddress;
     contact.tlsFp = entry.mailboxTlsFp;
-    contact.pqPkB64 = entry.pqPkB64; // sig-verified in _resolve
     await app.db.upsertContact(contact);
     return entry.mailboxAddress!;
   }
@@ -939,9 +918,8 @@ class ChatState extends ChangeNotifier {
   /// [ring] (call offers) are the delivery hints the mailbox is allowed to
   /// see.
   /// [toSealKeyB64] is that device's key, taken from its verified
-  /// certificate — not the identity's `pq_pk` in the directory, which
-  /// nothing is sealed to. That is what lets a device exist without the
-  /// identity secret.
+  /// certificate. That is what lets a device exist without the identity
+  /// secret.
   SealedEnvelope _wireSeal(
     Envelope envelope,
     String toSealKeyB64, {
@@ -1327,7 +1305,6 @@ class ChatState extends ChangeNotifier {
   Future<void> _fanOutToDevices({
     required String peerId,
     required String pubkeyB64,
-    required String pqPkB64,
     required String address,
     required String tlsFp,
     required String? bundleToken,
@@ -1450,12 +1427,9 @@ class ChatState extends ChangeNotifier {
     bool ring = false,
     ({String messageId, String conversationId})? outbox,
   }) async {
-    // _addressFor also backfills pq_pk for contacts saved before a resolve
-    // (e.g. a pending_in row built from an x3dh block alone).
     Future<void> attempt(String address) async => _fanOutToDevices(
       peerId: contact.stonechatId,
       pubkeyB64: await _identityKeyFor(contact.stonechatId),
-      pqPkB64: contact.pqPkB64!,
       address: address,
       tlsFp: contact.tlsFp!,
       bundleToken: contact.bundleToken,
@@ -2856,7 +2830,6 @@ class ChatState extends ChangeNotifier {
       }
       member.mailboxAddress = entry.mailboxAddress;
       member.tlsFp = entry.mailboxTlsFp;
-      member.pqPkB64 = entry.pqPkB64; // sig-verified in _resolve
       if (persist) await app.db.updateMember(member);
       return entry.mailboxAddress!;
     }
@@ -2865,7 +2838,6 @@ class ChatState extends ChangeNotifier {
       outbox: outbox,
       peerId: member.stonechatId,
       pubkeyB64: await _identityKeyFor(member.stonechatId),
-      pqPkB64: member.pqPkB64!,
       address: address,
       tlsFp: member.tlsFp!,
       bundleToken: member.bundleToken,
@@ -2877,10 +2849,7 @@ class ChatState extends ChangeNotifier {
       noPush: noPush,
     );
 
-    final known =
-        member.mailboxAddress != null &&
-        member.tlsFp != null &&
-        member.pqPkB64 != null;
+    final known = member.mailboxAddress != null && member.tlsFp != null;
     try {
       await attempt(known ? member.mailboxAddress! : await resolve());
     } on Exception {
@@ -2996,7 +2965,6 @@ class ChatState extends ChangeNotifier {
       stonechatId: entry.stonechatId,
       displayName: entry.stonechatId.substring(3, 12),
       pubkeyB64: entry.pubkeyB64,
-      pqPkB64: entry.pqPkB64, // sig-verified in _resolve
       status: ContactStatus.pendingOut,
       mailboxAddress: entry.mailboxAddress,
       tlsFp: entry.mailboxTlsFp,
@@ -5272,9 +5240,6 @@ class ChatState extends ChangeNotifier {
               (payload['display_name'] as String?) ??
               envelope.from.substring(3, 12),
           pubkeyB64: pubkeyB64,
-          // May be null when the directory was unreachable; _deliver
-          // backfills it (sig-verified) before anything is sealed to them.
-          pqPkB64: senderEntry?.pqPkB64,
           status: ContactStatus.pendingIn,
           mailboxAddress: senderEntry?.mailboxAddress,
           tlsFp: senderEntry?.mailboxTlsFp,

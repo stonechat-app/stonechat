@@ -582,21 +582,6 @@ export class Protocol {
       throw new Refused(`the directory's key for ${stonechatId} is not the one held`);
     }
     const identityPub = b64decode(entry.pubkey);
-    // The identity's X-Wing key is checked when present, as the app does.
-    // Nothing is sealed to it, so a bad one costs the record, not a message.
-    if (typeof entry.pq_pk === 'string' && typeof entry.pq_sig === 'string') {
-      let ok = false;
-      try {
-        const pq = b64decode(entry.pq_pk);
-        const sig = b64decode(entry.pq_sig);
-        ok =
-          pq.length === 1216 && sig.length === 64 &&
-          this.core.verify(identityPub, utf8.encode('stonechat-v1-pqpk'), pq, sig);
-      } catch {
-        ok = false;
-      }
-      if (!ok) throw new Refused(`the directory's record for ${stonechatId} carries a bad pq_pk`);
-    }
     const devices = (entry as unknown as Record<string, unknown>)['devices'];
     if (devices !== undefined && devices !== null) {
       const manifest = verifiedManifest(this.core, devices, stonechatId, identityPub);

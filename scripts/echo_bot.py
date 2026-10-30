@@ -192,7 +192,7 @@ def peer_devices(bot: Phone, peer: Peer) -> list[int]:
 def resolve(stonechat_id: str) -> Peer:
     # One implementation of "do I believe this directory", shared with the
     # end-to-end test: checked against the ID that was asked for, with the
-    # signatures over pq_pk and the mailbox's TLS fingerprint verified.
+    # signature over the mailbox's TLS fingerprint verified.
     entry = e2e.resolve_directory(stonechat_id)
     if not entry["mailbox"]:
         raise RuntimeError(f"{stonechat_id} has no running relay — can't deliver")

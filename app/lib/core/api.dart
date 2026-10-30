@@ -149,8 +149,6 @@ class ApiException implements Exception {
 class DirectoryEntry {
   final String stonechatId;
   final String pubkeyB64;
-  final String? pqPkB64; // the identity's X-Wing key (nothing is sealed to it)…
-  final String? pqSigB64; // …signed by the Ed25519 identity key
   final String? mailboxAddress; // null → peer's mailbox is off right now
   final String? mailboxTlsFp; // pinned cert fingerprint…
   final String? mailboxTlsSig; // …vouched for by the owner's identity key
@@ -161,8 +159,6 @@ class DirectoryEntry {
   DirectoryEntry({
     required this.stonechatId,
     required this.pubkeyB64,
-    this.pqPkB64,
-    this.pqSigB64,
     this.mailboxAddress,
     this.mailboxTlsFp,
     this.mailboxTlsSig,
@@ -262,21 +258,22 @@ class HubApi {
     return Future.value(parse(body as Map<String, dynamic>));
   }
 
-  /// [pqPkB64]/[pqSigB64]: the X-Wing identity key and its Ed25519
-  /// signature, which the hub requires and publishes in the directory.
-  /// Envelopes are not sealed to it; they go to device keys.
-  Future<({String stonechatId, String accountToken})> register(
-    String pubkeyB64,
-    String pqPkB64,
-    String pqSigB64,
-  ) async {
+  /// Register the identity: the public key plus a proof of possession
+  /// (CryptoService.signRegistration over [timestamp]), so nobody can claim
+  /// an ID for a key they merely know. 409 means the key is registered
+  /// already — recover() is the way back in.
+  Future<({String stonechatId, String accountToken})> register({
+    required String pubkeyB64,
+    required int timestamp,
+    required String signatureB64,
+  }) async {
     final r = await http.post(
       Uri.parse('$baseUrl/v1/register'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'pubkey': pubkeyB64,
-        'pq_pk': pqPkB64,
-        'pq_sig': pqSigB64,
+        'timestamp': timestamp,
+        'signature': signatureB64,
       }),
     );
     return _check(
@@ -327,8 +324,6 @@ class HubApi {
       return DirectoryEntry(
         stonechatId: j['stonechat_id'] as String,
         pubkeyB64: j['pubkey'] as String,
-        pqPkB64: j['pq_pk'] as String?,
-        pqSigB64: j['pq_sig'] as String?,
         mailboxAddress: mailbox?['address'] as String?,
         mailboxTlsFp: mailbox?['tls_fp'] as String?,
         mailboxTlsSig: mailbox?['tls_sig'] as String?,

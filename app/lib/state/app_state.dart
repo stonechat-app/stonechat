@@ -337,10 +337,11 @@ class AppState extends ChangeNotifier {
     final id = crypto.stonechatId;
     api.baseUrl = hubUrl;
 
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final result = await api.register(
-      crypto.publicKeyB64,
-      crypto.pqPublicKeyB64,
-      crypto.signPqPk(),
+      pubkeyB64: crypto.publicKeyB64,
+      timestamp: now,
+      signatureB64: crypto.signRegistration(now),
     );
     if (result.stonechatId != id) {
       throw ApiException.refusing(
@@ -411,12 +412,10 @@ class AppState extends ChangeNotifier {
       );
     } on ApiException catch (e) {
       if (e.status != 404) rethrow;
-      // The X-Wing identity is derived from the Ed25519 secret, so a
-      // restored identity re-publishes the same pq_pk it always had.
       result = await api.register(
-        crypto.publicKeyB64,
-        crypto.pqPublicKeyB64,
-        crypto.signPqPk(),
+        pubkeyB64: crypto.publicKeyB64,
+        timestamp: now,
+        signatureB64: crypto.signRegistration(now),
       );
     }
     if (result.stonechatId != id) {

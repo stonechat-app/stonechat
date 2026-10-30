@@ -4,7 +4,7 @@
 
 use stonechat_core::envelope::{seal_to, unseal};
 use stonechat_core::primitives::{
-    PQID_SEED_KEY, ed25519_seed_to_x25519_sk, keyed_hash_32, x25519_pk,
+    ed25519_seed_to_x25519_sk, keyed_hash_32, x25519_pk,
 };
 use stonechat_core::session::{
     Identity, InitiateRandom, PQ_ATTACH, PQ_INTERVAL, PrekeyBundle, RatchetHeader, SessionState,
@@ -290,24 +290,21 @@ fn state_json_round_trips_in_dart_shape() {
 
 #[test]
 fn hybrid_seal_round_trips_and_rejects_wrong_recipient() {
-    // Any 32-byte X-Wing seed will do for a seal round trip; this one is a
-    // keyed hash of a test seed. It is NOT how `pq_pk` is derived — that
-    // hashes the full 64-byte secret key (identity.rs) — and it is not what
-    // envelopes are sealed to, which is a device's own random seal seed.
-    let ed_seed = rnd32("seal/id");
-    let pq_seed = keyed_hash_32(&ed_seed, PQID_SEED_KEY);
-    let pq_pk = pqcore::xwing_pk_from_seed(&pq_seed);
+    // Any 32-byte X-Wing seed will do for a seal round trip: envelopes are
+    // sealed to a device's own random seal seed.
+    let seal_seed = rnd32("seal/id");
+    let seal_pub = pqcore::xwing_pk_from_seed(&seal_seed);
 
     let random: [u8; 64] = rnd("seal/r", 64).try_into().unwrap();
-    let sealed = seal_to(&pq_pk, b"inner envelope json", &random, &nonce("seal/n")).unwrap();
+    let sealed = seal_to(&seal_pub, b"inner envelope json", &random, &nonce("seal/n")).unwrap();
     assert_eq!(
-        unseal(&pq_seed, &sealed).as_deref(),
+        unseal(&seal_seed, &sealed).as_deref(),
         Some(b"inner envelope json".as_slice())
     );
 
-    let other_seed = keyed_hash_32(&rnd32("seal/other"), PQID_SEED_KEY);
+    let other_seed = rnd32("seal/other");
     assert_eq!(unseal(&other_seed, &sealed), None);
-    assert_eq!(unseal(&pq_seed, &sealed[..100]), None);
+    assert_eq!(unseal(&seal_seed, &sealed[..100]), None);
 }
 
 #[test]
@@ -322,8 +319,8 @@ fn seal_pads_to_size_buckets() {
     assert_eq!(padded_len(32768), 33792); // past doubling: 1 KiB steps
     assert_eq!(padded_len(40000), 40960);
 
-    let pq_seed = keyed_hash_32(&rnd32("pad/id"), PQID_SEED_KEY);
-    let pq_pk = pqcore::xwing_pk_from_seed(&pq_seed);
+    let seal_seed = rnd32("pad/id");
+    let seal_pub = pqcore::xwing_pk_from_seed(&seal_seed);
     let random: [u8; 64] = rnd("pad/r", 64).try_into().unwrap();
     let overhead = 1120 + 24 + 16;
 
@@ -336,19 +333,19 @@ fn seal_pads_to_size_buckets() {
         b"ends in the marker \x80\x00\x00".to_vec(),
         Vec::new(),
     ] {
-        let sealed = seal_to(&pq_pk, &message, &random, &nonce("pad/n")).unwrap();
+        let sealed = seal_to(&seal_pub, &message, &random, &nonce("pad/n")).unwrap();
         assert_eq!(sealed.len(), overhead + 2048);
-        assert_eq!(unseal(&pq_seed, &sealed), Some(message));
+        assert_eq!(unseal(&seal_seed, &sealed), Some(message));
         seen.push(sealed.len());
     }
     let big = vec![b'x'; 5000];
-    let sealed = seal_to(&pq_pk, &big, &random, &nonce("pad/n2")).unwrap();
+    let sealed = seal_to(&seal_pub, &big, &random, &nonce("pad/n2")).unwrap();
     assert_eq!(sealed.len(), overhead + 8192);
-    assert_eq!(unseal(&pq_seed, &sealed), Some(big));
+    assert_eq!(unseal(&seal_seed, &sealed), Some(big));
 
     // A validly encrypted seal whose content is not padded, or is padded to
     // the wrong bucket, is refused.
-    let (ct, ss) = pqcore::xwing_encaps(&pq_pk, &random).unwrap();
+    let (ct, ss) = pqcore::xwing_encaps(&seal_pub, &random).unwrap();
     let key = keyed_hash_32(&ss, HSEAL_KDF_KEY);
     for inner in [
         b"unpadded inner".to_vec(),
@@ -358,7 +355,7 @@ fn seal_pads_to_size_buckets() {
         let mut forged = ct.to_vec();
         forged.extend_from_slice(&nonce("pad/n3"));
         forged.extend_from_slice(&aead_seal(&key, &nonce("pad/n3"), &inner, HSEAL_AD));
-        assert_eq!(unseal(&pq_seed, &forged), None);
+        assert_eq!(unseal(&seal_seed, &forged), None);
     }
 }
 

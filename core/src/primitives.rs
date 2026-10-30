@@ -20,11 +20,12 @@ pub const X3DH_KDF_KEY: &[u8] = b"stonechat-v1-pqxdh-kdf";
 pub const PQ_RATCHET_KDF_INFO: &[u8] = b"stonechat-v1-pqratchet";
 pub const HSEAL_KDF_KEY: &[u8] = b"stonechat-v1-hsealkdf";
 pub const HSEAL_AD: &[u8] = b"stonechat-v1-hseal";
-pub const PQID_SEED_KEY: &[u8] = b"stonechat-v1-pqidseed";
 pub const SPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-spk";
 pub const KSPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-kspk";
-pub const PQPK_SIG_CONTEXT: &[u8] = b"stonechat-v1-pqpk";
 pub const TLS_SIG_CONTEXT: &[u8] = b"stonechat-v1-tls";
+/// Registration (hub `POST /v1/register`): proof of possession of the
+/// identity key, signed over the current unix time like recovery.
+pub const REGISTER_SIG_CONTEXT: &[u8] = b"stonechat-v1-register";
 pub const RECOVER_SIG_CONTEXT: &[u8] = b"stonechat-v1-recover";
 /// Account deletion (hub `POST /v1/account/delete`); signed by the app.
 pub const DELETE_SIG_CONTEXT: &[u8] = b"stonechat-v1-delete";

@@ -108,23 +108,20 @@ the identity key the recipient's Stonechat ID commits to, and seal to the key
 it carries. A device without a valid certificate is not encrypted to; there
 is no other key to fall back on.
 
-**The identity's X-Wing key (`pq_pk`) is not a seal target.** It is part of
-the wire format: its seed is derived from the identity secret
-(`pq_seed = BLAKE2b(identity_sk[64], key="stonechat-v1-pqidseed", 32)`), it is
-published at registration with
-`pq_sig = Ed25519("stonechat-v1-pqpk" || pq_pk)`, the hub checks its length
-and signature before storing it (`hub/app/main.py`), and every directory
-record carries both. The Flutter app verifies `pq_sig` when it resolves
-a record and refuses one without a valid key; the browser client and the
-agent ignore the fields. Nothing is encapsulated to `pq_pk` and nothing is
-opened with its private half.
+**The identity has no KEM key.** An identity-level X-Wing key (`pq_pk`)
+derived from the identity secret was published at registration and served in
+every directory record until 2026-10-18. It predated device certificates,
+which moved the seal target to the device; after that nothing was
+encapsulated to it and nothing opened with its private half, so it was
+removed. Its one side effect, proving at registration that the caller held
+the identity secret, is now a plain signature over the current time
+(PROTOCOL.md "Registration").
 
 By construction, the seal has **no forward secrecy**, because it is made to a
 long-lived key. Recorded envelopes plus a later theft of that device's seal
 key reveal historical sender/type metadata, but never content.
 
-Code: `core/src/envelope.rs` (`seal_to` / `unseal`), `core/src/devcert.rs`;
-`core/src/identity.rs` (`pq_public`, `sign_pq_pk`) for `pq_pk`.
+Code: `core/src/envelope.rs` (`seal_to` / `unseal`), `core/src/devcert.rs`.
 
 ### 3. Post-quantum ratchet (hybrid healing)
 
@@ -204,8 +201,8 @@ implementation, and the two are checked against each other.
   strings, refuses to serve a bundle until both signed halves exist, and has
   a dedicated 256 KB cap on prekey uploads (`MAX_PREKEY_UPLOAD_BYTES`). This
   behavior is pinned by the conformance corpus (`relay/tests/conformance.py`).
-- **`hub/`** stores `pq_pk` + `pq_sig` per identity and returns them in every
-  directory record. Stonechat ID derivation still uses only the Ed25519 key.
+- **`hub/`** links neither crate and stores no KEM material: the directory
+  record is the Ed25519 identity key and what its owner signed.
 
 ### Sizes on the wire
 
@@ -213,7 +210,7 @@ implementation, and the two are checked against each other.
 |---|---|
 | ML-KEM-768 public key (KSPK/KOPK) | 1184 |
 | ML-KEM-768 ciphertext (`kct`, initial messages only) | 1088 |
-| X-Wing public key (`pq_pk`, device `seal_pub`) | 1216 |
+| X-Wing public key (device `seal_pub`) | 1216 |
 | X-Wing ciphertext (every sealed envelope) | 1120 |
 | ML-KEM-768 public key (ratchet `ek`, up to 3 messages per sending chain while unanswered) | 1184 |
 | ML-KEM-768 ciphertext (ratchet `ct`, likewise) | 1088 |

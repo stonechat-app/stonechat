@@ -8,7 +8,7 @@
 //! is the design record.
 //!
 //! Secret keys are carried as seeds — 64 bytes for an ML-KEM-768 prekey,
-//! 32 for an X-Wing identity key — so callers store small opaque blobs and
+//! 32 for an X-Wing seal key — so callers store small opaque blobs and
 //! key expansion stays in here. Nothing in this crate draws entropy:
 //! callers pass CSPRNG bytes explicitly (the app uses the platform
 //! generator, Dart's `Random.secure()`; the browser client uses
@@ -62,14 +62,14 @@ pub fn mlkem_decaps(
 
 // -- X-Wing (hybrid envelope seal) -------------------------------------------
 
-/// Expand a 32-byte identity seed into the public key published in the hub
-/// directory (`pq_pk`).
+/// Expand a 32-byte seal seed into the public key a device publishes in
+/// its certificate (`seal_pub`).
 pub fn xwing_pk_from_seed(seed: &[u8; XWING_SEED_BYTES]) -> [u8; XWING_PUBLIC_BYTES] {
     let sk = x_wing::DecapsulationKey::from(*seed);
     sk.encapsulation_key().to_bytes().into()
 }
 
-/// Encapsulate to a peer's X-Wing identity key. `random` must be fresh
+/// Encapsulate to a peer device's X-Wing seal key. `random` must be fresh
 /// CSPRNG output. `None` when `pk` does not parse as an X-Wing key.
 pub fn xwing_encaps(
     pk: &[u8; XWING_PUBLIC_BYTES],

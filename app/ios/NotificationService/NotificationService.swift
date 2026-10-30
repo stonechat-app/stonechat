@@ -123,21 +123,25 @@ final class Drainer {
   private var db: Database?
   private var ownId = ""
   private var ownDevice = 1
-  private var edSeed = Data()
-  private var pqSeed = Data()
+  private var sealSeed = Data()
   private var silenced = 0
   private var mode = PreviewMode.full
 
   func run(deadline: Date) -> DrainSummary? {
-    // Identity + DB key from the shared keychain (first_unlock: readable
-    // here as long as the phone has been unlocked once since boot).
+    // Identity, device keys and DB key from the shared keychain
+    // (first_unlock: readable here as long as the phone has been unlocked
+    // once since boot). The device keys are what envelopes are sealed to;
+    // the identity secret is not needed here, so a linked device drains too.
     guard
       let dbKey = Keychain.read("sc_db_key"),
       let ownId = Keychain.read("sc_id"),
-      let secretB64 = Keychain.read("sc_secret"),
-      let secret = Data(base64Encoded: secretB64), secret.count == 64
+      let deviceKeysJson = Keychain.read("sc_device_keys"),
+      let deviceKeys = try? JSONSerialization.jsonObject(
+        with: Data(deviceKeysJson.utf8)) as? [String: Any],
+      let sealB64 = deviceKeys["seal"] as? String,
+      let sealSeed = Data(base64Encoded: sealB64), sealSeed.count == 32
     else {
-      nseLog.error("no identity in the shared keychain — nothing to drain")
+      nseLog.error("no identity or device keys in the shared keychain — nothing to drain")
       return nil
     }
     guard let db = Database(key: dbKey) else {
@@ -146,12 +150,7 @@ final class Drainer {
     }
     self.db = db
     self.ownId = ownId
-    self.edSeed = secret.prefix(32)
-    guard let pq = Core.pqSeed(fromEdSecret: secret) else {
-      nseLog.error("core: pq seed derivation failed")
-      return nil
-    }
-    self.pqSeed = pq
+    self.sealSeed = sealSeed
 
     // Own mailbox coordinates, mirrored into kv by ChatState.setMailbox.
     guard
@@ -234,7 +233,7 @@ final class Drainer {
       let envelopeId = sealed["id"] as? String,
       let sealedB64 = sealed["sealed"] as? String,
       let sealedBytes = Data(base64Encoded: sealedB64),
-      let innerData = Core.unseal(pqSeed: pqSeed, sealed: sealedBytes),
+      let innerData = Core.unseal(sealSeed: sealSeed, sealed: sealedBytes),
       let inner = try? JSONSerialization.jsonObject(with: innerData) as? [String: Any],
       let type = inner["type"] as? String,
       let from = inner["from"] as? String,
@@ -243,7 +242,7 @@ final class Drainer {
       let device = inner["device"] as? Int, device == ownDevice,
       let id = inner["id"] as? String, id == envelopeId
     else {
-      nseLog.info("envelope did not unseal to this identity and device — left for the app")
+      nseLog.info("envelope did not unseal to this device — left for the app")
       return nil
     }
 

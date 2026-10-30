@@ -72,16 +72,15 @@ fn unpad(mut padded: Vec<u8>) -> Option<Vec<u8>> {
 
 /// Seal `message` to an X-Wing public key. For envelopes that is the
 /// recipient **device's** `seal_pub`, taken from a device certificate the
-/// host has verified — not the identity's `pq_pk`, which nothing is sealed
-/// to. `random` must be fresh CSPRNG output, `nonce` likewise. `None` when
-/// the key doesn't parse. (The parameter keeps its old name.)
+/// host has verified. `random` must be fresh CSPRNG output, `nonce`
+/// likewise. `None` when the key doesn't parse.
 pub fn seal_to(
-    pq_pk: &[u8; XWING_PUBLIC_BYTES],
+    seal_pub: &[u8; XWING_PUBLIC_BYTES],
     message: &[u8],
     random: &[u8; XWING_ENCAPS_RANDOM_BYTES],
     nonce: &[u8; AEAD_NONCE_BYTES],
 ) -> Option<Vec<u8>> {
-    let (ct, ss) = xwing_encaps(pq_pk, random)?;
+    let (ct, ss) = xwing_encaps(seal_pub, random)?;
     let key = keyed_hash_32(&ss, HSEAL_KDF_KEY);
     let boxed = aead_seal(&key, nonce, &pad(message), HSEAL_AD);
     let mut out = Vec::with_capacity(ct.len() + nonce.len() + boxed.len());

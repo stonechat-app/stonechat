@@ -3,6 +3,7 @@ the signature and the version on the way in, and serves the manifest verbatim
 in the directory record."""
 
 import base64
+import time
 import os
 import sys
 import tempfile
@@ -17,9 +18,6 @@ from nacl.signing import SigningKey  # noqa: E402
 
 from app.main import _devices_signing_bytes, app  # noqa: E402
 
-PQ_PK_LEN = 1216
-
-
 def b64(b: bytes) -> str:
     return base64.b64encode(b).decode()
 
@@ -29,11 +27,11 @@ class Devices(unittest.TestCase):
     def setUpClass(cls):
         cls.client = TestClient(app)
         cls.identity = SigningKey.generate()
-        pq_pk = bytes(PQ_PK_LEN)
+        now = int(time.time())
         r = cls.client.post("/v1/register", json={
             "pubkey": b64(bytes(cls.identity.verify_key)),
-            "pq_pk": b64(pq_pk),
-            "pq_sig": b64(cls.identity.sign(b"stonechat-v1-pqpk" + pq_pk).signature),
+            "timestamp": now,
+            "signature": b64(cls.identity.sign(b"stonechat-v1-register" + str(now).encode()).signature),
         })
         assert r.status_code == 201, r.text
         cls.stonechat_id = r.json()["stonechat_id"]

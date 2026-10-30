@@ -2,6 +2,7 @@
 machine shapes the explicit provider+machine form is held to."""
 
 import base64
+import time
 import os
 import sys
 import tempfile
@@ -18,9 +19,6 @@ from nacl.signing import SigningKey  # noqa: E402
 from app import countries  # noqa: E402
 from app.main import app, enabled_providers  # noqa: E402
 
-PQ_PK_LEN = 1216
-
-
 def b64(b: bytes) -> str:
     return base64.b64encode(b).decode()
 
@@ -30,11 +28,11 @@ class Allowlist(unittest.TestCase):
     def setUpClass(cls):
         cls.client = TestClient(app)
         identity = SigningKey.generate()
-        pq_pk = bytes(PQ_PK_LEN)
+        now = int(time.time())
         r = cls.client.post("/v1/register", json={
             "pubkey": b64(bytes(identity.verify_key)),
-            "pq_pk": b64(pq_pk),
-            "pq_sig": b64(identity.sign(b"stonechat-v1-pqpk" + pq_pk).signature),
+            "timestamp": now,
+            "signature": b64(identity.sign(b"stonechat-v1-register" + str(now).encode()).signature),
         })
         assert r.status_code == 201, r.text
         cls.auth = {"Authorization": f"Bearer {r.json()['account_token']}"}

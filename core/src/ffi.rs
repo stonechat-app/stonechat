@@ -25,7 +25,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 
 use crate::envelope;
-use crate::primitives::{PQID_SEED_KEY, hash_var, keyed_hash_32};
+use crate::primitives::hash_var;
 use crate::session::{Identity, InitiateRandom, PrekeyBundle, RatchetHeader, SessionState};
 
 const OK: i32 = 0;
@@ -627,46 +627,23 @@ pub unsafe extern "C" fn stonechat_session_decrypt(
 
 // -- envelope + identity helpers (the NSE's non-session needs) -----------------
 
-/// Derive the X-Wing identity seed the same way the app does
-/// (crypto.dart `_pqSeed`): a domain-separated hash of the **full
-/// 64-byte libsodium Ed25519 secret key** (seed || public half), NOT of
-/// the 32-byte seed. Hashing the seed alone yields a different identity
-/// and every sealed envelope silently fails to open.
-///
-/// # Safety
-/// `ed_secret`: 64 readable bytes. `pq_seed_out`: 32 writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn stonechat_pq_seed_from_ed_secret(
-    ed_secret: *const u8,
-    pq_seed_out: *mut u8,
-) -> i32 {
-    ffi_guard!({
-        let Some(secret) = (unsafe { arr::<64>(ed_secret) }) else {
-            return ERR_INPUT;
-        };
-        let pq = keyed_hash_32(secret, PQID_SEED_KEY);
-        unsafe { pq_seed_out.copy_from_nonoverlapping(pq.as_ptr(), pq.len()) };
-        OK
-    })
-}
-
 /// Open a sealed envelope (X-Wing hybrid seal, PROTOCOL.md "Envelope") with
-/// our identity seed. `-3` when it wasn't sealed to this identity or is
-/// garbage — a normal outcome, drop the envelope.
+/// this device's own seal seed. `-3` when it wasn't sealed to that key or
+/// is garbage — a normal outcome, drop the envelope.
 ///
 /// # Safety
-/// `pq_seed`: 32 readable bytes. `sealed`: `sealed_len` readable bytes.
+/// `seal_seed`: 32 readable bytes. `sealed`: `sealed_len` readable bytes.
 /// `out_ptr`/`out_len` writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stonechat_unseal(
-    pq_seed: *const u8,
+    seal_seed: *const u8,
     sealed: *const u8,
     sealed_len: usize,
     out_ptr: *mut *mut u8,
     out_len: *mut usize,
 ) -> i32 {
     ffi_guard!({
-        let (Some(seed), Some(sealed)) = (unsafe { arr::<32>(pq_seed) }, unsafe {
+        let (Some(seed), Some(sealed)) = (unsafe { arr::<32>(seal_seed) }, unsafe {
             slice(sealed, sealed_len)
         }) else {
             return ERR_INPUT;
@@ -707,7 +684,7 @@ pub unsafe extern "C" fn stonechat_tls_fingerprint(
 /// Expand a caller-supplied 32-byte CSPRNG seed into a fresh identity, or
 /// re-expand a stored one: pass the 64-byte secret key with `from_secret`
 /// non-zero. Result JSON: `{"secret":"<b64 64>","public":"<b64 32>",
-/// "pq_pk":"<b64>","pq_pk_sig":"<b64>","stonechat_id":"SC-…"}`.
+/// "stonechat_id":"SC-…"}`.
 ///
 /// # Safety
 /// `input`: 32 readable bytes when `from_secret == 0`, 64 when non-zero.
@@ -734,8 +711,6 @@ pub unsafe extern "C" fn stonechat_identity(
         let v = json!({
             "secret": B64.encode(keys.secret),
             "public": B64.encode(keys.public),
-            "pq_pk": B64.encode(keys.pq_public()),
-            "pq_pk_sig": B64.encode(keys.sign_pq_pk()),
             "stonechat_id": keys.stonechat_id(),
         });
         unsafe { emit_json(&v, out_ptr, out_len) }
@@ -907,14 +882,15 @@ pub unsafe extern "C" fn stonechat_normalize_id(
     })
 }
 
-/// Seal an envelope to a peer's X-Wing identity (PROTOCOL.md "Envelope").
+/// Seal an envelope to a peer device's X-Wing seal key, the `seal_pub` of
+/// its verified certificate (PROTOCOL.md "Envelope").
 ///
 /// # Safety
-/// `pq_pk`: 1216 readable. `random`: 64 readable. `nonce`: 24 readable.
+/// `seal_pub`: 1216 readable. `random`: 64 readable. `nonce`: 24 readable.
 /// `message`: its length. `out_*` writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn stonechat_seal(
-    pq_pk: *const u8,
+    seal_pub: *const u8,
     message: *const u8,
     message_len: usize,
     random: *const u8,
@@ -924,7 +900,7 @@ pub unsafe extern "C" fn stonechat_seal(
 ) -> i32 {
     ffi_guard!({
         let (Some(pk), Some(msg), Some(rnd), Some(n)) = (
-            unsafe { arr::<{ pqcore::XWING_PUBLIC_BYTES }>(pq_pk) },
+            unsafe { arr::<{ pqcore::XWING_PUBLIC_BYTES }>(seal_pub) },
             unsafe { slice(message, message_len) },
             unsafe { arr::<{ pqcore::XWING_ENCAPS_RANDOM_BYTES }>(random) },
             unsafe { arr::<24>(nonce) },
