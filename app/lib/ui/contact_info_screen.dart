@@ -8,7 +8,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 
 import '../core/links.dart';
@@ -221,11 +220,10 @@ class _ScanScreenState extends State<_ScanScreen> {
         appBar: AppBar(title: const Text('Scan their code')),
         body: Stack(
           children: [
-            MobileScanner(
-              onDetect: (capture) {
+            QrScanView(
+              onCode: (raw) {
                 if (_handled) return;
-                final raw = capture.barcodes.firstOrNull?.rawValue;
-                if (raw == null || stonechatInviteFromInput(raw) == null) return;
+                if (stonechatInviteFromInput(raw) == null) return;
                 _handled = true;
                 Navigator.pop(context, raw);
               },

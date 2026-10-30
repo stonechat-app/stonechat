@@ -2,10 +2,12 @@
 library;
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_zxing/flutter_zxing.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../state/mailbox_state.dart';
 import 'theme.dart';
@@ -377,6 +379,74 @@ void showZnSnack(BuildContext context, String message, {bool error = false}) {
       ),
     ),
   );
+}
+
+/// Opens a web page (terms, privacy policy, source) in the browser. If no
+/// browser takes it, the link is copied instead so it is never a dead end.
+Future<void> openLink(BuildContext context, String url) async {
+  var opened = false;
+  try {
+    opened = await launchUrl(Uri.parse(url),
+        mode: LaunchMode.externalApplication);
+  } catch (_) {}
+  if (opened) return;
+  await Clipboard.setData(ClipboardData(text: url));
+  if (context.mounted) showZnSnack(context, 'Link copied: $url');
+}
+
+/// The camera QR scanner every scan screen uses. ZXing decodes the frames on
+/// the device, with no Google ML Kit and nothing sent anywhere. [onCode] gets
+/// the text of each QR code it reads, possibly the same one several times;
+/// callers ignore what isn't theirs.
+class QrScanView extends StatefulWidget {
+  final void Function(String raw) onCode;
+
+  const QrScanView({super.key, required this.onCode});
+
+  @override
+  State<QrScanView> createState() => _QrScanViewState();
+}
+
+class _QrScanViewState extends State<QrScanView> {
+  bool _noCamera = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (_noCamera) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(32),
+          child: Text(
+            'The camera is unavailable. Allow Stonechat to use it in your '
+            'phone\'s settings, or paste the code instead.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, color: Zn.text),
+          ),
+        ),
+      );
+    }
+    return ReaderWidget(
+      codeFormat: Format.qrCode,
+      // Decode the whole width of the frame, not ZXing's default centre
+      // cut-out, so a code held close still scans; 1080p because identity
+      // exports are dense.
+      resolution: ResolutionPreset.veryHigh,
+      cropPercent: 1,
+      showScannerOverlay: false,
+      tryHarder: true,
+      showGallery: false,
+      showToggleCamera: false,
+      scanDelay: const Duration(milliseconds: 200),
+      scanDelaySuccess: const Duration(milliseconds: 500),
+      onControllerCreated: (_, error) {
+        if (error != null && mounted) setState(() => _noCamera = true);
+      },
+      onScan: (code) {
+        final text = code.text;
+        if (code.isValid && text != null) widget.onCode(text);
+      },
+    );
+  }
 }
 
 /// A selectable "where does your mailbox live" card: radio-style marker,

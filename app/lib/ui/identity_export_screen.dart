@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
@@ -234,10 +233,9 @@ class _IdentityRestoreScreenState extends State<IdentityRestoreScreen> {
   Widget _buildScanner() {
     return Stack(
       children: [
-        MobileScanner(
-          onDetect: (capture) {
-            final raw = capture.barcodes.firstOrNull?.rawValue;
-            if (raw != null && raw.startsWith(IdentityCodec.prefix)) {
+        QrScanView(
+          onCode: (raw) {
+            if (raw.startsWith(IdentityCodec.prefix)) {
               setState(() {
                 _code.text = raw;
                 _scanning = false;

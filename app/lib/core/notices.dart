@@ -9,7 +9,18 @@
 /// sees the new state on return. Acceptable for a nice-to-have.
 library;
 
+import 'dart:ui' show Color;
+
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+
+/// Android status-bar icon: the bird as a white silhouette
+/// (res/drawable-*/ic_notification.png). Android draws small icons from
+/// their alpha alone, so the full-colour launcher icon came out as a square.
+/// Kept from resource shrinking by res/raw/keep.xml.
+const androidNotificationIcon = 'ic_notification';
+
+/// Tints the icon and app name in the notification shade (theme.dart Zn.orange).
+const androidNotificationColor = Color(0xFFFF4D00);
 
 class LocalNotices {
   final _plugin = FlutterLocalNotificationsPlugin();
@@ -24,7 +35,7 @@ class LocalNotices {
       _ready =
           await _plugin.initialize(
             settings: const InitializationSettings(
-              android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+              android: AndroidInitializationSettings(androidNotificationIcon),
               // Never prompt from here: notification permission is requested
               // once, deferred, by PushService (see core/push.dart). These
               // notices simply ride whatever grant that produced.
@@ -67,6 +78,7 @@ class LocalNotices {
             'mailbox',
             'Mailbox status',
             channelDescription: 'Mailbox setup and status updates',
+            color: androidNotificationColor,
             importance: Importance.high,
             priority: Priority.high,
           ),

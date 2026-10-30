@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../state/app_state.dart';
 import 'identity_export_screen.dart';
 import 'link_device_screen.dart';
+import 'settings_screen.dart' show privacyPolicyUrl, termsUrl;
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -120,16 +121,38 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                                   strokeWidth: 2,
                                 ),
                               )
-                            : const Text('Create account'),
+                            : const Text('Agree and create account'),
                       ),
                     ),
                     const SizedBox(height: 12),
                     const Text(
                       'No sign-up form. Your account is an encryption key created '
-                      'on this phone — we never learn who you are.\n\n'
-                      'By continuing you agree to the terms at '
-                      'stonechat.app/terms: no abuse, no illegal content.',
+                      'on this phone — we never learn who you are.',
                       style: TextStyle(
+                        color: Zn.muted,
+                        fontSize: 12,
+                        height: 1.4,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // Play's user-generated content policy: the terms are
+                    // agreed to before any content exists, and readable here.
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          const TextSpan(
+                            text: 'By tapping "Agree and create account" you '
+                                'accept the ',
+                          ),
+                          _link(context, 'Terms of service', termsUrl),
+                          const TextSpan(
+                            text: ' (no abuse, no illegal content) and the ',
+                          ),
+                          _link(context, 'Privacy policy', privacyPolicyUrl),
+                          const TextSpan(text: '.'),
+                        ],
+                      ),
+                      style: const TextStyle(
                         color: Zn.muted,
                         fontSize: 12,
                         height: 1.4,
@@ -258,3 +281,22 @@ class _CodeRevealDialog extends StatelessWidget {
     );
   }
 }
+
+/// An inline, tappable link inside running text.
+InlineSpan _link(BuildContext context, String label, String url) => WidgetSpan(
+  alignment: PlaceholderAlignment.baseline,
+  baseline: TextBaseline.alphabetic,
+  child: GestureDetector(
+    onTap: () => openLink(context, url),
+    child: Text(
+      label,
+      style: const TextStyle(
+        color: Zn.orange,
+        fontSize: 12,
+        height: 1.4,
+        decoration: TextDecoration.underline,
+        decorationColor: Zn.orange,
+      ),
+    ),
+  ),
+);

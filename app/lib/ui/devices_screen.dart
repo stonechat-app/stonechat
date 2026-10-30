@@ -4,7 +4,6 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 import 'dart:async';
 
 import 'package:provider/provider.dart';
@@ -421,11 +420,10 @@ class _LinkScannerScreen extends StatelessWidget {
       appBar: AppBar(title: const Text('Scan the new device')),
       body: Stack(
         children: [
-          MobileScanner(
-            onDetect: (capture) {
+          QrScanView(
+            onCode: (raw) {
               if (handled) return;
-              final raw = capture.barcodes.firstOrNull?.rawValue;
-              final offer = raw == null ? null : LinkOffer.tryParse(raw);
+              final offer = LinkOffer.tryParse(raw);
               if (offer == null) return; // a scanner sees a lot of other things
               handled = true;
               Navigator.pop(context, offer);

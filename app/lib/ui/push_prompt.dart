@@ -17,7 +17,7 @@ Future<void> maybeAskForPush(BuildContext context) async {
   final push = context.read<PushService>();
 
   if (app.pushPrompted) return;
-  if (!await push.isUndetermined) {
+  if (!await push.isUndetermined(asked: app.pushPrompted)) {
     await app.markPushPrompted();
     return;
   }
@@ -44,8 +44,9 @@ Future<void> maybeAskForPush(BuildContext context) async {
             const SizedBox(height: 10),
             const Text(
               'We\'ll let you know when your request is accepted and when '
-              'messages arrive. Stonechat notifications are content-free — the '
-              'alert never carries who wrote or what they said.',
+              'messages arrive. The push itself carries nothing: your phone '
+              'decrypts the message, and you choose in Settings what the '
+              'notification shows.',
               style: TextStyle(color: Zn.muted, fontSize: 13, height: 1.45),
             ),
             const SizedBox(height: 20),

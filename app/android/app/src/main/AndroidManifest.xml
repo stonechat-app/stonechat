@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
@@ -10,8 +11,20 @@
     <!-- Android 13+: showing push notifications needs a runtime grant
          (requested by PushService via firebase_messaging). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- open_filex declares these, but it only opens files the app wrote to
+         its own storage (via its FileProvider). Play's photo/video policy
+         rejects broad media access a messenger doesn't need. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" tools:node="remove"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" tools:node="remove"/>
+    <!-- No backup and no device-to-device transfer: history lives on this
+         phone only (SQLCipher, key in the Keystore), and the store listing
+         says there is no cloud copy. Cleartext http is for local development
+         hubs only, so it is allowed in src/debug only. -->
     <application
-        android:usesCleartextTraffic="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="Stonechat"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

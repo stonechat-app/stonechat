@@ -125,12 +125,11 @@ class PushService {
 
   /// True only while the OS permission has never been asked — i.e. we may still
   /// show a soft ask and then prompt. False once granted or denied, or when
-  /// push isn't configured at all.
-  Future<bool> get isUndetermined async {
-    if (!_firebaseReady) return false;
-    final s = await FirebaseMessaging.instance.getNotificationSettings();
-    return s.authorizationStatus == AuthorizationStatus.notDetermined;
-  }
+  /// push isn't configured at all. [asked] is whether we have prompted before
+  /// (AppState.pushPrompted): Android has no "not asked yet" state of its own.
+  Future<bool> isUndetermined({required bool asked}) async =>
+      await permissionState(asked: asked) ==
+      NotificationPermission.notDetermined;
 
   /// Fires the OS permission dialog and, on grant, registers the device token.
   /// Call this ONLY after the user opts in through your own soft-ask UI — that
@@ -154,13 +153,19 @@ class PushService {
       s == AuthorizationStatus.authorized ||
       s == AuthorizationStatus.provisional;
 
-  /// Current permission state, for the settings toggle.
-  Future<NotificationPermission> permissionState() async {
+  /// Current permission state, for the settings toggle. [asked] as for
+  /// [isUndetermined].
+  Future<NotificationPermission> permissionState({required bool asked}) async {
     if (!_firebaseReady) return NotificationPermission.unavailable;
     final s = await FirebaseMessaging.instance.getNotificationSettings();
     return switch (s.authorizationStatus) {
       AuthorizationStatus.authorized ||
       AuthorizationStatus.provisional => NotificationPermission.granted,
+      // Android reports only on/off: a fresh install on Android 13+ reads
+      // "denied" before the dialog was ever shown. Until we have asked, that
+      // is undetermined, so the soft ask and the settings toggle still show it.
+      AuthorizationStatus.denied when Platform.isAndroid && !asked =>
+        NotificationPermission.notDetermined,
       AuthorizationStatus.denied => NotificationPermission.denied,
       _ => NotificationPermission.notDetermined,
     };

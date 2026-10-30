@@ -28,6 +28,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart'
     hide Message;
 
 import '../models.dart';
+import 'notices.dart';
 import 'notification_preview.dart';
 import '../state/app_state.dart';
 import '../state/chat_state.dart';
@@ -86,7 +87,7 @@ Future<void> pushBackgroundHandler(RemoteMessage message) async {
   final notices = FlutterLocalNotificationsPlugin();
   await notices.initialize(
     settings: const InitializationSettings(
-      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      android: AndroidInitializationSettings(androidNotificationIcon),
     ),
   );
   for (final entry in landed.entries) {
@@ -126,6 +127,7 @@ Future<void> pushBackgroundHandler(RemoteMessage message) async {
           messagesChannelId,
           'Messages',
           channelDescription: 'New messages',
+          color: androidNotificationColor,
           importance: Importance.high,
           priority: Priority.high,
           category: AndroidNotificationCategory.message,

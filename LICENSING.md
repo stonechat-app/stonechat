@@ -35,9 +35,9 @@ your modified version over a network.
 modifications, and it must not use the Stonechat name or marks — see below.
 
 Note one practical wrinkle if you fork the mobile client: the Android build
-links proprietary Google components (ML Kit for barcode scanning, Play
-Services for push) that are not AGPL-compatible. A distributable fork strips
-or replaces them, the way de-Googled builds of other AGPL messengers do.
+links a proprietary Google component (Play Services, for push) that is not
+AGPL-compatible. A distributable fork strips or replaces it, the way
+de-Googled builds of other AGPL messengers do.
 
 **Implementing the protocol instead.** Read [`PROTOCOL.md`](PROTOCOL.md) and
 build your own client from scratch. That imposes no obligation at all, and the
@@ -81,4 +81,4 @@ binaries; [`NOTICE`](NOTICE) records them and names the tooling that generates
 complete listings.
 
 The shipped mobile apps additionally link native SDKs that are **not** open
-source, notably Google ML Kit and Play Services, governed by their own terms.
+source, notably Google Play Services, governed by its own terms.
